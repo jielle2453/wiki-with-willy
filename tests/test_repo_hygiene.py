@@ -40,6 +40,22 @@ class Encoding(unittest.TestCase):
                 self.assertFalse(raw.endswith(b"\n\n"), "檔尾多於一個換行")
 
 
+class NoSysPath(unittest.TestCase):
+    """scripts/ 與 hooks/ 裡只有 hooks/guard.py 准動 sys.path（它不是從 scripts/ 跑的，見 CLAUDE.md 三）。"""
+
+    SYS_PATH_EXCEPTIONS = ("hooks/guard.py",)
+
+    def test_only_hook_entry_touches_sys_path(self):
+        for name in tracked_files():
+            if not (name.startswith("scripts/") or name.startswith("hooks/")) or Path(name).suffix != ".py":
+                continue
+            if name in self.SYS_PATH_EXCEPTIONS:
+                continue
+            text = (ROOT / name).read_text(encoding="utf-8")
+            with self.subTest(file=name):
+                self.assertNotIn("sys.path", text)
+
+
 class NoDevPaths(unittest.TestCase):
     def test_no_dev_machine_paths(self):
         for name in tracked_files():

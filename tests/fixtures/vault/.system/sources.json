@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {"id": "src-3f9a", "alias": "客戶案件", "spec": "../raw/客戶案件", "excludes": []},
+    {"id": "src-7c21", "alias": "行政", "spec": "../raw/行政",
+     "excludes": [
+       {"spec": "薪資", "kind": "hidden", "reason": "薪資個資", "added": "2026-10-12"},
+       {"spec": "舊檔", "kind": "unused", "reason": "都是舊版", "added": "2026-10-12"}
+     ]}
+  ]
+}

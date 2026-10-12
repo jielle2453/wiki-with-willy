@@ -20,4 +20,4 @@ claude --plugin-dir "<repo 路徑>"
 
 ## 狀態
 
-建置中，尚無功能。目前只有殼：plugin 載得進、測試跑得綠、`python scripts/kb.py version` 印得出版號。
+建置中。0.2.0 有守門：知識庫裡開對話時，客戶原檔只讀、排除的夾不讀、`kb.py` 不用按允許；還沒有任何 skill。

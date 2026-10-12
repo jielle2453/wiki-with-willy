@@ -44,6 +44,13 @@ class Sources:
                 best = src
         return ("registered", best) if best else (None, None)
 
+    def excluded_under(self, path):
+        """path 底下（含自己）有沒有排除夾：有就回那個來源的 alias（Z10b，S3）。"""
+        for src in self.entries:
+            if any(inside(ex["root"], path) for ex in src["excludes"]):
+                return src["alias"]
+        return None
+
 
 def load(vault):
     with open(str(vault).rstrip("/\\") + "/" + SOURCES_REL, encoding="utf-8") as f:

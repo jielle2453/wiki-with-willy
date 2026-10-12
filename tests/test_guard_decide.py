@@ -248,9 +248,9 @@ class ReviewGaps(DecideBase):
         self.expect("PowerShell", f"sc {p}\\客戶案件\\a.txt x", "deny", "Z9", "readonly_source")
 
     def test_ancestor_write_denied(self):
-        self.expect("Bash", f"rm -rf {self.raw}", "deny", "Z9", "readonly_source")
+        self.expect("Bash", f"rm -rf {self.raw}", "deny", "Z10b", "excluded_inside")  # 上層含排除夾，S3 的 Z10b 先命中
         self.expect("Bash", f"rm -rf {self.tmp}", "deny")
-        self.expect("Bash", f"ls {self.tmp}", "pass")
+        self.expect("Bash", f"ls {self.tmp}", "deny", "Z10b", "excluded_inside")  # 範圍底下有排除夾（S3）
 
     def test_python_c_write_reports_source_zone(self):
         p = str(self.raw).replace("\\", "/")
@@ -268,6 +268,80 @@ class ReviewGaps(DecideBase):
         v = str(self.V).replace("\\", "/")
         cwd = "/" + v[0].lower() + v[2:]
         self.expect("Read", self.raw / "行政" / "薪資" / "s.xlsx", "deny", "Z10", "excluded", cwd=cwd)
+
+
+
+class Round1(DecideBase):
+    """第一輪測試後修正：驗收 23–28、30。"""
+
+    def kb(self):
+        return f'"{ROOT}/scripts/kb.py" version'
+
+    def test_23_s1_interpreter_written_into_vault_is_not_allowed(self):
+        fake = self.V / "檔案索引" / "python"
+        self.expect("Write", fake, "allow", "Z5")
+        fake.write_text("evil", encoding="utf-8")
+        d = self.decide("Bash", f'{fake} {self.kb()}')
+        self.assertNotEqual(d.decision, "allow", d)
+        d = self.decide("Bash", f'檔案索引/python {self.kb()}')
+        self.assertNotEqual(d.decision, "allow", d)
+        d = self.decide("Bash", f'{self.raw}/客戶案件/python.exe {self.kb()}')
+        self.assertNotEqual(d.decision, "allow", d)
+        self.expect("Bash", "python " + self.kb(), "allow")
+
+    def test_s1_plugin_root_env_var_is_ignored(self):
+        os.environ["CLAUDE_PLUGIN_ROOT"] = str(self.tmp)
+        try:
+            (self.tmp / "scripts").mkdir(exist_ok=True)
+            (self.tmp / "scripts" / "kb.py").write_text("print(1)", encoding="utf-8")
+            d = self.decide("Bash", f'python "{self.tmp}/scripts/kb.py" version')
+            self.assertNotEqual(d.decision, "allow", d)
+            self.expect("Bash", "python " + self.kb(), "allow")
+        finally:
+            os.environ["CLAUDE_PLUGIN_ROOT"] = str(ROOT)
+
+    def test_24_s2_powershell_subexpression_not_allowed(self):
+        for tail in (" @(Remove-Item x)", "; rm x", " (rm x)", " $(rm x)"):
+            d = self.decide("PowerShell", "python " + self.kb() + tail)
+            with self.subTest(tail=tail):
+                self.assertNotEqual(d.decision, "allow", d)
+
+    def test_25_s3_file_tool_over_folder_containing_exclude(self):
+        self.expect("Grep", self.raw / "行政", "deny", "Z10b", "excluded_inside")
+        self.expect("Glob", self.raw, "deny", "Z10b", "excluded_inside")
+        self.expect("Read", self.raw / "行政", "deny", "Z10b", "excluded_inside")
+        self.expect("Grep", self.raw / "行政" / "請款", "allow", "Z9")
+        self.expect("Grep", self.raw / "客戶案件", "allow", "Z9")
+        d = guard.decide({"tool_name": "Grep", "tool_input": {"path": str(self.raw / "行政" / "請款"), "glob": "../薪資/*"}, "cwd": str(self.V)})
+        self.assertEqual((d.decision, d.zone), ("deny", "Z10"))
+
+    def test_26_s3_shell_over_folder_containing_exclude(self):
+        r = str(self.raw).replace("\\", "/")
+        self.expect("Bash", f"grep -r x {r}/行政", "deny", "Z10b", "excluded_inside")
+        self.expect("Bash", f"cat {r}/*/薪資/s.xlsx", "deny")
+        self.expect("Bash", f"cd {r}/行政 && cat */s.xlsx", "deny")
+        self.expect("Bash", f"find {r} -name '*.xlsx'", "deny", "Z10b", "excluded_inside")
+        self.expect("PowerShell", f"Set-Location -Path {r}/行政; Get-Content 薪資/s.xlsx", "deny", "Z10", "excluded")
+        self.expect("Bash", f"ls {r}/客戶案件", "pass")
+        self.expect("Bash", f"ls {r}/客戶案件/*", "pass")
+
+    def test_27_b1_reading_md_is_not_write(self):
+        v = str(self.V).replace("\\", "/")
+        self.expect("Bash", f"cat {v}/CLAUDE.md", "pass")
+        self.expect("Bash", f"head {v}/系統/待處理.md", "pass")
+        self.expect("Bash", f"grep x {v}/收件匣/a.md", "pass")
+        self.expect("Bash", f"type {self.raw}\\行政\\請款\\notes.md", "pass")
+        self.expect("Bash", "cat CLAUDE.md", "pass")
+
+    def test_28_b3_non_path_tokens(self):
+        v = str(self.V).replace("\\", "/")
+        self.expect("Bash", f'sed -i s/a/b/ "{v}/AI 產出/x.md"', "pass")
+        self.expect("Bash", f'echo 2026/10/12 > "{v}/AI 產出/x.md"', "pass")
+        self.expect("Bash", f"sed -i s/a/b/ {self.raw}/客戶案件/a.txt", "deny", "Z9", "readonly_source")
+
+    def test_30_r1_z9_reason(self):
+        d = self.decide("Write", self.raw / "客戶案件" / "a.txt")
+        self.assertEqual(d.reason, "客戶原檔只讀。要改內容我用檔案工具另存一份")
 
 
 if __name__ == "__main__":

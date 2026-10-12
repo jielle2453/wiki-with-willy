@@ -17,8 +17,11 @@ HEADER = ["time", "tool", "decision", "zone", "reason_code", "path_or_command_he
 HEAD_MAX = 120
 
 
+_LINE_BREAKS = re.compile("[\t\r\n\x0b\x0c\x1c\x1d\x1e\x85  ]")  # str.splitlines 會斷的全部（L1）
+
+
 def _clean(text):
-    return re.sub(r"[\t\r\n]", " ", str(text or ""))
+    return _LINE_BREAKS.sub(" ", str(text or ""))
 
 
 def _now():

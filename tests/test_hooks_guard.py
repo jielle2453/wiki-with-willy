@@ -76,12 +76,26 @@ class Hook(unittest.TestCase):
         self.assertEqual(r.stdout, "")
         self.assertTrue((self.V / ".system" / "hook-errors.log").exists())
 
-    def test_garbage_stdin_exits_0(self):
+    def test_garbage_stdin_outside_vault_is_silent_and_logged_to_temp(self):
+        """P2：找不到 vault 時任何錯誤一律不表態，只寫 %TEMP% 的錯誤檔（驗收 29）。"""
+        from kb._lib import ledger
+        log = ledger.fallback_error_log()
+        before = len(log.read_text(encoding="utf-8").splitlines()) if log.exists() else 0
         env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
         r = subprocess.run([sys.executable, str(HOOK)], input="not json", capture_output=True, text=True,
                            encoding="utf-8", cwd=str(ROOT), env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), before + 1)
+
+    def test_garbage_stdin_inside_vault_cwd_still_denies(self):
+        """stdin 壞掉但程序 cwd 在知識庫裡：還是 fail closed。"""
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        r = subprocess.run([sys.executable, str(HOOK)], input="not json", capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(self.V), env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(decision_of(r)[1], "deny")
+        self.assertTrue((self.V / ".system" / "hook-errors.log").exists())
 
 
 class ReviewGaps(unittest.TestCase):
@@ -100,12 +114,12 @@ class ReviewGaps(unittest.TestCase):
         self.assertEqual(decision_of(r)[1], "allow", r.stdout)
         self.assertEqual(json.loads((d / f"{platform.node()}.json").read_text(encoding="utf-8")).get("python"), platform.python_version())
 
-    def test_list_stdin_denies_and_logs(self):
+    def test_list_stdin_outside_vault_is_silent(self):
         env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
         r = subprocess.run([sys.executable, str(HOOK)], input="[1, 2]", capture_output=True, text=True,
                            encoding="utf-8", cwd=str(ROOT), env=env)
         self.assertEqual(r.returncode, 0)
-        self.assertEqual(decision_of(r)[1], "deny")
+        self.assertEqual(r.stdout, "")
 
 
 if __name__ == "__main__":

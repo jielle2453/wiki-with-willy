@@ -112,5 +112,21 @@ class Functions(unittest.TestCase):
         self.assertEqual(json.loads(files[0].read_text(encoding="utf-8"))["date"], date.today().isoformat())
 
 
+
+class Round1(unittest.TestCase):
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_l1_unicode_line_separators_do_not_split_rows(self):
+        head = "a\u2028b\u2029c\x85d\x0be\x0cf\x1cg"
+        ledger.append(self.V, {"tool": "Bash", "decision": "deny", "zone": "", "reason_code": "unparsed", "head": head})
+        text = (self.V / ".system" / "ledger.tsv").read_text(encoding="utf-8")
+        self.assertEqual(len(text.splitlines()), 2)
+        self.assertEqual(text.splitlines()[1].split("\t")[5], "a b c d e f g")
+
+
 if __name__ == "__main__":
     unittest.main()

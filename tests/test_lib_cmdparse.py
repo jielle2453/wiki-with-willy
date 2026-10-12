@@ -1,7 +1,8 @@
 """_lib/cmdparse：抽路徑、判寫入、判單一 kb.py 呼叫。"""
+import shutil
 import unittest
 
-from tests._guard_fixture import ROOT, SCRIPTS  # noqa: F401
+from tests._guard_fixture import ROOT, SCRIPTS, make_vault  # noqa: F401
 from kb._lib import cmdparse, paths  # noqa: E402
 
 CWD = "C:/x/vault"
@@ -26,8 +27,12 @@ class ExtractPaths(unittest.TestCase):
         self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
 
     def test_relative_path_joins_cwd(self):
-        got = cmdparse.extract_paths("ls ../raw/客戶案件", CWD)
-        self.assertIn(n("C:/x/raw/客戶案件"), got)
+        tmp, V, raw = make_vault()
+        try:
+            got = cmdparse.extract_paths("ls ../raw/客戶案件", str(V))
+            self.assertIn(paths.normalize(str(raw / "客戶案件"), None), got)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_redirect_symbols_are_stripped(self):
         got = cmdparse.extract_paths("echo hi >C:/x/raw/客戶案件/a.txt", CWD)
@@ -107,10 +112,15 @@ class ReviewGaps(unittest.TestCase):
                 self.assertTrue(cmdparse.is_write(cmd))
 
     def test_cd_then_relative_resolves_against_cd_target(self):
-        got = cmdparse.extract_paths("cd C:/x/raw/行政 && cat 薪資/s.xlsx", CWD)
-        self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
-        got = cmdparse.extract_paths("cd ../raw/行政; cat 薪資/s.xlsx", CWD)
-        self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
+        tmp, V, raw = make_vault()
+        try:
+            want = paths.normalize(str(raw / "行政" / "薪資" / "s.xlsx"), None)
+            got = cmdparse.extract_paths(f"cd {raw}/行政 && cat 薪資/s.xlsx", str(V))
+            self.assertIn(want, got)
+            got = cmdparse.extract_paths("cd ../raw/行政; cat 薪資/s.xlsx", str(V))
+            self.assertIn(want, got)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_absolute_path_embedded_in_token(self):
         got = cmdparse.extract_paths("python -c \"print(open('C:/x/raw/行政/薪資/s.xlsx','rb').read())\"", CWD)
@@ -124,6 +134,71 @@ class ReviewGaps(unittest.TestCase):
         globs = cmdparse.glob_prefixes("cat C:/x/raw/行政/*/s.xlsx; ls C:/x/raw/行政/薪?/", CWD)
         self.assertEqual(globs, [n("C:/x/raw/行政"), n("C:/x/raw/行政")])
         self.assertEqual(cmdparse.glob_prefixes("ls C:/x", CWD), [])
+
+
+
+class Round1(unittest.TestCase):
+    """第一輪測試後修正：S1 直譯器、S2 PowerShell 子運算式、B1 副檔名、B3 非路徑 token、萬用字元 token。"""
+
+    KB = f'"{PLUGIN}/scripts/kb.py" version'
+
+    def test_s1_interpreter_must_be_bare_or_safe_absolute(self):
+        self.assertTrue(cmdparse.is_single_plugin_call("python " + self.KB, PLUGIN))
+        self.assertTrue(cmdparse.is_single_plugin_call("python3 " + self.KB, PLUGIN))
+        self.assertTrue(cmdparse.is_single_plugin_call("py " + self.KB, PLUGIN))
+        self.assertTrue(cmdparse.is_single_plugin_call("python.exe " + self.KB, PLUGIN))
+        for bad in ("檔案索引/python ", "./python ", "../python ", "AI\\ 產出/python ", "C:/x/vault/檔案索引/notpython.exe "):
+            with self.subTest(interp=bad):
+                self.assertFalse(cmdparse.is_single_plugin_call(bad + self.KB, PLUGIN))
+        self.assertTrue(cmdparse.is_single_plugin_call("C:/Python312/python.exe " + self.KB, PLUGIN))
+        self.assertFalse(cmdparse.is_single_plugin_call("C:/x/vault/檔案索引/python " + self.KB, PLUGIN,
+                                                        forbidden_dirs=[paths.normalize("C:/x/vault", None)]))
+        self.assertFalse(cmdparse.is_single_plugin_call("C:/x/raw/客戶案件/python.exe " + self.KB, PLUGIN,
+                                                        forbidden_dirs=[paths.normalize("C:/x/raw/客戶案件", None)]))
+
+    def test_s2_subexpressions_are_not_single_call(self):
+        for tail in (" @(Remove-Item x)", " (rm x)", " $(rm x)", " `rm x`", "; rm x", " @('a')"):
+            with self.subTest(tail=tail):
+                self.assertFalse(cmdparse.is_single_plugin_call("python " + self.KB + tail, PLUGIN))
+        self.assertTrue(cmdparse.is_single_plugin_call('python ' + self.KB + ' --path "a (b)"', PLUGIN))
+
+    def test_b1_extension_is_not_a_write_verb(self):
+        for cmd in ("cat CLAUDE.md", "head 系統/待處理.md", "grep TODO 收件匣/a.md", "type C:\\r\\行政\\請款\\notes.md",
+                    "cat a.sc", "cat x.cp", "ls notes.ac", "cat README.md | head", "cat a.rm"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(cmdparse.is_write(cmd))
+        for cmd in ("md x", "rd x", "rm x.md", "cp a.md b.md", "sc a.md x", "cat a.md > b.md"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(cmdparse.is_write(cmd))
+
+    def test_b3_relative_token_must_resolve(self):
+        tmp, V, raw = make_vault()
+        try:
+            cwd = str(V)
+            self.assertEqual(cmdparse.extract_paths("sed -i s/a/b/ x", cwd), [])
+            self.assertEqual(cmdparse.extract_paths("echo 2026/10/12", cwd), [])
+            got = cmdparse.extract_paths('sed -i s/a/b/ "AI 產出/x.md"', cwd)
+            self.assertEqual(got, [paths.normalize(str(V / "AI 產出" / "x.md"), None)])
+            got = cmdparse.extract_paths("cat 案子/信義王/合約.docx", cwd)
+            self.assertEqual(got, [paths.normalize(str(V / "案子" / "信義王" / "合約.docx"), None)])
+            got = cmdparse.extract_paths("echo hi > 收件匣/x.txt", cwd)
+            self.assertEqual(got, [paths.normalize(str(V / "收件匣" / "x.txt"), None)])
+            got = cmdparse.extract_paths("mkdir 案子/新案", cwd)
+            self.assertEqual(got, [paths.normalize(str(V / "案子" / "新案"), None)])
+            self.assertEqual(cmdparse.extract_paths("echo 新案/新案/x.md", cwd), [])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_glob_tokens(self):
+        tmp, V, raw = make_vault()
+        try:
+            r = str(raw).replace("\\", "/")
+            got = cmdparse.glob_tokens(f"cat {r}/*/薪資/s.xlsx; ls {V}/AI\\ 產出", str(V))
+            self.assertEqual(got, [paths.normalize(f"{r}/*/薪資/s.xlsx", None)])
+            got = cmdparse.glob_tokens(f"cd {r}/行政 && cat */s.xlsx", str(V))
+            self.assertEqual(got, [paths.normalize(f"{r}/行政/*/s.xlsx", None)])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

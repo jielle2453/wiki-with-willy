@@ -72,6 +72,8 @@ def _on_error(e, payload, tool):
                                   "reason_code": "guard_error", "head": head})
     except BaseException:  # noqa: BLE001
         pass
+    if vault is None:
+        return  # 不在知識庫裡：任何錯誤一律不表態，只留 %TEMP% 的錯誤檔（P2）
     if tool not in SHELL_TOOLS:
         try:
             emit("deny", ERROR_REASON)

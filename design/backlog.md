@@ -25,6 +25,7 @@
 | B-013 | 2026-10-12 | open | 下一題（第一個 skill 或 command）的確認情境必含「/help 或 /plugin 看得到 wiki-with-willy」，補建殼沒拿到的載入正面證據；順便弄清楚 --plugin-dir 載的 plugin 在 /plugin 裡列不列。守門題（spec 2026-10-12-守門）的確認第 1 步先給 hook 層的證據，/help 可見留給第一個 skill | 建殼確認 |
 | B-014 | 2026-10-12 | open | spike：CLI `claude plugin update wiki-with-willy@<mp>` 能不能由 `kb upgrade` 用 subprocess 代跑、桌面版重開後吃不吃；能就 D-072 維持一句「升級」，不能就修訂成「說升級後我帶你點四步」（I-102） | B-008 |
 | B-015 | 2026-10-12 | open | 守門 spec 疑義待設計 session 拍板：(1) Bash 只提到登記來源或寫 Z1／Z3 時實作回 pass 不回 allow（spec 第 2 節「其餘不表態」vs 驗收 11「allow」vs D-073）；(2) Z8 寫擋的 reason_code 表上沒有，暫用 protected；(3) `kb guard decide` 例子 `cat a.txt > b.txt` 標 Z9，但無斜線 token 不抽路徑，實作會是 unparsed 或 Z8 | 守門實作 |
+| B-016 | 2026-10-12 | open | 查 Claude Code hooks 設定有沒有「hook 失敗或逾時即 deny」的欄位（onFailure 之類）與最低版本；有就加進 hooks.json，沒有就靠開場偵測 python（I-103） | 守門實作 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

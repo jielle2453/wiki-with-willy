@@ -232,6 +232,12 @@
 - 合併版會不會踩：會。D-072 說客戶只要說「升級」，但目前升級最後一段是 GUI 四步加一個嚇人的假警報，`kb upgrade` 碰不到 GUI。待設計 session 確認：測 CLI `claude plugin update` 能不能由 `kb upgrade` 代跑、桌面版重開後吃不吃。
 - 客戶會不會遇到：會，每次升級。
 
+### I-103 hook 逾時或 python 不在 PATH 時，Claude Code 放行（fail open）
+- 來源：本 repo 守門實作 session 的審閱，2026-10-12，`design/specs/2026-10-12-守門.md` 疑義 4。防範型。
+- 發生過什麼：PreToolUse hook 若逾時（timeout 10）或命令本身起不來（python 不在 PATH），Claude Code 不會把它當 deny，工具照常執行。守門只在它跑得動的時候有效。
+- 合併版會不會踩：會。D-073 要 fail closed，但這一層在 Claude Code 手上。對策三個：守門保持快（單次呼叫遠低於 timeout）；開場 hook 偵測 python 可用並印一行；B-016 查 hooks 設定有沒有「失敗即擋」的欄位與版本。
+- 客戶會不會遇到：python 壞掉的那台電腦會。
+
 ## 三、回合、備份、退回、登記
 
 ### I-035 背景代理做完的通知被當成客戶的新問題
@@ -595,7 +601,7 @@
 ### I-093 共用的 git index 與自動備份，把別人的檔掃進自己的 commit
 - 來源：llm-wiki 1.8.0 `skills/wiki-collabteam/04-查核.md:35-40`、`07-技術提醒.md:23-33`（2026-09-26 實際踩到）、`02-派工.md:18-19`、`templates/vault/raw/.manifest.json:6`、CHANGELOG 1.7.0。
 - 發生過什麼：逐檔 add 了九個路徑，commit 仍帶進別人 staged 的第十個。`git add -A` 掃進凍結紀錄與另一個 session 的 450 份在製檔，同一個 vault 發生兩次。`--only` 撤銷了 `git rm --cached`，commit 看起來成功，diff 裡卻沒有那個檔。obsidian-git 的自動備份突破凍結、吃掉歸屬，一個檔三天 76 筆 commit 全是備份帳號。`cp -p` 保留 mtime，`git status` 誤報乾淨。
-- 合併版會不會踩：客戶端不會，第一版不用 git（D-023）。repo 開發可能：conventions 三規定單一工作目錄、切分支、實作 session 才 commit。設計與實作 session 同時開著時，index 是共用的。實作 session 要不要一律 `git commit --only <路徑>`。設計 session 2026-10-12 定：實作 session 用 `git commit -- <檔>`（conventions 三）。
+- 合併版會不會踩：客戶端不會，第一版不用 git（D-023）。repo 開發可能：conventions 三規定單一工作目錄、切分支、實作 session 才 commit。設計與實作 session 同時開著時，index 是共用的。實作 session 要不要一律 `git commit --only <路徑>`。設計 session 2026-10-12 定：實作 session 用 `git commit -- <檔>`；同日守門題實際踩到（設計 commit 落到分支），改為實作與測試用 git worktree（conventions 三）。
 - 客戶會不會遇到：不會。
 
 ### I-094 檔案系統沒有鎖，後存的無聲覆蓋先存的

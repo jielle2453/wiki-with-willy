@@ -37,7 +37,8 @@ class Version(unittest.TestCase):
     def test_version_prints_name_and_version(self):
         r = run_kb("version")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "wiki-with-willy 0.1.0")
+        m = manifest()
+        self.assertEqual(r.stdout.strip(), f"{m['name']} {m['version']}")
 
     def test_version_json_matches_manifest(self):
         r = run_kb("version", "--json")

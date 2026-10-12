@@ -120,6 +120,8 @@ llm-wiki-j/
 | 測試 | `code-review` 等級 high；碰守門、權限、路徑時加 `security-review`；改了 skill 描述時用 `anthropic-skills:skill-creator` 的 eval 跑 `tests/evals/routing.yaml`，在同時裝著舊 `llm-wiki` 的機器上跑 |
 | 確認、發行 | 無，照流程手動 |
 
+plugin-dev 要先裝：`claude plugin install plugin-dev@claude-plugins-official`（2026-10-12 查，開發機還沒裝）。
+
 不用：`cowork-plugin-management:*`、`plugin-authoring`、`plugin-dev:mcp-integration`、`superpowers:subagent-driven-development`、`executing-plans`、`finishing-a-development-branch`。
 
 ## 六、測試資料

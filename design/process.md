@@ -111,6 +111,7 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 ```
 你在 C:\Users\Jie\Desktop\llm-wiki-j。讀 design/specs/<題目>.md 並照它實作。
 - 只改 spec「可以動」列的檔。
+- 怎麼做照 design/conventions.md 第五節：superpowers:test-driven-development 先寫測試；碰 hook／skill／command／agent 先讀對應的 plugin-dev 指引；收尾 superpowers:verification-before-completion，動過 hooks.json 或 manifest 跑 claude plugin validate。
 - spec 有疑義或做不到時停下來回報，不要自己決定。
 - 寫完跑 python -m unittest discover tests。
 - commit 訊息開頭寫 spec 題目。不要 push。
@@ -121,6 +122,7 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 
 ```
 你在 C:\Users\Jie\Desktop\llm-wiki-j。讀 design/specs/<題目>.md。你的工作是驗證，不是修改。
+- 怎麼做照 design/conventions.md 第五節：code-review 等級 high，碰守門、權限、路徑時加 security-review。
 - 對「驗收準則」逐條執行，每條寫 過／不過 與證據。
 - 跑 python -m unittest discover tests。
 - 不改任何程式。不看 git log 以外的實作過程。

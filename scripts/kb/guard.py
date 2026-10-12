@@ -4,6 +4,7 @@
 三態：allow／deny 印 JSON 給 Claude Code；pass 不表態，走預設流程。
 """
 import os
+import re
 from collections import namedtuple
 from pathlib import Path
 
@@ -51,7 +52,10 @@ def find_vault(cwd):
     """從 cwd 往上找第一個含 .system/sources.json 的目錄；找不到回 None（不是在知識庫裡開的對話）。"""
     if not cwd:
         return None
-    p = Path(cwd)
+    try:
+        p = Path(normalize(cwd, None))
+    except (OSError, ValueError):
+        return None
     for d in [p, *p.parents]:
         if (d / sources_lib.SOURCES_REL).is_file():
             return d
@@ -110,19 +114,55 @@ def _file_tool(tool, target, cwd, vault, sources):
     return Decision(decision, zone, code, reason, rows, vault)
 
 
+def _ancestor_zone(path, vault_n, sources):
+    """path 是不是某個排除夾、來源根或總資料夾的上層（rm -rf 整個上層）。是就回它會動到的區。"""
+    for src in sources.entries:
+        if inside(src["root"], path):
+            return "Z9", src["alias"]
+    for src in sources.entries:
+        if any(inside(ex["root"], path) for ex in src["excludes"]):
+            return "Z10", src["alias"]
+    if inside(vault_n, path):
+        return "Z7", None
+    return None, None
+
+
+def _glob_hits_exclude(prefix, sources):
+    """萬用字元前綴落在登記來源裡、而該來源的排除夾在前綴底下：shell 展開會掃到排除夾。"""
+    status, src = sources.lookup(prefix)
+    if status != "registered":
+        return None
+    if any(inside(ex["root"], prefix) for ex in src["excludes"]):
+        return src["alias"]
+    return None
+
+
 def _shell_tool(tool, command, cwd, vault, sources):
     paths = cmdparse.extract_paths(command, cwd)
     write = cmdparse.is_write(command)
     vault_n = normalize(vault, None)
     rows, saw_unresolved = [], False
+
+    def deny(zone, code, reason):
+        return Decision("deny", zone, code, reason, [_row(tool, "deny", zone, code, command)], vault)
+
     for p in paths:
         zone, alias = classify(p, vault_n, sources)
         for column in (("read", "write") if write else ("read",)):
             decision, code, reason = _verdict(zone, column, alias)
             if decision == "deny":
-                return Decision("deny", zone, code, reason, [_row(tool, "deny", zone, code, command)], vault)
+                return deny(zone, code, reason)
+        if write and zone == "Z11":
+            up_zone, up_alias = _ancestor_zone(p, vault_n, sources)
+            if up_zone:
+                _d, code, reason = _verdict(up_zone, "write", up_alias)
+                return deny(up_zone, code, reason)
         if zone == "Z11" and sources.unresolved:
             saw_unresolved = True
+    for prefix in cmdparse.glob_prefixes(command, cwd):
+        if _glob_hits_exclude(prefix, sources):
+            _d, code, reason = _verdict("Z10", "read", None)
+            return deny("Z10", code, reason)
     if write and not paths:
         return Decision("deny", "", "unparsed", UNPARSED_REASON, [_row(tool, "deny", "", "unparsed", command)], vault)
     if saw_unresolved:
@@ -155,6 +195,16 @@ def decide(payload):
             target = ti.get("file_path")
         if vault is None or not target:
             return Decision("pass", "", "", "", [], vault)
-        return _file_tool(tool, str(target), cwd, vault, sources_lib.load(vault))
+        sources = sources_lib.load(vault)
+        if tool == "Glob":
+            # pattern 帶絕對路徑或 .. 時，它的固定前綴也是讀的目標（審閱補）
+            pattern = str(ti.get("pattern") or "").replace("\\", "/")
+            if pattern and (re.match(r"^([a-zA-Z]:/|/)", pattern) or ".." in pattern.split("/")):
+                head = pattern[:m.start()] if (m := re.search(r"[*?\[{]", pattern)) else pattern
+                head = head.rsplit("/", 1)[0] if "/" in head else head
+                d = _file_tool(tool, normalize(head, normalize(str(target), cwd)), cwd, vault, sources)
+                if d.decision == "deny":
+                    return d
+        return _file_tool(tool, str(target), cwd, vault, sources)
 
     return Decision("pass", "", "", "", [], vault)

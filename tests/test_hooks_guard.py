@@ -84,5 +84,29 @@ class Hook(unittest.TestCase):
         self.assertEqual(decision_of(r)[1], "deny")
 
 
+class ReviewGaps(unittest.TestCase):
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_corrupt_status_file_does_not_change_decision(self):
+        import platform
+        d = self.V / ".system" / "guard-status"
+        d.mkdir()
+        (d / f"{platform.node()}.json").write_text("null", encoding="utf-8")
+        r = run_hook(payload("Read", self.raw / "客戶案件" / "a.txt", self.V))
+        self.assertEqual(decision_of(r)[1], "allow", r.stdout)
+        self.assertEqual(json.loads((d / f"{platform.node()}.json").read_text(encoding="utf-8")).get("python"), platform.python_version())
+
+    def test_list_stdin_denies_and_logs(self):
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        r = subprocess.run([sys.executable, str(HOOK)], input="[1, 2]", capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(ROOT), env=env)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(decision_of(r)[1], "deny")
+
+
 if __name__ == "__main__":
     unittest.main()

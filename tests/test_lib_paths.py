@@ -1,6 +1,9 @@
 """_lib/paths 的守門部分：normalize 六種寫法同一結果、inside 的邊界、resolve_spec 四種 spec 與展不開的變數。"""
 import os
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 
 from tests._guard_fixture import SCRIPTS  # noqa: F401  (把 scripts/ 放進 sys.path)
 from kb._lib import paths  # noqa: E402
@@ -74,6 +77,44 @@ class ResolveSpec(unittest.TestCase):
     def test_unresolvable_env_var_returns_none(self):
         os.environ.pop("KB_TEST_NOPE", None)
         self.assertIsNone(paths.resolve_spec("${KB_TEST_NOPE}/客戶", self.VAULT))
+
+
+class NormalizeEquivalentSpellings(unittest.TestCase):
+    """Win32 會接受的同一個檔的其他寫法（審閱發現）：尾點、\\.\ 前綴、本機 UNC 管理共享、磁碟相對、8.3 短名。"""
+
+    def test_trailing_dot_on_segments_is_stripped(self):
+        want = paths.normalize("C:/x/raw/行政/薪資/s.xlsx", CWD)
+        for f in ("C:/x/raw/行政/薪資./s.xlsx", "C:/x/raw/行政./薪資/s.xlsx", "C:/x/raw/行政/薪資/s.xlsx.", "C:/x/raw/行政/薪資 /s.xlsx"):
+            with self.subTest(form=f):
+                self.assertEqual(paths.normalize(f, CWD), want)
+
+    def test_device_prefix_and_local_admin_share(self):
+        want = paths.normalize("C:/x/a.txt", CWD)
+        for f in ("\\\\.\\C:\\x\\a.txt", "//?/C:/x/a.txt", "\\\\localhost\\c$\\x\\a.txt", "//127.0.0.1/c$/x/a.txt"):
+            with self.subTest(form=f):
+                self.assertEqual(paths.normalize(f, CWD), want)
+
+    def test_drive_relative_joins_cwd(self):
+        self.assertEqual(paths.normalize("C:../raw/a.txt", CWD), paths.normalize("C:/x/raw/a.txt", CWD))
+
+    def test_existing_path_is_canonicalized(self):
+        """存在的路徑經 realpath：8.3 短名、junction、大小寫都回到真名；不存在的尾段照樣接上。"""
+        d = Path(tempfile.mkdtemp(prefix="KbPaths-"))
+        try:
+            (d / "Sub").mkdir()
+            (d / "Sub" / "F.txt").write_text("x", encoding="utf-8")
+            want = paths.normalize(str(d / "Sub" / "F.txt"), CWD)
+            self.assertEqual(paths.normalize(str(d / "SUB" / "f.TXT"), CWD), want)
+            self.assertEqual(paths.normalize(str(d / "Sub" / "新檔.txt"), CWD), want.rsplit("/", 1)[0] + "/新檔.txt")
+            if os.name == "nt":
+                import ctypes
+                buf = ctypes.create_unicode_buffer(512)
+                ctypes.windll.kernel32.GetShortPathNameW(str(d / "Sub" / "F.txt"), buf, 512)
+                short = buf.value
+                if short and short.lower() != str(d / "Sub" / "F.txt").lower():
+                    self.assertEqual(paths.normalize(short, CWD), want)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

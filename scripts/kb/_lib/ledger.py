@@ -71,7 +71,7 @@ def touch_status(vault):
         with open(target, encoding="utf-8") as f:
             if json.load(f).get("date") == today:
                 return
-    except (OSError, ValueError):
+    except Exception:  # noqa: BLE001  狀態檔壞了就重寫，不能影響決定
         pass
     try:
         from kb._lib.paths import read_manifest

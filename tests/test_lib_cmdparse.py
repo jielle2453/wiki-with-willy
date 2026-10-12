@@ -86,5 +86,45 @@ class SinglePluginCall(unittest.TestCase):
         self.assertIsNone(cmdparse.outside_quotes('a "b'))
 
 
+class ReviewGaps(unittest.TestCase):
+    """審閱發現的漏洞：引號裡的包裝指令、PowerShell 別名、cd 之後的相對路徑、token 裡夾的絕對路徑、萬用字元。"""
+
+    def test_write_verb_inside_wrapper_quotes_counts(self):
+        for cmd in ('bash -c "rm C:/x/a.txt"', "sh -c 'rm a'", 'cmd /c "del C:\\x\\a.txt"', 'powershell -c "Remove-Item C:\\x\\a.txt"',
+                    'pwsh -Command "Set-Content C:\\x\\a.txt x"', 'eval "rm a"', 'bash -c "echo hi > C:/x/a.txt"'):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(cmdparse.is_write(cmd))
+
+    def test_commit_message_is_still_not_write(self):
+        self.assertFalse(cmdparse.is_write('git commit -m "copy of notes, rm later"'))
+
+    def test_powershell_aliases_and_other_tools(self):
+        for cmd in ("ri C:\\x\\a.txt", "sc C:\\x\\a.txt x", "ac C:\\x\\a.txt x", "md C:\\x\\d", "rd C:\\x\\d", "ni C:\\x\\a.txt",
+                    "sed --in-place s/a/b/ f", "perl -i -pe s/a/b/ f", "dd if=a of=C:/x/b", "find C:/x -delete", "curl -o C:/x/a http://h",
+                    "tar -xf a.tar -C C:/x", "unzip a.zip -d C:/x", "ln -s a C:/x/b", "git clean -fd", "git checkout -- C:/x/a.txt",
+                    "Export-Csv C:\\x\\a.csv", "Set-ItemProperty C:\\x\\a.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(cmdparse.is_write(cmd))
+
+    def test_cd_then_relative_resolves_against_cd_target(self):
+        got = cmdparse.extract_paths("cd C:/x/raw/行政 && cat 薪資/s.xlsx", CWD)
+        self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
+        got = cmdparse.extract_paths("cd ../raw/行政; cat 薪資/s.xlsx", CWD)
+        self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
+
+    def test_absolute_path_embedded_in_token(self):
+        got = cmdparse.extract_paths("python -c \"print(open('C:/x/raw/行政/薪資/s.xlsx','rb').read())\"", CWD)
+        self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
+        got = cmdparse.extract_paths("P=C:/x/raw/a.txt; rm $P", CWD)
+        self.assertIn(n("C:/x/raw/a.txt"), got)
+        got = cmdparse.extract_paths("cat file:///C:/x/raw/a.txt", CWD)
+        self.assertIn(n("C:/x/raw/a.txt"), got)
+
+    def test_glob_prefixes(self):
+        globs = cmdparse.glob_prefixes("cat C:/x/raw/行政/*/s.xlsx; ls C:/x/raw/行政/薪?/", CWD)
+        self.assertEqual(globs, [n("C:/x/raw/行政"), n("C:/x/raw/行政")])
+        self.assertEqual(cmdparse.glob_prefixes("ls C:/x", CWD), [])
+
+
 if __name__ == "__main__":
     unittest.main()

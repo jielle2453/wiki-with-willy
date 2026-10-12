@@ -217,5 +217,58 @@ class Zones(unittest.TestCase):
                 self.assertIn(guard.ZONES[z]["write"][0], ("allow", "deny", "pass"))
 
 
+class ReviewGaps(DecideBase):
+    """審閱發現的漏洞。"""
+
+    def test_trailing_dot_spelling_still_denied(self):
+        self.expect("Read", str(self.raw / "行政" / "薪資.") + "/s.xlsx", "deny", "Z10", "excluded")
+        self.expect("Write", str(self.raw / "客戶案件.") + "/a.txt", "deny", "Z9", "readonly_source")
+        self.expect("Bash", f"cat {self.raw}/行政/薪資./s.xlsx", "deny", "Z10", "excluded")
+
+    def test_quoted_wrapper_write_denied(self):
+        p = str(self.raw).replace("\\", "/")
+        self.expect("Bash", f'bash -c "rm {p}/客戶案件/a.txt"', "deny", "Z9", "readonly_source")
+        self.expect("PowerShell", f'powershell -c "Remove-Item {p}/客戶案件/a.txt"', "deny", "Z9", "readonly_source")
+        self.expect("Bash", f'bash -c "echo hi > {self.V}/收件匣/x.txt"', "deny", "Z4", "inbox")
+
+    def test_cd_then_relative_read_of_excluded_denied(self):
+        p = str(self.raw).replace("\\", "/")
+        self.expect("Bash", f"cd {p}/行政 && cat 薪資/s.xlsx", "deny", "Z10", "excluded")
+        self.expect("Bash", "cd ../raw/行政 && cat 薪資/s.xlsx", "deny", "Z10", "excluded")
+
+    def test_glob_over_source_with_excludes_denied(self):
+        p = str(self.raw).replace("\\", "/")
+        self.expect("Bash", f"cat {p}/行政/*/s.xlsx", "deny", "Z10", "excluded")
+        self.expect("Bash", f"cat {p}/行政/薪?/s.xlsx", "deny", "Z10", "excluded")
+        self.expect("Bash", f"ls {p}/客戶案件/*", "pass")
+
+    def test_powershell_alias_write_denied(self):
+        p = str(self.raw).replace("/", "\\")
+        self.expect("PowerShell", f"ri {p}\\客戶案件\\a.txt", "deny", "Z9", "readonly_source")
+        self.expect("PowerShell", f"sc {p}\\客戶案件\\a.txt x", "deny", "Z9", "readonly_source")
+
+    def test_ancestor_write_denied(self):
+        self.expect("Bash", f"rm -rf {self.raw}", "deny", "Z9", "readonly_source")
+        self.expect("Bash", f"rm -rf {self.tmp}", "deny")
+        self.expect("Bash", f"ls {self.tmp}", "pass")
+
+    def test_python_c_write_reports_source_zone(self):
+        p = str(self.raw).replace("\\", "/")
+        self.expect("Bash", f"python -c \"open('{p}/客戶案件/a.txt','w').write('x')\"", "deny", "Z9", "readonly_source")
+
+    def test_glob_tool_pattern_is_inspected(self):
+        d = guard.decide({"tool_name": "Glob", "tool_input": {"pattern": f"{self.raw}/行政/薪資/*", "path": str(self.V)}, "cwd": str(self.V)})
+        self.assertEqual((d.decision, d.zone), ("deny", "Z10"))
+        d = guard.decide({"tool_name": "Glob", "tool_input": {"pattern": "../raw/行政/薪資/**", "path": str(self.V)}, "cwd": str(self.V)})
+        self.assertEqual((d.decision, d.zone), ("deny", "Z10"))
+        d = guard.decide({"tool_name": "Glob", "tool_input": {"pattern": "**/*.md", "path": str(self.V)}, "cwd": str(self.V)})
+        self.assertEqual((d.decision, d.zone), ("allow", "Z8"))
+
+    def test_git_bash_cwd_finds_vault(self):
+        v = str(self.V).replace("\\", "/")
+        cwd = "/" + v[0].lower() + v[2:]
+        self.expect("Read", self.raw / "行政" / "薪資" / "s.xlsx", "deny", "Z10", "excluded", cwd=cwd)
+
+
 if __name__ == "__main__":
     unittest.main()

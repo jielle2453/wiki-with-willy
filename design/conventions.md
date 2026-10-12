@@ -107,7 +107,7 @@ llm-wiki-j/
 | 真相模式 | JSON 為真，`系統/*.md` 是渲染視圖，頂端三行：這是什麼、怎麼用、由程式產生改了會被覆蓋（D-067）；格式住程式，範例在 `tests/fixtures/` |
 | 測試 | `unittest`，`tests/test_<模組>.py`，`python -m unittest discover tests`，全綠才算改完 |
 | 預算 | 常駐字數、`rules/core.md` 行數、每個 `SKILL.md` 行數各有上限，`tests/test_budget.py` 守。初始值見 D-070 |
-| 權限 | repo `.claude/settings.json` 放行測試與 `kb.py`；客戶端高風險子命令放 `permissions.ask` |
+| 權限 | repo `.claude/settings.json` 放行測試與 `kb.py`；客戶端 settings 不放行任何路徑，讀取與 `kb.py` 由守門 hook allow（D-073），高風險子命令放 `permissions.ask` |
 
 ## 五、哪個步驟用哪個 skill
 

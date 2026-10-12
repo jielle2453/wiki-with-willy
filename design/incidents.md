@@ -471,7 +471,7 @@
 ### I-073 plugin 升級後路徑變了，放行規則失效
 - 來源：plugin 0.13.1 `README.md:35`、`scripts/init_kb.py:19`、`:65-66`、`:75-91`（0.10.1）。
 - 發生過什麼：放行規則寫的是 plugin 的絕對路徑，升級後路徑變了，舊規則無效，客戶每次執行都被問。要重跑 `init_kb.py` 拿掉舊規則、寫新的。另外 additionalDirectories 會連寫入一起開放，所以 plugin 的唯讀放行改用 `Read(//c/...)`；Windows 上 Claude Code 把 `C:\x` 寫成 `//c/x`。
-- 合併版會不會踩：可能。D-019 不把 plugin 路徑寫進狀態檔，但 `skeleton/.claude/settings.json` 要放行 `kb.py`，permission 規則裡能不能用 `${CLAUDE_PLUGIN_ROOT}` 沒驗證過。跟 B-006 的 spike 一起驗。設計 session 2026-10-12 定：併進 B-006 spike 一起驗。
+- 合併版會不會踩：可能。D-019 不把 plugin 路徑寫進狀態檔，但 `skeleton/.claude/settings.json` 要放行 `kb.py`，permission 規則裡能不能用 `${CLAUDE_PLUGIN_ROOT}` 沒驗證過。跟 B-006 的 spike 一起驗。設計 session 2026-10-12 定：B-006～B-008 驗完，kb.py 放行走守門 hook allow，settings 不含 plugin 路徑（D-073）。
 - 客戶會不會遇到：會，升級後核准詢問一直跳。
 
 ### I-074 沒按信任，放行規則全部不生效；加了資料夾，這個對話讀不到

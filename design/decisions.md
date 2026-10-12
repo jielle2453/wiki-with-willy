@@ -252,7 +252,7 @@
 - 為什麼：隱私與原檔不可逆，誤擋的代價是客戶多說一句，漏擋的代價是檔案壞掉。繞路留痕讓 lint 能發現守門看不到的路。
 - 放棄了：只擋明顯的；依客戶特質調嚴度。
 - 重談條件：B-110 量到誤擋率高到客戶抱怨，先改白話訊息，再談放鬆。
-- **2026-10-12 補**：讀取也由守門擋。「不想讓 AI 看到」的夾，PreToolUse 擋 Read、Glob、Grep 與指令字串裡的路徑，不靠 permissions：auto mode 下 permissions 對工作目錄外的讀取沒有作用（I-101）。
+- **2026-10-12 補**：讀取也由守門擋。「不想讓 AI 看到」的夾，PreToolUse 擋 Read、Glob、Grep 與指令字串裡的路徑，不靠 permissions：auto mode 下 permissions 對工作目錄外的讀取沒有作用（I-101）。放行也由守門做，見 D-073。
 
 ## D-035 總資料夾客戶打得開，第一層只有紀錄與知識
 - 日期：2026-10-11
@@ -515,6 +515,7 @@
 - 為什麼：B-006 spike 實測 settings.json 不熱重載（I-101），session 中改 additionalDirectories 或 Read 規則一律不生效。
 - 放棄了：登記後立刻製卡（讀不到）；叫客戶中途重開（打斷對話，且 resume 可能不重算工作目錄，B-007 續測）。
 - 重談條件：Claude Code 支援 settings 熱重載。
+- **2026-10-12 修訂**：讀取放行改走守門 hook（D-073），hook 每次呼叫重讀 sources.json，加資料夾後立刻讀得到。manage 加資料夾後問一句「現在就讀還是下次開對話」，客戶選。
 
 ## D-072 安裝與升級：本機 marketplace、公開 zip、一句「升級」
 - 日期：2026-10-12
@@ -522,6 +523,13 @@
 - 為什麼：客戶電腦沒 git 也沒 GitHub 帳號（D-023）；服務人員建置時在場（D-022）；程式碼不是護城河，磨合經驗才是，公開 zip 省掉在客戶電腦存鑰匙。
 - 放棄了：私有 GitHub marketplace（要 git 與 token）；下載帶鑰匙（多一步，護的東西不值）；遠端推送升級（客戶電腦沒有常駐程式）。
 - 重談條件：B-008 spike 三件之一不成立：桌面版 hook 不能聯網；換資料夾後必須客戶打 `/plugin update`；桌面版不接受本機路徑 marketplace。
+
+## D-073 讀取放行與 kb.py 放行都走守門 hook
+- 日期：2026-10-12
+- 選了：PreToolUse 守門一支程式三件事：(1) **讀取放行**：Read、Glob、Grep 與 Bash 指令字串裡的路徑，正規化後查 sources.json，登記且未排除的來源回 allow，排除的回 deny，其他不表態交回預設流程。(2) **寫入**照 D-046 路徑表。(3) **kb.py 放行**：Bash 命令符合 `python "<CLAUDE_PLUGIN_ROOT>/scripts/kb.py" ...` 回 allow，路徑從 hook 自己的環境變數取。客戶端 `.claude/settings.json` 不寫 additionalDirectories、不寫任何含 plugin 路徑的規則；只留 deny 憑證樣式與 ask 高風險子命令。I-073 收掉。守門掛了等於什麼都讀不到，這是要的（fail closed）。
+- 為什麼：B-008 實測 hook 回 allow 可免詢問讀工作目錄外的檔、回 deny 在 auto 模式也擋；permissions 規則的路徑寫法在 extension 上從未生效（B-006、B-007），桌面版 additionalDirectories 雖生效但連寫入一起放。路徑由 hook 自己正規化，因為 payload 原樣不正規化（I-101）。放行與封鎖同一張登記表，加資料夾後不用重開。
+- 放棄了：additionalDirectories（雙保險會讓守門掛了還讀得到，違反 fail closed）；permissions Read 規則；settings 放行 plugin 路徑（每版路徑不同）。
+- 重談條件：Claude Code 改掉 PreToolUse 的 permissionDecision 語意。
 
 ## 未決
 

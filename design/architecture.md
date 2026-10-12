@@ -9,7 +9,7 @@
 ## 一、原則
 
 1. 三種真相物理分開：客戶原檔只讀、AI 筆記回合備份、AI 成品登記。分開守的是物件與路徑規則（第九節路徑表），不是資料夾；檔案一旦離開 `AI 產出/` 或 `收件匣/` 就是客戶原檔。
-2. AI 的寫入只有四條路：筆記必經備份、成品必經登記、原檔必經受控程式、外部動作必經確認與記帳。守門的工作是讓第五條路不存在。
+2. AI 的寫入只有四條路：筆記必經備份、成品必經登記、原檔必經受控程式、外部動作必經確認與記帳。守門的工作是讓第五條路不存在。讀取與 kb.py 的放行也由同一支守門做，不靠 permissions（D-073）。
 3. skill 是「誰應門」，不是「誰擁有工具」。一句話一個入口，交棒明寫，共用腳本誰都能呼叫。
 4. 狀態由程式寫或現算，人不手維護。
 5. 失敗在每一層明講：讀不到清單、查無條件、守門留痕、失聯。
@@ -119,7 +119,7 @@ build 指令 `disable-model-invocation`：模型不代叫，客戶或服務人�
 
 | 操作 | 入口 | 腳本 | 關鍵防線 |
 |---|---|---|---|
-| 加資料夾 | manage | `kb folders add` | `discover` 掃上層列候選夾與 Office 份數、只列不登記；目標是另一個知識庫（有 `.system/` 標記）就拒絕並指 B-207；預覽先印份數與估算；登記與放行原子；告知下次開對話才讀得到 |
+| 加資料夾 | manage | `kb folders add` | `discover` 掃上層列候選夾與 Office 份數、只列不登記；目標是另一個知識庫（有 `.system/` 標記）就拒絕並指 B-207；預覽先印份數與估算；登記即可讀（守門重讀 sources.json，D-073）；問一句現在讀還是下次 |
 | 不讀某夾 | manage | `kb folders exclude --reason` | 兩種理由；不想讓 AI 看到要連 `versions/` `temp/` `AI 產出/` 的草稿一起清；刪推測逐條複述確認；固定一句「之前讀過的已送過雲端」 |
 | 搬檔 | manage | `kb source-edit move` | 目標必須在實體夾或已登記未排除的來源內；同名就問；共用夾提醒；占位檔先告知 |
 | 改名 | manage | `kb source-edit rename` | 副檔名不准改；同名就問；舊名自動進別名 |
@@ -228,7 +228,7 @@ llm-wiki-j/
 ├─ skeleton/
 │  ├─ .skeleton-policy
 │  ├─ CLAUDE.md
-│  ├─ .claude/settings.json           deny 憑證樣式、ask 高風險子命令
+│  ├─ .claude/settings.json           只有 deny 憑證樣式、ask 高風險子命令；不放 additionalDirectories、不放 plugin 路徑（D-073）
 │  ├─ AI 產出/  收件匣/  檔案索引/    空夾；型別夾由 build-setup 依設定檔建
 │  └─ 系統/{待處理,日程,總目錄,客戶設定檔,裁示,建置報告}.md + 工作日誌/ 健檢報告/
 ├─ tests/
@@ -277,4 +277,6 @@ llm-wiki-j/
 | `.system/` | 擋；只有 kb 腳本 |
 | `.claude/settings.json` | 擋；只有 `kb folders` |
 | 總資料夾 CLAUDE.md | 擋；只有 `kb upgrade` |
-| 客戶原檔區 | 擋 |
+| 客戶原檔區（登記未排除） | 寫擋；讀 allow |
+| 客戶原檔區（排除） | 讀寫都 deny |
+| 其他路徑 | 不表態，交回預設 |

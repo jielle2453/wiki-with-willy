@@ -222,9 +222,15 @@
 
 ### I-101 settings.json 不熱重載；auto mode 放行工作目錄外的讀取
 - 來源：本 repo B-006 spike，2026-10-12，`design/reports/B-006-spike.md`。實測。
-- 發生過什麼：session 開著時改 `.claude/settings.json`（additionalDirectories、Read allow、deny 都試），不重開完全不生效，deny canary 也要重開才被擋。另一個發現：session 在 auto mode 時，工作目錄外的 Read 沒有任何放行規則也直接讀到。重開後 additionalDirectories 與 Read 規則仍跳詢問；B-007 用純 ASCII 路徑、接回與全新 session 重測，十次全跳詢問，排除中文路徑與 resume。`Read(C:/...)` 沒有 `//` 前綴可能被當相對路徑、`${USERPROFILE}` 可能不展開、additionalDirectories 為何無效不明；`//c/` 與 `~/` 寫法未在 ASCII 下測，B-008 續。VS Code extension 環境，桌面版未測。
+- 發生過什麼：session 開著時改 `.claude/settings.json`（additionalDirectories、Read allow、deny 都試），不重開完全不生效，deny canary 也要重開才被擋。另一個發現：session 在 auto mode 時，工作目錄外的 Read 沒有任何放行規則也直接讀到。重開後 additionalDirectories 與 Read 規則仍跳詢問；B-007 用純 ASCII 路徑、接回與全新 session 重測，十次全跳詢問，排除中文路徑與 resume。`Read(C:/...)` 沒有 `//` 前綴可能被當相對路徑、`${USERPROFILE}` 可能不展開、additionalDirectories 為何無效不明；`//c/` 與 `~/` 寫法未在 ASCII 下測，B-008 續。以上是 VS Code extension。B-008 在桌面版測：additionalDirectories 寫入後同一 session 立刻熱載入、重開也生效，兩個介面行為相反；PreToolUse 回 allow 可免詢問讀工作目錄外的檔，回 deny 在 auto 模式也擋（reports/B-008-spike.md）。
 - 合併版會不會踩：會。(1) `kb folders add` 登記後這個對話一定讀不到新夾，U-8 只能是「登記、告知下次開場」。(2) 「不讀某夾」的隱私承諾不能靠 permissions 擋，客戶用 auto mode 時 permissions 形同沒有；只有 PreToolUse 守門 hook 擋讀取才可靠，D-034 的「併入讀檔守門」是必要不是選項。(3) 放行規則裡能不能寫 `${CLAUDE_PLUGIN_ROOT}`（I-073）仍未定，B-007 前 plugin 不假設可以。
 - 客戶會不會遇到：會。加資料夾後要重開對話；用 auto mode 的客戶若守門 hook 掛了，排除的夾會被讀到。
+
+### I-102 桌面版升級要在 GUI 點四步，且會跳假警報
+- 來源：本 repo B-008 spike，2026-10-12，`design/reports/B-008-spike.md`。實測，Claude Code 桌面版。
+- 發生過什麼：本機 directory 型 marketplace 的來源改了版號，重開桌面版不會更新，`/plugin update` 只會打開 GUI 管理頁。實際要：進 plugin 詳情頁、按「更新」、確認窗按「仍要更新」、重開。只要有別的 session 開著，確認窗會說「更新將覆寫本機變更」，是把 `.in_use/<pid>` 當成被改的檔，假警報，舊版資料夾不會被覆寫。更新完也不提示要重開。另外桌面版 GUI 加 marketplace 只收 https 或 owner/repo，本機路徑要用 CLI `claude plugin marketplace add "<路徑>"`。
+- 合併版會不會踩：會。D-072 說客戶只要說「升級」，但目前升級最後一段是 GUI 四步加一個嚇人的假警報，`kb upgrade` 碰不到 GUI。待設計 session 確認：測 CLI `claude plugin update` 能不能由 `kb upgrade` 代跑、桌面版重開後吃不吃。
+- 客戶會不會遇到：會，每次升級。
 
 ## 三、回合、備份、退回、登記
 

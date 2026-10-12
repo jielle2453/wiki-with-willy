@@ -244,6 +244,12 @@
 - 合併版會不會踩：會，只影響留痕完整性：ledger 記的是「守門擋的」，不是「所有被擋的」。lint 的守門趨勢以此為限。確認情境的 fixture 要用文字檔。
 - 客戶會不會遇到：不會察覺。
 
+### I-105 發行指令鏈沒以測試 exit code 把關，紅測試照樣 tag 與 push
+- 來源：本 repo v0.2.0 發行，2026-10-13。實際發生。
+- 發生過什麼：bump 0.2.0 後 `test_kb_cli` 寫死的「0.1.0」紅了，發行腳本用 `python -m unittest … | grep` 看結果，exit code 是 grep 的，`&&` 沒擋住，commit、tag、push 都出去了。補一個修正 commit 讓測試讀 plugin.json，tag 強制移到修正 commit。
+- 合併版會不會踩：客戶端不會。repo 流程會：測試不准寫死版號（讀 plugin.json）；發行步驟測試結果以 exit code 為準，不經 grep（process 六）。
+- 客戶會不會遇到：不會。
+
 ## 三、回合、備份、退回、登記
 
 ### I-035 背景代理做完的通知被當成客戶的新問題

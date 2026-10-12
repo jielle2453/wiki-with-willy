@@ -109,7 +109,7 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 實作 session：
 
 ```
-你在 C:\Users\Jie\Desktop\llm-wiki-j。讀 design/specs/<題目>.md 並照它實作。
+先在 C:\Users\Jie\Desktop\llm-wiki-j 跑 git worktree add ..\llm-wiki-j-<題目> -b spec/<題目>，之後全部在 C:\Users\Jie\Desktop\llm-wiki-j-<題目> 做。讀 design/specs/<題目>.md 並照它實作。
 - 只改 spec「可以動」列的檔。
 - 怎麼做照 design/conventions.md 第五節：superpowers:test-driven-development 先寫測試；碰 hook／skill／command／agent 先讀對應的 plugin-dev 指引；收尾 superpowers:verification-before-completion，動過 hooks.json 或 manifest 跑 claude plugin validate。
 - spec 有疑義或做不到時停下來回報，不要自己決定。
@@ -121,7 +121,7 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 測試 session：
 
 ```
-你在 C:\Users\Jie\Desktop\llm-wiki-j。讀 design/specs/<題目>.md。你的工作是驗證，不是修改。
+你在 C:\Users\Jie\Desktop\llm-wiki-j-<題目>（實作的 worktree，分支 spec/<題目>）。讀 design/specs/<題目>.md。你的工作是驗證，不是修改。
 - 怎麼做照 design/conventions.md 第五節：code-review 等級 high，碰守門、權限、路徑時加 security-review。
 - plugin-dev 審查：這題動到 hook／skill／command／agent 的話，先讀對應的 plugin-dev 指引當依據審那些檔；收尾跑 plugin-dev:plugin-validator 對整個 repo。結果寫報告一節「plugin-dev 審查」，沒問題也寫一句。
 - 對「驗收準則」逐條執行，每條寫 過／不過 與證據。

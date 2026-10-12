@@ -83,7 +83,7 @@ llm-wiki-j/
 | 項目 | 約定 |
 |---|---|
 | 初始化 | 第一個 commit 只有殼 |
-| 分支 | `main` 的程式只在發行時動；設計 session 可隨時在 `main` commit 純 `design/` 的改動，訊息開頭「設計:」。一題一個分支 `spec/<題目>`，實作與測試都在分支上。單一工作目錄，切分支，不用 worktree |
+| 分支 | `main` 的程式只在發行時動；設計 session 可隨時在 `main` commit 純 `design/` 的改動，訊息開頭「設計:」。一題一個分支 `spec/<題目>`，實作與測試都在分支上。**實作與測試 session 用 git worktree**：`git worktree add ..\llm-wiki-j-<題目> -b spec/<題目>`，開在那個夾；主 checkout 永遠停在 `main` 給設計 session。發行 merge 後 `git worktree remove`（2026-10-12 改，I-093 實際踩到） |
 | 發行 | 設計 session 併回 main、bump、CHANGELOG、tag `vX.Y.Z`、push。只在你說「發行」之後 |
 | 版號 | semver。首位客戶試跑前停在 `0.x`；功能加 minor，修 bug 加 patch |
 | commit | 第一行 `<題目>: <一句話>`；結尾 `Spec: design/specs/<檔名>` 加各 session 自己的 Co-Authored-By；用 `git commit -- <檔>` 只提交自己改的檔，不 `-a`（I-093） |

@@ -530,6 +530,7 @@
 - 為什麼：B-008 實測 hook 回 allow 可免詢問讀工作目錄外的檔、回 deny 在 auto 模式也擋；permissions 規則的路徑寫法在 extension 上從未生效（B-006、B-007），桌面版 additionalDirectories 雖生效但連寫入一起放。路徑由 hook 自己正規化，因為 payload 原樣不正規化（I-101）。放行與封鎖同一張登記表，加資料夾後不用重開。
 - 放棄了：additionalDirectories（雙保險會讓守門掛了還讀得到，違反 fail closed）；permissions Read 規則；settings 放行 plugin 路徑（每版路徑不同）。
 - 重談條件：Claude Code 改掉 PreToolUse 的 permissionDecision 語意。
+- **2026-10-12 補**：Bash／PowerShell 指令字串裡的路徑只用於 deny；Bash 的 allow 只有單一 kb.py 呼叫一種。放行讀取的 allow 只給 Read、Glob、Grep（守門實作疑義 1）。
 
 ## 未決
 

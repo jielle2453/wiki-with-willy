@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m unittest:*)",
+      "Bash(python scripts/kb.py:*)",
+      "Bash(python \"scripts/kb.py\":*)"
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "schema_version": 1,
+  "_why_schema_version": "每個設定檔都帶版本，升級時遷移（D-014）"
+}

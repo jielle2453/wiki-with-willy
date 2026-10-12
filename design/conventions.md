@@ -115,7 +115,7 @@ llm-wiki-j/
 |---|---|
 | 討論與決策 | `superpowers:brainstorming`；定目錄時 `plugin-dev:plugin-structure` |
 | 寫 spec | 本流程的範本。不用 `superpowers:writing-plans`，兩份會漂 |
-| 實作 | `superpowers:test-driven-development`、`superpowers:verification-before-completion`；碰到什麼用對應的 `plugin-dev:hook-development`／`skill-development`／`command-development`／`agent-development`；測試紅了 `superpowers:systematic-debugging` |
+| 實作 | `superpowers:test-driven-development`、`superpowers:verification-before-completion`；碰到什麼用對應的 `plugin-dev:hook-development`／`skill-development`／`command-development`／`agent-development`；寫或改 skill 描述時再用 `anthropic-skills:skill-creator`（內建，不用裝）寫描述、建 `tests/evals/routing.yaml` 的案例、量觸發準確率，描述要守 D-070 的 150 字；測試紅了 `superpowers:systematic-debugging` |
 | 實作收尾 | 動過 manifest、目錄、hooks.json 跑 agent `plugin-dev:plugin-validator`；動過 SKILL.md 跑 agent `plugin-dev:skill-reviewer` |
 | 測試 | `code-review` 等級 high；碰守門、權限、路徑時加 `security-review`；改了 skill 描述時用 `anthropic-skills:skill-creator` 的 eval 跑 `tests/evals/routing.yaml`，在同時裝著舊 `llm-wiki` 的機器上跑 |
 | 確認、發行 | 無，照流程手動 |

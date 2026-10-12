@@ -72,7 +72,10 @@ class SinglePluginCall(unittest.TestCase):
 
     def test_single_call_true(self):
         self.assertTrue(cmdparse.is_single_plugin_call(self.KB, PLUGIN))
-        self.assertTrue(cmdparse.is_single_plugin_call(f"python {PLUGIN}/scripts/kb.py guard decide --tool Read --path x", PLUGIN))
+        fwd = PLUGIN.replace("\\", "/")
+        self.assertTrue(cmdparse.is_single_plugin_call(f"python {fwd}/scripts/kb.py guard decide --tool Read --path x", PLUGIN))
+        # N-a：引號外的反斜線一律不是單一呼叫，不加引號的 Windows 路徑要用 /
+        self.assertFalse(cmdparse.is_single_plugin_call(f"python {fwd.replace('/', chr(92))}\\scripts\\kb.py version", PLUGIN))
         self.assertTrue(cmdparse.is_single_plugin_call(self.KB.replace("/", "\\"), PLUGIN))
 
     def test_chained_is_false(self):
@@ -150,11 +153,11 @@ class Round1(unittest.TestCase):
         for bad in ("檔案索引/python ", "./python ", "../python ", "AI\\ 產出/python ", "C:/x/vault/檔案索引/notpython.exe "):
             with self.subTest(interp=bad):
                 self.assertFalse(cmdparse.is_single_plugin_call(bad + self.KB, PLUGIN))
-        self.assertTrue(cmdparse.is_single_plugin_call("C:/Python312/python.exe " + self.KB, PLUGIN))
-        self.assertFalse(cmdparse.is_single_plugin_call("C:/x/vault/檔案索引/python " + self.KB, PLUGIN,
-                                                        forbidden_dirs=[paths.normalize("C:/x/vault", None)]))
-        self.assertFalse(cmdparse.is_single_plugin_call("C:/x/raw/客戶案件/python.exe " + self.KB, PLUGIN,
-                                                        forbidden_dirs=[paths.normalize("C:/x/raw/客戶案件", None)]))
+        # 第二輪 S1 殘：任何含路徑分隔符的直譯器一律不算，連 vault 外的絕對路徑也不算
+        for bad in ("C:/Python312/python.exe ", "C:/Temp/evil/python.exe ", "C:\\Temp\\evil\\python.exe ",
+                    "C:/x/vault/檔案索引/python ", "C:/x/raw/客戶案件/python.exe ", "/usr/bin/python3 "):
+            with self.subTest(interp=bad):
+                self.assertFalse(cmdparse.is_single_plugin_call(bad + self.KB, PLUGIN))
 
     def test_s2_subexpressions_are_not_single_call(self):
         for tail in (" @(Remove-Item x)", " (rm x)", " $(rm x)", " `rm x`", "; rm x", " @('a')"):
@@ -199,6 +202,43 @@ class Round1(unittest.TestCase):
             self.assertEqual(got, [paths.normalize(f"{r}/行政/*/s.xlsx", None)])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+
+class Round2(unittest.TestCase):
+    """第二輪：N-a 反斜線跳脫引號、N-b lookbehind 退步、N-c 跳脫形態。"""
+
+    KB = f'"{PLUGIN}/scripts/kb.py" version'
+
+    def test_na_escaped_quote_is_not_a_quote_boundary(self):
+        bare = cmdparse.outside_quotes('a \\"b; c')
+        self.assertIsNotNone(bare)
+        self.assertIn(";", bare)
+        self.assertEqual(cmdparse.outside_quotes('a "b;c" d'), "a  d")
+        self.assertIsNone(cmdparse.outside_quotes('a "b'))
+
+    def test_na_escaped_quote_payload_is_not_single_call(self):
+        evil = 'python ' + self.KB + ' \\"; rm -rf C:/x/raw/客戶案件; echo \\"'
+        self.assertFalse(cmdparse.is_single_plugin_call(evil, PLUGIN))
+        self.assertFalse(cmdparse.is_single_plugin_call('python ' + self.KB + " \\'; rm x; echo \\'", PLUGIN))
+        self.assertFalse(cmdparse.is_single_plugin_call('python ' + self.KB + ' --x a\\b', PLUGIN))  # 引號外任何 \ 都不是單一呼叫
+        self.assertTrue(cmdparse.is_single_plugin_call('python ' + self.KB.replace("/", "\\"), PLUGIN))  # 引號內的 \ 是路徑
+        self.assertTrue(cmdparse.is_write(evil))
+
+    def test_nb_verb_after_slash_or_backslash_counts(self):
+        for cmd in ("\\rm -rf C:/x/a", "/bin/rm C:/x/a.txt", "/usr/bin/cp a b", "Microsoft.PowerShell.Management\\Remove-Item C:\\x\\a.txt",
+                    "  rm x", "rm x"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(cmdparse.is_write(cmd))
+        for cmd in ("cat x.md", "ls --rm", "cat x.cp", "cat README.md", "type notes.ac"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(cmdparse.is_write(cmd))
+
+    def test_nc_escaped_non_ascii_variant_is_extracted(self):
+        got = cmdparse.extract_paths("cat C:/x/raw/行政/薪\\資/s.xlsx", CWD)
+        self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
+        got = cmdparse.extract_paths("ls C:/x/vault/AI\\ 產出", CWD)
+        self.assertIn(n("C:/x/vault/AI 產出"), got)
 
 
 if __name__ == "__main__":

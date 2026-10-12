@@ -191,15 +191,6 @@ def _shell_tool(tool, command, cwd, vault, sources):
     return Decision("pass", "", "", "", rows, vault)
 
 
-def _forbidden_interpreter_dirs(vault, sources):
-    """S1：直譯器不能放在知識庫或任何來源底下（AI 寫得進去的地方）。"""
-    dirs = [normalize(vault, None)]
-    for src in sources.entries:
-        dirs.append(src["root"])
-        dirs.extend(ex["root"] for ex in src["excludes"])
-    return dirs
-
-
 def decide(payload):
     """照 tool_name 分流。回 Decision(decision, zone, reason_code, reason, ledger_rows, vault)。"""
     tool = payload.get("tool_name", "") or ""
@@ -210,9 +201,8 @@ def decide(payload):
     if tool in SHELL_TOOLS:
         command = ti.get("command") or ""
         root = str(plugin_root())  # 以自己的 __file__ 為準，不信 CLAUDE_PLUGIN_ROOT（S1）
-        sources = sources_lib.load(vault) if vault is not None else None
-        forbidden = _forbidden_interpreter_dirs(vault, sources) if vault is not None else ()
-        if cmdparse.is_single_plugin_call(command, root, cwd, forbidden_dirs=forbidden):
+        sources = sources_lib.load(vault) if vault is not None else None  # 先讀：sources.json 壞掉時 kb.py 也不自動放行
+        if cmdparse.is_single_plugin_call(command, root, cwd):
             return Decision("allow", "", "", KB_CALL_REASON, [], vault)
         if vault is None:
             return Decision("pass", "", "", "", [], None)

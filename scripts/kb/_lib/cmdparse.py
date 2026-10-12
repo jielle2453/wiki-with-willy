@@ -16,8 +16,9 @@ KB_SCRIPT = "scripts/kb.py"
 
 # 只是把輸出丟掉，不算寫入：2>/dev/null、>/dev/null、2>&1、> nul、> $null、| Out-Null
 DISCARD_OUTPUT = re.compile(r"\d?>\s*&\s*\d|\d?>\s*/dev/null|\d?>\s*\$null|\d?>\s*nul\b|\|\s*out-null", re.IGNORECASE)
-# 寫入動詞只在 token 開頭：前一個字元不能是 . 字母 數字 _ / \ -（B1：.md、--rm 不算）
-_W = r"(?<![.\w/\\-])"
+# 寫入動詞只在 token 開頭：前一個字元不能是 . 字母 數字 _ -（B1：.md、--rm 不算）；
+# 前面是 \ 或 / 也算動詞（N-b：\rm、/bin/rm、Microsoft.PowerShell.Management\Remove-Item）
+_W = r"(?<![.\w-])"
 WRITE_WORDS = re.compile(
     _W + r"(?:rm|mv|cp|tee|touch|mkdir|rmdir|del|erase|move|copy|ren|rename|truncate|dd|rsync|wget|tar|unzip|install|ln|"
     r"chmod|chown|ri|rd|md|sc|ac|ni|cpi|mi|rni|iex)\b|"
@@ -57,20 +58,24 @@ _PYTHON = re.compile(
     re.IGNORECASE,
 )
 _BARE_INTERP = {"python", "python3", "py", "python.exe", "python3.exe", "py.exe"}
-_INTERP_NAME = re.compile(r"^(?:python3?|py)(?:\.exe)?$", re.IGNORECASE)
+# bash 的跳脫：\ 後接非 ASCII 或空白時，\ 只是跳脫（薪\資 → 薪資、AI\ 產出 → AI 產出）
+_ESCAPE = re.compile(r"\\(?=[^\x00-\x7f]| )")
 
 
 def outside_quotes(cmd):
-    """去掉引號裡的內容（引號裡的 > ; | 都只是文字）。引號沒有成對時回 None。"""
-    out, quote = [], None
+    """去掉引號裡的內容（引號裡的 > ; | 都只是文字）。引號沒有成對時回 None。
+    反斜線跳脫的引號（\\" 與 \\'）不是引號邊界（N-a）。"""
+    out, quote, prev = [], None, ""
     for ch in cmd:
+        escaped = ch in "\"'" and prev == "\\"
         if quote:
-            if ch == quote:
+            if ch == quote and not escaped:
                 quote = None
-        elif ch in "\"'":
+        elif ch in "\"'" and not escaped:
             quote = ch
         else:
             out.append(ch)
+        prev = ch
     return None if quote else "".join(out)
 
 
@@ -90,6 +95,7 @@ def _tokens(cmd):
             after_redirect = False
         buf, quoted = [], False
 
+    prev = ""
     for ch in cmd:
         if quote:
             if ch == quote:
@@ -99,6 +105,8 @@ def _tokens(cmd):
         elif ch in "\"'":
             quote = ch
             quoted = True
+        elif ch == " " and prev == "\\":
+            buf.append(ch)  # 跳脫的空白是 token 的一部分（AI\ 產出），N-c 再去掉 \
         elif ch.isspace() or ch in _TOKEN_BREAK:
             flush()
             if ch == ">":
@@ -107,6 +115,7 @@ def _tokens(cmd):
                 after_redirect = False
         else:
             buf.append(ch)
+        prev = ch
     flush()
     return out
 
@@ -166,9 +175,11 @@ def _walk(command, cwd):
             expect_cd_target = True
             continue
         for cand in _candidates(text, quoted, after_redirect, after_cd):
-            p = normalize(cand, base)
-            if _ABS_START.match(cand) or _relative_resolves(cand, p):
-                yield cand, p
+            # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對
+            for form in dict.fromkeys((cand, _ESCAPE.sub("", cand))):
+                p = normalize(form, base)
+                if _ABS_START.match(form) or _relative_resolves(form, p):
+                    yield form, p
 
 
 def extract_paths(command, cwd):
@@ -211,30 +222,24 @@ def is_write(command):
     return bool(REDIRECT.search(scope) or WRITE_WORDS.search(scope) or WRITE_CODE.search(cleaned))
 
 
-def _interpreter_ok(token, cwd, forbidden_dirs):
-    """S1：直譯器只接受裸字 python／python3／py，或絕對路徑且檔名是 python 且不在知識庫、來源底下。"""
-    if token.lower() in _BARE_INTERP:
-        return True
-    if not _ABS_START.match(token) or token.startswith("~") or token.startswith("file:"):
-        return False
-    p = normalize(token, cwd)
-    if not _INTERP_NAME.match(p.rsplit("/", 1)[-1]):
-        return False
-    return not any(p == d or p.startswith(d.rstrip("/") + "/") for d in forbidden_dirs)
+def _interpreter_ok(token):
+    """S1：直譯器只接受裸字 python／python3／py（可帶 .exe）。任何含路徑分隔符的直譯器一律不算（第二輪 S1 殘）。"""
+    return token.lower() in _BARE_INTERP
 
 
-def is_single_plugin_call(command, plugin_root, cwd=None, forbidden_dirs=()):
-    """整句是不是只有「python <plugin>/scripts/kb.py …」這一個呼叫。串接、導向、子運算式、反引號都不算。"""
+def is_single_plugin_call(command, plugin_root, cwd=None):
+    """整句是不是只有「python <plugin>/scripts/kb.py …」這一個呼叫。串接、導向、子運算式、反引號都不算；
+    引號外出現任何反斜線也不算（N-a：kb.py 路徑在引號內，用不到跳脫）。"""
     if "`" in command or "$(" in command:
         return False
     bare = outside_quotes(command)
-    if bare is None or any(ch in SHELL_META for ch in bare):
+    if bare is None or "\\" in bare or any(ch in SHELL_META for ch in bare):
         return False
     m = _PYTHON.match(command)
     if not m:
         return False
     cwd = cwd or os.getcwd()
-    if not _interpreter_ok(m.group(1).strip("\"'"), cwd, forbidden_dirs):
+    if not _interpreter_ok(m.group(1).strip("\"'")):
         return False
     script = m.group(2).strip("\"'")
     return normalize(script, cwd) == normalize(os.path.join(str(plugin_root), KB_SCRIPT), cwd)

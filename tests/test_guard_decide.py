@@ -344,5 +344,37 @@ class Round1(DecideBase):
         self.assertEqual(d.reason, "客戶原檔只讀。要改內容我用檔案工具另存一份")
 
 
+
+class Round2(DecideBase):
+    """第二輪：驗收 32–35。"""
+
+    def kb(self):
+        return f'"{ROOT}/scripts/kb.py" version'
+
+    def test_32_na_escaped_quotes_not_allowed(self):
+        evil = 'python ' + self.kb() + f' \\"; rm -rf {self.raw}/客戶案件; echo \\"'
+        d = self.decide("Bash", evil)
+        self.assertNotEqual(d.decision, "allow", d)
+        self.assertEqual(d.decision, "deny", d)
+
+    def test_33_s1_only_bare_interpreter(self):
+        d = self.decide("Bash", 'C:/Temp/evil/python.exe ' + self.kb())
+        self.assertNotEqual(d.decision, "allow", d)
+        self.expect("Bash", "python.exe " + self.kb(), "allow")
+        self.expect("Bash", "py " + self.kb(), "allow")
+
+    def test_34_nb_prefixed_verbs_still_write(self):
+        r = str(self.raw).replace("\\", "/")
+        self.expect("Bash", f"\\rm -rf {r}/客戶案件", "deny", "Z9", "readonly_source")
+        self.expect("Bash", f"/bin/rm {r}/客戶案件/a.txt", "deny", "Z9", "readonly_source")
+        self.expect("PowerShell", "Microsoft.PowerShell.Management\\Remove-Item " + str(self.raw) + "\\客戶案件\\a.txt", "deny", "Z9", "readonly_source")
+        self.expect("Bash", "cat x.md", "pass")
+        self.expect("Bash", "ls --rm", "pass")
+
+    def test_35_nc_escaped_segment_still_denied(self):
+        r = str(self.raw).replace("\\", "/")
+        self.expect("Bash", f"cat {r}/行政/薪\\資/s.xlsx", "deny", "Z10", "excluded")
+
+
 if __name__ == "__main__":
     unittest.main()

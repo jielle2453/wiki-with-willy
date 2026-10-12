@@ -122,5 +122,20 @@ class ReviewGaps(unittest.TestCase):
         self.assertEqual(r.stdout, "")
 
 
+
+class Round2(unittest.TestCase):
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_32_escaped_quote_payload_via_hook(self):
+        evil = f'python "{ROOT}/scripts/kb.py" version \\"; rm -rf {self.raw}/客戶案件; echo \\"'
+        r = run_hook(payload("Bash", evil, self.V))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout == "" or decision_of(r)[1] == "deny", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

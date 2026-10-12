@@ -131,7 +131,8 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 
 ```
 你在 C:\Users\Jie\Desktop\llm-wiki-test\總資料夾，plugin 由 --plugin-dir 載入。
-- 先確認「來源」已從 來源.zip 還原。
+- 先確認「來源」已從 來源.zip 還原。確認環境先停用舊的 llm-wiki plugin（`/plugin` 裡 disable `llm-wiki@llm-wiki`），不然 13 個 wiki-* skill 會搶觸發。
+- 終端機畫面上的開場訊息、/plugin、/help 你看不到，這幾步請使用者看一眼補驗，報告標「人眼」。
 - 讀 C:\Users\Jie\Desktop\llm-wiki-j\design\specs\<題目>.md 的「確認情境」，用客戶會說的話實際操作，記每一步的實際輸出與落差。
 - 不改 plugin 的程式。
 報告存成 design/reports/<題目>-確認.md，最後給我一段結論。

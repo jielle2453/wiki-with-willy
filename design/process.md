@@ -48,7 +48,7 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 3. **實作**（新 session，在 repo）。只給 spec。只改「可以動」列的檔。有疑義停下來回報，不自己決定。做完跑全部測試，commit 不 push。回報改了哪些檔、commit hash、測試結果、疑義。
 4. **測試**（新 session，在 repo）。只給 spec。逐條驗，每條寫過或不過附證據。不改程式。報告存 `reports/<題目>-測試.md`。
 5. **確認**（新 session，在測試 vault；也可以你親自做）。先還原來源。照「確認情境」操作，記實際輸出與落差。不改程式。報告存 `reports/<題目>-確認.md`。
-6. **發行**（設計）。測試與確認都過，**你說「發行」才做**：併回 main、bump、同 commit 寫 CHANGELOG、tag、push。
+6. **發行**（設計）。測試與確認都過，**你說「發行」才做**：併回 main、bump、同 commit 寫 CHANGELOG（這時才填該段的 commit 欄，寫實作 commit 的 hash；實作時寫「發行時填」）、tag、push。
 7. **結案**（設計）。把實作回報的 commit hash、測試與確認報告路徑填進 spec 紀錄節。對 `incidents.md` 與舊程式碼查類似問題，有就進 backlog，沒有就在 spec 寫「已查，無」。spec 改 `done` 附版號。
 
 ## 四、不過關時

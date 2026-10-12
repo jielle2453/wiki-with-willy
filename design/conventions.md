@@ -83,11 +83,11 @@ llm-wiki-j/
 | 項目 | 約定 |
 |---|---|
 | 初始化 | 第一個 commit 只有殼 |
-| 分支 | `main` 只在發行時動。一題一個分支 `spec/<題目>`，實作與測試都在分支上。單一工作目錄，切分支，不用 worktree |
+| 分支 | `main` 的程式只在發行時動；設計 session 可隨時在 `main` commit 純 `design/` 的改動，訊息開頭「設計:」。一題一個分支 `spec/<題目>`，實作與測試都在分支上。單一工作目錄，切分支，不用 worktree |
 | 發行 | 設計 session 併回 main、bump、CHANGELOG、tag `vX.Y.Z`、push。只在你說「發行」之後 |
 | 版號 | semver。首位客戶試跑前停在 `0.x`；功能加 minor，修 bug 加 patch |
 | commit | 第一行 `<題目>: <一句話>`；結尾 `Spec: design/specs/<檔名>` 加各 session 自己的 Co-Authored-By；用 `git commit -- <檔>` 只提交自己改的檔，不 `-a`（I-093） |
-| author | 實作 session `git -c user.name="實作:<題目>" commit`，只改 user.name。測試與確認 session 不 commit |
+| author | email 用這台機器的 global 設定（2026-10-12 已設）。實作 session `git -c user.name="實作:<題目>" commit`，設計 session `git -c user.name="設計" commit`，都只改 user.name。測試與確認 session 不 commit |
 | 行尾 | `.gitattributes`：`* text=auto eol=lf` |
 | 不進 repo | `__pycache__/`、`*.pyc`、`.claude/settings.local.json`、`*.tmp`、測試環境、任何客戶資料 |
 | 版號對齊 | 測試檢查 `plugin.json` 與 CHANGELOG 最新一段一致 |

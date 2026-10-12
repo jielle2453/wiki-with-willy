@@ -222,7 +222,7 @@
 
 ### I-101 settings.json 不熱重載；auto mode 放行工作目錄外的讀取
 - 來源：本 repo B-006 spike，2026-10-12，`design/reports/B-006-spike.md`。實測。
-- 發生過什麼：session 開著時改 `.claude/settings.json`（additionalDirectories、Read allow、deny 都試），不重開完全不生效，deny canary 也要重開才被擋。另一個發現：session 在 auto mode 時，工作目錄外的 Read 沒有任何放行規則也直接讀到。重開後含中文路徑的 additionalDirectories 與 Read 規則仍跳詢問，原因未排除（中文路徑、resume 接回舊對話），B-007 續測。
+- 發生過什麼：session 開著時改 `.claude/settings.json`（additionalDirectories、Read allow、deny 都試），不重開完全不生效，deny canary 也要重開才被擋。另一個發現：session 在 auto mode 時，工作目錄外的 Read 沒有任何放行規則也直接讀到。重開後 additionalDirectories 與 Read 規則仍跳詢問；B-007 用純 ASCII 路徑、接回與全新 session 重測，十次全跳詢問，排除中文路徑與 resume。`Read(C:/...)` 沒有 `//` 前綴可能被當相對路徑、`${USERPROFILE}` 可能不展開、additionalDirectories 為何無效不明；`//c/` 與 `~/` 寫法未在 ASCII 下測，B-008 續。VS Code extension 環境，桌面版未測。
 - 合併版會不會踩：會。(1) `kb folders add` 登記後這個對話一定讀不到新夾，U-8 只能是「登記、告知下次開場」。(2) 「不讀某夾」的隱私承諾不能靠 permissions 擋，客戶用 auto mode 時 permissions 形同沒有；只有 PreToolUse 守門 hook 擋讀取才可靠，D-034 的「併入讀檔守門」是必要不是選項。(3) 放行規則裡能不能寫 `${CLAUDE_PLUGIN_ROOT}`（I-073）仍未定，B-007 前 plugin 不假設可以。
 - 客戶會不會遇到：會。加資料夾後要重開對話；用 auto mode 的客戶若守門 hook 掛了，排除的夾會被讀到。
 

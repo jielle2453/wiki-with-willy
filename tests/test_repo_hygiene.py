@@ -41,15 +41,17 @@ class Encoding(unittest.TestCase):
 
 
 class NoSysPath(unittest.TestCase):
-    """scripts/ 與 hooks/ 裡只有 hooks/guard.py 准動 sys.path（它不是從 scripts/ 跑的，見 CLAUDE.md 三）。"""
+    """scripts/ 與 hooks/ 裡只有 hooks/*.py 准動 sys.path（hook 不是從 scripts/ 跑的，見 CLAUDE.md 三）。"""
 
-    SYS_PATH_EXCEPTIONS = ("hooks/guard.py",)
+    @staticmethod
+    def is_exception(name):
+        return name.startswith("hooks/") and "/" not in name[len("hooks/"):] and name.endswith(".py")
 
-    def test_only_hook_entry_touches_sys_path(self):
+    def test_only_hook_entries_touch_sys_path(self):
         for name in tracked_files():
             if not (name.startswith("scripts/") or name.startswith("hooks/")) or Path(name).suffix != ".py":
                 continue
-            if name in self.SYS_PATH_EXCEPTIONS:
+            if self.is_exception(name):
                 continue
             text = (ROOT / name).read_text(encoding="utf-8")
             with self.subTest(file=name):

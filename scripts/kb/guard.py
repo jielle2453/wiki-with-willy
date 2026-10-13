@@ -3,6 +3,8 @@
 決策表（D-046、D-073；specs/2026-10-12-守門.md）：路徑先 normalize，區由上到下第一個命中。
 三態：allow／deny 印 JSON 給 Claude Code；pass 不表態，走預設流程。
 第一輪修正：Z10b（目標範圍底下有排除夾，S3）、kb.py 放行以 plugin 自己的 __file__ 為準且檢查直譯器（S1）。
+事務層（specs/2026-10-13-事務層.md）：Z1、Z3、Z5 的指令寫入 deny shell_write；檔案工具寫這三區放行後
+由 hooks/guard.py 呼叫 kb._lib.turn.before_write 做備份與大改動攔截，這裡維持純判斷。
 """
 import glob as globlib
 import os
@@ -26,14 +28,16 @@ if os.name != "nt":
     RESERVED["AI 產出"] = "Z3"
 
 # 區 -> {"name", "read": (decision, reason_code, reason), "write": (...)}。理由全中文、一句、說為什麼與可以怎麼做。
+# 有 "shell_write" 的區：Bash／PowerShell 寫入用這欄（指令寫不經回合備份也不經 PostToolUse 登記，D-046 補、I-027）。
+SHELL_WRITE = ("deny", "shell_write", "用指令改的退不回來，請用檔案工具改。")
 ZONES = {
-    "Z1": {"name": "綜合卡", "read": ("allow", "", "綜合卡"), "write": ("allow", "", "綜合卡")},
+    "Z1": {"name": "綜合卡", "read": ("allow", "", "綜合卡"), "write": ("allow", "", "綜合卡"), "shell_write": SHELL_WRITE},
     "Z2": {"name": "實體夾原檔", "read": ("allow", "", "實體夾原檔"),
            "write": ("deny", "entity_file", "實體夾裡只有同名的綜合卡能改，其他都是原檔只讀；要改內容我用檔案工具另存一份到 AI 產出。")},
-    "Z3": {"name": "AI 產出", "read": ("allow", "", "AI 產出"), "write": ("allow", "", "AI 產出")},
+    "Z3": {"name": "AI 產出", "read": ("allow", "", "AI 產出"), "write": ("allow", "", "AI 產出"), "shell_write": SHELL_WRITE},
     "Z4": {"name": "收件匣", "read": ("allow", "", "收件匣"),
            "write": ("deny", "inbox", "收件匣只收東西、不手寫，要把檔案放進來說「收進來」，我走收件流程。")},
-    "Z5": {"name": "檔案索引", "read": ("allow", "", "檔案索引"), "write": ("allow", "", "檔案索引")},
+    "Z5": {"name": "檔案索引", "read": ("allow", "", "檔案索引"), "write": ("allow", "", "檔案索引"), "shell_write": SHELL_WRITE},
     "Z6": {"name": "系統", "read": ("allow", "", "系統"),
            "write": ("deny", "system_render", "系統區是程式渲染的，直接改會被蓋掉；跟我說要改什麼，我從源頭改。")},
     "Z7": {"name": "設定與狀態", "read": ("allow", "", "設定與狀態"),
@@ -169,7 +173,10 @@ def _shell_tool(tool, command, cwd, vault, sources):
             return deny(zone, code, reason)
 
     for p, zone, alias in classified:
-        for column in (("read", "write") if write else ("read",)):
+        columns = ("read",)
+        if write:
+            columns = ("read", "shell_write" if "shell_write" in ZONES[zone] else "write")
+        for column in columns:
             decision, code, reason = _verdict(zone, column, alias)
             if decision == "deny":
                 return deny(zone, code, reason)

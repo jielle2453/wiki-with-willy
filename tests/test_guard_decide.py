@@ -181,13 +181,25 @@ class Shell(DecideBase):
         self.expect("Bash", f"echo x > {v}/CLAUDE.md", "deny", "Z7", "protected")
         self.expect("Bash", f"echo x >> {v}/.claude/settings.json", "deny", "Z7", "protected")
 
-    def test_write_to_allowed_zone_or_read_source_is_pass(self):
-        v = str(self.V).replace("\\", "/")
+    def test_read_source_is_pass(self):
         p = str(self.raw).replace("\\", "/")
-        self.expect("Bash", f"echo hi > {v}/案子/信義王/信義王.md", "pass")
-        self.expect("Bash", f'echo hi > "{v}/AI 產出/x.md"', "pass")  # 有空白的路徑要加引號，shell 也是這樣
         self.expect("Bash", f"ls {p}/客戶案件", "pass")
         self.expect("Bash", f"cat {p}/客戶案件/a.txt", "pass")
+
+    def test_shell_write_to_backed_up_zones_is_deny_shell_write(self):
+        """事務層：指令寫綜合卡、AI 產出、檔案索引都 deny shell_write（指令寫不經備份也不經登記，I-027、D-046 補）。"""
+        v = str(self.V).replace("\\", "/")
+        d = self.expect("Bash", f"echo hi > {v}/案子/信義王/信義王.md", "deny", "Z1", "shell_write")
+        self.assertIn("用指令改的退不回來", d.reason)
+        self.expect("Bash", f'echo hi > "{v}/AI 產出/x.md"', "deny", "Z3", "shell_write")  # 有空白的路徑要加引號，shell 也是這樣
+        self.expect("Bash", f'sed -i s/a/b/ "{v}/檔案索引/x.md"', "deny", "Z5", "shell_write")
+        self.expect("PowerShell", f'Set-Content "{v}/檔案索引/x.md" x', "deny", "Z5", "shell_write")
+
+    def test_shell_read_of_backed_up_zones_still_pass(self):
+        v = str(self.V).replace("\\", "/")
+        self.expect("Bash", f"cat {v}/案子/信義王/信義王.md", "pass")
+        self.expect("Bash", f'cat "{v}/AI 產出/x.md"', "pass")
+        self.expect("Bash", f'cat "{v}/檔案索引/x.md"', "pass")
 
     def test_write_without_parsable_path_deny_unparsed(self):
         d = self.expect("Bash", "rm $X", "deny", code="unparsed")
@@ -335,8 +347,8 @@ class Round1(DecideBase):
 
     def test_28_b3_non_path_tokens(self):
         v = str(self.V).replace("\\", "/")
-        self.expect("Bash", f'sed -i s/a/b/ "{v}/AI 產出/x.md"', "pass")
-        self.expect("Bash", f'echo 2026/10/12 > "{v}/AI 產出/x.md"', "pass")
+        self.expect("Bash", f'sed -i s/a/b/ "{v}/AI 產出/x.md"', "deny", "Z3", "shell_write")  # 事務層：由 pass 改 deny
+        self.expect("Bash", f'echo 2026/10/12 > "{v}/AI 產出/x.md"', "deny", "Z3", "shell_write")
         self.expect("Bash", f"sed -i s/a/b/ {self.raw}/客戶案件/a.txt", "deny", "Z9", "readonly_source")
 
     def test_30_r1_z9_reason(self):

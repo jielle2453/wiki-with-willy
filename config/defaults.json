@@ -1,4 +1,6 @@
 {
   "schema_version": 1,
-  "_why_schema_version": "每個設定檔都帶版本，升級時遷移（D-014）"
+  "_why_schema_version": "每個設定檔都帶版本，升級時遷移（D-014）",
+  "big_change_synthesis_max": 10,
+  "_why_big_change_synthesis_max": "同一句話由 AI 自己決定修改的既有綜合卡張數上限，到了就停下來問（D-075、I-028）；客戶同意後 kb turn approve 解除這一回合"
 }

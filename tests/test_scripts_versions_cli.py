@@ -288,6 +288,33 @@ class Revert(Base):
         self.assertNotEqual(rt["turn"], t["turn"])
         self.assertEqual([e["action"] for e in turn.entries(self.V, rt["turn"])], ["modify"])
 
+    def test_three_turns_in_one_second_revert_hits_the_last(self):
+        """驗收 29：同一秒開三個回合、各改一張不同的 Z1 卡，revert 退的是代號最大的第三個。"""
+        from datetime import datetime
+        from unittest import mock
+        cards = []
+        for i in range(3):
+            d = self.V / "案子" / f"案{i}"
+            d.mkdir()
+            (d / f"案{i}.md").write_text(f"原 {i}\n", encoding="utf-8")
+            cards.append(f"案子/案{i}/案{i}.md")
+        ids = []
+        with mock.patch.object(turn, "_now", lambda: datetime(2026, 10, 13, 15, 30, 12)):
+            for i in range(3):
+                t = turn.start(self.V, SID, f"第{i}句")
+                turn.backup(self.V, cards[i], t["turn"])
+                (self.V / cards[i]).write_text(f"改 {i}\n", encoding="utf-8")
+                ids.append(t["turn"])
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(set(ids)), 3)
+        self.new_turn()
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"已退回 {ids[2]}（問：「第2句」）", r.stdout)
+        self.assertEqual((self.V / cards[2]).read_text(encoding="utf-8"), "原 2\n")
+        self.assertEqual((self.V / cards[0]).read_text(encoding="utf-8"), "改 0\n")
+        self.assertEqual((self.V / cards[1]).read_text(encoding="utf-8"), "改 1\n")
+
     def test_lost_backup_is_reported(self):
         t = self.modify_card_in_turn()
         shutil.rmtree(self.versions_dir(t["turn"]) / "files")

@@ -45,6 +45,31 @@ class Start(unittest.TestCase):
         self.assertTrue((self.V / ".system" / "turns" / "current.json").exists())
         self.assertEqual(sorted(p.name for p in (self.V / ".system" / "turns").iterdir()), ["current.json"])
 
+    def test_turn_ids_are_monotonic_even_when_clock_lags(self):
+        """裁定：新代號取 max(現在, 既有最大代號 + 1 秒)。同一秒三句話，第三個代號最大；時鐘落後也不會排到舊的前面。"""
+        from datetime import datetime
+        from unittest import mock
+        fixed = datetime(2026, 10, 13, 15, 30, 12)
+        with mock.patch.object(turn, "_now", lambda: fixed):
+            a = turn.start(self.V, SID, "一")
+            turn.backup(self.V, "案子/信義王/信義王.md", a["turn"])
+            b = turn.start(self.V, SID, "二")
+            turn.backup(self.V, "案子/信義王/信義王.md", b["turn"])
+            c = turn.start(self.V, SID, "三")
+        self.assertEqual([a["turn"], b["turn"], c["turn"]],
+                         ["20261013-153012-test", "20261013-153013-test", "20261013-153014-test"])
+        self.assertLess(a["turn"], b["turn"])
+        self.assertLess(b["turn"], c["turn"])
+        self.assertEqual(c["started"], "2026-10-13T15:30:14")
+
+    def test_new_turn_sorts_after_every_existing_versions_dir(self):
+        from datetime import datetime
+        from unittest import mock
+        (self.V / ".system" / "versions" / "20261013-153020-test").mkdir(parents=True)
+        with mock.patch.object(turn, "_now", lambda: datetime(2026, 10, 13, 15, 30, 12)):
+            t = turn.start(self.V, SID, "晚來的時鐘")
+        self.assertEqual(t["turn"], "20261013-153021-test")
+
     def test_session_id_is_sanitised_for_filename(self):
         turn.start(self.V, "a/b:c d", "x")
         self.assertTrue((self.V / ".system" / "turns" / "a_b_c_d.json").exists())

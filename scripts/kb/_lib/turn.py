@@ -42,13 +42,13 @@ def _current_file(vault):
 
 def start(vault, session_id, prompt):
     """開新回合：寫 turns/<sid>.json（有 sid 才寫）與 current.json。回回合 dict。"""
-    now = _now()
+    now = _now().replace(microsecond=0)  # 代號只到秒，比較也只到秒
     head = " ".join(str(prompt or "").split())[:PROMPT_HEAD_MAX]
     tag = _safe_sid(session_id)[:4] if session_id else "0000"
-    taken = {t.get("turn") for t in (_read_turn(_session_file(vault, session_id)) if session_id else None,
-                                     _read_turn(_current_file(vault))) if t}
-    while f"{now:%Y%m%d-%H%M%S}-{tag}" in taken or (Path(vault) / VERSIONS_REL / f"{now:%Y%m%d-%H%M%S}-{tag}").exists():
-        now += timedelta(seconds=1)  # 同一秒兩句話：代號不能撞
+    # 代號單調遞增：取 max(現在, 既有最大代號 + 1 秒)。同一秒幾句話不撞，時鐘落後也不會排到舊回合前面
+    latest = _latest_turn_time(vault, session_id)
+    if latest is not None and now <= latest:
+        now = latest + timedelta(seconds=1)
     data = {
         "schema_version": 1,
         "turn": f"{now:%Y%m%d-%H%M%S}-{tag}",
@@ -62,6 +62,32 @@ def start(vault, session_id, prompt):
         write_json_atomic(_session_file(vault, session_id), data)
     write_json_atomic(_current_file(vault), data)
     return data
+
+
+_TURN_TIME = re.compile(r"^(\d{8}-\d{6})-")
+
+
+def _turn_time(turn_id):
+    m = _TURN_TIME.match(str(turn_id or ""))
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+
+def _latest_turn_time(vault, session_id):
+    """既有回合裡最晚的時間：這個 session 的回合、current.json、versions/ 底下每個夾名。"""
+    ids = []
+    for t in (_read_turn(_session_file(vault, session_id)) if session_id else None, _read_turn(_current_file(vault))):
+        if t:
+            ids.append(t.get("turn"))
+    root = Path(vault) / VERSIONS_REL
+    if root.is_dir():
+        ids.extend(p.name for p in root.iterdir() if p.is_dir())
+    times = [x for x in (_turn_time(i) for i in ids) if x is not None]
+    return max(times) if times else None
 
 
 def current(vault, session_id=None):

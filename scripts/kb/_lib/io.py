@@ -58,33 +58,35 @@ class FileLock:
     Windows 上 O_EXCL 碰到待刪除的鎖檔會丟 PermissionError，當成有人持鎖繼續等（L6）。
     """
 
-    def __init__(self, path, timeout=LOCK_TIMEOUT, stale=STALE_LOCK_SECONDS):
+    def __init__(self, path, timeout=None, stale=None):
         self.path = str(path) + ".lock"
-        self.timeout = timeout
-        self.stale = stale
+        self.timeout = LOCK_TIMEOUT if timeout is None else timeout  # 呼叫時才讀模組值：CLI 可調成 30（R2-L3）
+        self.stale = STALE_LOCK_SECONDS if stale is None else stale
         self.fd = None
 
     def __enter__(self):
         start = time.time()
         while True:
+            if time.time() - start > self.timeout:  # 逾時檢查在每一圈最前面（R2-1）
+                raise TimeoutError(f"等待檔案鎖逾時：{self.path}")
             try:
                 self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 return self
-            except (FileExistsError, PermissionError):
-                try:
-                    if time.time() - os.path.getmtime(self.path) > self.stale:
-                        try:
-                            os.remove(self.path)
-                        except FileNotFoundError:
-                            pass  # 別的程序先清掉了
-                        continue
-                except FileNotFoundError:
+            except FileExistsError:
+                pass
+            except PermissionError:
+                if not os.path.exists(self.path):
+                    raise  # 鎖檔根本建不起來（回合夾不可寫）：直接丟給呼叫端，不當成有人持鎖（R2-1）
+            try:
+                if time.time() - os.path.getmtime(self.path) > self.stale:
+                    try:
+                        os.remove(self.path)
+                    except FileNotFoundError:
+                        pass  # 別的程序先清掉了
                     continue
-                except OSError:
-                    pass
-                if time.time() - start > self.timeout:
-                    raise TimeoutError(f"等待檔案鎖逾時：{self.path}")
-                time.sleep(0.1)
+            except OSError:
+                pass  # 鎖檔剛好消失或讀不到 mtime：照走逾時檢查與 sleep
+            time.sleep(0.1)
 
     def __exit__(self, *exc):
         if self.fd is not None:

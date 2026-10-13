@@ -92,7 +92,7 @@ class OutputLog(unittest.TestCase):
         write_via_tools(self.V, self.out, "第二次\n", tool="Edit")
         entries = inventory.load(self.V)["entries"]
         self.assertEqual(len(entries), 2)
-        self.assertEqual(entries[0]["status"], "turn_reverted")
+        self.assertEqual(entries[0]["status"], "superseded")  # 第二輪 R2-3：舊筆被新成品取代
         self.assertEqual(entries[1]["status"], "active")
         self.assertEqual(entries[1]["created_turn"], t2["turn"])
         self.assertNotEqual(entries[1]["id"], old["id"])

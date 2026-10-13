@@ -266,6 +266,32 @@ class Transaction(unittest.TestCase):
         self.assertTrue(copy.is_file())
         self.assertEqual(self.manifest()[0]["path"], "案子/信義王/信義王.md")
 
+    def test_long_prefix_and_tilde_forms_are_backed_up_correctly(self):
+        """第二輪 R2-L2／L7（驗收 35）：\\\\?\\<絕對路徑> 與 ~/… 都 allow 且 manifest path 正確。"""
+        if os.name != "nt":
+            self.skipTest("這些寫法在 Windows 驗")
+        from pathlib import Path
+        resolved = self.card.resolve()
+        r = self.write("\\\\?\\" + str(resolved))
+        self.assertEqual(decision_of(r)[1], "allow", r.stdout)
+        self.assertEqual(self.manifest()[0]["path"], "案子/信義王/信義王.md")
+        home = Path(os.path.expanduser("~")).resolve()
+        if str(resolved).lower().startswith(str(home).lower() + os.sep):
+            t2 = self.turn.start(self.V, self.SID, "再來")
+            tilde = "~/" + str(resolved)[len(str(home)) + 1:].replace("\\", "/")
+            r = self.write(tilde)
+            self.assertEqual(decision_of(r)[1], "allow", r.stdout)
+            self.assertEqual(self.manifest(t2["turn"])[0]["path"], "案子/信義王/信義王.md")
+
+    def test_whole_config_not_object_still_allows_and_logs(self):
+        """第二輪 L5 補（驗收 34）。"""
+        (self.V / ".system" / "config.json").write_text("5", encoding="utf-8")
+        r = self.write(self.card)
+        self.assertEqual(decision_of(r)[1], "allow", r.stdout)
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("config.json", log[0])
+
     def test_bad_manifest_line_still_allows_and_logs(self):
         """第一輪 L4（驗收 25）。"""
         self.write(self.card)

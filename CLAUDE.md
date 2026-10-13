@@ -23,7 +23,7 @@
 | `scripts/kb/versions.py` | 子命令 `versions list`／`revert`／`delete-outputs`：列回合、退回最近一次、刪已退回回合留著的成品（D-074、D-011） |
 | `scripts/kb/turn_cli.py` | 子命令 `turn current`／`approve`：看目前回合、解除綜合卡張數上限（D-075） |
 | `scripts/kb/_lib/paths.py` | `plugin_root()`、`read_manifest()`：從 `__file__` 往上找，不寫死路徑；`normalize`、`inside`、`resolve_spec` |
-| `scripts/kb/_lib/io.py` | UTF-8、LF、原子寫入的讀寫函式；`os.replace` 被拒重試（I-018）；`FileLock` 鎖檔（等 3 秒、殘留 30 秒，hook 10 秒內一定回） |
+| `scripts/kb/_lib/io.py` | UTF-8、LF、原子寫入的讀寫函式；`os.replace` 被拒重試（I-018）；`FileLock` 鎖檔（hook 等 3 秒、CLI 30 秒、殘留 30 秒；鎖檔建不起來直接丟錯） |
 | `scripts/kb/_lib/config.py` | `get(vault, key)`：`defaults.json` 為底，客戶端 `.system/config.json` 同鍵覆寫 |
 | `scripts/kb/_lib/turn.py` | 回合：`start`、`current`、`approve`、`rel_path`（原始大小寫）、`backup`、`before_write`（大改動門檻加備份） |
 | `scripts/kb/_lib/inventory.py` | 清冊最小版（D-076）：`.system/inventory.json`，`register_output`、`outputs_of_turn`、`set_status` |

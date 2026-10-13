@@ -99,7 +99,29 @@ class Register(unittest.TestCase):
         self.assertEqual(new["created_turn"], t2["turn"])
         entries = inventory.load(self.V)["entries"]
         self.assertEqual(len(entries), 2)
-        self.assertEqual(entries[0]["status"], "turn_reverted")
+        self.assertEqual(entries[0]["status"], "superseded")  # 第二輪 R2-3：舊筆被新成品取代
+
+    def test_new_entry_marks_old_non_active_entries_superseded(self):
+        """第二輪 R2-3(1)：新建條目時，同 location 其他非 active 的舊條目改 superseded。"""
+        old = inventory.register_output(self.V, self.rel, self.t["turn"])
+        inventory.set_status(self.V, [old["id"]], "turn_reverted")
+        t2 = turn.start(self.V, SID, "再寫")
+        modify_in_turn(self.V, self.rel, t2["turn"], "新內容\n")
+        new = inventory.register_output(self.V, self.rel, t2["turn"])
+        entries = {e["id"]: e for e in inventory.load(self.V)["entries"]}
+        self.assertEqual(entries[old["id"]]["status"], "superseded")
+        self.assertEqual(entries[new["id"]]["status"], "active")
+        self.assertEqual(inventory.outputs_of_turn(self.V, self.t["turn"]), [])
+
+    def test_superseded_is_not_touched_by_set_status_of_others(self):
+        old = inventory.register_output(self.V, self.rel, self.t["turn"])
+        inventory.set_status(self.V, [old["id"]], "deleted")
+        (self.V / self.rel).unlink()
+        t2 = turn.start(self.V, SID, "重寫")
+        create_in_turn(self.V, self.rel, t2["turn"], "重寫\n")
+        inventory.register_output(self.V, self.rel, t2["turn"])
+        entries = {e["id"]: e for e in inventory.load(self.V)["entries"]}
+        self.assertEqual(entries[old["id"]]["status"], "superseded")
 
     def test_deleted_entry_then_recreated_gets_new_entry(self):
         old = inventory.register_output(self.V, self.rel, self.t["turn"])

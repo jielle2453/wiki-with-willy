@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import unittest
+from pathlib import Path
 
 from tests._guard_fixture import make_vault
 from kb._lib import turn  # noqa: E402
@@ -69,6 +70,26 @@ class Start(unittest.TestCase):
         with mock.patch.object(turn, "_now", lambda: datetime(2026, 10, 13, 15, 30, 12)):
             t = turn.start(self.V, SID, "晚來的時鐘")
         self.assertEqual(t["turn"], "20261013-153021-test")
+
+    def test_far_future_turn_dir_is_ignored_and_logged(self):
+        """第二輪 R2-L4（驗收 37）：比現在晚超過一天的代號不算，新代號是現在，寫一行 log。"""
+        from datetime import datetime
+        from unittest import mock
+        (self.V / ".system" / "versions" / "20991231-235958-zzzz").mkdir(parents=True)
+        with mock.patch.object(turn, "_now", lambda: datetime(2026, 10, 13, 15, 30, 12)):
+            t = turn.start(self.V, SID, "現在")
+        self.assertEqual(t["turn"], "20261013-153012-test")
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("20991231-235958-zzzz", log[0])
+
+    def test_turn_dir_within_a_day_ahead_still_counts(self):
+        from datetime import datetime
+        from unittest import mock
+        (self.V / ".system" / "versions" / "20261014-100000-test").mkdir(parents=True)
+        with mock.patch.object(turn, "_now", lambda: datetime(2026, 10, 13, 15, 30, 12)):
+            t = turn.start(self.V, SID, "時鐘差幾小時")
+        self.assertEqual(t["turn"], "20261014-100001-test")
 
     def test_session_id_is_sanitised_for_filename(self):
         turn.start(self.V, "a/b:c d", "x")
@@ -141,6 +162,21 @@ class RelPath(unittest.TestCase):
     def test_outside_vault_raises(self):
         with self.assertRaises(ValueError):
             turn.rel_path(self.V, str(self.tmp / "x.md"), str(self.V))
+
+    def test_text_forms_tilde_long_prefix_file_uri_and_quotes(self):
+        """第二輪 R2-L2／L7（驗收 35）：~、\\\\?\\、file://、外圍引號都走 paths._text_forms。"""
+        if os.name != "nt":
+            self.skipTest("這些寫法在 Windows 驗")
+        card = self.V / "案子" / "信義王" / "信義王.md"
+        want = "案子/信義王/信義王.md"
+        home = Path(os.path.expanduser("~")).resolve()
+        resolved = card.resolve()
+        if str(resolved).lower().startswith(str(home).lower() + os.sep):
+            tilde = "~/" + str(resolved)[len(str(home)) + 1:].replace("\\", "/")
+            self.assertEqual(turn.rel_path(self.V, tilde, str(self.V)), want)
+        self.assertEqual(turn.rel_path(self.V, "\\\\?\\" + str(resolved), str(self.V)), want)
+        self.assertEqual(turn.rel_path(self.V, "file:///" + str(resolved).replace("\\", "/"), str(self.V)), want)
+        self.assertEqual(turn.rel_path(self.V, f'"{resolved}"', str(self.V)), want)
 
 
 class ZoneOf(unittest.TestCase):
@@ -245,6 +281,17 @@ class Backup(unittest.TestCase):
         turn.backup(self.V, self.card, self.t["turn"])
         self.assertFalse(lock.exists())
         self.assertEqual(len(manifest_lines(self.V, self.t["turn"])), 1)
+
+    def test_append_after_half_line_starts_on_a_new_line(self):
+        """第二輪 R2-L5：manifest 檔尾是半截行沒換行，追加前先補換行，新的一行不會被吃掉。"""
+        turn.backup(self.V, self.card, self.t["turn"])
+        m = self.V / ".system" / "versions" / self.t["turn"] / "manifest.jsonl"
+        with open(m, "a", encoding="utf-8", newline="\n") as f:
+            f.write('{"path": "半截')
+        turn.backup(self.V, "案子/新卡/新卡.md", self.t["turn"])
+        rows = turn.entries(self.V, self.t["turn"])
+        self.assertEqual([e["path"] for e in rows], [self.card, "案子/新卡/新卡.md"])
+        self.assertEqual(m.read_bytes().count(b"\n"), 3)
 
     def test_entries_skips_bad_line_and_logs(self):
         """第一輪 L4：manifest 半截行跳過並寫一行 hook-errors.log，不讓之後全部 deny。"""

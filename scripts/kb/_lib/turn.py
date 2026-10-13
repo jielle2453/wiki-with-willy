@@ -46,7 +46,7 @@ def start(vault, session_id, prompt):
     head = " ".join(str(prompt or "").split())[:PROMPT_HEAD_MAX]
     tag = _safe_sid(session_id)[:4] if session_id else "0000"
     # 代號單調遞增：取 max(現在, 既有最大代號 + 1 秒)。同一秒幾句話不撞，時鐘落後也不會排到舊回合前面
-    latest = _latest_turn_time(vault, session_id)
+    latest = _latest_turn_time(vault, session_id, now)
     if latest is not None and now <= latest:
         now = latest + timedelta(seconds=1)
     data = {
@@ -77,8 +77,13 @@ def _turn_time(turn_id):
         return None
 
 
-def _latest_turn_time(vault, session_id):
-    """既有回合裡最晚的時間：這個 session 的回合、current.json、versions/ 底下每個夾名。"""
+FUTURE_TOLERANCE = timedelta(days=1)
+
+
+def _latest_turn_time(vault, session_id, now):
+    """既有回合裡最晚的時間：這個 session 的回合、current.json、versions/ 底下每個夾名。
+    比現在晚超過一天的代號不算（時鐘曾經錯過），忽略時寫一行 log（第二輪 R2-L4）。
+    """
     ids = []
     for t in (_read_turn(_session_file(vault, session_id)) if session_id else None, _read_turn(_current_file(vault))):
         if t:
@@ -86,7 +91,15 @@ def _latest_turn_time(vault, session_id):
     root = Path(vault) / VERSIONS_REL
     if root.is_dir():
         ids.extend(p.name for p in root.iterdir() if p.is_dir())
-    times = [x for x in (_turn_time(i) for i in ids) if x is not None]
+    times = []
+    for i in ids:
+        x = _turn_time(i)
+        if x is None:
+            continue
+        if x - now > FUTURE_TOLERANCE:
+            ledger.log_error(vault, f"回合代號 {i} 比現在晚超過一天，算新代號時不理它")
+            continue
+        times.append(x)
     return max(times) if times else None
 
 
@@ -138,18 +151,14 @@ def _realcase(p):
     return os.path.join(os.path.realpath(cur), *tail) if tail else os.path.realpath(cur)
 
 
-_GIT_BASH = re.compile(r"^/([a-zA-Z])(?:/(.*))?$")
-
-
 def rel_path(vault, target, cwd):
     """目標相對總資料夾的路徑，正斜線、原始大小寫。不在總資料夾裡丟 ValueError。
-    Git Bash 寫法 /c/... 先轉 C:/...（第一輪 L1）。
+    字串層的寫法（引號、\\\\?\\、file://、~、Git Bash 的 /c/、磁碟相對）跟守門一樣交給 paths._text_forms（第二輪 R2-L2／L7），
+    之後才用 realpath 取磁碟上的大小寫；normalize 本身會小寫，所以這裡不用它（I-027）。
     """
-    target = str(target).replace("\\", "/")
-    m = _GIT_BASH.match(target)
-    if m and os.name == "nt":
-        target = f"{m.group(1).upper()}:/{m.group(2) or ''}"
-    if not os.path.isabs(target):
+    from kb._lib.paths import _text_forms
+    target, drive_rel = _text_forms(target)
+    if drive_rel or not os.path.isabs(target):
         target = os.path.join(str(cwd or os.getcwd()), target)
     real_t = _realcase(os.path.abspath(target))
     real_v = os.path.realpath(str(vault))
@@ -226,8 +235,14 @@ def backup(vault, rel, turn_id, action=None):
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, dst)
         row = {"path": rel, "action": action, "time": _now().strftime("%Y-%m-%dT%H:%M:%S")}
+        lead = ""
+        if manifest.is_file() and manifest.stat().st_size > 0:
+            with open(manifest, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    lead = "\n"  # 檔尾是半截行：先補換行，新的一行不被吃掉（第二輪 R2-L5）
         with open(manifest, "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.write(lead + json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def zone_of(vault, rel, sources=None):

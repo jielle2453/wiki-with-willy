@@ -3,7 +3,9 @@
 退回只從最近一次開始，不跳；退回前先把現況備進「退回」這句話自己的回合，退錯可再退。
 成品（清冊 created_turn 是那回合且 manifest 記 create 的）預設留著、status 改 turn_reverted，revert 只列不問；
 客戶明說刪才 delete-outputs（或一開始就 revert --delete-outputs）。退回動完後對碰到的 Z3 路徑對帳清冊 status。
-退回標記是回合夾裡的 reverted.json，不改夾名。
+退回標記是回合夾裡的 reverted.json，不改夾名；退回動作的回合在 turn.json 記 reverted_turn，退掉它時撤原回合的標記（第二輪 R2-4）。
+刪成品前三道關：這一句話已經改過的不刪（R2-2）、指紋跟清冊不同的不刪（R2-3）、檔已不在只改 status（R2-L1）。
+CLI 的鎖等 30 秒（hook 維持 3，第二輪 R2-L3）。
 """
 import argparse
 import json
@@ -14,11 +16,16 @@ from pathlib import Path
 
 from kb import guard
 from kb._lib import inventory, turn
+from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb._lib.io import read_json, write_json_atomic
 
 ENTRY_LINES_MAX = 15
+CLI_LOCK_TIMEOUT = 30
 NOT_IN_VAULT = "不在知識庫裡：這裡往上找不到 .system/sources.json"
+TOUCHED_THIS_TURN = "{rel} 這一句話已經改過，下一句再刪"
+CHANGED_SINCE = "{rel} 之後被改過，留著"
+ALREADY_GONE = "{rel} 已經不在"
 
 
 def add_arguments(sub):
@@ -37,7 +44,7 @@ def add_arguments(sub):
 
 
 def turns(vault):
-    """由新到舊：{turn, dir, started, prompt_head, reverted, entries}。"""
+    """由新到舊：{turn, dir, started, prompt_head, reverted, reverted_turn, entries}。"""
     root = Path(vault) / turn.VERSIONS_REL
     if not root.is_dir():
         return []
@@ -50,6 +57,7 @@ def turns(vault):
             "turn": d.name, "dir": d,
             "started": info.get("started", ""), "prompt_head": info.get("prompt_head", ""),
             "reverted": (d / "reverted.json").is_file(),
+            "reverted_turn": info.get("reverted_turn"),
             "entries": turn.entries(vault, d.name),
         })
     return out
@@ -75,7 +83,7 @@ def _list(vault, n, as_json):
     if as_json:
         print(json.dumps([{
             "turn": t["turn"], "started": t["started"], "prompt_head": t["prompt_head"],
-            "reverted": t["reverted"], "current": t["turn"] == current,
+            "reverted": t["reverted"], "reverted_turn": t["reverted_turn"], "current": t["turn"] == current,
             "counts": _counts(vault, t), "entries": t["entries"],
         } for t in shown], ensure_ascii=False))
         return 0
@@ -108,9 +116,9 @@ def _prune_dirs(vault, rel):
             break
 
 
-def _remove(vault, rel, revert_turn):
-    """刪檔前先備進退回動作的回合（action delete），再退一次救得回（D-074、D-011）。"""
-    turn.backup(vault, rel, revert_turn, action="delete")
+def _remove(vault, rel, acting_turn):
+    """刪檔前先備進動作回合（action delete），再退一次救得回（D-074、D-011）。"""
+    turn.backup(vault, rel, acting_turn, action="delete")
     os.remove(Path(vault) / rel)
     _prune_dirs(vault, rel)
 
@@ -119,12 +127,28 @@ def _rels_of(entries_):
     return [loc[len("file://"):] for o in entries_ for loc in o.get("locations", []) if loc.startswith("file://")]
 
 
+def _rel_of(entry):
+    rels = _rels_of([entry])
+    return rels[0] if rels else None
+
+
 def _acting_turn(vault, target_turn):
     """退回動作本身的回合；若等於要退的回合，開一個新的（現況要有別的回合可備）。"""
     rt = turn.current(vault)
     if rt["turn"] == target_turn:
         rt = turn.start(vault, rt.get("session_id") or None, f"退回 {target_turn}")
     return rt
+
+
+def _touched_paths(vault, turn_id):
+    return {e.get("path") for e in turn.entries(vault, turn_id)}
+
+
+def _unchanged_since_registered(vault, rel, entry):
+    fps = entry.get("fingerprints") or []
+    if not fps:
+        return True
+    return inventory.sha256_of(Path(vault) / rel) == fps[-1].get("sha256")
 
 
 def _reconcile(vault, rels):
@@ -145,9 +169,31 @@ def _reconcile(vault, rels):
         inventory.set_status(vault, to_deleted, "deleted")
 
 
+def _mark_acting_turn(vault, acting_turn, target_turn):
+    """動作回合的 turn.json 記 reverted_turn（第二輪 R2-4）。"""
+    vdir = turn.turn_dir(vault, acting_turn)
+    meta = read_json(vdir / "turn.json", {}) or {}
+    meta["reverted_turn"] = target_turn
+    write_json_atomic(vdir / "turn.json", meta)
+
+
+def _undo_revert_marks(vault, original_turn):
+    """退掉「退回」本身：原回合的 reverted.json 撤掉，它留著的成品（檔還在）改回 active（第二輪 R2-4）。"""
+    marker = Path(vault) / turn.VERSIONS_REL / original_turn / "reverted.json"
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
+    back = [e["id"] for e in inventory.load(vault)["entries"]
+            if e.get("created_turn") == original_turn and e.get("status") == "turn_reverted"
+            and (rel := _rel_of(e)) and (Path(vault) / rel).is_file()]
+    if back:
+        inventory.set_status(vault, back, "active")
+
+
 def _revert(vault, code, delete_outputs, as_json):
     all_turns = turns(vault)
-    cands = [t for t in all_turns if not t["reverted"] and t["entries"]]
+    cands = [t for t in all_turns if not t["reverted"] and (t["entries"] or t["reverted_turn"])]
     if not cands:
         print("沒有可以退回的改動")
         return 3
@@ -156,13 +202,14 @@ def _revert(vault, code, delete_outputs, as_json):
         print(f"只能從最近一次開始退：{target['turn']}")
         return 3
     rt = _acting_turn(vault, target["turn"])
+    touched_before = _touched_paths(vault, rt["turn"])  # 這一句話在退回前就動過的路徑（R2-2）
     sources = sources_lib.load(vault)
     # 成品只算「清冊 created_turn 是這回合 且 這回合 manifest 記 create」的（第一輪 M4）
     created = {e.get("path") for e in target["entries"] if e.get("action") == "create"}
-    outputs = [o for o in inventory.outputs_of_turn(vault, target["turn"]) if any(r in created for r in _rels_of([o]))]
+    outputs = [o for o in inventory.outputs_of_turn(vault, target["turn"]) if _rel_of(o) in created]
     out_rels = _rels_of(outputs)
 
-    restored, removed, lost, touched_z3 = [], [], [], []
+    restored, removed, lost, touched_z3, kept_msgs, kept_ids = [], [], [], [], [], []
     for e in reversed(target["entries"]):
         rel, action = e.get("path"), e.get("action")
         dst = Path(vault) / rel
@@ -181,6 +228,10 @@ def _revert(vault, code, delete_outputs, as_json):
         elif action == "create" and dst.is_file():
             if is_z3 and not delete_outputs:
                 continue  # 成品照 D-011：沒明說就留著，之後用 delete-outputs 刪
+            if is_z3 and rel in touched_before:
+                kept_msgs.append(TOUCHED_THIS_TURN.format(rel=rel))
+                kept_ids.extend(o["id"] for o in outputs if _rel_of(o) == rel)
+                continue
             _remove(vault, rel, rt["turn"])
             removed.append(rel)
             if is_z3:
@@ -188,45 +239,63 @@ def _revert(vault, code, delete_outputs, as_json):
 
     if outputs:
         if delete_outputs:
-            for rel in out_rels:
-                if (Path(vault) / rel).is_file():
-                    _remove(vault, rel, rt["turn"])
-                    removed.append(rel)
-            inventory.set_status(vault, [o["id"] for o in outputs], "deleted")
+            gone = [o["id"] for o in outputs if o["id"] not in kept_ids]
+            if gone:
+                inventory.set_status(vault, gone, "deleted")
+            if kept_ids:
+                inventory.set_status(vault, kept_ids, "turn_reverted")
         else:
             inventory.set_status(vault, [o["id"] for o in outputs], "turn_reverted")
-    _reconcile(vault, [r for r in touched_z3 if delete_outputs or r not in out_rels])
-
+    _reconcile(vault, touched_z3)
+    if target["reverted_turn"]:
+        _undo_revert_marks(vault, target["reverted_turn"])
+    _mark_acting_turn(vault, rt["turn"], target["turn"])
     write_json_atomic(target["dir"] / "reverted.json",
                       {"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "by_turn": rt["turn"]})
 
+    deleted_n = len(outputs) - len(set(kept_ids))
     if as_json:
         print(json.dumps({
             "turn": target["turn"], "prompt_head": target["prompt_head"], "by_turn": rt["turn"],
             "restored": restored, "removed": removed, "lost": lost,
-            "outputs": out_rels, "outputs_deleted": bool(delete_outputs),
+            "outputs": out_rels, "outputs_deleted": bool(delete_outputs), "kept": kept_msgs,
+            "undone_revert_of": target["reverted_turn"],
         }, ensure_ascii=False))
         return 0
     if lost:
         print(f"無法還原 {len(lost)} 檔（備份已不在）：" + "、".join(lost))
-    tail = ("刪了" if delete_outputs else "留著") if outputs else ""
-    print(f"已退回 {target['turn']}（問：「{target['prompt_head']}」）："
-          f"還原 {len(restored)}、移除 {len(removed)}、成品 {len(outputs)} 份{tail}")
+    if outputs and delete_outputs:
+        tail = f"成品 {deleted_n} 份刪了" + (f"、{len(set(kept_ids))} 份留著" if kept_ids else "")
+    elif outputs:
+        tail = f"成品 {len(outputs)} 份留著"
+    else:
+        tail = "成品 0 份"
+    print(f"已退回 {target['turn']}（問：「{target['prompt_head']}」）：還原 {len(restored)}、移除 {len(removed)}、{tail}")
     for rel in out_rels:
         print(f"    {rel}")
+    for msg in kept_msgs:
+        print(msg)
     if outputs and not delete_outputs:
         print(f"這 {len(outputs)} 份成品先留著；要刪跟我說，我用 delete-outputs 刪。")
+    if target["reverted_turn"]:
+        print(f"這一次退的是「退回 {target['reverted_turn']}」本身，{target['reverted_turn']} 不再算已退回。")
     return 0
 
 
 def _delete_outputs(vault, code, as_json):
-    """第一輪 H1：「退回 → 客戶說刪 → 刪」的第二步。只刪已退回回合裡 status 還是 turn_reverted 的成品。"""
-    entries_ = inventory.load(vault)["entries"]
+    """第一輪 H1：「退回 → 客戶說刪 → 刪」的第二步。只刪已退回回合裡 status 還是 turn_reverted 的成品；
+    三道關：這一句話已經改過的不刪（R2-2，連 superseded 的也先告知）、指紋不同的不刪（R2-3）、檔已不在只改 status（R2-L1）。
+    """
+    all_entries = inventory.load(vault)["entries"]
+    acting = turn.current(vault)
+    touched = _touched_paths(vault, acting["turn"])
     cands = []
     for t in turns(vault):
         if not t["reverted"]:
             continue
-        outs = [e for e in entries_ if e.get("created_turn") == t["turn"] and e.get("status") == "turn_reverted"]
+        outs = [e for e in all_entries if e.get("created_turn") == t["turn"]
+                and (e.get("status") == "turn_reverted"
+                     or (e.get("status") == "superseded" and _rel_of(e) in touched))]
         if outs:
             cands.append((t, outs))
     if code:
@@ -239,18 +308,38 @@ def _delete_outputs(vault, code, as_json):
         return 3
     target, outs = cands[0]
     rt = _acting_turn(vault, target["turn"])
-    deleted = []
-    for rel in _rels_of(outs):
-        if (Path(vault) / rel).is_file():
-            _remove(vault, rel, rt["turn"])
+    deleted, missing, kept_msgs, gone_ids = [], [], [], []
+    for o in outs:
+        rel = _rel_of(o)
+        if rel is None:
+            continue
+        if rel in touched:
+            kept_msgs.append(TOUCHED_THIS_TURN.format(rel=rel))
+            continue
+        if not (Path(vault) / rel).is_file():
+            missing.append(rel)
+            gone_ids.append(o["id"])
+            continue
+        if not _unchanged_since_registered(vault, rel, o):
+            kept_msgs.append(CHANGED_SINCE.format(rel=rel))
+            continue
+        _remove(vault, rel, rt["turn"])
         deleted.append(rel)
-    inventory.set_status(vault, [o["id"] for o in outs], "deleted")
+        gone_ids.append(o["id"])
+    if gone_ids:
+        inventory.set_status(vault, gone_ids, "deleted")
     if as_json:
-        print(json.dumps({"turn": target["turn"], "by_turn": rt["turn"], "deleted": deleted}, ensure_ascii=False))
+        print(json.dumps({"turn": target["turn"], "by_turn": rt["turn"], "deleted": deleted, "missing": missing,
+                          "kept": kept_msgs}, ensure_ascii=False))
         return 0
-    print(f"已刪 {len(outs)} 份成品（回合 {target['turn']}）：")
-    for rel in deleted:
-        print(f"    {rel}")
+    if deleted:
+        print(f"已刪 {len(deleted)} 份成品（回合 {target['turn']}）：")
+        for rel in deleted:
+            print(f"    {rel}")
+    for rel in missing:
+        print(ALREADY_GONE.format(rel=rel))
+    for msg in kept_msgs:
+        print(msg)
     return 0
 
 
@@ -259,6 +348,7 @@ def run(args):
     if vault is None:
         print(NOT_IN_VAULT)
         return 2
+    kio.LOCK_TIMEOUT = CLI_LOCK_TIMEOUT  # CLI 不受 hook 的 10 秒限制，等久一點才不會留下半套（R2-L3）
     as_json = getattr(args, "json", False)
     if args.versions_command == "list":
         return _list(vault, args.n, as_json)

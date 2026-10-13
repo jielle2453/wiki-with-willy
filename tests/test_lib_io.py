@@ -117,23 +117,67 @@ class Lock(unittest.TestCase):
                 pass
         self.assertTrue(lock_path.exists())
 
-    def test_permission_error_on_open_is_treated_as_busy(self):
-        """L6：Windows 上 O_EXCL 碰到待刪除的鎖檔丟 PermissionError，要當成「有人持鎖」繼續等，不是跳出。"""
+    def test_permission_error_without_lock_file_raises_immediately(self):
+        """第二輪 R2-1：鎖檔根本建不起來（回合夾不可寫）→ 直接 raise，不無窮迴圈、不等逾時。"""
+        import time
+        from unittest import mock
+
+        def denied(path, flags, *a):
+            raise PermissionError("folder not writable")
+
+        t0 = time.time()
+        with mock.patch.object(kio.os, "open", denied):
+            with self.assertRaises(PermissionError):
+                with kio.FileLock(self.target, timeout=5):
+                    pass
+        self.assertLess(time.time() - t0, 1)
+
+    def test_lock_file_vanishing_between_checks_still_times_out(self):
+        """第二輪 R2-1：getmtime 的 FileNotFoundError 不跳過逾時檢查。"""
+        import time
+        from unittest import mock
+
+        def always_exists(path, flags, *a):
+            raise FileExistsError(path)
+
+        def vanished(path):
+            raise FileNotFoundError(path)
+
+        t0 = time.time()
+        with mock.patch.object(kio.os, "open", always_exists), mock.patch.object(kio.os.path, "getmtime", vanished):
+            with self.assertRaises(TimeoutError):
+                with kio.FileLock(self.target, timeout=0.5):
+                    pass
+        self.assertLess(time.time() - t0, 3)
+
+    def test_default_timeout_reads_module_setting_at_call_time(self):
+        """第二輪 R2-L3：CLI 把 io.LOCK_TIMEOUT 調成 30，之後建的 FileLock 都用新值；hook 維持 3。"""
+        from unittest import mock
+        self.assertEqual(kio.FileLock(self.target).timeout, 3)
+        with mock.patch.object(kio, "LOCK_TIMEOUT", 30):
+            self.assertEqual(kio.FileLock(self.target).timeout, 30)
+        self.assertEqual(kio.FileLock(self.target, timeout=1).timeout, 1)
+
+    def test_permission_error_on_open_with_lock_present_is_treated_as_busy(self):
+        """L6／R2-1：鎖檔存在時 O_EXCL 丟 PermissionError（待刪除）要當成「有人持鎖」繼續等；鎖消失後拿到。"""
         from unittest import mock
         real_open = kio.os.open
+        lock_path = self.tmp / "inventory.json.lock"
+        lock_path.write_text("", encoding="utf-8")
         calls = {"n": 0}
 
         def flaky(path, flags, *a):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise PermissionError("pending delete")
+            lock_path.unlink(missing_ok=True)  # 持鎖者放掉了
             return real_open(path, flags, *a)
 
         with mock.patch.object(kio.os, "open", flaky):
             with kio.FileLock(self.target, timeout=2):
                 pass
         self.assertEqual(calls["n"], 2)
-        self.assertFalse((self.tmp / "inventory.json.lock").exists())
+        self.assertFalse(lock_path.exists())
 
     def test_stale_lock_removed_by_someone_else_is_ignored(self):
         """L6：清殘留鎖時別的程序先刪了，FileNotFoundError 忽略、繼續搶。"""

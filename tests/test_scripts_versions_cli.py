@@ -234,12 +234,21 @@ class Revert(Base):
         self.assertIn("還原 1、移除 0、成品 0 份", r.stdout)
         self.assertEqual((self.V / rel).read_text(encoding="utf-8"), "草稿\n")
         self.assertEqual(self.status_of(new["id"]), "active")
-        self.assertEqual(self.status_of(old["id"]), "turn_reverted")
+        self.assertEqual(self.status_of(old["id"]), "superseded")  # 第二輪 R2-3
 
-    def test_reverted_turn_cannot_be_reverted_again(self):
-        self.make_output()
-        self.new_turn()
+    def test_reverted_turn_is_never_chosen_again(self):
+        """已退回的回合不再是候選；第二輪 R2-4 後「退回」那一回合本身可以退（它帶 reverted_turn），所以用指定代號驗。"""
+        a, rel, entry = self.make_output()
+        rt = self.new_turn()
         run_kb("versions", "revert", cwd=self.V)
+        self.new_turn()
+        r = run_kb("versions", "revert", a["turn"], cwd=self.V)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout.strip(), f"只能從最近一次開始退：{rt['turn']}")
+        self.assertEqual(self.status_of(entry["id"]), "turn_reverted")
+
+    def test_nothing_left_after_undoing_a_revert_chain_is_reported(self):
+        """沒有任何回合有改動也沒有退回紀錄時才印「沒有可以退回的改動」。"""
         self.new_turn()
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 3)
@@ -405,6 +414,108 @@ class DeleteOutputs(Base):
         data = json.loads(r.stdout)
         self.assertEqual(data["turn"], t["turn"])
         self.assertEqual(data["deleted"], [rel])
+
+    def test_same_turn_rewrite_then_delete_outputs_is_refused(self):
+        """第二輪 R2-2（驗收 31）：同回合先重寫留著的成品再 delete-outputs → 不刪、印「這一句話已經改過」、status 不變。"""
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        at = self.new_turn("重寫再刪")
+        turn.backup(self.V, rel, at["turn"])
+        (self.V / rel).write_text("這一句話重寫的\n", encoding="utf-8")
+        new = inventory.register_output(self.V, rel, at["turn"])
+        statuses_before = {e["id"]: e["status"] for e in inventory.load(self.V)["entries"]}
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"{rel} 這一句話已經改過，下一句再刪", r.stdout)
+        self.assertNotIn("已刪", r.stdout)
+        self.assertEqual((self.V / rel).read_text(encoding="utf-8"), "這一句話重寫的\n")
+        self.assertEqual({e["id"]: e["status"] for e in inventory.load(self.V)["entries"]}, statuses_before)
+        self.assertEqual([(e["path"], e["action"]) for e in turn.entries(self.V, at["turn"])], [(rel, "modify")])
+        self.assertIsNotNone(new)
+
+    def test_superseded_output_is_not_deletable(self):
+        """第二輪 R2-3(1)（驗收 32 前半）：留著的成品被新回合重寫 → 舊筆 superseded，delete-outputs 沒東西可刪，新檔還在。"""
+        t, rel, old = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        t3 = turn.start(self.V, SID, "再寫")
+        turn.backup(self.V, rel, t3["turn"])
+        (self.V / rel).write_text("新回合的\n", encoding="utf-8")
+        inventory.register_output(self.V, rel, t3["turn"])
+        self.assertEqual(self.status_of(old["id"]), "superseded")
+        self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout.strip(), "沒有可刪的成品")
+        self.assertEqual((self.V / rel).read_text(encoding="utf-8"), "新回合的\n")
+
+    def test_manually_changed_output_is_kept(self):
+        """第二輪 R2-3(2)（驗收 32 後半）：留著的成品手動改過內容 → 指紋不同、不刪、印「之後被改過，留著」。"""
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        (self.V / rel).write_text("手動改的\n", encoding="utf-8")
+        self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"{rel} 之後被改過，留著", r.stdout)
+        self.assertTrue((self.V / rel).is_file())
+        self.assertEqual(self.status_of(entry["id"]), "turn_reverted")
+
+    def test_missing_output_file_is_reported_and_marked_deleted(self):
+        """第二輪 R2-L1（驗收 36）：檔已不在 → 印「已經不在」、status deleted、manifest 不多行。"""
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        (self.V / rel).unlink()
+        dt = self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"{rel} 已經不在", r.stdout)
+        self.assertNotIn("已刪 1 份", r.stdout)
+        self.assertEqual(self.status_of(entry["id"]), "deleted")
+        self.assertEqual(turn.entries(self.V, dt["turn"]), [])
+
+    def test_reverting_the_revert_restores_reverted_marker_and_status(self):
+        """第二輪 R2-4（驗收 33）：A 退回（成品留著）→ 再退掉那次退回：A 的 reverted.json 不在、list 不標、成品 active；delete-outputs 沒東西。"""
+        a, rel, entry = self.make_output()
+        rt = self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.assertTrue((self.versions_dir(a["turn"]) / "reverted.json").is_file())
+        meta = json.loads((self.versions_dir(rt["turn"]) / "turn.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["reverted_turn"], a["turn"])
+        self.new_turn("退掉退回")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"已退回 {rt['turn']}", r.stdout)
+        self.assertFalse((self.versions_dir(a["turn"]) / "reverted.json").exists())
+        self.assertEqual(self.status_of(entry["id"]), "active")
+        r = run_kb("versions", "list", cwd=self.V)
+        self.assertNotIn(f"{a['turn']}（已退回）", r.stdout)
+        self.assertIn(f"{rt['turn']}（已退回）", r.stdout)
+        self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout.strip(), "沒有可刪的成品")
+
+    def test_reverting_the_revert_with_card_change(self):
+        """R2-4 的另一面：退掉退回後，被退回那一回合的綜合卡改動也回來、它不再算「已退回」；
+        再退一次退的是「退掉退回」那一回合（只從最近一次開始），卡又回原版。"""
+        t = self.modify_card_in_turn()
+        rt = self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(self.card.read_bytes(), self.original)
+        rt2 = self.new_turn("退掉退回")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertIn(f"已退回 {rt['turn']}", r.stdout)
+        self.assertIn(f"{t['turn']} 不再算已退回", r.stdout)
+        self.assertEqual(self.card.read_text(encoding="utf-8"), "改過了\n")
+        self.assertFalse((self.versions_dir(t["turn"]) / "reverted.json").exists())
+        self.new_turn("再退")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertIn(f"已退回 {rt2['turn']}", r.stdout)
+        self.assertEqual(self.card.read_bytes(), self.original)
 
     def test_second_revert_after_revert_does_not_touch_earlier_turn(self):
         """H1 的根因：退回後「刪」不再靠第二次 revert，前一回合客戶接受的綜合卡修改不會被退掉。"""

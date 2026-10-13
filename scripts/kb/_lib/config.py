@@ -22,9 +22,14 @@ def get(vault, key):
         raise KeyError(key)
     default = base[key]
     try:
-        client = read_json(Path(vault) / CLIENT_REL, default={}) or {}
+        client = read_json(Path(vault) / CLIENT_REL, default={})
     except ValueError as e:
         ledger.log_error(vault, f"config.json 讀不了，{key} 用預設 {default!r}：{type(e).__name__}: {e}")
+        return default
+    if client is None:
+        client = {}
+    if not isinstance(client, dict):  # 整份不是物件（第二輪 L5 補）
+        ledger.log_error(vault, f"config.json 不是物件（{type(client).__name__}），{key} 用預設 {default!r}")
         return default
     if key not in client:
         return default

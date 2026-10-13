@@ -1,6 +1,7 @@
 """清冊最小版（D-076）：.system/inventory.json，一筆一份成品。
 id、origin（先只有 ai_output）、locations（相對總資料夾的 file:// spec）、created_turn、fingerprints（sha256 加時間）、
-status（active｜turn_reverted｜deleted）。指紋先用位元組 sha256（B-018）。讀改寫整段包 FileLock（I-080）。
+status 四值 active｜turn_reverted｜deleted｜superseded（同位置後來有新成品，第二輪 R2-3）。
+指紋先用位元組 sha256（B-018）。讀改寫整段包 FileLock（I-080）。
 """
 import hashlib
 import secrets
@@ -83,6 +84,9 @@ def register_output(vault, rel, turn_id):
         action = _manifest_action(vault, rel, turn_id)
         if not (action == "create" or (action == "modify" and same)):
             return None
+        for old in same:  # 同位置後來有新成品：舊的非 active 條目改 superseded（第二輪 R2-3）
+            if old.get("status") != "active":
+                old["status"] = "superseded"
         entry = {
             "id": _new_id({e.get("id") for e in data["entries"]}),
             "origin": "ai_output",

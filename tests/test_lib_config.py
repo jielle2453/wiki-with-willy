@@ -49,6 +49,14 @@ class Get(unittest.TestCase):
         self.assertEqual(len(log), 1)
         self.assertIn("big_change_synthesis_max", log[0])
 
+    def test_whole_file_not_an_object_uses_default_and_logs(self):
+        """第二輪 L5 補（驗收 34）：config.json 整份是 5 → 用預設、寫一行 log。"""
+        (self.vault / ".system" / "config.json").write_text("5", encoding="utf-8")
+        self.assertEqual(config.get(self.vault, "big_change_synthesis_max"), 10)
+        log = (self.vault / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("config.json", log[0])
+
     def test_bool_is_not_accepted_as_int(self):
         (self.vault / ".system" / "config.json").write_text(
             json.dumps({"big_change_synthesis_max": True}), encoding="utf-8")

@@ -86,15 +86,77 @@ class Lock(unittest.TestCase):
                 with kio.FileLock(self.target, timeout=0.3):
                     pass
 
-    def test_stale_lock_older_than_600s_is_cleared(self):
+    def test_default_timeout_is_3_seconds_under_hook_budget(self):
+        """M1：hook timeout 10 秒，鎖最多等 3 秒就丟 TimeoutError，讓 before_write 回 backup_failed。"""
+        import time
+        with kio.FileLock(self.target):
+            t0 = time.time()
+            with self.assertRaises(TimeoutError):
+                with kio.FileLock(self.target):
+                    pass
+            elapsed = time.time() - t0
+        self.assertGreaterEqual(elapsed, 2.9)
+        self.assertLess(elapsed, 5)
+
+    def test_stale_lock_older_than_30s_is_cleared(self):
         import os
         import time
         lock_path = self.tmp / "inventory.json.lock"
         lock_path.write_text("", encoding="utf-8")
-        old = time.time() - 700
+        old = time.time() - 40
         os.utime(lock_path, (old, old))
         with kio.FileLock(self.target, timeout=0.5):
             self.assertTrue(lock_path.exists())
+        self.assertFalse(lock_path.exists())
+
+    def test_fresh_lock_is_not_treated_as_stale(self):
+        lock_path = self.tmp / "inventory.json.lock"
+        lock_path.write_text("", encoding="utf-8")
+        with self.assertRaises(TimeoutError):
+            with kio.FileLock(self.target, timeout=0.3):
+                pass
+        self.assertTrue(lock_path.exists())
+
+    def test_permission_error_on_open_is_treated_as_busy(self):
+        """L6：Windows 上 O_EXCL 碰到待刪除的鎖檔丟 PermissionError，要當成「有人持鎖」繼續等，不是跳出。"""
+        from unittest import mock
+        real_open = kio.os.open
+        calls = {"n": 0}
+
+        def flaky(path, flags, *a):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError("pending delete")
+            return real_open(path, flags, *a)
+
+        with mock.patch.object(kio.os, "open", flaky):
+            with kio.FileLock(self.target, timeout=2):
+                pass
+        self.assertEqual(calls["n"], 2)
+        self.assertFalse((self.tmp / "inventory.json.lock").exists())
+
+    def test_stale_lock_removed_by_someone_else_is_ignored(self):
+        """L6：清殘留鎖時別的程序先刪了，FileNotFoundError 忽略、繼續搶。"""
+        import os
+        import time
+        from unittest import mock
+        lock_path = self.tmp / "inventory.json.lock"
+        lock_path.write_text("", encoding="utf-8")
+        old = time.time() - 40
+        os.utime(lock_path, (old, old))
+        real_remove = kio.os.remove
+        calls = {"n": 0}
+
+        def race(path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                real_remove(path)
+                raise FileNotFoundError(path)
+            return real_remove(path)
+
+        with mock.patch.object(kio.os, "remove", race):
+            with kio.FileLock(self.target, timeout=1):
+                pass
         self.assertFalse(lock_path.exists())
 
 

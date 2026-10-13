@@ -143,8 +143,7 @@ class Transaction(unittest.TestCase):
         return run_hook(data)
 
     def manifest(self, turn_id=None):
-        m = self.V / ".system" / "versions" / (turn_id or self.t["turn"]) / "manifest.jsonl"
-        return [json.loads(x) for x in m.read_text(encoding="utf-8").splitlines() if x.strip()] if m.exists() else []
+        return self.turn.entries(self.V, turn_id or self.t["turn"])
 
     def ledger_rows(self):
         p = self.V / ".system" / "ledger.tsv"
@@ -231,6 +230,65 @@ class Transaction(unittest.TestCase):
         t = self.turn.current(self.V, self.SID)
         self.assertTrue((self.V / ".system" / "turns" / f"{self.SID}.json").exists())
         self.assertEqual(len(self.manifest(t["turn"])), 1)
+
+    def test_held_lock_denies_backup_failed_within_hook_budget(self):
+        """第一輪 M1（驗收 21）：殘留的 manifest.jsonl.lock（mtime 現在）3 到 4 秒內 deny backup_failed，不超過 10 秒。"""
+        import time
+        vdir = self.turn.turn_dir(self.V, self.t["turn"])
+        lock = vdir / "manifest.jsonl.lock"
+        lock.write_text("busy", encoding="utf-8")
+        t0 = time.time()
+        r = self.write(self.card)
+        elapsed = time.time() - t0
+        self.assertLess(elapsed, 10)
+        self.assertGreaterEqual(elapsed, 2.9)
+        _event, decision, reason = decision_of(r)
+        self.assertEqual(decision, "deny")
+        self.assertIn("備份失敗", reason)
+        self.assertEqual(self.ledger_rows()[-1][4], "backup_failed")
+        self.assertFalse((vdir / "files").exists())
+        old = time.time() - 60
+        os.utime(lock, (old, old))
+        r = self.write(self.card)
+        self.assertEqual(decision_of(r)[1], "allow", r.stdout)
+        self.assertFalse(lock.exists())
+        self.assertEqual(len(self.manifest()), 1)
+
+    def test_git_bash_path_form_is_backed_up_correctly(self):
+        """第一輪 L1（驗收 24）：file_path 用 /c/Users/... 寫法。"""
+        if os.name != "nt":
+            self.skipTest("Git Bash 寫法只在 Windows 有意義")
+        p = str(self.card).replace("\\", "/")
+        gb = "/" + p[0].lower() + p[2:]
+        r = self.write(gb)
+        self.assertEqual(decision_of(r)[1], "allow", r.stdout)
+        copy = self.V / ".system" / "versions" / self.t["turn"] / "files" / "案子" / "信義王" / "信義王.md"
+        self.assertTrue(copy.is_file())
+        self.assertEqual(self.manifest()[0]["path"], "案子/信義王/信義王.md")
+
+    def test_bad_manifest_line_still_allows_and_logs(self):
+        """第一輪 L4（驗收 25）。"""
+        self.write(self.card)
+        m = self.V / ".system" / "versions" / self.t["turn"] / "manifest.jsonl"
+        with open(m, "a", encoding="utf-8", newline="\n") as f:
+            f.write("{bad\n")
+        idx = self.V / "檔案索引" / "i.md"
+        idx.write_text("索引", encoding="utf-8")
+        r = self.write(idx)
+        self.assertEqual(decision_of(r)[1], "allow", r.stdout)
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertGreaterEqual(len(log), 1)
+        self.assertIn("manifest", log[0])
+        self.assertEqual(self.manifest()[-1]["path"], "檔案索引/i.md")
+
+    def test_bad_config_type_still_allows_and_logs(self):
+        """第一輪 L5（驗收 26）。"""
+        (self.V / ".system" / "config.json").write_text('{"big_change_synthesis_max": "十"}', encoding="utf-8")
+        r = self.write(self.card)
+        self.assertEqual(decision_of(r)[1], "allow", r.stdout)
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("big_change_synthesis_max", log[0])
 
     def test_shell_write_to_card_denied_with_ledger(self):
         data = payload("Bash", f"echo hi > {self.card}", self.V)

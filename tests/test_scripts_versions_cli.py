@@ -1,5 +1,6 @@
-"""kb versions list／revert 黑箱：subprocess 跑 kb.py，cwd 在 vault。
-list 空、list 一回合、revert 還原修改、revert 移除新增、成品留著／刪掉、指定舊代號被拒 exit 3、退回後再退回、--json。"""
+"""kb versions list／revert／delete-outputs 黑箱：subprocess 跑 kb.py，cwd 在 vault。
+list 空、list 一回合、revert 還原修改、revert 移除新增、成品留著／刪掉、指定舊代號被拒 exit 3、退回後再退回、--json；
+第一輪 H1 delete-outputs、M3 退回後對帳 status、M4 成品只算 manifest create 的。"""
 import json
 import os
 import shutil
@@ -42,6 +43,17 @@ class Base(unittest.TestCase):
     def versions_dir(self, turn_id):
         return self.V / ".system" / "versions" / turn_id
 
+    def make_output(self, prompt="寫草稿", rel="AI 產出/x.md", text="草稿\n"):
+        """模擬檔案工具在新回合新建一份 AI 產出並登記（PreToolUse 備份 create、寫檔、PostToolUse 登記）。"""
+        t = turn.start(self.V, SID, prompt)
+        turn.backup(self.V, rel, t["turn"])
+        (self.V / rel).write_text(text, encoding="utf-8")
+        entry = inventory.register_output(self.V, rel, t["turn"])
+        return t, rel, entry
+
+    def status_of(self, entry_id):
+        return [e for e in inventory.load(self.V)["entries"] if e["id"] == entry_id][0]["status"]
+
 
 class List(Base):
     def test_empty(self):
@@ -81,6 +93,16 @@ class List(Base):
         self.assertEqual(len(heads), 2)
         self.assertIn("問：「三」", heads[0])
 
+    def test_bad_manifest_line_does_not_break_list(self):
+        """第一輪 L4（驗收 25）：manifest 半截行，list 照常印。"""
+        t = self.modify_card_in_turn()
+        with open(self.versions_dir(t["turn"]) / "manifest.jsonl", "a", encoding="utf-8", newline="\n") as f:
+            f.write("{bad\n")
+        r = run_kb("versions", "list", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("修改 1、新增 0", r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+
 
 class Revert(Base):
     def test_restores_modified_file(self):
@@ -89,7 +111,7 @@ class Revert(Base):
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.card.read_bytes(), self.original)
-        self.assertIn(f"已退回 {t['turn']}（問：「改一下」）：還原 1、移除 0、成品 0 份", r.stdout)
+        self.assertEqual(r.stdout.strip(), f"已退回 {t['turn']}（問：「改一下」）：還原 1、移除 0、成品 0 份")
         self.assertTrue((self.versions_dir(t["turn"]) / "reverted.json").is_file())
         rv = json.loads((self.versions_dir(t["turn"]) / "reverted.json").read_text(encoding="utf-8"))
         self.assertEqual(set(rv), {"time", "by_turn"})
@@ -136,44 +158,86 @@ class Revert(Base):
         self.assertFalse((self.V / rel).exists())
         self.assertTrue((self.V / "案子" / "新卡" / "原檔.docx").exists())
 
-    def _make_output(self, prompt="寫草稿"):
-        t = turn.start(self.V, SID, prompt)
-        rel = "AI 產出/x.md"
-        turn.backup(self.V, rel, t["turn"])
-        (self.V / rel).write_text("草稿\n", encoding="utf-8")
-        entry = inventory.register_output(self.V, rel, t["turn"])
-        return t, rel, entry
-
     def test_outputs_kept_without_flag_and_status_turn_reverted(self):
-        t, rel, entry = self._make_output()
+        """第一輪 H1：revert 不問「確定嗎」，只列清單加一句怎麼刪。"""
+        t, rel, entry = self.make_output()
         self.new_turn()
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         lines = r.stdout.splitlines()
-        self.assertEqual(lines[0], "這一回合有 1 份成品：")
+        self.assertEqual(lines[0], f"已退回 {t['turn']}（問：「寫草稿」）：還原 0、移除 0、成品 1 份留著")
         self.assertEqual(lines[1], f"    {rel}")
-        self.assertIn("這 1 份會刪掉，確定嗎", lines[2])
-        self.assertIn("成品 1 份留著", lines[-1])
+        self.assertEqual(lines[2], "這 1 份成品先留著；要刪跟我說，我用 delete-outputs 刪。")
+        self.assertEqual(len(lines), 3)
+        self.assertNotIn("確定嗎", r.stdout)
         self.assertTrue((self.V / rel).is_file())
-        got = [e for e in inventory.load(self.V)["entries"] if e["id"] == entry["id"]][0]
-        self.assertEqual(got["status"], "turn_reverted")
+        self.assertEqual(self.status_of(entry["id"]), "turn_reverted")
         self.assertTrue((self.versions_dir(t["turn"]) / "reverted.json").is_file())
 
-    def test_delete_outputs_removes_file_with_backup(self):
-        t, rel, entry = self._make_output()
+    def test_delete_outputs_flag_removes_file_with_backup(self):
+        t, rel, entry = self.make_output()
         rt = self.new_turn()
         r = run_kb("versions", "revert", "--delete-outputs", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse((self.V / rel).exists())
         self.assertIn("成品 1 份刪了", r.stdout)
-        got = [e for e in inventory.load(self.V)["entries"] if e["id"] == entry["id"]][0]
-        self.assertEqual(got["status"], "deleted")
+        self.assertIn(f"    {rel}", r.stdout)
+        self.assertEqual(self.status_of(entry["id"]), "deleted")
         rows = turn.entries(self.V, rt["turn"])
         self.assertEqual([(e["path"], e["action"]) for e in rows], [(rel, "delete")])
         self.assertEqual((self.versions_dir(rt["turn"]) / "files" / "AI 產出" / "x.md").read_text(encoding="utf-8"), "草稿\n")
 
+    def test_reverting_a_deletion_restores_file_and_status_active(self):
+        """第一輪 M3：退掉「刪成品」那一回合，檔回來、status 回 active。"""
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", "--delete-outputs", cwd=self.V)
+        self.assertEqual(self.status_of(entry["id"]), "deleted")
+        self.new_turn("救回來")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.V / rel).read_text(encoding="utf-8"), "草稿\n")
+        self.assertEqual(self.status_of(entry["id"]), "active")
+
+    def test_preexisting_file_in_outputs_is_restored_not_deleted(self):
+        """第一輪 M4：這回合之前就存在、沒登記的 AI 產出檔，--delete-outputs 不刪，還原成原內容。"""
+        q = self.V / "AI 產出" / "q.md"
+        q.write_text("客戶自己放的\n", encoding="utf-8")
+        t = turn.start(self.V, SID, "改 q")
+        turn.backup(self.V, "AI 產出/q.md", t["turn"])
+        q.write_text("AI 改過\n", encoding="utf-8")
+        self.assertIsNone(inventory.register_output(self.V, "AI 產出/q.md", t["turn"]))
+        rt = self.new_turn()
+        r = run_kb("versions", "revert", "--delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(q.read_text(encoding="utf-8"), "客戶自己放的\n")
+        self.assertIn("還原 1、移除 0、成品 0 份", r.stdout)
+        rows = turn.entries(self.V, rt["turn"])
+        self.assertEqual([(e["path"], e["action"]) for e in rows], [("AI 產出/q.md", "modify")])
+        self.assertEqual((self.versions_dir(rt["turn"]) / "files" / "AI 產出" / "q.md").read_text(encoding="utf-8"), "AI 改過\n")
+
+    def test_registered_entry_whose_manifest_says_modify_is_not_counted_as_output(self):
+        """第一輪 M4：成品只算 manifest create 的。舊筆 turn_reverted 後新回合再改（新筆 active、manifest modify）：
+        退那回合是還原、不是刪成品；對帳後新筆仍 active（檔在）。"""
+        t, rel, old = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(self.status_of(old["id"]), "turn_reverted")
+        t3 = turn.start(self.V, SID, "再寫")
+        turn.backup(self.V, rel, t3["turn"])
+        (self.V / rel).write_text("第二次\n", encoding="utf-8")
+        new = inventory.register_output(self.V, rel, t3["turn"])
+        self.assertNotEqual(new["id"], old["id"])
+        self.new_turn()
+        r = run_kb("versions", "revert", "--delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("還原 1、移除 0、成品 0 份", r.stdout)
+        self.assertEqual((self.V / rel).read_text(encoding="utf-8"), "草稿\n")
+        self.assertEqual(self.status_of(new["id"]), "active")
+        self.assertEqual(self.status_of(old["id"]), "turn_reverted")
+
     def test_reverted_turn_cannot_be_reverted_again(self):
-        self._make_output()
+        self.make_output()
         self.new_turn()
         run_kb("versions", "revert", cwd=self.V)
         self.new_turn()
@@ -236,6 +300,96 @@ class Revert(Base):
     def test_outside_vault_exits_2(self):
         r = run_kb("versions", "list", cwd=self.tmp)
         self.assertEqual(r.returncode, 2)
+
+
+class DeleteOutputs(Base):
+    """第一輪 H1：退回 → 客戶說刪 → kb versions delete-outputs。"""
+
+    def test_deletes_turn_reverted_outputs_of_latest_reverted_turn(self):
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(self.status_of(entry["id"]), "turn_reverted")
+        dt = self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"已刪 1 份成品（回合 {t['turn']}）：")
+        self.assertEqual(lines[1], f"    {rel}")
+        self.assertFalse((self.V / rel).exists())
+        self.assertEqual(self.status_of(entry["id"]), "deleted")
+        rows = turn.entries(self.V, dt["turn"])
+        self.assertEqual([(e["path"], e["action"]) for e in rows], [(rel, "delete")])
+        self.assertEqual((self.versions_dir(dt["turn"]) / "files" / "AI 產出" / "x.md").read_text(encoding="utf-8"), "草稿\n")
+
+    def test_then_revert_brings_output_back_active(self):
+        """驗收 14 的尾段：delete-outputs 之後 revert 退掉刪除，檔回來、status 回 active。"""
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.new_turn("刪掉")
+        run_kb("versions", "delete-outputs", cwd=self.V)
+        self.new_turn("救回來")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.V / rel).read_text(encoding="utf-8"), "草稿\n")
+        self.assertEqual(self.status_of(entry["id"]), "active")
+
+    def test_explicit_code(self):
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", t["turn"], cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.status_of(entry["id"]), "deleted")
+
+    def test_not_reverted_turn_is_refused(self):
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        r = run_kb("versions", "delete-outputs", t["turn"], cwd=self.V)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout.strip(), f"{t['turn']} 沒有可刪的成品")
+        self.assertTrue((self.V / rel).is_file())
+        self.assertEqual(self.status_of(entry["id"]), "active")
+
+    def test_nothing_to_delete(self):
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout.strip(), "沒有可刪的成品")
+
+    def test_already_deleted_is_refused(self):
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.new_turn("刪掉")
+        run_kb("versions", "delete-outputs", cwd=self.V)
+        self.new_turn("再刪")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout.strip(), "沒有可刪的成品")
+
+    def test_json(self):
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", "--json", cwd=self.V)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["turn"], t["turn"])
+        self.assertEqual(data["deleted"], [rel])
+
+    def test_second_revert_after_revert_does_not_touch_earlier_turn(self):
+        """H1 的根因：退回後「刪」不再靠第二次 revert，前一回合客戶接受的綜合卡修改不會被退掉。"""
+        self.modify_card_in_turn("改卡", "客戶接受的版本\n")
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.card.read_text(encoding="utf-8"), "客戶接受的版本\n")
+        self.assertFalse((self.V / rel).exists())
 
 
 if __name__ == "__main__":

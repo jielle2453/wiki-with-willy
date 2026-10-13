@@ -62,7 +62,7 @@ def _log(e, payload):
 
         payload = payload if isinstance(payload, dict) else {}
         vault = guard.find_vault(payload.get("cwd") or os.getcwd())
-        ledger.log_error(vault, f"output_log {type(e).__name__}: {str(e)[:200]}")
+        ledger.log_error(vault, f"{type(e).__name__}: {str(e)[:200]}", source="output_log")
     except BaseException:  # noqa: BLE001
         pass
 

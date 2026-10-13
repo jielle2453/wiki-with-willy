@@ -40,6 +40,20 @@ class Get(unittest.TestCase):
         with self.assertRaises(KeyError):
             config.get(self.vault, "no_such_key")
 
+    def test_wrong_type_in_client_file_uses_default_and_logs(self):
+        """第一輪 L5：型別跟預設不同就用預設，寫一行 hook-errors.log。"""
+        (self.vault / ".system" / "config.json").write_text(
+            json.dumps({"big_change_synthesis_max": "十"}), encoding="utf-8")
+        self.assertEqual(config.get(self.vault, "big_change_synthesis_max"), 10)
+        log = (self.vault / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("big_change_synthesis_max", log[0])
+
+    def test_bool_is_not_accepted_as_int(self):
+        (self.vault / ".system" / "config.json").write_text(
+            json.dumps({"big_change_synthesis_max": True}), encoding="utf-8")
+        self.assertEqual(config.get(self.vault, "big_change_synthesis_max"), 10)
+
     def test_client_file_cannot_add_unknown_key(self):
         (self.vault / ".system" / "config.json").write_text(json.dumps({"mystery": 1}), encoding="utf-8")
         with self.assertRaises(KeyError):

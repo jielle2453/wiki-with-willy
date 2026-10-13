@@ -9,7 +9,8 @@ from pathlib import Path
 
 REPLACE_RETRIES = 20
 REPLACE_WAIT = 0.1
-STALE_LOCK_SECONDS = 600
+LOCK_TIMEOUT = 3  # hook timeout 10 秒，鎖等不到就要讓 before_write 回 backup_failed（第一輪 M1）
+STALE_LOCK_SECONDS = 30
 
 
 def read_text(path, encoding="utf-8"):
@@ -53,12 +54,14 @@ def write_json_atomic(path, data):
 
 class FileLock:
     """with FileLock(path): …。鎖檔是 <path>.lock，O_CREAT|O_EXCL 保證只有一個程序建得成。
-    超過 STALE_LOCK_SECONDS 的鎖視為殘留（程式中途被中斷）清掉；等超過 timeout 秒丟 TimeoutError。
+    超過 stale 秒的鎖視為殘留（程式中途被中斷）清掉；等超過 timeout 秒丟 TimeoutError（是 OSError 的子類）。
+    Windows 上 O_EXCL 碰到待刪除的鎖檔會丟 PermissionError，當成有人持鎖繼續等（L6）。
     """
 
-    def __init__(self, path, timeout=60):
+    def __init__(self, path, timeout=LOCK_TIMEOUT, stale=STALE_LOCK_SECONDS):
         self.path = str(path) + ".lock"
         self.timeout = timeout
+        self.stale = stale
         self.fd = None
 
     def __enter__(self):
@@ -67,13 +70,18 @@ class FileLock:
             try:
                 self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 return self
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
                 try:
-                    if time.time() - os.path.getmtime(self.path) > STALE_LOCK_SECONDS:
-                        os.remove(self.path)
+                    if time.time() - os.path.getmtime(self.path) > self.stale:
+                        try:
+                            os.remove(self.path)
+                        except FileNotFoundError:
+                            pass  # 別的程序先清掉了
                         continue
                 except FileNotFoundError:
                     continue
+                except OSError:
+                    pass
                 if time.time() - start > self.timeout:
                     raise TimeoutError(f"等待檔案鎖逾時：{self.path}")
                 time.sleep(0.1)

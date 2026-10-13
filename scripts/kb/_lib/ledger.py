@@ -32,13 +32,13 @@ def fallback_error_log():
     return Path(tempfile.gettempdir()) / FALLBACK_ERROR_LOG
 
 
-def log_error(vault, text):
-    """追加一行 `時間\\tguard\\t訊息`。找不到 vault 就寫到 %TEMP%。"""
+def log_error(vault, text, source="guard"):
+    """追加一行 `時間\\t<source>\\t訊息`，source 是哪支 hook（guard／turn／output_log）。找不到 vault 就寫到 %TEMP%。"""
     target = (Path(vault) / ERROR_LOG_REL) if vault else fallback_error_log()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, "a", encoding="utf-8", newline="\n") as f:
-            f.write(f"{_now()}\tguard\t{_clean(text)[:200]}\n")
+            f.write(f"{_now()}\t{_clean(source)}\t{_clean(text)[:200]}\n")
     except OSError:
         pass
 

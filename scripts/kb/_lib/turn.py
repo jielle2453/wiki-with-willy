@@ -112,9 +112,17 @@ def _realcase(p):
     return os.path.join(os.path.realpath(cur), *tail) if tail else os.path.realpath(cur)
 
 
+_GIT_BASH = re.compile(r"^/([a-zA-Z])(?:/(.*))?$")
+
+
 def rel_path(vault, target, cwd):
-    """目標相對總資料夾的路徑，正斜線、原始大小寫。不在總資料夾裡丟 ValueError。"""
+    """目標相對總資料夾的路徑，正斜線、原始大小寫。不在總資料夾裡丟 ValueError。
+    Git Bash 寫法 /c/... 先轉 C:/...（第一輪 L1）。
+    """
     target = str(target).replace("\\", "/")
+    m = _GIT_BASH.match(target)
+    if m and os.name == "nt":
+        target = f"{m.group(1).upper()}:/{m.group(2) or ''}"
     if not os.path.isabs(target):
         target = os.path.join(str(cwd or os.getcwd()), target)
     real_t = _realcase(os.path.abspath(target))
@@ -153,45 +161,67 @@ def _find_turn(vault, turn_id):
 
 
 def entries(vault, turn_id):
+    """讀 manifest.jsonl。半截行跳過並寫一行 hook-errors.log，不讓之後全部 deny（第一輪 L4）。"""
     m = Path(vault) / VERSIONS_REL / turn_id / "manifest.jsonl"
     if not m.is_file():
         return []
+    rows = []
     with open(m, encoding="utf-8") as f:
-        return [json.loads(ln) for ln in f if ln.strip()]
+        for lineno, ln in enumerate(f, 1):
+            if not ln.strip():
+                continue
+            try:
+                row = json.loads(ln)
+            except ValueError as e:
+                ledger.log_error(vault, f"manifest 壞行跳過 {turn_id}:{lineno}: {type(e).__name__}: {e}")
+                continue
+            if isinstance(row, dict) and row.get("path"):
+                rows.append(row)
+            else:
+                ledger.log_error(vault, f"manifest 壞行跳過 {turn_id}:{lineno}: 不是有 path 的物件")
+    return rows
 
 
 def backup(vault, rel, turn_id, action=None):
     """寫入前把舊版複製到 versions/<turn_id>/files/<rel>，manifest 追加一行。同回合同路徑只做第一次。
-    action 預設存在 modify、不存在 create；呼叫端刪檔前傳 delete。複製失敗丟 OSError。
+    action 預設存在 modify、不存在 create；呼叫端刪檔前傳 delete。
+    查重、複製、記帳在同一把鎖裡（第一輪 M1／L3）；複製失敗或鎖逾時丟 OSError（TimeoutError 也是）。
     """
-    if any(e.get("path") == rel for e in entries(vault, turn_id)):
-        return
     target = Path(vault) / rel
-    exists = target.is_file()
-    action = action or ("modify" if exists else "create")
     vdir = turn_dir(vault, turn_id)
-    if exists:
-        dst = vdir / "files" / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(target, dst)
     manifest = vdir / "manifest.jsonl"
-    row = {"path": rel, "action": action, "time": _now().strftime("%Y-%m-%dT%H:%M:%S")}
     with FileLock(manifest):
+        if any(e.get("path") == rel for e in entries(vault, turn_id)):
+            return
+        exists = target.is_file()
+        action = action or ("modify" if exists else "create")
+        if exists:
+            dst = vdir / "files" / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, dst)
+        row = {"path": rel, "action": action, "time": _now().strftime("%Y-%m-%dT%H:%M:%S")}
         with open(manifest, "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _is_synthesis(vault, rel):
+def zone_of(vault, rel, sources=None):
+    """相對路徑落在哪一區，判斷只有這一份（第一輪 L8）；sources 可先載好傳進來，省得每行重讀。"""
     from kb import guard
     from kb._lib import sources as sources_lib
     from kb._lib.paths import normalize
-    vault_n = normalize(str(vault), None)
-    zone, _alias = guard.classify(normalize(str(Path(vault) / rel), None), vault_n, sources_lib.load(vault))
-    return zone == "Z1"
+    if sources is None:
+        sources = sources_lib.load(vault)
+    zone, _alias = guard.classify(normalize(str(Path(vault) / rel), None), normalize(str(vault), None), sources)
+    return zone
 
 
 def modified_synthesis_count(vault, turn_id):
-    return sum(1 for e in entries(vault, turn_id) if e.get("action") == "modify" and _is_synthesis(vault, e["path"]))
+    from kb._lib import sources as sources_lib
+    rows = [e for e in entries(vault, turn_id) if e.get("action") == "modify"]
+    if not rows:
+        return 0
+    sources = sources_lib.load(vault)
+    return sum(1 for e in rows if zone_of(vault, e["path"], sources) == "Z1")
 
 
 def before_write(vault, target, cwd, zone, session_id):

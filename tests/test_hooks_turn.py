@@ -69,7 +69,9 @@ class TurnHook(unittest.TestCase):
         r = run_hook("not json", cwd=self.V)
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout, "")
-        self.assertTrue((self.V / ".system" / "hook-errors.log").exists())
+        lines = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].split("\t")[1], "turn")  # 第一輪 L7：第二欄是哪支 hook
 
     def test_bad_json_outside_vault_is_silent_exit_0(self):
         r = run_hook("[1, 2]")

@@ -104,6 +104,44 @@ class RelPath(unittest.TestCase):
         rel = turn.rel_path(self.V, str(self.V / "案子" / "信義王" / "信義王.md").replace(".md", ".MD").lower(), str(self.V))
         self.assertEqual(rel, "案子/信義王/信義王.md")
 
+    def test_git_bash_drive_form_is_understood(self):
+        """第一輪 L1：/c/... 先轉 C:/... 再 realpath，不會變成 C:/c/...。"""
+        if os.name != "nt":
+            self.skipTest("Git Bash 寫法只在 Windows 有意義")
+        p = str(self.V / "案子" / "信義王" / "信義王.md").replace("\\", "/")
+        gb = "/" + p[0].lower() + p[2:]
+        self.assertEqual(turn.rel_path(self.V, gb, str(self.V)), "案子/信義王/信義王.md")
+        self.assertEqual(turn.rel_path(self.V, "/" + p[0].upper() + p[2:], str(self.V)), "案子/信義王/信義王.md")
+
+    def test_outside_vault_raises(self):
+        with self.assertRaises(ValueError):
+            turn.rel_path(self.V, str(self.tmp / "x.md"), str(self.V))
+
+
+class ZoneOf(unittest.TestCase):
+    """第一輪 L8：Z1 判斷只有一份，sources 可一次載入傳下去。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_zone_of_card_and_output(self):
+        self.assertEqual(turn.zone_of(self.V, "案子/信義王/信義王.md"), "Z1")
+        self.assertEqual(turn.zone_of(self.V, "AI 產出/x.md"), "Z3")
+        self.assertEqual(turn.zone_of(self.V, "檔案索引/x.md"), "Z5")
+
+    def test_zone_of_accepts_preloaded_sources(self):
+        from kb._lib import sources as sources_lib
+        src = sources_lib.load(self.V)
+        self.assertEqual(turn.zone_of(self.V, "案子/信義王/信義王.md", src), "Z1")
+
+    def test_versions_has_no_second_copy(self):
+        from kb import versions
+        self.assertFalse(hasattr(versions, "_zone_of"))
+        self.assertFalse(hasattr(turn, "_is_synthesis"))
+
 
 class Backup(unittest.TestCase):
     def setUp(self):
@@ -159,6 +197,41 @@ class Backup(unittest.TestCase):
         versions.write_text("我是檔不是夾", encoding="utf-8")
         with self.assertRaises(OSError):
             turn.backup(self.V, self.card, self.t["turn"])
+
+    def test_held_lock_times_out_without_copying(self):
+        """第一輪 M1／L3：複製與記帳在同一把鎖裡；鎖拿不到就 TimeoutError，files/ 不留半截副本。"""
+        vdir = turn.turn_dir(self.V, self.t["turn"])
+        (vdir / "manifest.jsonl.lock").write_text("busy", encoding="utf-8")
+        import time
+        t0 = time.time()
+        with self.assertRaises(TimeoutError):
+            turn.backup(self.V, self.card, self.t["turn"])
+        self.assertLess(time.time() - t0, 6)
+        self.assertFalse((vdir / "files").exists())
+        self.assertEqual(turn.entries(self.V, self.t["turn"]), [])
+
+    def test_stale_lock_is_cleared_and_backup_proceeds(self):
+        vdir = turn.turn_dir(self.V, self.t["turn"])
+        lock = vdir / "manifest.jsonl.lock"
+        lock.write_text("stale", encoding="utf-8")
+        import time
+        old = time.time() - 60
+        os.utime(lock, (old, old))
+        turn.backup(self.V, self.card, self.t["turn"])
+        self.assertFalse(lock.exists())
+        self.assertEqual(len(manifest_lines(self.V, self.t["turn"])), 1)
+
+    def test_entries_skips_bad_line_and_logs(self):
+        """第一輪 L4：manifest 半截行跳過並寫一行 hook-errors.log，不讓之後全部 deny。"""
+        turn.backup(self.V, self.card, self.t["turn"])
+        m = self.V / ".system" / "versions" / self.t["turn"] / "manifest.jsonl"
+        with open(m, "a", encoding="utf-8", newline="\n") as f:
+            f.write("{bad\n")
+        rows = turn.entries(self.V, self.t["turn"])
+        self.assertEqual([e["path"] for e in rows], [self.card])
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("manifest", log[0])
 
 
 class BeforeWrite(unittest.TestCase):
@@ -223,6 +296,27 @@ class BeforeWrite(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(code, "backup_failed")
         self.assertIn("備份失敗", reason)
+
+    def test_held_lock_returns_backup_failed_quickly(self):
+        """第一輪 M1：鎖等 3 秒就放棄，回 backup_failed（TimeoutError 是 OSError）。"""
+        t = turn.current(self.V, SID)
+        vdir = turn.turn_dir(self.V, t["turn"])
+        (vdir / "manifest.jsonl.lock").write_text("busy", encoding="utf-8")
+        import time
+        t0 = time.time()
+        ok, code, _reason = self.write(self.cards[0])
+        self.assertLess(time.time() - t0, 6)
+        self.assertEqual((ok, code), (False, "backup_failed"))
+
+    def test_bad_config_value_falls_back_to_default_and_logs(self):
+        """第一輪 L5：big_change_synthesis_max 不是整數就用預設 10，寫一行 hook-errors.log，不 deny。"""
+        (self.V / ".system" / "config.json").write_text('{"big_change_synthesis_max": "十"}', encoding="utf-8")
+        for p in self.cards[:10]:
+            self.assertEqual(self.write(p), (True, "", ""))
+        ok, code, _ = self.write(self.cards[10])
+        self.assertEqual((ok, code), (False, "big_change"))
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8")
+        self.assertIn("big_change_synthesis_max", log)
 
     def test_z3_write_backs_up(self):
         p = self.V / "AI 產出" / "x.md"

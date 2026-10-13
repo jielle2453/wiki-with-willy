@@ -50,8 +50,19 @@ def _new_id(taken):
             return new
 
 
+def _manifest_action(vault, rel, turn_id):
+    from kb._lib import turn
+    for e in turn.entries(vault, turn_id):
+        if e.get("path") == rel:
+            return e.get("action")
+    return None
+
+
 def register_output(vault, rel, turn_id):
-    """同 location 已有條目：最後一筆指紋相同就不動，不同就追加一筆；沒有就新建。回那一筆。"""
+    """同 location 有 status active 的條目：最後一筆指紋相同就不動，不同就追加一筆，回那一筆。
+    沒有 active 條目：這回合 manifest 記 create 才新建；曾登記過（turn_reverted／deleted）又再改也新建；
+    從沒登記過的既有檔（modify）不登記、回 None（第一輪 M2／M4）。
+    """
     location = "file://" + str(rel).replace("\\", "/")
     digest = sha256_of(Path(vault) / rel)
     now = _now()
@@ -59,14 +70,19 @@ def register_output(vault, rel, turn_id):
     p.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(p):
         data = load(vault)
-        for entry in data["entries"]:
-            if location in entry.get("locations", []):
-                fps = entry.setdefault("fingerprints", [])
-                if fps and fps[-1].get("sha256") == digest:
-                    return entry
-                fps.append({"sha256": digest, "time": now, "turn": turn_id})
-                write_json_atomic(p, data)
+        same = [e for e in data["entries"] if location in e.get("locations", [])]
+        active = [e for e in same if e.get("status") == "active"]
+        if active:
+            entry = active[-1]
+            fps = entry.setdefault("fingerprints", [])
+            if fps and fps[-1].get("sha256") == digest:
                 return entry
+            fps.append({"sha256": digest, "time": now, "turn": turn_id})
+            write_json_atomic(p, data)
+            return entry
+        action = _manifest_action(vault, rel, turn_id)
+        if not (action == "create" or (action == "modify" and same)):
+            return None
         entry = {
             "id": _new_id({e.get("id") for e in data["entries"]}),
             "origin": "ai_output",

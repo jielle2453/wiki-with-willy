@@ -64,5 +64,186 @@ class TextAtomic(unittest.TestCase):
         self.assertEqual(list(self.tmp.glob("*.tmp")), [])
 
 
+class Lock(unittest.TestCase):
+    """io.FileLock：O_CREAT|O_EXCL 鎖檔；殘留超過 600 秒清掉；逾時丟 TimeoutError（不 sys.exit）。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kbio-"))
+        self.target = self.tmp / "inventory.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_lock_file_exists_while_held_and_removed_after(self):
+        lock_path = self.tmp / "inventory.json.lock"
+        with kio.FileLock(self.target):
+            self.assertTrue(lock_path.exists())
+        self.assertFalse(lock_path.exists())
+
+    def test_second_holder_times_out_with_timeout_error(self):
+        with kio.FileLock(self.target):
+            with self.assertRaises(TimeoutError):
+                with kio.FileLock(self.target, timeout=0.3):
+                    pass
+
+    def test_default_timeout_is_3_seconds_under_hook_budget(self):
+        """M1：hook timeout 10 秒，鎖最多等 3 秒就丟 TimeoutError，讓 before_write 回 backup_failed。"""
+        import time
+        with kio.FileLock(self.target):
+            t0 = time.time()
+            with self.assertRaises(TimeoutError):
+                with kio.FileLock(self.target):
+                    pass
+            elapsed = time.time() - t0
+        self.assertGreaterEqual(elapsed, 2.9)
+        self.assertLess(elapsed, 5)
+
+    def test_stale_lock_older_than_30s_is_cleared(self):
+        import os
+        import time
+        lock_path = self.tmp / "inventory.json.lock"
+        lock_path.write_text("", encoding="utf-8")
+        old = time.time() - 40
+        os.utime(lock_path, (old, old))
+        with kio.FileLock(self.target, timeout=0.5):
+            self.assertTrue(lock_path.exists())
+        self.assertFalse(lock_path.exists())
+
+    def test_fresh_lock_is_not_treated_as_stale(self):
+        lock_path = self.tmp / "inventory.json.lock"
+        lock_path.write_text("", encoding="utf-8")
+        with self.assertRaises(TimeoutError):
+            with kio.FileLock(self.target, timeout=0.3):
+                pass
+        self.assertTrue(lock_path.exists())
+
+    def test_permission_error_without_lock_file_raises_immediately(self):
+        """第二輪 R2-1：鎖檔根本建不起來（回合夾不可寫）→ 直接 raise，不無窮迴圈、不等逾時。"""
+        import time
+        from unittest import mock
+
+        def denied(path, flags, *a):
+            raise PermissionError("folder not writable")
+
+        t0 = time.time()
+        with mock.patch.object(kio.os, "open", denied):
+            with self.assertRaises(PermissionError):
+                with kio.FileLock(self.target, timeout=5):
+                    pass
+        self.assertLess(time.time() - t0, 1)
+
+    def test_lock_file_vanishing_between_checks_still_times_out(self):
+        """第二輪 R2-1：getmtime 的 FileNotFoundError 不跳過逾時檢查。"""
+        import time
+        from unittest import mock
+
+        def always_exists(path, flags, *a):
+            raise FileExistsError(path)
+
+        def vanished(path):
+            raise FileNotFoundError(path)
+
+        t0 = time.time()
+        with mock.patch.object(kio.os, "open", always_exists), mock.patch.object(kio.os.path, "getmtime", vanished):
+            with self.assertRaises(TimeoutError):
+                with kio.FileLock(self.target, timeout=0.5):
+                    pass
+        self.assertLess(time.time() - t0, 3)
+
+    def test_default_timeout_reads_module_setting_at_call_time(self):
+        """第二輪 R2-L3：CLI 把 io.LOCK_TIMEOUT 調成 30，之後建的 FileLock 都用新值；hook 維持 3。"""
+        from unittest import mock
+        self.assertEqual(kio.FileLock(self.target).timeout, 3)
+        with mock.patch.object(kio, "LOCK_TIMEOUT", 30):
+            self.assertEqual(kio.FileLock(self.target).timeout, 30)
+        self.assertEqual(kio.FileLock(self.target, timeout=1).timeout, 1)
+
+    def test_permission_error_on_open_with_lock_present_is_treated_as_busy(self):
+        """L6／R2-1：鎖檔存在時 O_EXCL 丟 PermissionError（待刪除）要當成「有人持鎖」繼續等；鎖消失後拿到。"""
+        from unittest import mock
+        real_open = kio.os.open
+        lock_path = self.tmp / "inventory.json.lock"
+        lock_path.write_text("", encoding="utf-8")
+        calls = {"n": 0}
+
+        def flaky(path, flags, *a):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError("pending delete")
+            lock_path.unlink(missing_ok=True)  # 持鎖者放掉了
+            return real_open(path, flags, *a)
+
+        with mock.patch.object(kio.os, "open", flaky):
+            with kio.FileLock(self.target, timeout=2):
+                pass
+        self.assertEqual(calls["n"], 2)
+        self.assertFalse(lock_path.exists())
+
+    def test_stale_lock_removed_by_someone_else_is_ignored(self):
+        """L6：清殘留鎖時別的程序先刪了，FileNotFoundError 忽略、繼續搶。"""
+        import os
+        import time
+        from unittest import mock
+        lock_path = self.tmp / "inventory.json.lock"
+        lock_path.write_text("", encoding="utf-8")
+        old = time.time() - 40
+        os.utime(lock_path, (old, old))
+        real_remove = kio.os.remove
+        calls = {"n": 0}
+
+        def race(path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                real_remove(path)
+                raise FileNotFoundError(path)
+            return real_remove(path)
+
+        with mock.patch.object(kio.os, "remove", race):
+            with kio.FileLock(self.target, timeout=1):
+                pass
+        self.assertFalse(lock_path.exists())
+
+
+class Retry(unittest.TestCase):
+    """write_text_atomic：os.replace 被拒（PermissionError，I-018）重試最多 20 次、每次 0.1 秒。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kbio-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_retries_then_succeeds(self):
+        from unittest import mock
+        real = kio.os.replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError("busy")
+            return real(src, dst)
+
+        with mock.patch.object(kio.os, "replace", flaky), mock.patch.object(kio.time, "sleep", lambda s: None):
+            kio.write_text_atomic(self.tmp / "t.md", "x\n")
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual((self.tmp / "t.md").read_text(encoding="utf-8"), "x\n")
+        self.assertEqual(list(self.tmp.glob("*.tmp")), [])
+
+    def test_gives_up_after_20_and_leaves_no_tmp(self):
+        from unittest import mock
+        calls = {"n": 0}
+
+        def always(src, dst):
+            calls["n"] += 1
+            raise PermissionError("busy")
+
+        with mock.patch.object(kio.os, "replace", always), mock.patch.object(kio.time, "sleep", lambda s: None):
+            with self.assertRaises(PermissionError):
+                kio.write_text_atomic(self.tmp / "t.md", "x\n")
+        self.assertEqual(calls["n"], 20)
+        self.assertEqual(list(self.tmp.glob("*.tmp")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

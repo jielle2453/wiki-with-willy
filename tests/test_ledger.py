@@ -100,6 +100,13 @@ class Functions(unittest.TestCase):
         text = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8")
         self.assertRegex(text, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\tguard\tKeyError: 'sources'\n$")
 
+    def test_log_error_source_names_the_hook(self):
+        """第一輪 L7：第二欄是哪支 hook，預設 guard；turn.py、output_log.py 各傳自己的名字。"""
+        ledger.log_error(self.V, "ValueError: x", source="turn")
+        ledger.log_error(self.V, "ValueError: y", source="output_log")
+        lines = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual([ln.split("\t")[1] for ln in lines], ["turn", "output_log"])
+
     def test_touch_status_same_day_noop(self):
         ledger.touch_status(self.V)
         files = list((self.V / ".system" / "guard-status").glob("*.json"))

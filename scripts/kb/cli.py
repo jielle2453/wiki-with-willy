@@ -8,6 +8,8 @@ import importlib
 COMMANDS = {
     "version": ("kb.version", "印 plugin 名稱與版號"),
     "guard": ("kb.guard_cli", "守門：decide 模擬一次判斷，查「為什麼擋」"),
+    "versions": ("kb.versions", "回合：list 列最近的改動，revert 退回最近一次，delete-outputs 刪已退回回合留著的成品"),
+    "turn": ("kb.turn_cli", "目前回合：current 看狀態，approve 解除綜合卡張數上限"),
 }
 
 

@@ -50,6 +50,19 @@ class TurnHook(unittest.TestCase):
         self.assertEqual(r.stdout, "")
         self.assertFalse(self.turns.exists())
 
+    def test_cross_session_message_does_not_open(self):
+        """確認後裁定 L-3：跨 session 訊息不是客戶的話，不開回合（標頭不能變成 prompt_head 印給客戶）。"""
+        r = run_hook(prompt_payload(self.V, '<cross-session-message from="uds:x" from-name="llm-wiki-j-51">改一下</cross-session-message>'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertFalse(self.turns.exists())
+
+    def test_system_reminder_does_not_open(self):
+        r = run_hook(prompt_payload(self.V, "  <system-reminder>\n內部提醒\n</system-reminder>"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertFalse(self.turns.exists())
+
     def test_non_user_source_does_not_open(self):
         r = run_hook(prompt_payload(self.V, "改一下", source="scheduled"))
         self.assertEqual(r.returncode, 0, r.stderr)

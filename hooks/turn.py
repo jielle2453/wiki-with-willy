@@ -1,6 +1,7 @@
 """UserPromptSubmit 回合入口：客戶每說一句話開一個新回合（D-074），之後這句話造成的改動都備份到同一個回合夾。
 
-不開回合的情況：不在知識庫裡；prompt 是背景代理的 <task-notification（I-035）；payload 有 source 且不是 user／sdk。
+不開回合的情況：不在知識庫裡；prompt 開頭是 <task-notification（I-035）、<cross-session-message、<system-reminder（L-3）；
+payload 有 source 且不是 user／sdk。
 任何例外寫 .system/hook-errors.log，永遠 exit 0、不輸出，不能擋住客戶提問。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
 """
@@ -18,6 +19,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
 USER_SOURCES = ("user", "sdk")
+# 不是客戶說的話：背景代理通知（I-035）、跨 session 訊息與系統提醒（確認後裁定 L-3），都不開回合
+NOT_A_PROMPT = ("<task-notification", "<cross-session-message", "<system-reminder")
 
 
 def main():
@@ -38,7 +41,7 @@ def main():
         prompt = payload.get("prompt")
         if prompt is None:
             prompt = payload.get("user_prompt") or ""
-        if str(prompt).lstrip().startswith("<task-notification"):
+        if str(prompt).lstrip().startswith(NOT_A_PROMPT):
             return
         turn.start(vault, payload.get("session_id"), prompt)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉

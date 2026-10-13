@@ -28,7 +28,7 @@
 | B-016 | 2026-10-12 | open | 查 Claude Code hooks 設定有沒有「hook 失敗或逾時即 deny」的欄位（onFailure 之類）與最低版本；有就加進 hooks.json，沒有就靠開場偵測 python（I-103） | 守門實作 |
 | B-017 | 2026-10-12 | deferred | 守門測試的低優先：guard-status 每次呼叫都讀改成每天一次快取；`.gitattributes` 對 tests/fixtures 的二進位檔標 binary；POSIX 上 CLAUDE.md 大小寫；型別夾根新檔理由句用 Z8；origin/HEAD 沒設讓 security-review skill 跑不起來（已設）；Z9 理由句結尾補句號；fixture a.txt 內容別用 hello；deny 在終端機顯示成「Error: PreToolUse:X hook error: <理由句>」，事務層確認已人眼看過（2026-10-13）：理由句完整但前綴嚇人，是 Claude Code 固定格式，只能靠理由句白話（併 B-110） | 守門測試、確認 |
 | B-018 | 2026-10-13 | deferred | AI 產出的指紋先用位元組 sha256，`kb convert` 出來後 Office 檔改文字指紋（D-014 補、D-076） | 事務層設計 |
-| B-020 | 2026-10-13 | open | 發行 README 寫明只支援 Windows、Python 3.10 以上、PATH 上要有 `python`（hooks.json 是裸 python，沒有就 fail open，I-103）；plugin-dev 的 validate-hook-schema.sh 沒 jq 會誤報 Invalid JSON，不拿它當發行關卡 | 事務層 plugin-validator |
+| B-020 | 2026-10-13 | done | v0.3.0 README 加「環境需求」一節（2026-10-13）。原題：發行 README 寫明只支援 Windows、Python 3.10 以上、PATH 上要有 `python`（hooks.json 是裸 python，沒有就 fail open，I-103）；plugin-dev 的 validate-hook-schema.sh 沒 jq 會誤報 Invalid JSON，不拿它當發行關卡 | 事務層 plugin-validator |
 | B-021 | 2026-10-13 | deferred | ledger.tsv 的 path_or_command_head 只留前 120 字，深路徑看不到檔名；改成保留尾端或拉長；長 TEMP 下 test_ledger 會紅 | 事務層測試第二輪 |
 | B-022 | 2026-10-13 | open | 守門：不帶磁碟代號的根路徑（`\案子\...`）normalize 後判 Z11 不表態；事務層 delete-outputs 刪前也不再查 zone。守門題補一條 | 事務層測試第三輪 |
 | B-023 | 2026-10-13 | deferred | 事務層低項：T 建成品→退回→U 重寫→退掉 U 後 T 那筆仍 superseded 刪不到；未來時間回合夾在 list 排第一且每句記 log；delete-outputs 固定取第一個候選可能卡住；revert --delete-outputs 沒比 sha；CLI 鎖 30 秒等於殘留門檻；LOCK_TIMEOUT 改模組全域；`\\?\` 加結尾點檔名未驗。細節 reports/事務層-測試.md 第三輪 | 事務層測試第三輪 |

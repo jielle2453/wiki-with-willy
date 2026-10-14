@@ -524,6 +524,78 @@ class CredentialRound1(unittest.TestCase):
         self.assertEqual(guard.token_hit("echo $PASSWORD.txt"), None)
         self.assertEqual(guard.token_hit("x --secret.txt"), None)
 
+    # 第二輪 N1：cwd 本身、裸夾名、不給路徑的範圍搜尋
+    def test_46_cwd_itself_bare_folder_and_search_without_path(self):
+        (self.V / "收件匣" / "網站密碼.txt").write_text("x", encoding="utf-8")
+        for tool, cmd in (("Bash", "grep -r 帳號 ."), ("Bash", "grep -rn 帳號"), ("Bash", "rg -i 帳號"), ("Bash", "cat *"),
+                          ("PowerShell", "Get-ChildItem -Recurse | Select-String 帳號"), ("Bash", 'grep -r "" 收件匣'),
+                          ("Bash", "find . -name '*.txt'"), ("Bash", "ls -R"), ("PowerShell", "gci -r"), ("Bash", "tree"),
+                          ("Bash", "cat ../vault/*"), ("Bash", "cd 收件匣 && cat *"), ("Bash", "cd .. && grep -r x vault")):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+                self.assertIn("網站密碼.txt", d.reason)
+        for cmd in ("ls", "git status", "ls -la", "cat 系統/待處理.md", "cat CLAUDE.md", "python --version"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertNotIn(d.reason_code, ("credential", "credential_inside", "credential_scan_limit"), d)
+        d = self.decide("Bash", "cat 系統/待處理.md")
+        self.assertEqual(d.decision, "pass", d)
+        d = self.decide("Bash", "grep -r 帳號 案子")  # 裸夾名、裡面沒憑證
+        self.assertEqual(d.decision, "pass", d)
+
+    # 第二輪 N2：含來源根的上層夾也走訪
+    def test_47_folder_above_source_root_is_scanned(self):
+        r3 = self.tmp / "R3"
+        (r3 / "甲").mkdir(parents=True)
+        (r3 / "甲" / ".env").write_text("x", encoding="utf-8")
+        (r3 / "乙").mkdir()
+        (r3 / "乙" / "b.txt").write_text("x", encoding="utf-8")
+        import json
+        src = self.V / ".system" / "sources.json"
+        data = json.loads(src.read_text(encoding="utf-8"))
+        data["sources"].append({"id": "src-c3c3", "alias": "甲", "spec": (r3 / "甲").as_posix(), "excludes": []})
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        p = r3.as_posix()
+        self.assert_deny(self.grep(r3), "credential_inside", contains=".env")
+        self.assert_deny(self.decide("Bash", f'grep -r K "{p}"'), "credential_inside", contains="甲/.env")
+        self.assert_deny(self.decide("Bash", f'cd "{p}" && cat 甲/*'), "credential_inside")
+        self.assert_deny(self.decide("Bash", f'cd "{p}" && grep -r K 甲'), "credential_inside")
+        other = self.tmp / "別處"
+        other.mkdir()
+        (other / ".env").write_text("x", encoding="utf-8")
+        self.assertEqual((self.grep(other).decision, self.grep(other).zone), ("pass", "Z11"))
+        self.assertEqual(self.decide("Bash", f'grep -r K "{other.as_posix()}"').decision, "pass")
+        self.assertEqual(self.decide("Bash", f'grep -r K "{(r3 / "乙").as_posix()}"').decision, "pass")
+
+    # 第二輪 N3：含點的句子與正規式不是檔名
+    def test_48_regex_and_sentences_are_not_filenames(self):
+        for tool, cmd in (("Bash", 'grep -rn "password.*=" 收件匣'), ("Bash", 'grep "密碼.*" notes.txt'),
+                          ("Bash", 'echo "My password is safe."'), ("Bash", 'grep -E "(secret|token)\\.txt" a.md'),
+                          ("PowerShell", 'Select-String -Pattern "密碼[0-9]+\\.log" x.md'), ("Bash", 'echo "密碼.txt 在哪"')):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertNotEqual(d.reason_code, "credential", d)
+        for s in ("password.*=", "My password is safe.", "a b.env", "secret[1].txt", "x^密碼.txt", "(密碼).txt", "$x.env"):
+            with self.subTest(token=s):
+                self.assertIsNone(guard.token_hit("cat " + ('"' + s + '"' if " " in s else s)), s)
+
+    # 第二輪 N4：走訪跳過排除夾，交 Z10b
+    def test_49_scan_skips_excluded_folders(self):
+        admin = self.raw / "行政"
+        (admin / "薪資" / "網站密碼.txt").write_text("x", encoding="utf-8")
+        (admin / "舊檔" / ".env").write_text("x", encoding="utf-8")
+        for d in (self.grep(admin), self.decide("Bash", f'grep -r x "{admin.as_posix()}"'),
+                  self.decide("Bash", f'cd "{admin.as_posix()}" && cat *')):
+            with self.subTest(d=d):
+                self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+                self.assertNotIn("網站密碼", d.reason)
+                self.assertNotIn(".env", d.reason)
+        (admin / "請款" / "id_rsa").write_text("x", encoding="utf-8")
+        d = self.grep(admin)
+        self.assert_deny(d, "credential_inside", "Z10b", "請款/id_rsa")
+        self.assertNotIn("網站密碼", d.reason)
+
     def test_35_write_command_over_folder_is_not_scanned(self):
         (self.client / ".env").write_text("K=1", encoding="utf-8")
         r = str(self.client).replace("\\", "/")

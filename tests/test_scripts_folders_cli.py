@@ -136,6 +136,44 @@ class Add(Base):
                     self.assertNotIn("Traceback", r.stdout + r.stderr)
             self.assertEqual(src.read_text(encoding="utf-8"), text)
 
+    def test_50_entry_not_object_exit_3_without_traceback(self):
+        src = self.V / ".system" / "sources.json"
+        for text in ('{"schema_version":1,"sources":[1]}', '{"schema_version":1,"sources":[{"alias":"x","spec":"../raw/客戶案件","excludes":5}]}',
+                     '{"schema_version":1,"sources":[null]}'):
+            src.write_text(text, encoding="utf-8")
+            for args in (("list",), ("add", "../raw/行政"), ("exclude", "../raw/行政/薪資", "--kind", "hidden")):
+                with self.subTest(text=text, cmd=args[0]):
+                    r = self.folders(*args)
+                    self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                    self.assertTrue(r.stdout.splitlines()[0].strip())
+                    self.assertNotIn("Traceback", r.stdout + r.stderr)
+            self.assertEqual(src.read_text(encoding="utf-8"), text)
+
+    def test_50_device_names_rejected_as_alias(self):
+        (self.raw / "別名測試").mkdir()
+        for alias in ("CON", "nul", "COM1", "lpt9", "Aux", "PRN", "con.txt"):
+            with self.subTest(alias=alias):
+                r = self.add("../raw/別名測試", "--alias", alias)
+                self.assertEqual(r.returncode, 3, r.stdout)
+                self.assertIn("別名", r.stdout.splitlines()[0])
+        r = self.add("../raw/別名測試", "--alias", "console")
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_50_lock_timeout_is_one_line_exit_3(self):
+        lock = self.V / ".system" / "sources.json.lock"
+        lock.write_text("busy", encoding="utf-8")
+        (self.raw / "另一個").mkdir()
+        # 鎖等 30 秒太久：同樣的 main，把鎖的等待時間調成 1 秒
+        code = ("import sys; sys.stdout.reconfigure(encoding='utf-8'); sys.path.insert(0, %r); "
+                "from kb._lib import io; io.LOCK_TIMEOUT = 1; from kb import folders; folders.CLI_LOCK_TIMEOUT = 1; "
+                "from kb.cli import main; sys.exit(main(['folders', 'add', '../raw/另一個']))") % str(ROOT / "scripts")
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8", cwd=str(self.V),
+                           env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT), USERPROFILE=str(self.tmp / "home"), HOME=str(self.tmp / "home")))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+        self.assertTrue(r.stdout.splitlines()[0].strip())
+        self.assertEqual(self.sources()["sources"], [])
+
     def test_44_two_concurrent_adds_both_land(self):
         (self.raw / "甲").mkdir()
         (self.raw / "乙").mkdir()
@@ -378,6 +416,22 @@ class List(Base):
         data = json.loads(self.list("--json").stdout)
         self.assertFalse(data["sources"][0]["exists"])
         os.rename(self.raw / "改名", self.raw / "客戶案件")
+        self.assertTrue(json.loads(self.list("--json").stdout)["sources"][0]["exists"])
+
+    def test_50_git_bash_spec_is_expanded(self):
+        if os.name != "nt":
+            self.skipTest("Git Bash 寫法只在 Windows 有意義")
+        p = (self.raw / "客戶案件").as_posix()
+        spec = "/" + p[0].lower() + p[2:]
+        src = self.V / ".system" / "sources.json"
+        src.write_text(json.dumps({"schema_version": 1, "sources": [{"id": "src-1234", "alias": "客戶案件", "spec": spec, "excludes": []}]},
+                                  ensure_ascii=False), encoding="utf-8")
+        r = self.list()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        first = r.stdout.splitlines()[0]
+        self.assertNotIn("找不到", first)
+        self.assertNotIn("?", first)
+        self.assertTrue(first.endswith(p), first)
         self.assertTrue(json.loads(self.list("--json").stdout)["sources"][0]["exists"])
 
     def test_json_shape(self):

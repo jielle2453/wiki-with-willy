@@ -30,8 +30,8 @@
 | `scripts/kb/_lib/turn.py` | 回合：`start`、`current`、`approve`、`rel_path`（原始大小寫）、`backup`、`before_write`（大改動門檻加備份） |
 | `scripts/kb/_lib/inventory.py` | 清冊最小版（D-076）：`.system/inventory.json`，`register_output`、`outputs_of_turn`、`set_status` |
 | `scripts/kb/_lib/cmdparse.py` | 指令字串解析：`extract_paths`、`is_write`、`is_single_plugin_call` |
-| `scripts/kb/_lib/sources.py` | 讀 `.system/sources.json`，`lookup` 查登記／排除；`load_raw`／`save` 給 `kb folders` 改寫原始 dict，`new_id`、`RESERVED_ALIASES` |
-| `scripts/kb/_lib/credentials.py` | 憑證檔名樣式 `CREDENTIAL_PATTERNS`（寫死、不讀 config）、`match_segment`、`scan_dir`（守門走訪、有上限）、`scan_all`（`kb folders add` 數檔與收憑證清單） |
+| `scripts/kb/_lib/sources.py` | 讀 `.system/sources.json`，`lookup` 查登記／排除；`load_raw` 給 `kb folders` 讀原始 dict（格式不對丟 `ValueError`），`new_id`、`RESERVED_ALIASES` |
+| `scripts/kb/_lib/credentials.py` | 憑證檔名樣式 `CREDENTIAL_PATTERNS`（寫死、不讀 config）、`match_segment`、`looks_like_filename`、`scan_dir`（守門走訪、有上限、跳過排除夾）、`scan_all`（`kb folders add` 數檔與收憑證清單） |
 | `scripts/kb/_lib/ledger.py` | 留痕：`ledger.tsv` 事件帳、`guard-status` 每日一次、`hook-errors.log` |
 | `hooks/hooks.json` | 三個 hook 的註冊：UserPromptSubmit、PreToolUse、PostToolUse |
 | `hooks/guard.py` | PreToolUse 守門入口：讀 stdin、呼叫 `kb.guard.decide`，寫 Z1／Z3／Z5 放行前先 `turn.before_write` 備份，印 allow／deny 或不印，永遠 exit 0 |

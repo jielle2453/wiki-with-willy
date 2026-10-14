@@ -2,13 +2,12 @@
 
 schema 見 specs/2026-10-12-守門.md。排除的 spec 相對該來源根；兩種 kind（hidden、unused）守門一視同仁都不讀（D-024）。
 壞 JSON 直接丟例外，讓 hook 走出錯路徑（deny，fail closed）。
-骨架與來源登記：load_raw／save 給 kb folders 讀改寫原始 dict（Sources 類是展開後的，寫回要用原始）；new_id、RESERVED_ALIASES。
+骨架與來源登記：load_raw 給 kb folders 讀原始 dict（Sources 類是展開後的，寫回要用原始；寫回由 folders 在自己的鎖裡做）；
+new_id、RESERVED_ALIASES。條目不是物件、excludes 不是清單也丟 ValueError（N6）。
 """
 import json
 import secrets
-from pathlib import Path
 
-from kb._lib.io import FileLock, write_json_atomic
 from kb._lib.paths import inside, normalize, resolve_spec
 
 SOURCES_REL = ".system/sources.json"
@@ -68,13 +67,15 @@ def load_raw(vault):
         data = json.load(f)
     if not isinstance(data, dict) or not isinstance(data.get("sources"), list):
         raise ValueError(f"{SOURCES_REL} 格式不對：要有 sources 清單")
+    for i, s in enumerate(data["sources"], 1):
+        if not isinstance(s, dict):
+            raise ValueError(f"{SOURCES_REL} 格式不對：第 {i} 筆來源不是物件")
+        excludes = s.get("excludes")
+        if excludes is not None and not isinstance(excludes, list):
+            raise ValueError(f"{SOURCES_REL} 格式不對：第 {i} 筆來源的 excludes 不是清單")
+        if any(not isinstance(ex, dict) for ex in excludes or []):
+            raise ValueError(f"{SOURCES_REL} 格式不對：第 {i} 筆來源的排除有一條不是物件")
     return data
-
-
-def save(vault, data):
-    p = Path(vault) / SOURCES_REL
-    with FileLock(p):
-        write_json_atomic(p, data)
 
 
 def new_id(existing_ids):

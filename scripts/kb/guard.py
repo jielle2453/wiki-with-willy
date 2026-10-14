@@ -88,12 +88,19 @@ def credential_hit(path, zone, vault_n, sources):
     return credentials.match_segment(segments)
 
 
+_NOT_FILENAME_CHARS = set("*?[]^$()|")  # 正規式與萬用字元：含這些的 token 不是檔名（N3）
+# 範圍搜尋類指令（寫死）：沒給任何路徲時走訪效用 cwd（N1）
+SEARCH_VERBS = {"grep", "egrep", "fgrep", "rg", "findstr", "select-string", "sls", "find", "tree"}
+LIST_VERBS = {"ls", "dir", "get-childitem", "gci"}  # 只有帶遞迴旗標才算範圍搜尋
+
+
 def token_hit(command):
-    """第二道（H1；第一輪修正裁定 1 收窄）：指令每個 token 去引號、取 / 與 \\ 的最後一段，只有像檔名的才比樣式
-    （含 . 或命中 id_rsa*、id_ed25519*）；- 與 $ 開頭的 token（旗標、變數）跳過。不解析路徑、不看 cwd。回命中的那段或 None。"""
+    """第二道（H1；裁定 1 收窄、N3 再收）：指令每個 token 去引號、取 / 與 \\ 的最後一段，只有像檔名的才比樣式
+    （含 . 或命中 id_rsa*、id_ed25519*）；- 與 $ 開頭（旗標、變數）、含空白或正規式／萬用字元字元的 token 跳過。
+    不解析路徑、不看 cwd。回命中的那段或 None。"""
     cleaned = cmdparse.DISCARD_OUTPUT.sub(" ", command)
     for text, _quoted, _after_redirect in cmdparse._tokens(cleaned):  # cmdparse 的 token 切法與路徑抽取一致
-        if not text or text[0] in "-$":
+        if not text or text[0] in "-$" or any(ch.isspace() or ch in _NOT_FILENAME_CHARS for ch in text):
             continue
         last = text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         if credentials.looks_like_filename(last) and credentials.match_segment((last,)) is not None:
@@ -101,14 +108,85 @@ def token_hit(command):
     return None
 
 
-def folder_scan(vault, path):
-    """第三道（H1）：讀取範圍是資料夾時走訪找憑證檔名。回 (reason_code, reason) 或 (None, None)。"""
-    hit, truncated = credentials.scan_dir(path, config.get(vault, "credential_scan_max_entries"))
+def _excluded_roots(sources):
+    return [ex["root"] for src in sources.entries for ex in src["excludes"]]
+
+
+def folder_scan(vault, path, sources):
+    """第三道（H1、N4）：讀取範圍是資料夾時走訪找憑證檔名，排除夾不進去（交 Z10b 用自己的理由句）。回 (reason_code, reason) 或 (None, None)。"""
+    hit, truncated = credentials.scan_dir(path, config.get(vault, "credential_scan_max_entries"), _excluded_roots(sources))
     if hit is not None:
         return "credential_inside", CREDENTIAL_INSIDE_REASON.format(rel=hit)
     if truncated:
         return "credential_scan_limit", CREDENTIAL_LIMIT_REASON
     return None, None
+
+
+def _scan_zone(path, zone, vault_n, sources):
+    """第三道要不要走訪這個夾：在來源或總資料夾裡用它的區；Z11 但底下含來源根或總資料夾也走訪（N2）；其他回 None。"""
+    if zone != "Z11":
+        return zone
+    return _ancestor_zone(path, vault_n, sources)[0]
+
+
+def _is_recursive_flag(verb, token):
+    low = token.lower()
+    if verb == "ls":
+        return low == "--recursive" or (token.startswith("-") and not token.startswith("--") and "R" in token)
+    if verb == "dir":
+        return low == "/s"
+    return low in ("-r", "-recurse") or low.startswith("-rec")
+
+
+def _scan_targets(command, cwd, has_paths):
+    """第三道的額外夾（N1）：`.`／`..`、效用 cwd（cd 之後）底下存在的裸夾名 token、範圍搜尋類指令沒給任何路徑時的效用 cwd。回正規化的夾清單。"""
+    cleaned = cmdparse.DISCARD_OUTPUT.sub(" ", command)
+    base = normalize(cwd, None)
+    dirs, has_target = [], has_paths
+    expect_cd, search, list_verb, recursive = False, False, None, False
+    for text, _quoted, _after_redirect in cmdparse._tokens(cleaned):
+        if expect_cd:
+            if text.startswith("-"):
+                continue
+            expect_cd = False
+            if text and "$" not in text and "%" not in text:
+                base = normalize(text, base)
+            continue
+        low = text.lower()
+        if low in cmdparse._CD:
+            expect_cd = True
+            continue
+        verb = low.replace("\\", "/").rsplit("/", 1)[-1]
+        if verb in SEARCH_VERBS:
+            search = True
+            continue
+        if verb in LIST_VERBS:
+            list_verb = verb
+            continue
+        if list_verb and _is_recursive_flag(list_verb, text):
+            recursive = True
+            continue
+        if text in (".", ".."):
+            dirs.append(normalize(text, base))
+            has_target = True
+            continue
+        if not text or text[0] in "-$%":
+            continue
+        if "/" not in text and "\\" not in text and any(ch in "*?[" for ch in text):
+            dirs.append(base)  # 裸萬用字元（cat *）：前綴夾就是效用 cwd；帶斜線的由 glob_tokens 處理
+            has_target = True
+            continue
+        if "/" in text or "\\" in text or any(ch in _NOT_FILENAME_CHARS for ch in text):
+            continue
+        p = normalize(text, base)
+        if os.path.isdir(p):
+            dirs.append(p)
+            has_target = True
+        elif os.path.isfile(p):
+            has_target = True
+    if (search or (list_verb and recursive)) and not has_target:
+        dirs.append(base)
+    return dirs
 
 
 def _original_segment(target, seg):
@@ -189,10 +267,12 @@ def _file_tool(tool, target, cwd, vault, sources):
     if seg is not None:  # 憑證第一道先於區（D-079 補）
         reason = CREDENTIAL_REASON.format(seg=_original_segment(target, seg))
         return Decision("deny", zone, "credential", reason, [_row(tool, "deny", zone, "credential", target)], vault)
-    if tool == "Grep" and zone != "Z11" and os.path.isdir(path):  # 第三道：Grep 整夾會讀內容；Glob 只列檔名不走訪
-        code, reason = folder_scan(vault, path)
-        if code:
-            return Decision("deny", zone, code, reason, [_row(tool, "deny", zone, code, target)], vault)
+    if tool == "Grep" and os.path.isdir(path):  # 第三道：Grep 整夾會讀內容；Glob 只列檔名不走訪
+        scan_zone = _scan_zone(path, zone, vault_n, sources)
+        if scan_zone:
+            code, reason = folder_scan(vault, path, sources)
+            if code:
+                return Decision("deny", scan_zone, code, reason, [_row(tool, "deny", scan_zone, code, target)], vault)
     decision, code, reason = _verdict(zone, column, alias)
     rows = []
     if decision == "deny":
@@ -237,14 +317,22 @@ def _shell_tool(tool, command, cwd, vault, sources):
         return Decision("deny", zone, code, reason, [_row(tool, "deny", zone, code, command)], vault)
 
     classified = [(p, *classify(p, vault_n, sources)) for p in paths]
-    # 萬用字元：前綴資料夾與實際展開的每一個命中都不能落在排除夾（或含排除夾）
-    glob_candidates = list(cmdparse.glob_prefixes(command, cwd))
+    # 萬用字元：前綴資料夾（接 cd 之後的 cwd，只算一次）與實際展開的每一個命中都不能落在排除夾（或含排除夾）
+    heads = []
+    glob_hits = []
     for token in cmdparse.glob_tokens(command, cwd):
-        glob_candidates.extend(_expand_glob(token))
-    glob_prefixes = [(p, *classify(p, vault_n, sources)) for p in cmdparse.glob_prefixes(command, cwd)]
-    glob_classified = [(p, *classify(p, vault_n, sources)) for p in glob_candidates]
-    # 憑證三道先於區（D-079 補）。第一道：抽出的每個路徑與萬用字元候選的段
-    for p, zone, _alias in classified + glob_classified:
+        head = _pattern_head(token)
+        if head.endswith(":"):
+            head += "/"
+        if head and head not in heads:
+            heads.append(head)
+        glob_hits.extend(_expand_glob(token))
+    head_classified = [(p, *classify(p, vault_n, sources)) for p in heads]
+    glob_classified = head_classified + [(p, *classify(p, vault_n, sources)) for p in glob_hits]
+    # 憑證三道先於區（D-079 補）。第一道：抽出的每個路徑與萬用字元前綴夾的段（展開命中的內容交第三道走訪）
+    for p, zone, _alias in classified + head_classified:
+        if not os.path.exists(p) and any(ch in _NOT_FILENAME_CHARS for ch in p):
+            continue  # N3：引號裡帶副檔名的正規式（"密碼[0-9]+\.log"）會被抽成路徑；不存在又含正規式字元的不當檔名比
         seg = credential_hit(p, zone, vault_n, sources)
         if seg is not None:
             return deny(zone, "credential", CREDENTIAL_REASON.format(seg=_original_segment(command, seg)))
@@ -252,16 +340,20 @@ def _shell_tool(tool, command, cwd, vault, sources):
     seg = token_hit(command)
     if seg is not None:
         return deny("", "credential", CREDENTIAL_REASON.format(seg=seg))
-    # 第三道：讀取範圍是資料夾（抽出的路徑、cd 目標、萬用字元前綴夾）且在來源或總資料夾裡；寫入不適用
+    # 第三道：讀取範圍是資料夾（抽出的路徑、cd 目標、萬用字元前綴夾、.／..、裸夾名、範圍搜尋沒給路徑的 cwd）；寫入不適用
     if not write:
+        extra = [(p, *classify(p, vault_n, sources)) for p in _scan_targets(command, cwd, bool(paths))]
         scanned = []
-        for p, zone, _alias in classified + glob_prefixes:
-            if zone == "Z11" or p in scanned or not os.path.isdir(p):
+        for p, zone, _alias in classified + head_classified + extra:
+            if p in scanned or not os.path.isdir(p):
                 continue
             scanned.append(p)
-            code, reason = folder_scan(vault, p)
+            scan_zone = _scan_zone(p, zone, vault_n, sources)
+            if not scan_zone:
+                continue
+            code, reason = folder_scan(vault, p, sources)
             if code:
-                return deny(zone, code, reason)
+                return deny(scan_zone, code, reason)
     # 直接命中排除夾（Z10）比「範圍含排除夾」（Z10b）具體，先報它
     for _p, zone, alias in classified + glob_classified:
         if zone == "Z10":

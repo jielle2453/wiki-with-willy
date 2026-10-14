@@ -11,7 +11,6 @@ import argparse
 import contextlib
 import json
 import os
-import re
 from datetime import date
 from pathlib import Path
 
@@ -20,7 +19,7 @@ from kb._lib import config, credentials, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb._lib.io import FileLock, write_json_atomic
-from kb._lib.paths import compress_spec, inside, is_abs_spec, normalize
+from kb._lib.paths import compress_spec, inside, is_abs_spec, normalize, resolve_spec
 
 CLI_LOCK_TIMEOUT = 30
 NOT_IN_VAULT = "這裡不是知識庫；到知識庫裡執行，或加 --vault"
@@ -29,8 +28,8 @@ CREDENTIAL_LIST_MAX = 10
 KIND_TEXT = {"hidden": "不想讓 AI 看到", "unused": "用不到"}
 HIDDEN_TAIL = "之前讀過的已送過雲端；這版還沒有卡和備份要清。"
 ALIAS_BAD_CHARS = '<>:"/\\|?*'
-_ENV_VAR = re.compile(r"\$\{([^}]+)\}")
-_DRIVE_ABS = re.compile(r"^[a-zA-Z]:/")
+# Windows 保留裝置名（N7）：當夾名會建不出來或指到裝置
+DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
 
 
 def add_arguments(sub):
@@ -65,29 +64,27 @@ def _overlap(a, b):
 
 
 def _realcase(p):
-    """給人看的路徑：存在就用磁碟上的大小寫（realpath），否則原樣；一律正斜線。"""
-    s = str(p)
+    """給人看的路徑（L1）：存在的部分用磁碟上的大小寫（realpath），不存在的尾段原樣接回；一律正斜線。"""
+    cur, tail = str(p), []
     try:
-        if os.path.exists(s):
-            s = os.path.realpath(s)
+        while not os.path.exists(cur):
+            head, name = os.path.split(cur)
+            if not name or head == cur:
+                return str(p).replace("\\", "/")
+            tail.insert(0, name)
+            cur = head
+        real = os.path.realpath(cur)
     except (OSError, ValueError):
-        pass
-    return s.replace("\\", "/")
+        return str(p).replace("\\", "/")
+    return (os.path.join(real, *tail) if tail else real).replace("\\", "/")
 
 
-def _display_path(spec, base):
-    """從 spec 原文展開成給人看的路徑（原始大小寫），不經 normalize。展不開的環境變數回 None。"""
-    s = str(spec).strip()
-    if "${" in s:
-        if any(not os.environ.get(name) for name in _ENV_VAR.findall(s)):
-            return None
-        s = _ENV_VAR.sub(lambda m: os.environ[m.group(1)], s)
-    if s == "~" or s.startswith("~/") or s.startswith("~\\"):
-        s = os.path.expanduser("~") + s[1:]
-    s = s.replace("\\", "/")
-    if not (_DRIVE_ABS.match(s) or s.startswith("/")):
-        s = str(base).replace("\\", "/").rstrip("/") + "/" + s
-    return _realcase(os.path.normpath(s))
+def _display(spec, base):
+    """spec 展開（paths.resolve_spec，N8）後給人看：回 (路徑字串或 None, 存不存在)。"""
+    root = resolve_spec(spec, base) if spec else None
+    if root is None:
+        return None, False
+    return _realcase(root), os.path.exists(root)
 
 
 def _reject(reason):
@@ -105,6 +102,8 @@ def _alias_problem(alias, raw_sources):
         return "別名不能是空的、「.」或「..」"
     if any(ch in ALIAS_BAD_CHARS or ord(ch) < 32 for ch in alias):
         return f"別名「{alias}」不能含 {' '.join(ALIAS_BAD_CHARS)} 或控制字元"
+    if alias.split(".")[0].upper() in DEVICE_NAMES:
+        return f"別名「{alias}」是 Windows 保留的裝置名，建不出這個夾；請用 --alias 換一個"
     low = alias.lower()
     if low in {r.lower() for r in sources_lib.RESERVED_ALIASES}:
         return f"別名「{alias}」是保留字，檔案索引裡留給知識庫自己用；請用 --alias 換一個"
@@ -226,7 +225,8 @@ def _exclude(vault, args, as_json):
                 return _reject(f"已經在排除裡：{_realcase(ex['root'])}")
         entry = _raw_entry(raw, best)
         if entry is None:
-            return _reject(f"sources.json 裡找不到「{best['alias']}」這筆，沒有寫入")
+            shown = best["alias"] if best["alias"] != "?" else f"沒有別名、spec {best['root']}"  # Sources 對沒別名的填 ?，不印給人
+            return _reject(f"sources.json 裡找不到「{shown}」這筆，沒有寫入")
         rel = os.path.relpath(str(t), os.path.realpath(best["root"])).replace("\\", "/")
         added = date.today().isoformat()
         row = {"spec": rel, "kind": args.kind, "reason": args.reason or "", "added": added}
@@ -246,13 +246,12 @@ def _list(vault, as_json):
     out = []
     for s in raw["sources"]:
         spec = s.get("spec", "")
-        path = _display_path(spec, vault) if spec else None
-        exists = bool(path) and os.path.exists(path)
+        path, exists = _display(spec, str(vault))
         excludes = []
         for ex in s.get("excludes", []) or []:
-            ex_path = _display_path(ex.get("spec", ""), path) if path and ex.get("spec") else None
+            ex_path, ex_exists = _display(ex.get("spec", ""), path) if path else (None, False)
             excludes.append({"spec": ex.get("spec", ""), "kind": ex.get("kind", ""), "reason": ex.get("reason", ""),
-                             "added": ex.get("added", ""), "path": ex_path, "exists": bool(ex_path) and os.path.exists(ex_path)})
+                             "added": ex.get("added", ""), "path": ex_path, "exists": ex_exists})
         out.append({"id": s.get("id", ""), "alias": s.get("alias", ""), "spec": spec, "path": path, "exists": exists,
                     "excludes": excludes})
     if as_json:
@@ -288,6 +287,12 @@ def run(args):
         if args.folders_command == "exclude":
             return _exclude(vault, args, as_json)
         return _list(vault, as_json)
-    except ValueError as e:  # L7：sources.json 壞掉或格式不對
+    except ValueError as e:  # L7、N6：sources.json 壞掉或格式不對
         print(f"{sources_lib.SOURCES_REL} 讀不了，請先修好它：{type(e).__name__}: {e}")
+        return 3
+    except TimeoutError:  # N6：FileLock 等不到
+        print(f"等不到 {sources_lib.SOURCES_REL} 的鎖（別的指令正在改它），沒有寫入；請稍後再試")
+        return 3
+    except OSError as e:  # N6：備份或寫檔失敗
+        print(f"沒有寫入：{type(e).__name__}: {e}")
         return 3

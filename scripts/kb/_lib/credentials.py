@@ -36,11 +36,18 @@ def match_segment(segments):
     return None
 
 
-def _scan(path, max_entries, first_only, stop_marker):
-    """回 (hits, files, truncated, marker_dir)。命中的夾不再往下走（整夾都算憑證）。"""
+def _key(path):
+    """skip 清單的比對鍵：正斜線，Windows 小寫（跟 paths.normalize 的結果同形，但不走 realpath，走訪 5000 項不能每項一次系統呼叫）。"""
+    s = str(path).replace("\\", "/").rstrip("/")
+    return s.lower() if os.name == "nt" else s
+
+
+def _scan(path, max_entries, first_only, stop_marker, skip=()):
+    """回 (hits, files, truncated, marker_dir)。命中的夾不再往下走（整夾都算憑證）；skip 裡的夾（排除夾）整個不進去、不比。"""
     root = str(path)
     hits, files, seen = [], 0, 0
     marker = stop_marker.replace("\\", "/").split("/") if stop_marker else None
+    skip_keys = {_key(s) for s in skip}
 
     def onerror(_e):
         pass
@@ -51,6 +58,9 @@ def _scan(path, max_entries, first_only, stop_marker):
         rel_dir = os.path.relpath(dirpath, root).replace("\\", "/")
         prefix = "" if rel_dir == "." else rel_dir + "/"
         for name in list(dirnames):
+            if skip_keys and _key(os.path.join(dirpath, name)) in skip_keys:
+                dirnames.remove(name)
+                continue
             seen += 1
             if max_entries is not None and seen > max_entries:
                 return hits, files, True, None
@@ -71,9 +81,9 @@ def _scan(path, max_entries, first_only, stop_marker):
     return hits, files, False, None
 
 
-def scan_dir(path, max_entries):
-    """回 (hit, truncated)：hit 是第一個命中的相對路徑（正斜線）或 None。"""
-    hits, _files, truncated, _marker = _scan(path, max_entries, True, None)
+def scan_dir(path, max_entries, skip=()):
+    """回 (hit, truncated)：hit 是第一個命中的相對路徑（正斜線）或 None。skip 是不進去的夾（排除夾，N4），正規化過的路徑。"""
+    hits, _files, truncated, _marker = _scan(path, max_entries, True, None, skip)
     return (hits[0] if hits else None), truncated
 
 

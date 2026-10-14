@@ -80,6 +80,16 @@ class ScanDir(unittest.TestCase):
         self.assertEqual(credentials.scan_dir(self.tmp / "沒有", 100), (None, False))
         self.assertEqual(credentials.scan_dir(self.tmp / "z.md", 100), (None, False))
 
+    def test_skip_folders_are_not_entered(self):
+        (self.tmp / "a" / "b" / ".env").write_text("x", encoding="utf-8")
+        skip = {str(self.tmp / "a" / "b").replace("\\", "/")}
+        if os.name == "nt":
+            skip = {s.lower() for s in skip}
+        self.assertEqual(credentials.scan_dir(self.tmp, 100, skip=skip), (None, False))
+        self.assertEqual(credentials.scan_dir(self.tmp, 100), ("a/b/.env", False))
+        (self.tmp / "網站密碼.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(credentials.scan_dir(self.tmp, 100, skip=skip), ("網站密碼.txt", False))
+
     def test_scan_all_counts_files_and_collects_every_hit(self):
         (self.tmp / "a" / "b" / ".env").write_text("x", encoding="utf-8")
         (self.tmp / "網站密碼.txt").write_text("x", encoding="utf-8")

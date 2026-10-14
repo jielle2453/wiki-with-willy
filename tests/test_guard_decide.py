@@ -388,5 +388,68 @@ class Round2(DecideBase):
         self.expect("Bash", f"cat {r}/行政/薪\\資/s.xlsx", "deny", "Z10", "excluded")
 
 
+class Credential(DecideBase):
+    """骨架與來源登記（D-079、I-032）：憑證檔名樣式在區之前擋，讀寫都擋、不分大小寫、任一段命中就算。"""
+
+    def credential(self, tool, value, cwd=None):
+        d = self.decide(tool, value, cwd)
+        with self.subTest(tool=tool, value=str(value)):
+            self.assertEqual(d.decision, "deny", d)
+            self.assertEqual(d.reason_code, "credential", d)
+            self.assertIn("密碼或金鑰", d.reason)
+            self.assertEqual(len(d.ledger_rows), 1, d)
+            self.assertEqual(d.ledger_rows[0]["reason_code"], "credential")
+        return d
+
+    def test_patterns_table(self):
+        hits = [".env", ".env.local", "x.pem", "k.ppk", "db.kdbx", "id_rsa", "id_rsa.pub", "id_ed25519",
+                "網站密碼.txt", "passwd.bak", "my-secret.json", "credentials.json", "PASSWORD.TXT"]
+        for name in hits:
+            with self.subTest(name=name):
+                self.assertTrue(guard.is_credential(f"c:/x/raw/客戶案件/{name}".lower()), name)
+        self.assertTrue(guard.is_credential("d:/資料/密碼/x.txt"))
+        self.assertTrue(guard.is_credential("c:/v/ai 產出/secret/*.md"))
+        for name in ("會計憑證.xlsx", "a.txt", "environment.md", "合約.docx", "report.pdf"):
+            with self.subTest(name=name):
+                self.assertFalse(guard.is_credential(f"c:/x/raw/客戶案件/{name}"), name)
+        self.assertFalse(guard.is_credential("c:/secret-drive-name-not-a-segment"[:2] + "/x.txt"))
+
+    def test_read_env_in_source_denied_with_zone(self):
+        d = self.credential("Read", self.raw / "客戶案件" / ".env")
+        self.assertEqual(d.zone, "Z9")
+        self.assertIn("（.env）", d.reason)
+
+    def test_chinese_password_name_denied(self):
+        d = self.credential("Read", self.raw / "客戶案件" / "網站密碼.txt")
+        self.assertIn("網站密碼.txt", d.reason)
+
+    def test_case_insensitive(self):
+        d = self.credential("Read", self.raw / "客戶案件" / "PASSWORD.TXT")
+        self.assertIn("PASSWORD.TXT", d.reason)
+
+    def test_glob_and_write_in_vault_denied(self):
+        d = self.credential("Glob", self.V / "AI 產出" / "secret" / "*.md")
+        self.assertEqual(d.zone, "Z3")
+        d = self.credential("Write", self.V / "AI 產出" / "password.docx")
+        self.assertEqual(d.zone, "Z3")
+        self.credential("Edit", self.V / "AI 產出" / "password.docx")
+
+    def test_bash_cat_env_denied(self):
+        p = str(self.raw).replace("\\", "/")
+        d = self.credential("Bash", f'cat "{p}/客戶案件/.env"')
+        self.assertEqual(d.ledger_rows[0]["head"], f'cat "{p}/客戶案件/.env"')
+        self.credential("PowerShell", f'Get-Content "{p}/客戶案件/id_rsa"')
+
+    def test_accounting_voucher_is_not_credential(self):
+        d = self.decide("Read", self.raw / "客戶案件" / "會計憑證.xlsx")
+        self.assertEqual((d.decision, d.zone, d.reason_code), ("allow", "Z9", ""))
+
+    def test_kb_call_with_password_folder_still_allowed(self):
+        self.expect("Bash", f'python "{ROOT}/scripts/kb.py" folders exclude "{self.raw}/密碼"', "allow")
+
+    def test_outside_vault_still_pass(self):
+        self.expect("Read", self.raw / "客戶案件" / ".env", "pass", cwd=self.tmp)
+
+
 if __name__ == "__main__":
     unittest.main()

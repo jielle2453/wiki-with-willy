@@ -331,6 +331,17 @@ class Round2(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_credential_path_denied_and_ledgered(self):
+        """骨架與來源登記（D-079）：Read 憑證檔名 → stdout deny JSON，ledger 一行 reason_code credential。"""
+        r = run_hook(payload("Read", self.raw / "客戶案件" / ".env", self.V))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        _event, decision, reason = decision_of(r)
+        self.assertEqual(decision, "deny")
+        self.assertIn("密碼或金鑰", reason)
+        rows = [ln.split("\t") for ln in (self.V / ".system" / "ledger.tsv").read_text(encoding="utf-8").splitlines()[1:]]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0][1], rows[0][2], rows[0][3], rows[0][4]), ("Read", "deny", "Z9", "credential"))
+
     def test_32_escaped_quote_payload_via_hook(self):
         evil = f'python "{ROOT}/scripts/kb.py" version \\"; rm -rf {self.raw}/客戶案件; echo \\"'
         r = run_hook(payload("Bash", evil, self.V))

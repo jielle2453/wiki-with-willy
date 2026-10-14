@@ -117,5 +117,71 @@ class NormalizeEquivalentSpellings(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class CompressSpec(unittest.TestCase):
+    """骨架與來源登記：compress_spec 四種結果（相對、~/、絕對、不同磁碟）與 is_abs_spec。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="KbSpec-")).resolve()
+        self.vault = self.tmp / "總" / "知識庫"
+        self.vault.mkdir(parents=True)
+        self.env = {k: os.environ.get(k) for k in ("USERPROFILE", "HOME")}
+
+    def tearDown(self):
+        for k, v in self.env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def set_home(self, path):
+        os.environ["USERPROFILE"] = str(path)
+        os.environ["HOME"] = str(path)
+
+    def test_same_drive_within_max_up_is_relative_with_forward_slash(self):
+        target = self.tmp / "總" / "來源" / "公司行政"
+        target.mkdir(parents=True)
+        self.assertEqual(paths.compress_spec(target, self.vault, 4), "../來源/公司行政")
+        self.assertEqual(paths.compress_spec(self.tmp / "別處", self.vault, 4), "../../別處")
+
+    def test_over_max_up_under_home_gives_tilde(self):
+        self.set_home(self.tmp)
+        target = self.tmp / "Documents" / "x"
+        self.assertEqual(paths.compress_spec(target, self.vault, 1), "~/Documents/x")
+
+    def test_over_max_up_outside_home_gives_absolute(self):
+        other = Path(tempfile.mkdtemp(prefix="KbHome-")).resolve()
+        try:
+            self.set_home(other)
+            target = self.tmp / "Documents" / "x"
+            got = paths.compress_spec(target, self.vault, 1)
+            self.assertEqual(got, target.as_posix())
+            self.assertNotIn("\\", got)
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+    def test_different_drive_gives_absolute(self):
+        if os.name != "nt":
+            self.skipTest("不同磁碟只在 Windows 模擬")
+        drive = str(self.vault)[0]
+        other = "D" if drive.upper() != "D" else "E"
+        target = f"{other}:\\share\\客戶"
+        try:
+            os.path.relpath(target, str(self.vault))
+        except ValueError:
+            pass
+        else:
+            self.skipTest("relpath 沒有丟 ValueError，無法模擬不同磁碟")
+        self.assertEqual(paths.compress_spec(target, self.vault, 4), f"{other}:/share/客戶")
+
+    def test_is_abs_spec(self):
+        for spec in ("D:/x", "//nas/x", "C:\\x"):
+            with self.subTest(spec=spec):
+                self.assertTrue(paths.is_abs_spec(spec))
+        for spec in ("../x", "~/x", "${X}/x", "x"):
+            with self.subTest(spec=spec):
+                self.assertFalse(paths.is_abs_spec(spec))
+
+
 if __name__ == "__main__":
     unittest.main()

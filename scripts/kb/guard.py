@@ -5,7 +5,10 @@
 第一輪修正：Z10b（目標範圍底下有排除夾，S3）、kb.py 放行以 plugin 自己的 __file__ 為準且檢查直譯器（S1）。
 事務層（specs/2026-10-13-事務層.md）：Z1、Z3、Z5 的指令寫入 deny shell_write；檔案工具寫這三區放行後
 由 hooks/guard.py 呼叫 kb._lib.turn.before_write 做備份與大改動攔截，這裡維持純判斷。
+骨架與來源登記（D-079、I-032）：憑證檔名樣式是區之前的一道，寫死在 CREDENTIAL_PATTERNS，不讀 config、關不掉；
+路徑任一段命中就 deny credential，讀寫都擋；kb.py 單一呼叫的放行仍在它前面。
 """
+import fnmatch
 import glob as globlib
 import os
 import re
@@ -52,6 +55,37 @@ ZONES = {
              "write": ("deny", "excluded_inside", "這個範圍底下有你說過不讀的夾，不能整個動；請縮到不含它的子資料夾。")},
     "Z11": {"name": "其他", "read": ("pass", "", ""), "write": ("pass", "", "")},
 }
+# 憑證檔名樣式（D-079）：不含「憑證」，會計憑證、報關憑證是客戶的正常文件。寧可多擋（D-034，誤擋率併 B-110）。
+CREDENTIAL_PATTERNS = (
+    ".env", ".env.*", "*.pem", "*.ppk", "*.kdbx", "id_rsa*", "id_ed25519*",
+    "*password*", "*passwd*", "*secret*", "*credential*", "*密碼*",
+)
+CREDENTIAL_REASON = "檔名像密碼或金鑰（{seg}），一律不讀也不寫，這條關不掉。"
+
+
+def credential_segment(path):
+    """path 正斜線分段，任一段對任一樣式 fnmatch 就回那一段（小寫比對）；磁碟代號段不比。沒命中回 None。"""
+    for seg in str(path).replace("\\", "/").split("/"):
+        if not seg or seg.endswith(":"):
+            continue
+        low = seg.lower()
+        if any(fnmatch.fnmatchcase(low, pat) for pat in CREDENTIAL_PATTERNS):
+            return seg
+    return None
+
+
+def is_credential(path):
+    return credential_segment(path) is not None
+
+
+def _original_segment(target, seg):
+    """理由句印原始大小寫的那一段：normalize 在 Windows 會小寫，從 payload 原字串找回來。"""
+    for part in str(target).replace("\\", "/").split("/"):
+        if part.lower() == seg.lower():
+            return part
+    return seg
+
+
 UNPARSED_REASON = "看不出這個指令會寫到哪，請用檔案工具或告訴我路徑。"
 KB_CALL_REASON = "知識庫腳本"
 ERROR_REASON = "守門出錯，這次不放行。說「檢查」我看原因"
@@ -117,6 +151,10 @@ def _file_tool(tool, target, cwd, vault, sources):
     column = "read" if tool in READ_TOOLS else "write"
     path = normalize(target, cwd)
     zone, alias = classify(path, normalize(vault, None), sources)
+    seg = credential_segment(path)
+    if seg is not None:  # 憑證樣式先於區（D-079）
+        reason = CREDENTIAL_REASON.format(seg=_original_segment(target, seg))
+        return Decision("deny", zone, "credential", reason, [_row(tool, "deny", zone, "credential", target)], vault)
     decision, code, reason = _verdict(zone, column, alias)
     rows = []
     if decision == "deny":
@@ -166,6 +204,11 @@ def _shell_tool(tool, command, cwd, vault, sources):
     for token in cmdparse.glob_tokens(command, cwd):
         glob_candidates.extend(_expand_glob(token))
     glob_classified = [(p, *classify(p, vault_n, sources)) for p in glob_candidates]
+    # 憑證樣式先於區（D-079）：抽出的每個路徑與萬用字元的候選都查
+    for p, zone, _alias in classified + glob_classified:
+        seg = credential_segment(p)
+        if seg is not None:
+            return deny(zone, "credential", CREDENTIAL_REASON.format(seg=_original_segment(command, seg)))
     # 直接命中排除夾（Z10）比「範圍含排除夾」（Z10b）具體，先報它
     for _p, zone, alias in classified + glob_classified:
         if zone == "Z10":

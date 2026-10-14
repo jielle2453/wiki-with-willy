@@ -160,6 +160,7 @@
 - 放棄了：位置只能是檔案路徑。
 - 重談條件：無。
 - **2026-10-12 補**：`file://` 後面存可攜 spec（`~/`、相對總資料夾、環境變數），不存絕對路徑；壓不掉的標紅，lint 列。另一台電腦找不到某來源時，開場只報一次「這台電腦找不到 X」、不當成刪除、不重做卡，按機器記在 env.json（I-045）。
+- **2026-10-14 補**：`kb folders add` 壓縮順序：相對總資料夾（往上層數上限住 config `source_spec_max_up`）→ `~/` → 絕對並印一句換電腦會找不到；`${VAR}` 不自動產生，只能展開。做法照舊 llm-wiki `vaultpaths.portable_path`，只搬這一個函式。
 
 ## D-022 安靜模式預設開
 - 日期：2026-10-11
@@ -533,6 +534,7 @@
 - 放棄了：additionalDirectories（雙保險會讓守門掛了還讀得到，違反 fail closed）；permissions Read 規則；settings 放行 plugin 路徑（每版路徑不同）。
 - 重談條件：Claude Code 改掉 PreToolUse 的 permissionDecision 語意。
 - **2026-10-12 補**：Bash／PowerShell 指令字串裡的路徑只用於 deny；Bash 的 allow 只有單一 kb.py 呼叫一種。放行讀取的 allow 只給 Read、Glob、Grep（守門實作疑義 1）。
+- **2026-10-14 修訂**：客戶端 settings.json 第一版是空殼，憑證樣式住守門；高風險子命令由守門回 ask，見 D-079。
 
 ## D-074 回合、備份與退回
 - 日期：2026-10-13
@@ -555,6 +557,34 @@
 - 為什麼：登記表只有一份（D-014 清冊就是登記處），獨立檔之後還要併；D-011 退回要查成品靠它。
 - 放棄了：獨立 outputs.json；等 ingest 題才登記（這期間成品退不回也查不到）。
 - 重談條件：無。
+
+## D-077 骨架與來源登記第一版的範圍
+- 日期：2026-10-14
+- 選了：這題做 `kb init`（建五區、`系統/` 空白檔、`.system/`、CLAUDE.md、`.claude/settings.json`、隱藏屬性）與 `kb folders add|exclude|list`。`discover`、`relocate`、排除後清殘留（D-024）延後到清冊題。
+- 為什麼：ingest、第一個 skill、桌面版確認都要一個 plugin 自己建出來的總資料夾，fixture 手抄撐不到那裡。discover 要候選夾啟發（I-051）與容錯走訪（I-021），relocate 要抽樣比指紋，清殘留要有卡可清，三個都等清冊。守門從登記排除那一刻就擋讀，所以清殘留延後不影響隱私承諾的「以後」，只影響「以前」。
+- 放棄了：加 discover（題目變大）；只做 init 不做 folders（確認環境還是要手抄 sources.json）。
+- 重談條件：無；清冊題開工時把三個延後項接回來。
+
+## D-078 kb init 不建型別夾，標記檔維持 sources.json
+- 日期：2026-10-14
+- 選了：`kb init` 只建四個保留區與 `系統/`、`.system/`、CLAUDE.md、settings.json；型別夾不建、不收參數。總資料夾的標記維持 `.system/sources.json`，init 寫一份空的。型別名與四大類的登記留給客戶設定檔題（D-052），到時掃既有第一層夾認出來。
+- 為什麼：守門已把第一層非保留字的夾當型別夾（Z1），客戶自己在檔案總管建夾是正常使用（D-043、D-057）；型別名住客戶設定檔，設定檔的格式與解析器還沒設計，這題先寫就會定了又改。
+- 放棄了：`--type` 只建夾不記（多一個參數，下一題照樣要對帳）；`--type 名稱:大類` 寫最小版 profile.json（提前定設定檔 schema）。
+- 重談條件：無。
+
+## D-079 憑證檔名樣式住守門，客戶端 settings.json 第一版是空殼
+- 日期：2026-10-14
+- 選了：憑證檔名樣式（`.env`、`*password*`、`*密碼*`、`id_rsa*`、`*.pem` 一類）寫死在守門程式裡一份，不進設定、不可關；守門對符合的檔不分區、不分工具一律 deny，理由句明講是憑證檔（I-032：被擋要印出來）。客戶端 `.claude/settings.json` 由 `kb init` 寫成只有 `permissions` 一個已知鍵的空殼，不放憑證規則、不放註解鍵（I-030）；這題 `kb folders` 不改它。D-073 的「settings 只留 deny 憑證樣式」改為此。高風險子命令的「問一句」等那些子命令出現時由守門回 ask，不靠 settings 的 ask（守門對 kb.py 回 allow 會蓋過它），記 backlog。
+- 為什麼：hook 回 deny 在 auto mode 實測有效（B-008）；settings 的 `Read(...)` 規則在 extension 上從沒生效過（B-007），寫了等於承諾一道不確定的防線。一份清單放兩處會漂、兩種寫法、settings 那份測不到、擋的說法不一致（D-004）。守門掛了就 fail open 的洞（I-103）由 B-016 與開場偵測 python 補，不靠第二份清單。模型自己會迴避密碼不算數：製卡是整夾逐份讀，模型不知道哪個檔對客戶算敏感。
+- 放棄了：照 D-073 字面寫進 settings.json；兩邊都寫。
+- 重談條件：B-016 查到 Claude Code 沒有「hook 失敗即擋」而且客戶端真的出過 python 壞掉的事故。
+
+## D-080 總資料夾 CLAUDE.md 第一版只寫身分與五區
+- 日期：2026-10-14
+- 選了：`skeleton/CLAUDE.md` 只寫：這是 wiki-with-willy 維護的知識庫、五區各一行是什麼、客戶原檔在外面只讀。不寫任何執行規則；規則一次到位住 `rules/core.md`，路徑由開場 hook 注入（D-019、D-059）。`系統/` 只建 `工作日誌/`、`健檢報告/` 兩個空夾，六個渲染 md 不預建（格式住渲染程式，D-067）；`.skeleton-policy` 等 upgrade 題。
+- 為什麼：現在沒有客戶在用，唯一進去的是確認 session，照 spec 情境操作、被擋看理由句就夠。先帶三條規則，core.md 出來後要靠 `kb upgrade` 再拿掉，多一次要記得做的事，還會跟 core.md 重複（D-004）。
+- 放棄了：短版帶三條底線；把 D-059 全寫進去。
+- 重談條件：core.md 之前就有客戶試跑。
 
 ## 未決
 

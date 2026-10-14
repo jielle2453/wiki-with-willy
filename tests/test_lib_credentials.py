@@ -29,6 +29,14 @@ class MatchSegment(unittest.TestCase):
         self.assertIsNone(credentials.match_segment(["raw", "客戶案件", "a.txt"]))
         self.assertIsNone(credentials.match_segment([]))
 
+    def test_looks_like_filename(self):
+        for s in ("a.txt", ".env", "id_rsa", "ID_RSA.pub", "id_ed25519", "網站密碼.txt"):
+            with self.subTest(s=s):
+                self.assertTrue(credentials.looks_like_filename(s))
+        for s in ("passwords", "secret", "密碼", "PASSWORD", "", "id_dsa"):
+            with self.subTest(s=s):
+                self.assertFalse(credentials.looks_like_filename(s))
+
     def test_patterns_do_not_include_voucher(self):
         self.assertNotIn("*憑證*", credentials.CREDENTIAL_PATTERNS)
         self.assertIn("*密碼*", credentials.CREDENTIAL_PATTERNS)

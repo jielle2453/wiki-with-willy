@@ -89,11 +89,14 @@ def credential_hit(path, zone, vault_n, sources):
 
 
 def token_hit(command):
-    """第二道（H1）：指令每個 token 去引號、取 / 與 \\ 的最後一段比樣式；不解析路徑、不看 cwd。回命中的那段或 None。"""
+    """第二道（H1；第一輪修正裁定 1 收窄）：指令每個 token 去引號、取 / 與 \\ 的最後一段，只有像檔名的才比樣式
+    （含 . 或命中 id_rsa*、id_ed25519*）；- 與 $ 開頭的 token（旗標、變數）跳過。不解析路徑、不看 cwd。回命中的那段或 None。"""
     cleaned = cmdparse.DISCARD_OUTPUT.sub(" ", command)
     for text, _quoted, _after_redirect in cmdparse._tokens(cleaned):  # cmdparse 的 token 切法與路徑抽取一致
+        if not text or text[0] in "-$":
+            continue
         last = text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-        if credentials.match_segment((last,)) is not None:
+        if credentials.looks_like_filename(last) and credentials.match_segment((last,)) is not None:
             return last
     return None
 

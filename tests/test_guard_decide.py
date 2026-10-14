@@ -506,6 +506,24 @@ class CredentialRound1(unittest.TestCase):
         self.assert_deny(self.decide("PowerShell", "Get-Content 網站密碼.txt"), "credential", contains="網站密碼.txt")
         self.assert_deny(self.decide("Bash", "cat sub\\dir\\PASSWORD.TXT"), "credential", contains="PASSWORD.TXT")
 
+    def test_45_bare_token_only_when_it_looks_like_a_filename(self):
+        """第一輪修正裁定 1 收窄：搜尋詞、變數、旗標、沒副檔名的字不因第二道擋；有 . 的檔名與 id_rsa*、id_ed25519* 照擋。"""
+        for cmd in ("grep -i password notes.txt", "echo $PASSWORD", "curl --password=x https://a.b/", "cat passwords",
+                    "Get-ChildItem -Filter secret", "echo 密碼", "python -c \"print('secret')\"", "ls -la --secret-flag"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertNotEqual(d.reason_code, "credential", d)
+                self.assertNotEqual(d.reason_code, "credential_inside", d)
+        for cmd in ("cat passwords.txt", "cat id_rsa", "type .env", "Get-Content 網站密碼.txt",
+                    "cat id_ed25519", "cat .env.local", "cat sub/id_rsa.pub", "cat 公司/密碼.txt"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("PowerShell" if cmd.startswith("Get-") else "Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "credential"), d)
+        self.assertEqual(guard.token_hit("cat passwords"), None)
+        self.assertEqual(guard.token_hit("cat passwords.txt"), "passwords.txt")
+        self.assertEqual(guard.token_hit("echo $PASSWORD.txt"), None)
+        self.assertEqual(guard.token_hit("x --secret.txt"), None)
+
     def test_35_write_command_over_folder_is_not_scanned(self):
         (self.client / ".env").write_text("K=1", encoding="utf-8")
         r = str(self.client).replace("\\", "/")

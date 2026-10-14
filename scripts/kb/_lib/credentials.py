@@ -15,6 +15,16 @@ CREDENTIAL_PATTERNS = (
 )
 
 
+# 沒副檔名也算檔名的樣式（金鑰檔慣例沒有副檔名）
+KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
+
+
+def looks_like_filename(segment):
+    """指令裸 token 收窄用：含 . 的，或命中沒副檔名的金鑰樣式；passwords、secret 這種單字不算檔名。"""
+    s = str(segment)
+    return "." in s or any(fnmatch.fnmatchcase(s.lower(), pat) for pat in KEYFILE_PATTERNS)
+
+
 def match_segment(segments):
     """任一段命中就回那一段（原字串）；沒有回 None。"""
     for seg in segments:

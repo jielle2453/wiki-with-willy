@@ -143,6 +143,15 @@ class Init(unittest.TestCase):
         self.assertEqual(data["created"], [])
         self.assertEqual(len(data["existing"]), len(EXPECTED_DIRS) + len(EXPECTED_FILES) + 1)
 
+    def test_41_check_with_json(self):
+        r = run_kb("--json", "init", str(self.V), "--check", cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["vault"], str(self.V))
+        self.assertEqual(sorted(data["would_create"]), sorted(EXPECTED_DIRS + EXPECTED_FILES + ["系統"]))
+        self.assertEqual(data["existing"], [])
+        self.assertFalse(self.V.exists())
+
     def test_relative_path_resolves_against_cwd(self):
         r = self.init("知識庫")
         self.assertEqual(r.returncode, 0, r.stderr)

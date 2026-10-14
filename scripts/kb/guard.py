@@ -5,17 +5,18 @@
 第一輪修正：Z10b（目標範圍底下有排除夾，S3）、kb.py 放行以 plugin 自己的 __file__ 為準且檢查直譯器（S1）。
 事務層（specs/2026-10-13-事務層.md）：Z1、Z3、Z5 的指令寫入 deny shell_write；檔案工具寫這三區放行後
 由 hooks/guard.py 呼叫 kb._lib.turn.before_write 做備份與大改動攔截，這裡維持純判斷。
-骨架與來源登記（D-079、I-032）：憑證檔名樣式是區之前的一道，寫死在 CREDENTIAL_PATTERNS，不讀 config、關不掉；
-路徑任一段命中就 deny credential，讀寫都擋；kb.py 單一呼叫的放行仍在它前面。
+骨架與來源登記（D-079 補、I-032）：憑證三道在區之前、都只 deny、關不掉；樣式與走訪住 kb._lib.credentials，這裡只管順序：
+(1) 目標路徑的段：來源根或總資料夾以下的段，其他路徑只比最後一段；(2) 指令字串每個 token 的檔名部分；
+(3) 讀取範圍是資料夾（Grep、指令抽出的夾、萬用字元前綴、cd 目標）且在來源或總資料夾裡：走訪找憑證檔名，
+超過 config credential_scan_max_entries 也擋。kb.py 單一呼叫的放行仍在最前面。
 """
-import fnmatch
 import glob as globlib
 import os
 import re
 from collections import namedtuple
 from pathlib import Path
 
-from kb._lib import cmdparse, sources as sources_lib
+from kb._lib import cmdparse, config, credentials, sources as sources_lib
 from kb._lib.paths import inside, normalize, plugin_root
 
 Decision = namedtuple("Decision", "decision zone reason_code reason ledger_rows vault")
@@ -55,27 +56,56 @@ ZONES = {
              "write": ("deny", "excluded_inside", "這個範圍底下有你說過不讀的夾，不能整個動；請縮到不含它的子資料夾。")},
     "Z11": {"name": "其他", "read": ("pass", "", ""), "write": ("pass", "", "")},
 }
-# 憑證檔名樣式（D-079）：不含「憑證」，會計憑證、報關憑證是客戶的正常文件。寧可多擋（D-034，誤擋率併 B-110）。
-CREDENTIAL_PATTERNS = (
-    ".env", ".env.*", "*.pem", "*.ppk", "*.kdbx", "id_rsa*", "id_ed25519*",
-    "*password*", "*passwd*", "*secret*", "*credential*", "*密碼*",
-)
+VAULT_ZONES = ("Z1", "Z2", "Z3", "Z4", "Z5", "Z6", "Z7", "Z8")
+SOURCE_ZONES = ("Z9", "Z10", "Z10b")
 CREDENTIAL_REASON = "檔名像密碼或金鑰（{seg}），一律不讀也不寫，這條關不掉。"
+CREDENTIAL_INSIDE_REASON = "這個範圍裡有檔名像密碼或金鑰的檔（{rel}），請縮到不含它的子資料夾或指定單一檔。"
+CREDENTIAL_LIMIT_REASON = "範圍太大，守門來不及檢查有沒有密碼檔，請縮小範圍。"
 
 
-def credential_segment(path):
-    """path 正斜線分段，任一段對任一樣式 fnmatch 就回那一段（小寫比對）；磁碟代號段不比。沒命中回 None。"""
-    for seg in str(path).replace("\\", "/").split("/"):
-        if not seg or seg.endswith(":"):
-            continue
-        low = seg.lower()
-        if any(fnmatch.fnmatchcase(low, pat) for pat in CREDENTIAL_PATTERNS):
-            return seg
+def _credential_base(path, zone, vault_n, sources):
+    """第一道的比對起點：總資料夾、路徑最深的來源根；Z11 回 None（只比最後一段）；Z10b 在來源根之上回 ""（沒有段可比）。"""
+    if zone in VAULT_ZONES:
+        return vault_n
+    if zone in SOURCE_ZONES:
+        best = None
+        for src in sources.entries:
+            if inside(path, src["root"]) and (best is None or len(src["root"]) > len(best["root"])):
+                best = src
+        return best["root"] if best else ""
     return None
 
 
-def is_credential(path):
-    return credential_segment(path) is not None
+def credential_hit(path, zone, vault_n, sources):
+    """第一道（D-079 補、M1）：path 已 normalize。回命中的段或 None。"""
+    base = _credential_base(path, zone, vault_n, sources)
+    if base is None:
+        segments = [path.rsplit("/", 1)[-1]]
+    elif not base or path == base or not inside(path, base):
+        return None
+    else:
+        segments = path[len(base) + 1:].split("/")
+    return credentials.match_segment(segments)
+
+
+def token_hit(command):
+    """第二道（H1）：指令每個 token 去引號、取 / 與 \\ 的最後一段比樣式；不解析路徑、不看 cwd。回命中的那段或 None。"""
+    cleaned = cmdparse.DISCARD_OUTPUT.sub(" ", command)
+    for text, _quoted, _after_redirect in cmdparse._tokens(cleaned):  # cmdparse 的 token 切法與路徑抽取一致
+        last = text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if credentials.match_segment((last,)) is not None:
+            return last
+    return None
+
+
+def folder_scan(vault, path):
+    """第三道（H1）：讀取範圍是資料夾時走訪找憑證檔名。回 (reason_code, reason) 或 (None, None)。"""
+    hit, truncated = credentials.scan_dir(path, config.get(vault, "credential_scan_max_entries"))
+    if hit is not None:
+        return "credential_inside", CREDENTIAL_INSIDE_REASON.format(rel=hit)
+    if truncated:
+        return "credential_scan_limit", CREDENTIAL_LIMIT_REASON
+    return None, None
 
 
 def _original_segment(target, seg):
@@ -150,11 +180,16 @@ def _unresolved_rows(tool, sources, head):
 def _file_tool(tool, target, cwd, vault, sources):
     column = "read" if tool in READ_TOOLS else "write"
     path = normalize(target, cwd)
-    zone, alias = classify(path, normalize(vault, None), sources)
-    seg = credential_segment(path)
-    if seg is not None:  # 憑證樣式先於區（D-079）
+    vault_n = normalize(vault, None)
+    zone, alias = classify(path, vault_n, sources)
+    seg = credential_hit(path, zone, vault_n, sources)
+    if seg is not None:  # 憑證第一道先於區（D-079 補）
         reason = CREDENTIAL_REASON.format(seg=_original_segment(target, seg))
         return Decision("deny", zone, "credential", reason, [_row(tool, "deny", zone, "credential", target)], vault)
+    if tool == "Grep" and zone != "Z11" and os.path.isdir(path):  # 第三道：Grep 整夾會讀內容；Glob 只列檔名不走訪
+        code, reason = folder_scan(vault, path)
+        if code:
+            return Decision("deny", zone, code, reason, [_row(tool, "deny", zone, code, target)], vault)
     decision, code, reason = _verdict(zone, column, alias)
     rows = []
     if decision == "deny":
@@ -203,12 +238,27 @@ def _shell_tool(tool, command, cwd, vault, sources):
     glob_candidates = list(cmdparse.glob_prefixes(command, cwd))
     for token in cmdparse.glob_tokens(command, cwd):
         glob_candidates.extend(_expand_glob(token))
+    glob_prefixes = [(p, *classify(p, vault_n, sources)) for p in cmdparse.glob_prefixes(command, cwd)]
     glob_classified = [(p, *classify(p, vault_n, sources)) for p in glob_candidates]
-    # 憑證樣式先於區（D-079）：抽出的每個路徑與萬用字元的候選都查
+    # 憑證三道先於區（D-079 補）。第一道：抽出的每個路徑與萬用字元候選的段
     for p, zone, _alias in classified + glob_classified:
-        seg = credential_segment(p)
+        seg = credential_hit(p, zone, vault_n, sources)
         if seg is not None:
             return deny(zone, "credential", CREDENTIAL_REASON.format(seg=_original_segment(command, seg)))
+    # 第二道：裸 token 的檔名部分（cat id_rsa、type .env）
+    seg = token_hit(command)
+    if seg is not None:
+        return deny("", "credential", CREDENTIAL_REASON.format(seg=seg))
+    # 第三道：讀取範圍是資料夾（抽出的路徑、cd 目標、萬用字元前綴夾）且在來源或總資料夾裡；寫入不適用
+    if not write:
+        scanned = []
+        for p, zone, _alias in classified + glob_prefixes:
+            if zone == "Z11" or p in scanned or not os.path.isdir(p):
+                continue
+            scanned.append(p)
+            code, reason = folder_scan(vault, p)
+            if code:
+                return deny(zone, code, reason)
     # 直接命中排除夾（Z10）比「範圍含排除夾」（Z10b）具體，先報它
     for _p, zone, alias in classified + glob_classified:
         if zone == "Z10":

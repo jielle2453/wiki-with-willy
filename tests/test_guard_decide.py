@@ -401,19 +401,6 @@ class Credential(DecideBase):
             self.assertEqual(d.ledger_rows[0]["reason_code"], "credential")
         return d
 
-    def test_patterns_table(self):
-        hits = [".env", ".env.local", "x.pem", "k.ppk", "db.kdbx", "id_rsa", "id_rsa.pub", "id_ed25519",
-                "網站密碼.txt", "passwd.bak", "my-secret.json", "credentials.json", "PASSWORD.TXT"]
-        for name in hits:
-            with self.subTest(name=name):
-                self.assertTrue(guard.is_credential(f"c:/x/raw/客戶案件/{name}".lower()), name)
-        self.assertTrue(guard.is_credential("d:/資料/密碼/x.txt"))
-        self.assertTrue(guard.is_credential("c:/v/ai 產出/secret/*.md"))
-        for name in ("會計憑證.xlsx", "a.txt", "environment.md", "合約.docx", "report.pdf"):
-            with self.subTest(name=name):
-                self.assertFalse(guard.is_credential(f"c:/x/raw/客戶案件/{name}"), name)
-        self.assertFalse(guard.is_credential("c:/secret-drive-name-not-a-segment"[:2] + "/x.txt"))
-
     def test_read_env_in_source_denied_with_zone(self):
         d = self.credential("Read", self.raw / "客戶案件" / ".env")
         self.assertEqual(d.zone, "Z9")
@@ -449,6 +436,130 @@ class Credential(DecideBase):
 
     def test_outside_vault_still_pass(self):
         self.expect("Read", self.raw / "客戶案件" / ".env", "pass", cwd=self.tmp)
+
+
+class CredentialRound1(unittest.TestCase):
+    """第一輪修正（D-079 補、驗收 34～37）：三道憑證：段（只比來源根／總資料夾以下）、裸 token、資料夾範圍走訪。每個測試自己一份 vault。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        os.environ["CLAUDE_PLUGIN_ROOT"] = str(ROOT)
+        self.client = self.raw / "客戶案件"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def decide(self, tool, value, cwd=None):
+        return guard.decide(payload(tool, value, cwd or self.V))
+
+    def grep(self, path, cwd=None):
+        return guard.decide({"tool_name": "Grep", "tool_input": {"path": str(path), "pattern": "x"}, "cwd": str(cwd or self.V)})
+
+    def assert_deny(self, d, code, zone=None, contains=None):
+        self.assertEqual((d.decision, d.reason_code), ("deny", code), d)
+        if zone is not None:
+            self.assertEqual(d.zone, zone, d)
+        if contains:
+            self.assertIn(contains, d.reason)
+        self.assertEqual(len(d.ledger_rows), 1, d)
+        self.assertEqual(d.ledger_rows[0]["reason_code"], code)
+
+    # 34：Grep 整夾
+    def test_34_grep_folder_containing_env_denied_inside(self):
+        (self.client / ".env").write_text("K=1", encoding="utf-8")
+        (self.client / "子夾").mkdir()
+        (self.client / "子夾" / "b.txt").write_text("x", encoding="utf-8")
+        d = self.grep(self.client)
+        self.assert_deny(d, "credential_inside", "Z9", "這個範圍裡有")
+        self.assertIn(".env", d.reason)
+        d = self.grep(self.client / "子夾")
+        self.assertEqual((d.decision, d.zone), ("allow", "Z9"), d)
+        d = guard.decide({"tool_name": "Glob", "tool_input": {"pattern": "*.md", "path": str(self.client)}, "cwd": str(self.V)})
+        self.assertEqual((d.decision, d.zone), ("allow", "Z9"), d)  # Glob 只列檔名不走訪
+        d = self.grep(self.V)
+        self.assertEqual(d.decision, "allow", d)  # 總資料夾裡沒有憑證檔
+
+    def test_34_grep_folder_with_credential_named_subfolder(self):
+        (self.client / "密碼").mkdir()
+        (self.client / "密碼" / "x.txt").write_text("x", encoding="utf-8")
+        d = self.grep(self.client)
+        self.assert_deny(d, "credential_inside", "Z9", "密碼")
+
+    def test_grep_z11_folder_is_not_scanned(self):
+        other = self.tmp / "別處"
+        other.mkdir()
+        (other / ".env").write_text("x", encoding="utf-8")
+        d = self.grep(other)
+        self.assertEqual((d.decision, d.zone), ("pass", "Z11"), d)
+
+    # 35：指令
+    def test_35_shell_commands(self):
+        (self.client / ".env").write_text("K=1", encoding="utf-8")
+        r = str(self.client).replace("\\", "/")
+        self.assert_deny(self.decide("Bash", f'grep -r 報價 "{r}"'), "credential_inside", "Z9", ".env")
+        self.assert_deny(self.decide("PowerShell", f'Select-String -Path "{r}" -Pattern 報價'), "credential_inside", "Z9")
+        self.assert_deny(self.decide("Bash", f'cd "{r}" && cat *'), "credential_inside", "Z9")
+        self.assert_deny(self.decide("Bash", f'cd "{r}" && cat id_rsa'), "credential", contains="id_rsa")
+        self.assert_deny(self.decide("Bash", "cat id_rsa"), "credential", contains="id_rsa")
+        self.assert_deny(self.decide("Bash", "cat id_rsa", cwd=self.V / "AI 產出"), "credential")
+        self.assert_deny(self.decide("Bash", "type .env"), "credential", contains=".env")
+        self.assert_deny(self.decide("PowerShell", "Get-Content 網站密碼.txt"), "credential", contains="網站密碼.txt")
+        self.assert_deny(self.decide("Bash", "cat sub\\dir\\PASSWORD.TXT"), "credential", contains="PASSWORD.TXT")
+
+    def test_35_write_command_over_folder_is_not_scanned(self):
+        (self.client / ".env").write_text("K=1", encoding="utf-8")
+        r = str(self.client).replace("\\", "/")
+        d = self.decide("Bash", f'rm -rf "{r}"')
+        self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
+        self.assertEqual(self.decide("Bash", f'ls "{r}/子夾不存在"').decision, "pass")
+
+    def test_35_folder_read_without_credentials_still_pass(self):
+        r = str(self.client).replace("\\", "/")
+        self.assertEqual(self.decide("Bash", f'ls "{r}"').decision, "pass")
+        self.assertEqual(self.decide("Bash", f'grep -r x "{r}"').decision, "pass")
+
+    # 36：走訪上限
+    def test_36_scan_limit_from_config_fail_closed(self):
+        (self.client / "b.txt").write_text("x", encoding="utf-8")
+        (self.client / "c.txt").write_text("x", encoding="utf-8")
+        cfg = self.V / ".system" / "config.json"
+        cfg.write_text('{"credential_scan_max_entries": 1}', encoding="utf-8")
+        d = self.grep(self.client)
+        self.assert_deny(d, "credential_scan_limit", "Z9", "範圍太大")
+        d = self.decide("Bash", f'ls "{self.client}"')
+        self.assert_deny(d, "credential_scan_limit", "Z9", "範圍太大")
+        cfg.unlink()
+        self.assertEqual((self.grep(self.client).decision, self.grep(self.client).zone), ("allow", "Z9"))
+
+    # 37：上層夾名不算
+    def test_37_segments_above_source_root_are_ignored(self):
+        root = self.tmp / "secretary" / "來源"
+        root.mkdir(parents=True)
+        (root / "a.txt").write_text("x", encoding="utf-8")
+        import json
+        src = self.V / ".system" / "sources.json"
+        data = json.loads(src.read_text(encoding="utf-8"))
+        data["sources"].append({"id": "src-ab12", "alias": "祕書", "spec": str(root).replace("\\", "/"), "excludes": []})
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        d = self.decide("Read", root / "a.txt")
+        self.assertEqual((d.decision, d.zone, d.reason_code), ("allow", "Z9", ""), d)
+        self.assert_deny(self.decide("Read", root / "password.txt"), "credential", "Z9", "password.txt")
+        self.assert_deny(self.decide("Write", root / "password.txt"), "credential", "Z9")
+        d = self.decide("Read", self.tmp / "secretary" / "docs" / "a.txt")  # 沒登記：只比最後一段
+        self.assertEqual((d.decision, d.zone), ("pass", "Z11"), d)
+        self.assert_deny(self.decide("Read", "~/.ssh/id_rsa"), "credential", "Z11", "id_rsa")
+        self.assert_deny(self.decide("Read", self.tmp / "secretary" / "docs" / ".env"), "credential", "Z11")
+        self.assertEqual(self.decide("Bash", f'ls "{root.as_posix()}"').decision, "pass")  # 反斜線在 bash 是跳脫，照其他測試用正斜線
+
+    def test_37_vault_segments_only_below_vault(self):
+        hidden = self.tmp / "secrets"
+        hidden.mkdir()
+        shutil.copytree(self.V, hidden / "vault")
+        v2 = hidden / "vault"
+        d = guard.decide(payload("Read", v2 / "案子" / "信義王" / "信義王.md", v2))
+        self.assertEqual((d.decision, d.zone), ("allow", "Z1"), d)
+        d = guard.decide(payload("Write", v2 / "AI 產出" / "password.docx", v2))
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential"), d)
 
 
 if __name__ == "__main__":

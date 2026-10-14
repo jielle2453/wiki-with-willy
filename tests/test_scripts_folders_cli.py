@@ -96,18 +96,56 @@ class Add(Base):
         self.assertIsInstance(data["warnings"], list)
 
     def test_alias_rules(self):
+        """驗收 13、38（M2）：沒登記過的夾配各種別名，理由講別名不是重疊；結尾空白與點去掉；重複不分大小寫。"""
         self.add("../raw/客戶案件")
         r = self.add("../raw/客戶案件")  # 同一夾第二次：先碰到重疊，也是 exit 3
         self.assertEqual(r.returncode, 3)
-        (self.raw / "另一個").mkdir()
-        for alias in ("客戶案件", "收件匣", "AI 產出", "知識庫", "a/b", "a\\b", ""):
+        self.assertIn("重疊", r.stdout)
+        (self.raw / "別名測試").mkdir()
+        bad = ("客戶案件", "客戶案件 ", "客戶案件.", "收件匣", "收件匣 ", "收件匣.", "AI 產出", "ai 產出", "知識庫",
+               "a/b", "a\\b", "", " ", ".", "..", "a:b", 'a"b', "a<b", "a>b", "a|b", "a?b", "a*b", "a\tb")
+        for alias in bad:
             with self.subTest(alias=alias):
-                r = self.add("../raw/另一個", "--alias", alias)
+                r = self.add("../raw/別名測試", "--alias", alias)
                 self.assertEqual(r.returncode, 3, r.stdout)
-                self.assertTrue(r.stdout.splitlines()[0])
-        r = self.add("../raw/另一個", "--alias", "另名")
+                first = r.stdout.splitlines()[0]
+                self.assertIn("別名", first)
+                self.assertNotIn("重疊", first)
+        self.assertEqual(len(self.sources()["sources"]), 1)
+        r = self.add("../raw/別名測試", "--alias", "另名 ")
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.sources()["sources"][-1]["alias"], "另名")
+        self.assertIn("「另名」", r.stdout)
+        (self.raw / "再一個").mkdir()
+        r = self.add("../raw/再一個", "--alias", "Abc")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        (self.raw / "又一個").mkdir()
+        r = self.add("../raw/又一個", "--alias", "abc")
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("別名", r.stdout.splitlines()[0])
+
+    def test_40_broken_sources_json_exit_3_without_traceback(self):
+        src = self.V / ".system" / "sources.json"
+        for text in ('{"sources": {}}', "{bad json", "[]"):
+            src.write_text(text, encoding="utf-8")
+            for args in (("add", "../raw/客戶案件"), ("exclude", "../raw/行政/薪資", "--kind", "hidden"), ("list",)):
+                with self.subTest(text=text, cmd=args[0]):
+                    r = self.folders(*args)
+                    self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                    self.assertTrue(r.stdout.splitlines()[0].strip())
+                    self.assertNotIn("Traceback", r.stdout + r.stderr)
+            self.assertEqual(src.read_text(encoding="utf-8"), text)
+
+    def test_44_two_concurrent_adds_both_land(self):
+        (self.raw / "甲").mkdir()
+        (self.raw / "乙").mkdir()
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT), USERPROFILE=str(self.tmp / "home"), HOME=str(self.tmp / "home"))
+        procs = [subprocess.Popen([sys.executable, str(KB), "folders", "add", f"../raw/{name}"], cwd=str(self.V), env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE) for name in ("甲", "乙")]
+        outs = [p.communicate() for p in procs]
+        for p, (out, err) in zip(procs, outs):
+            self.assertEqual(p.returncode, 0, out.decode("utf-8", "replace") + err.decode("utf-8", "replace"))
+        self.assertEqual(sorted(s["alias"] for s in self.sources()["sources"]), ["乙", "甲"])
 
     def test_rejections_exit_3_with_reason_on_first_line(self):
         (self.tmp / "檔.txt").write_text("x", encoding="utf-8")
@@ -272,6 +310,31 @@ class Exclude(Base):
         r = self.exclude("../raw/行政/舊檔", "--kind", "secret")
         self.assertEqual(r.returncode, 2)
 
+    def test_39_entry_without_id_is_found_by_alias_and_missing_entry_exit_3(self):
+        src = self.V / ".system" / "sources.json"
+        data = self.sources()
+        del data["sources"][0]["id"]
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        r = self.exclude("../raw/行政/請款", "--kind", "unused")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.sources()["sources"][0]["excludes"][0]["spec"], "請款")
+        data["sources"] = [{"spec": "../raw/行政", "excludes": []}]  # 沒 id 也沒 alias：找不到就不存檔
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        before = src.read_text(encoding="utf-8")
+        r = self.exclude("../raw/行政/舊檔", "--kind", "unused")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("找不到", r.stdout.splitlines()[0])
+        self.assertEqual(src.read_text(encoding="utf-8"), before)
+
+    def test_42_duplicate_message_prints_original_case_path(self):
+        self.exclude("../raw/行政/薪資", "--kind", "hidden")
+        r = self.exclude("../raw/行政/薪資/s.xlsx", "--kind", "hidden")
+        self.assertEqual(r.returncode, 3)
+        first = r.stdout.splitlines()[0]
+        self.assertIn("已經在排除裡", first)
+        self.assertIn((self.raw / "行政" / "薪資").as_posix(), first)
+        self.assertNotIn("\\", first)
+
     def test_guard_denies_after_exclude(self):
         self.exclude("../raw/行政/薪資", "--kind", "hidden", "--reason", "薪資個資")
         r = run_kb("guard", "decide", "--tool", "Read", "--path", str(self.raw / "行政" / "薪資" / "s.xlsx"), cwd=self.V)
@@ -309,7 +372,9 @@ class List(Base):
         self.add("../raw/客戶案件")
         os.rename(self.raw / "客戶案件", self.raw / "改名")
         r = self.list()
-        self.assertTrue(r.stdout.splitlines()[0].endswith("（這台電腦找不到）"), r.stdout)
+        first = r.stdout.splitlines()[0]
+        self.assertTrue(first.endswith("（這台電腦找不到）"), r.stdout)
+        self.assertIn((self.raw / "客戶案件").as_posix(), first)  # 驗收 42：原始大小寫
         data = json.loads(self.list("--json").stdout)
         self.assertFalse(data["sources"][0]["exists"])
         os.rename(self.raw / "改名", self.raw / "客戶案件")

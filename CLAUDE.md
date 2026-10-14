@@ -14,11 +14,11 @@
 | `.claude/settings.json` | repo 內的權限：只放行測試與 `kb.py` |
 | `README.md` `CHANGELOG.md` `LICENSE` | 給使用者的說明、一版一段的變更、MIT |
 | `.gitattributes` `.gitignore` | 行尾一律 LF；不進 repo 的東西 |
-| `config/defaults.json` | 門檻與預設數字，每個鍵旁一個 `_why_<鍵>`；`schema_version`、`big_change_synthesis_max`、`source_spec_max_up` |
+| `config/defaults.json` | 門檻與預設數字，每個鍵旁一個 `_why_<鍵>`；`schema_version`、`big_change_synthesis_max`、`source_spec_max_up`、`credential_scan_max_entries` |
 | `scripts/kb.py` | 唯一 CLI 入口（D-013）。不動 `sys.path` |
 | `scripts/kb/cli.py` | argparse 主程式；子命令註冊表 `COMMANDS` |
 | `scripts/kb/version.py` | 子命令 `version` |
-| `scripts/kb/guard.py` | 守門判斷：`find_vault`、`classify`、`decide`，決策表 `ZONES`（Z1／Z3／Z5 多一欄 `shell_write`）；憑證檔名樣式 `CREDENTIAL_PATTERNS`、`is_credential` 在區之前擋、關不掉（D-079）。純函式，hook 與 CLI 共用 |
+| `scripts/kb/guard.py` | 守門判斷：`find_vault`、`classify`、`decide`，決策表 `ZONES`（Z1／Z3／Z5 多一欄 `shell_write`）；憑證三道在區之前、關不掉（D-079 補）：`credential_hit`（段）、`token_hit`（裸 token）、`folder_scan`（資料夾範圍走訪）。純函式，hook 與 CLI 共用 |
 | `scripts/kb/guard_cli.py` | 子命令 `guard decide`：模擬一次判斷，查「為什麼擋」，不留痕、不備份 |
 | `scripts/kb/versions.py` | 子命令 `versions list`／`revert`／`delete-outputs`：列回合、退回最近一次、刪已退回回合留著的成品（D-074、D-011） |
 | `scripts/kb/turn_cli.py` | 子命令 `turn current`／`approve`：看目前回合、解除綜合卡張數上限（D-075） |
@@ -31,6 +31,7 @@
 | `scripts/kb/_lib/inventory.py` | 清冊最小版（D-076）：`.system/inventory.json`，`register_output`、`outputs_of_turn`、`set_status` |
 | `scripts/kb/_lib/cmdparse.py` | 指令字串解析：`extract_paths`、`is_write`、`is_single_plugin_call` |
 | `scripts/kb/_lib/sources.py` | 讀 `.system/sources.json`，`lookup` 查登記／排除；`load_raw`／`save` 給 `kb folders` 改寫原始 dict，`new_id`、`RESERVED_ALIASES` |
+| `scripts/kb/_lib/credentials.py` | 憑證檔名樣式 `CREDENTIAL_PATTERNS`（寫死、不讀 config）、`match_segment`、`scan_dir`（守門走訪、有上限）、`scan_all`（`kb folders add` 數檔與收憑證清單） |
 | `scripts/kb/_lib/ledger.py` | 留痕：`ledger.tsv` 事件帳、`guard-status` 每日一次、`hook-errors.log` |
 | `hooks/hooks.json` | 三個 hook 的註冊：UserPromptSubmit、PreToolUse、PostToolUse |
 | `hooks/guard.py` | PreToolUse 守門入口：讀 stdin、呼叫 `kb.guard.decide`，寫 Z1／Z3／Z5 放行前先 `turn.before_write` 備份，印 allow／deny 或不印，永遠 exit 0 |

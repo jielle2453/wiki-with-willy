@@ -1,7 +1,7 @@
 """kb init <路徑>：從 skeleton/ 建客戶端總資料夾的五區骨架加 .system/sources.json（D-077、D-080）。
 
 缺的才建，既有檔一律不碰（I-066）；.gitkeep 只為了讓 git 留住空夾，不複製；.system/ 不在骨架裡，由這裡建。
-目標的上層已是知識庫就拒絕（I-054）。CLAUDE.md、.claude/、.system/ 在 Windows 設隱藏屬性，設不成只印一句。
+目標的上層已是知識庫就拒絕（I-054，用 guard.find_vault 找）。CLAUDE.md、.claude/、.system/ 在 Windows 設隱藏屬性，設不成只印一句。
 不開回合、不備份、不寫 ledger：init 之前還沒有知識庫。
 """
 import argparse
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 
+from kb import guard
 from kb._lib import sources as sources_lib
 from kb._lib.io import read_text, write_text_atomic
 from kb._lib.paths import plugin_root
@@ -48,10 +49,9 @@ def plan_items():
 
 
 def _vault_above(p):
-    for d in p.parents:
-        if (d / sources_lib.SOURCES_REL).is_file():
-            return d
-    return None
+    """p 的上層有沒有知識庫（p 自己有算「補齊」，不算）。回原始大小寫的路徑或 None。"""
+    found = guard.find_vault(str(p.parent))
+    return Path(os.path.realpath(str(found))) if found is not None else None
 
 
 def _hide(path):
@@ -89,6 +89,10 @@ def run(args):
     existed = (p / sources_lib.SOURCES_REL).is_file()
     status = [(rel, kind, (p / rel).exists()) for rel, kind in plan_items()]
     if args.check:
+        if as_json:  # L8
+            print(json.dumps({"vault": str(p), "would_create": [rel for rel, _k, have in status if not have],
+                              "existing": [rel for rel, _k, have in status if have]}, ensure_ascii=False))
+            return 0
         for rel, kind, have in status:
             print(f"{'已有' if have else '會建'} {_label(rel, kind)}")
         return 0

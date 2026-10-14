@@ -1,21 +1,26 @@
 """kb folders add／exclude／list：登記來源資料夾、排除裡面的夾或檔、列登記表（D-077、D-021 補、D-042、D-073）。
 
 add 先過拒絕條件（不存在、整顆磁碟、系統夾、跟總資料夾或既有來源互相包含、另一個知識庫，I-050、I-054），
-再數份數並列出憑證樣式的檔（只數、不讀內容），spec 用 paths.compress_spec 壓成可攜；改 sources.json 前先備進目前回合（D-074）。
-exclude 的對象要真的存在（I-033），spec 相對該來源根；兩種 kind 守門都不讀（D-024），清殘留延後。
---check 只印報告不寫；拒絕一律第一行原因、exit 3；argparse 參數錯 exit 2。不碰 settings.json（D-079）。
+再數份數並列出憑證樣式的檔（credentials.scan_all，只數、不讀內容），spec 用 paths.compress_spec 壓成可攜；
+讀、檢查重疊與別名、備份、寫四步在同一把 FileLock 裡（I-080），改 sources.json 前先備進目前回合（D-074）。
+exclude 的對象要真的存在（I-033），spec 相對該來源根；寫回時有 id 用 id、沒有用 alias，找不到就不存檔；兩種 kind 守門都不讀（D-024）。
+--check 只印報告不寫；拒絕一律第一行原因、exit 3；sources.json 壞掉也是一行原因 exit 3；argparse 參數錯 exit 2。
+印給人看的路徑用原始大小寫。往上找知識庫一律 guard.find_vault。不碰 settings.json（D-079）。
 """
 import argparse
+import contextlib
 import json
 import os
+import re
 from datetime import date
 from pathlib import Path
 
 from kb import guard
-from kb._lib import config, turn
+from kb._lib import config, credentials, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
-from kb._lib.paths import compress_spec, inside, is_abs_spec, normalize, resolve_spec
+from kb._lib.io import FileLock, write_json_atomic
+from kb._lib.paths import compress_spec, inside, is_abs_spec, normalize
 
 CLI_LOCK_TIMEOUT = 30
 NOT_IN_VAULT = "這裡不是知識庫；到知識庫裡執行，或加 --vault"
@@ -23,6 +28,9 @@ HOME_TOP_FOLDERS = ("Desktop", "Documents", "Downloads", "桌面", "文件", "�
 CREDENTIAL_LIST_MAX = 10
 KIND_TEXT = {"hidden": "不想讓 AI 看到", "unused": "用不到"}
 HIDDEN_TAIL = "之前讀過的已送過雲端；這版還沒有卡和備份要清。"
+ALIAS_BAD_CHARS = '<>:"/\\|?*'
+_ENV_VAR = re.compile(r"\$\{([^}]+)\}")
+_DRIVE_ABS = re.compile(r"^[a-zA-Z]:/")
 
 
 def add_arguments(sub):
@@ -56,11 +64,30 @@ def _overlap(a, b):
     return inside(a, b) or inside(b, a)
 
 
-def _vault_at_or_above(p):
-    for d in [p, *p.parents]:
-        if (d / sources_lib.SOURCES_REL).is_file():
-            return d
-    return None
+def _realcase(p):
+    """給人看的路徑：存在就用磁碟上的大小寫（realpath），否則原樣；一律正斜線。"""
+    s = str(p)
+    try:
+        if os.path.exists(s):
+            s = os.path.realpath(s)
+    except (OSError, ValueError):
+        pass
+    return s.replace("\\", "/")
+
+
+def _display_path(spec, base):
+    """從 spec 原文展開成給人看的路徑（原始大小寫），不經 normalize。展不開的環境變數回 None。"""
+    s = str(spec).strip()
+    if "${" in s:
+        if any(not os.environ.get(name) for name in _ENV_VAR.findall(s)):
+            return None
+        s = _ENV_VAR.sub(lambda m: os.environ[m.group(1)], s)
+    if s == "~" or s.startswith("~/") or s.startswith("~\\"):
+        s = os.path.expanduser("~") + s[1:]
+    s = s.replace("\\", "/")
+    if not (_DRIVE_ABS.match(s) or s.startswith("/")):
+        s = str(base).replace("\\", "/").rstrip("/") + "/" + s
+    return _realcase(os.path.normpath(s))
 
 
 def _reject(reason):
@@ -68,36 +95,22 @@ def _reject(reason):
     return 3
 
 
+def _clean_alias(alias):
+    return str(alias).rstrip(" .")
+
+
 def _alias_problem(alias, raw_sources):
-    if not alias.strip():
-        return "別名不能是空的"
-    if "/" in alias or "\\" in alias:
-        return f"別名「{alias}」不能含斜線"
-    if alias in sources_lib.RESERVED_ALIASES:
-        return f"「{alias}」是保留字，檔案索引裡留給知識庫自己用；請用 --alias 換一個"
-    if any(s.get("alias") == alias for s in raw_sources):
-        return f"別名「{alias}」已經有了；請用 --alias 換一個"
+    """M2：空、.、..、Windows 不允許的字元或控制字元、保留字、跟既有別名重複（不分大小寫）。alias 已去掉結尾空白與點。"""
+    if alias in ("", ".", ".."):
+        return "別名不能是空的、「.」或「..」"
+    if any(ch in ALIAS_BAD_CHARS or ord(ch) < 32 for ch in alias):
+        return f"別名「{alias}」不能含 {' '.join(ALIAS_BAD_CHARS)} 或控制字元"
+    low = alias.lower()
+    if low in {r.lower() for r in sources_lib.RESERVED_ALIASES}:
+        return f"別名「{alias}」是保留字，檔案索引裡留給知識庫自己用；請用 --alias 換一個"
+    if any(str(s.get("alias", "")).lower() == low for s in raw_sources):
+        return f"別名「{alias}」已經有了（不分大小寫）；請用 --alias 換一個"
     return None
-
-
-def _survey(t):
-    """os.walk 容錯版（I-021）：只數檔案份數、收集憑證樣式的相對路徑；走到另一個知識庫就回它。不讀內容、不跟隨符號連結。"""
-    files, creds = 0, []
-    marker = sources_lib.SOURCES_REL.split("/")
-
-    def onerror(_e):
-        pass
-
-    for dirpath, _dirnames, filenames in os.walk(str(t), onerror=onerror):
-        if dirpath != str(t) and os.path.isfile(os.path.join(dirpath, *marker)):
-            return files, creds, dirpath
-        rel_dir = os.path.relpath(dirpath, str(t)).replace("\\", "/")
-        for name in filenames:
-            files += 1
-            rel = name if rel_dir == "." else f"{rel_dir}/{name}"
-            if guard.is_credential(rel):
-                creds.append(rel)
-    return files, creds, None
 
 
 def _home_n():
@@ -115,10 +128,15 @@ def _warnings(t, spec, files):
     return out
 
 
-def _backup_then_save(vault, data):
+def _sources_path(vault):
+    return Path(vault) / sources_lib.SOURCES_REL
+
+
+def _backup_then_write(vault, data):
+    """呼叫端持有 sources.json 的鎖：先備進目前回合（D-074），再原子寫回。"""
     turn_id = turn.current(vault)["turn"]
     turn.backup(vault, sources_lib.SOURCES_REL, turn_id)
-    sources_lib.save(vault, data)
+    write_json_atomic(_sources_path(vault), data)
 
 
 def _add(vault, args, as_json):
@@ -135,29 +153,30 @@ def _add(vault, args, as_json):
             return _reject(f"系統資料夾（{s}）不能當來源，也不能包住它")
     if _overlap(tn, normalize(str(vault), None)):
         return _reject("總資料夾和來源不能互相包含")
-    raw = sources_lib.load_raw(vault)
-    resolved = sources_lib.Sources(vault, raw)
-    for e in resolved.entries:
-        if _overlap(tn, e["root"]):
-            return _reject(f"和既有來源「{e['alias']}」重疊，同一份檔會有兩張卡；要細分請在來源裡建子夾")
-    other = _vault_at_or_above(t)
+    other = guard.find_vault(str(t))
     if other is not None:
-        return _reject(f"{other} 是另一個知識庫，不能當來源")
-    alias = args.alias if args.alias is not None else t.name
-    problem = _alias_problem(alias, raw["sources"])
-    if problem:
-        return _reject(problem)
-    files, creds, inner = _survey(t)
+        return _reject(f"{_realcase(other)} 是另一個知識庫，不能當來源")
+    alias = _clean_alias(args.alias if args.alias is not None else t.name)
+    creds, files, _truncated, inner = credentials.scan_all(t, stop_marker=sources_lib.SOURCES_REL)
     if inner is not None:
-        return _reject(f"裡面有另一個知識庫 {inner}，不能當來源")
+        return _reject(f"裡面有另一個知識庫 {_realcase(inner)}，不能當來源")
     spec = compress_spec(t, vault, config.get(vault, "source_spec_max_up"))
     warnings = _warnings(t, spec, files)
 
     entry_id = None
-    if not args.check:
-        entry_id = sources_lib.new_id(s.get("id") for s in raw["sources"])
-        raw["sources"].append({"id": entry_id, "alias": alias, "spec": spec, "excludes": []})
-        _backup_then_save(vault, raw)
+    lock = contextlib.nullcontext() if args.check else FileLock(_sources_path(vault))
+    with lock:  # L5：讀、檢查重疊與別名、備份、寫在同一把鎖裡
+        raw = sources_lib.load_raw(vault)
+        for e in sources_lib.Sources(vault, raw).entries:
+            if _overlap(tn, e["root"]):
+                return _reject(f"和既有來源「{e['alias']}」重疊，同一份檔會有兩張卡；要細分請在來源裡建子夾")
+        problem = _alias_problem(alias, raw["sources"])
+        if problem:
+            return _reject(problem)
+        if not args.check:
+            entry_id = sources_lib.new_id(s.get("id") for s in raw["sources"])
+            raw["sources"].append({"id": entry_id, "alias": alias, "spec": spec, "excludes": []})
+            _backup_then_write(vault, raw)
 
     if as_json:
         print(json.dumps({"id": entry_id, "alias": alias, "spec": spec, "path": str(t), "files": files,
@@ -173,32 +192,46 @@ def _add(vault, args, as_json):
     return 0
 
 
+def _raw_entry(raw, best):
+    """M3：寫回時找原始條目：有 id 用 id，沒有用 alias；都找不到回 None。"""
+    if best["id"]:
+        for s in raw["sources"]:
+            if s.get("id") == best["id"]:
+                return s
+        return None
+    for s in raw["sources"]:
+        if not s.get("id") and s.get("alias") == best["alias"]:
+            return s
+    return None
+
+
 def _exclude(vault, args, as_json):
     t = Path(args.path).resolve()
     if not t.exists():
         return _reject(f"找不到 {t}；排除的對象要真的存在")
     tn = normalize(str(t), None)
-    raw = sources_lib.load_raw(vault)
-    resolved = sources_lib.Sources(vault, raw)
-    best = None
-    for e in resolved.entries:
-        if inside(tn, e["root"]) and (best is None or len(e["root"]) > len(best["root"])):
-            best = e
-    if best is None:
-        return _reject(f"{t} 不在任何登記的來源裡；先用 folders add 登記")
-    if tn == best["root"]:
-        return _reject("整個來源的拿掉這版還沒有")
-    for ex in best["excludes"]:
-        if inside(tn, ex["root"]):
-            return _reject(f"已經在排除裡：{ex['root']}")
-    rel = os.path.relpath(str(t), os.path.realpath(best["root"])).replace("\\", "/")
-    added = date.today().isoformat()
-    row = {"spec": rel, "kind": args.kind, "reason": args.reason or "", "added": added}
-    for s in raw["sources"]:
-        if s.get("id") == best["id"] and s.get("alias") == best["alias"]:
-            s.setdefault("excludes", []).append(row)
-            break
-    _backup_then_save(vault, raw)
+    with FileLock(_sources_path(vault)):
+        raw = sources_lib.load_raw(vault)
+        resolved = sources_lib.Sources(vault, raw)
+        best = None
+        for e in resolved.entries:
+            if inside(tn, e["root"]) and (best is None or len(e["root"]) > len(best["root"])):
+                best = e
+        if best is None:
+            return _reject(f"{t} 不在任何登記的來源裡；先用 folders add 登記")
+        if tn == best["root"]:
+            return _reject("整個來源的拿掉這版還沒有")
+        for ex in best["excludes"]:
+            if inside(tn, ex["root"]):
+                return _reject(f"已經在排除裡：{_realcase(ex['root'])}")
+        entry = _raw_entry(raw, best)
+        if entry is None:
+            return _reject(f"sources.json 裡找不到「{best['alias']}」這筆，沒有寫入")
+        rel = os.path.relpath(str(t), os.path.realpath(best["root"])).replace("\\", "/")
+        added = date.today().isoformat()
+        row = {"spec": rel, "kind": args.kind, "reason": args.reason or "", "added": added}
+        entry.setdefault("excludes", []).append(row)
+        _backup_then_write(vault, raw)
     if as_json:
         print(json.dumps({"source_id": best["id"], "alias": best["alias"], **row}, ensure_ascii=False))
         return 0
@@ -208,29 +241,18 @@ def _exclude(vault, args, as_json):
     return 0
 
 
-def _display(root):
-    """展開後的路徑給人看：存在就用磁碟上的大小寫、正斜線；回 (字串或 None, 存不存在)。"""
-    if root is None:
-        return None, False
-    if os.path.exists(root):
-        return os.path.realpath(root).replace("\\", "/"), True
-    return root, False
-
-
 def _list(vault, as_json):
     raw = sources_lib.load_raw(vault)
-    vn = normalize(str(vault), None)
     out = []
     for s in raw["sources"]:
         spec = s.get("spec", "")
-        root = resolve_spec(spec, vn) if spec else None
-        path, exists = _display(root)
+        path = _display_path(spec, vault) if spec else None
+        exists = bool(path) and os.path.exists(path)
         excludes = []
         for ex in s.get("excludes", []) or []:
-            ex_root = resolve_spec(ex.get("spec", ""), root) if root and ex.get("spec") else None
-            ex_path, ex_exists = _display(ex_root)
+            ex_path = _display_path(ex.get("spec", ""), path) if path and ex.get("spec") else None
             excludes.append({"spec": ex.get("spec", ""), "kind": ex.get("kind", ""), "reason": ex.get("reason", ""),
-                             "added": ex.get("added", ""), "path": ex_path, "exists": ex_exists})
+                             "added": ex.get("added", ""), "path": ex_path, "exists": bool(ex_path) and os.path.exists(ex_path)})
         out.append({"id": s.get("id", ""), "alias": s.get("alias", ""), "spec": spec, "path": path, "exists": exists,
                     "excludes": excludes})
     if as_json:
@@ -260,8 +282,12 @@ def run(args):
         return 3
     kio.LOCK_TIMEOUT = CLI_LOCK_TIMEOUT
     as_json = getattr(args, "json", False)
-    if args.folders_command == "add":
-        return _add(vault, args, as_json)
-    if args.folders_command == "exclude":
-        return _exclude(vault, args, as_json)
-    return _list(vault, as_json)
+    try:
+        if args.folders_command == "add":
+            return _add(vault, args, as_json)
+        if args.folders_command == "exclude":
+            return _exclude(vault, args, as_json)
+        return _list(vault, as_json)
+    except ValueError as e:  # L7：sources.json 壞掉或格式不對
+        print(f"{sources_lib.SOURCES_REL} 讀不了，請先修好它：{type(e).__name__}: {e}")
+        return 3

@@ -153,7 +153,11 @@ class MaskSecrets(unittest.TestCase):
         self.assertEqual(m("幫我登入 ERP，帳號 jie 密碼 abc123"), "幫我登入 ERP，帳號███")
         self.assertEqual(m("我的密碼是 Secret!23"), "我的密碼███")
         self.assertIn("███", m("門禁密碼多少"))
-        self.assertEqual(m("第一行密碼 a\n第二行沒有"), "第一行密碼███\n第二行沒有")
+        # 第七輪 X4：關鍵詞與值之間允許一個換行；子句尾只有全形標點與連續兩個換行
+        self.assertEqual(m("password:\nhunter2"), "password███")
+        self.assertEqual(m("密碼\nabc123"), "密碼███")
+        self.assertEqual(m("密碼：abc\n\n另外"), "密碼███\n\n另外")
+        self.assertEqual(m("第一行密碼 a\n第二行沒有，好"), "第一行密碼███，好")
 
     def test_keywords_case_insensitive_and_bare_keyword_untouched(self):
         m = credentials.mask_secrets

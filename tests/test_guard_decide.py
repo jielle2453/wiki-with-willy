@@ -659,27 +659,26 @@ class CredentialRound1(unittest.TestCase):
     def test_52_read_range_scanned_even_when_command_writes(self):
         (self.client / ".env").write_text("x", encoding="utf-8")
         client_n = paths_normalize(str(self.client), None)
-        for cmd in ("grep -r TOKEN . | tee /tmp/hits.txt", "grep -r TOKEN > /tmp/hits.txt", "cat * > /tmp/all.txt", "tar czf ../bak.tgz ."):
+        for cmd in ("grep -r TOKEN . | tee /tmp/hits.txt", "grep -r TOKEN > /tmp/hits.txt", "cat * > /tmp/all.txt"):
             with self.subTest(cmd=cmd):
                 info = self.analyze(cmd)
                 self.assertIn(client_n, info["read_dirs"], (cmd, info))
-                self.assertNotIn(client_n, info["write_targets"], (cmd, info))
                 d = self.decide("Bash", self.in_client(cmd))
                 self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
         info = self.analyze("ls . | tee /tmp/a")
         self.assertNotIn(client_n, info["write_targets"], info)
         d = self.decide("Bash", self.in_client("ls . | tee /tmp/a"))
         self.assertNotEqual(d.reason_code, "protected", d)
-        # 第五輪 Q8：區判斷的寫入目標也用這題的定義；在總資料夾裡 . 是讀取範圍，tee 與 tar 的輸出在知識庫外
-        for cmd in ("ls . | tee /tmp/a", "grep -r X . | tee /tmp/h", "tar czf ../bak.tgz ."):
+        # 第七輪 Q8 重定：只保「. 在讀取段不是 protected」；一段有導向或寫入動詞就整段寫入，打包類在總資料夾裡擋就擋
+        for cmd in ("ls . | tee /tmp/a", "grep -r X . | tee /tmp/h"):
             with self.subTest(cmd=cmd):
                 d = self.decide("Bash", cmd)
                 self.assertNotEqual(d.reason_code, "protected", d)
                 self.assertEqual(d.decision, "pass", d)
-        d = self.decide("Bash", "echo x > CLAUDE.md")  # 導向目標照舊是寫入
-        self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
-        d = self.decide("Bash", "rm -rf .")
-        self.assertEqual(d.decision, "deny", d)
+        for cmd in ("tar czf ../bak.tgz .", "echo x > CLAUDE.md", "rm -rf .", "cat CLAUDE.md > /tmp/c.md"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
 
     # 第五輪 V1：PowerShell 的 cmdlet 會展開引號裡的 *；Bash 不會
     def test_64_powershell_quoted_wildcards_expand(self):
@@ -766,21 +765,60 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("Bash", f'cd "{self.raw.as_posix()}"/行*/薪資 && ls')  # 展開後是排除夾：交 Z10
         self.assertEqual((d.decision, d.zone), ("deny", "Z10"), d)
 
-    # 第六輪 打包例外收窄：只對打包的輸入；tar x／-C、cp／mv 的第二個參數是寫入目標；動詞以 token 比
-    def test_73_archive_exception_only_for_pack_inputs(self):
+    # 第七輪：寫入判斷回到保守預設——一段有導向或寫入動詞，整段路徑都是寫入目標；打包類在總資料夾裡擋就擋
+    def test_73_write_stage_makes_every_path_a_write_target(self):
         for tool, cmd in (("Bash", "tar xzf /tmp/a.tgz -C ."), ("Bash", "cp C:/tmp/zip/a.txt ."), ("PowerShell", "Copy-Item C:/tmp/a.txt ."),
-                          ("Bash", "mv /tmp/x.md ."), ("Bash", "tar -xf /tmp/a.tar -C ."), ("Bash", "unzip /tmp/a.zip -d .")):
+                          ("Bash", "mv /tmp/x.md ."), ("Bash", "tar -xf /tmp/a.tar -C ."), ("Bash", "unzip /tmp/a.zip -d ."),
+                          ("Bash", "tar -C . -xzf /tmp/a.tgz"), ("Bash", "tar czf ../bak.tgz ."), ("Bash", "tar -czf /tmp/b.tgz .")):
             with self.subTest(cmd=cmd):
                 d = self.decide(tool, cmd)
                 self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
-        for tool, cmd in (("Bash", "tar czf /tmp/b.tgz 收件匣"), ("Bash", "tar -czf /tmp/b.tgz ."), ("Bash", "zip -r /tmp/b.zip 收件匣"),
-                          ("Bash", "7z a /tmp/b.7z 收件匣"), ("PowerShell", "Compress-Archive -Path 收件匣 -DestinationPath /tmp/b.zip")):
+        for tool, cmd in (("Bash", "tar czf /tmp/b.tgz 收件匣"), ("Bash", "zip -r /tmp/b.zip 收件匣"), ("Bash", "7z a /tmp/b.7z 收件匣"),
+                          ("PowerShell", "Compress-Archive -Path 收件匣 -DestinationPath /tmp/b.zip")):
             with self.subTest(cmd=cmd):
                 d = self.decide(tool, cmd)
-                self.assertNotEqual(d.reason_code, "protected", d)
-                self.assertEqual(d.decision, "pass", d)
+                self.assertEqual((d.decision, d.zone, d.reason_code), ("deny", "Z4", "inbox"), d)  # 收件匣在寫入段：Z4 寫入欄，接受誤擋
         info = self.analyze("cp C:/tmp/zip/a.txt .", cwd=self.V)
         self.assertIn(paths_normalize(str(self.V), None), info["write_targets"], info)
+        self.assertFalse(hasattr(guard, "_special_roles"))
+
+    # 第七輪 X1：mv 的來源也是寫入目標
+    def test_75_move_source_is_a_write_target(self):
+        a = (self.client / "a.txt").as_posix()
+        for tool, cmd in (("Bash", f'mv "{a}" /tmp/a.txt'), ("PowerShell", f'Move-Item -Path "{a}" -Destination /tmp/'),
+                          ("Bash", f'mv "{self.client.as_posix()}" /tmp/x')):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
+        d = self.decide("Bash", "mv .system/sources.json /tmp/s.json")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
+
+    # 第七輪 X2：-C／-t／-Destination 這些目標不再被當讀取
+    def test_76_targets_of_extract_copy_sync_are_write_targets(self):
+        r = self.client.as_posix()
+        for tool, cmd in (("Bash", f'tar -C "{r}" -xzf /tmp/x.tgz'), ("Bash", f'tar xf /tmp/x.tar --directory "{r}"'),
+                          ("Bash", f'cp -t "{r}" /tmp/t.txt'), ("PowerShell", f'Copy-Item -Destination "{r}" -Path /tmp/t.txt'),
+                          ("Bash", f'rsync -a --remove-source-files "{r}/" /tmp/t/'), ("Bash", f'robocopy "{r}" /tmp/t /MIR'),
+                          ("Bash", f'xcopy "{r}" /tmp/t /s'), ("PowerShell", f'Expand-Archive /tmp/x.zip -DestinationPath "{r}"'),
+                          ("PowerShell", f'Set-Content "{r}/n.txt" x'), ("PowerShell", f'Out-File -FilePath "{r}/n.txt"'),
+                          ("Bash", f'zip -r /tmp/b.zip "{r}"')):  # 旗標黏值（7z -o"…"）cmdparse 抽不到，B-026
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
+
+    # 第七輪 X3：單字母 /x 只在開關式指令或 PowerShell 當旗標；Bash 的 grep -r X /c 裡 /c 是 C 槽根
+    def test_77_slash_letter_is_a_switch_only_for_switch_commands(self):
+        for cmd in ("grep -r TODO /c", 'find /c -name "*.env"'):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual(d.decision, "deny", d)
+                self.assertIn(d.reason_code, ("excluded_inside", "credential_inside", "credential_scan_limit"), d)
+        d = self.decide("Bash", "cmd /c ver")
+        self.assertEqual(d.decision, "pass", d)
+        d = self.decide("PowerShell", "robocopy a b /e")
+        self.assertNotEqual(d.reason_code, "excluded_inside", d)
+        d = self.decide("Bash", "findstr /s TODO *.txt")
+        self.assertNotIn(d.reason_code, ("excluded_inside", "credential_scan_limit"), d)
 
     # 第五輪 V5：單字母 /x token 不當路徑、不走訪整顆磁碟
     def test_67_single_letter_slash_token_is_not_a_path(self):

@@ -42,7 +42,13 @@ class ExtractPaths(unittest.TestCase):
         self.assertEqual(cmdparse.extract_paths("cmd /c ver", CWD), [])
         self.assertEqual(cmdparse.extract_paths("findstr /s x", CWD), [])
         self.assertEqual(cmdparse.extract_paths("robocopy /e /s", CWD), [])
+        self.assertEqual(cmdparse.extract_paths("ls; cmd /c dir", CWD), [])
         self.assertIn(n("C:/x/a.txt"), cmdparse.extract_paths("cat /c/x/a.txt", CWD))  # 真正的 Git Bash 路徑照抽
+        # 第七輪 X3：只有開關式指令（cmd、findstr、robocopy、xcopy、dir、attrib、icacls）或 PowerShell 才把 /x 當旗標
+        self.assertIn(n("C:/"), cmdparse.extract_paths("grep -r TODO /c", CWD))
+        self.assertIn(n("C:/"), cmdparse.extract_paths('find /c -name "*.env"', CWD))
+        self.assertEqual(cmdparse.extract_paths("foo a /e", CWD, powershell=True), [])
+        self.assertIn(n("E:/"), cmdparse.extract_paths("foo a /e", CWD))
 
     def test_relative_path_joins_cwd(self):
         tmp, V, raw = make_vault()

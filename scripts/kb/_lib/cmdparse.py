@@ -21,7 +21,7 @@ DISCARD_OUTPUT = re.compile(r"\d?>\s*&\s*\d|\d?>\s*/dev/null|\d?>\s*\$null|\d?>\
 _W = r"(?<![.\w-])"
 WRITE_WORDS = re.compile(
     _W + r"(?:rm|mv|cp|tee|touch|mkdir|rmdir|del|erase|move|copy|ren|rename|truncate|dd|rsync|wget|tar|unzip|install|ln|"
-    r"chmod|chown|ri|rd|md|sc|ac|ni|cpi|mi|rni|iex)\b|"
+    r"chmod|chown|ri|rd|md|sc|ac|ni|cpi|mi|rni|iex|robocopy|xcopy|zip|7z|compress-archive|expand-archive)\b|"
     + _W + r"sed\s+(?:-[a-zA-Z]*i|--in-place)|" + _W + r"perl\s+-[a-zA-Z]*i|"
     + _W + r"curl\b[^|;&]*\s(?:-[a-zA-Z]*o|-O|--output)\b|-delete\b|"
     + _W + r"git\s+(?:clean|checkout|restore|reset|stash|rm|mv)\b|"
@@ -84,15 +84,20 @@ def norm_cmd(cmd):
     return cmd.lower().replace("\\\\", "/").replace("\\", "/")
 
 
+# Windows 開關式指令：只有這些（或 PowerShell）後面的單字母 /x 才是旗標；bash 的 grep -r X /c 裡 /c 是 C 槽根（第七輪 X3）
+SWITCH_VERBS = {"cmd", "cmd.exe", "findstr", "robocopy", "xcopy", "dir", "attrib", "icacls"}
+
+
 def _tokens(cmd):
-    """回 [(字串, 有引號, 緊接在 > 後面)]。引號裡的空白與符號保留；引號沒成對就一路到底。"""
-    out, buf, quote, quoted, after_redirect = [], [], None, False, False
+    """回 [(字串, 有引號, 緊接在 > 後面, 是不是一段的第一個 token)]。引號裡的空白與符號保留；引號沒成對就一路到底。"""
+    out, buf, quote, quoted, after_redirect, first = [], [], None, False, False, True
 
     def flush():
-        nonlocal buf, quoted, after_redirect
+        nonlocal buf, quoted, after_redirect, first
         if buf or quoted:
-            out.append(("".join(buf), quoted, after_redirect))
+            out.append(("".join(buf), quoted, after_redirect, first))
             after_redirect = False
+            first = False
         buf, quoted = [], False
 
     prev = ""
@@ -113,6 +118,7 @@ def _tokens(cmd):
                 after_redirect = True
             elif ch in _TOKEN_BREAK:
                 after_redirect = False
+                first = True  # ; | & ( ) 之後是新的一段
         else:
             buf.append(ch)
         prev = ch
@@ -120,14 +126,14 @@ def _tokens(cmd):
     return out
 
 
-def _candidates(text, quoted, after_redirect, after_cd):
+def _candidates(text, quoted, after_redirect, after_cd, switch_ok=False):
     """一個 token 裡可能是路徑的字串。夾在中間的絕對路徑先抽；沒有就看整個 token 像不像路徑。"""
     if not text or _URL.match(text):
         return []
     if text in (".", ".."):
         return [text]  # 不帶斜線的 . 與 .. 也是路徑，要經區判斷（骨架與來源登記第三輪 S1：grep -r X .. 走 Z10b）
-    if re.match(r"^/[a-zA-Z]$", text):
-        return []  # cmd /c、findstr /s 的單字母開關不是路徑；Git Bash 不會有人寫裸 /c（骨架與來源登記第六輪 V5）
+    if switch_ok and re.match(r"^/[a-zA-Z]$", text):
+        return []  # cmd /c、findstr /s 的單字母開關不是路徑（第六輪 V5；第七輪 X3：只對開關式指令或 PowerShell）
     matches = list(ABS_PATH.finditer(text))
     if matches and matches[0].start() > 0:
         # 夾在中間的絕對路徑（python -c "open('C:/…')"、P=C:/…）
@@ -161,11 +167,13 @@ def _relative_resolves(cand, path):
         return False
 
 
-def _walk(command, cwd):
-    """依序產出 (原字串, 正規化路徑)，cd 之後的相對路徑接 cd 的目標。"""
+def _walk(command, cwd, powershell=False):
+    """依序產出 (原字串, 正規化路徑)，cd 之後的相對路徑接 cd 的目標。powershell：單字母 /x 一律當旗標（PowerShell 沒有 Git Bash 寫法）。"""
     cleaned = DISCARD_OUTPUT.sub(" ", command)
-    base, expect_cd_target, after_cd = cwd, False, False
-    for text, quoted, after_redirect in _tokens(cleaned):
+    base, expect_cd_target, after_cd, verb = cwd, False, False, ""
+    for text, quoted, after_redirect, first in _tokens(cleaned):
+        if first:
+            verb = text.lower().replace("\\", "/").rsplit("/", 1)[-1]
         if expect_cd_target:
             if text.startswith("-"):
                 continue  # Set-Location -Path X、cd -- X：旗標跳過，下一個才是目標
@@ -178,7 +186,7 @@ def _walk(command, cwd):
         if text.lower() in _CD:
             expect_cd_target = True
             continue
-        for cand in _candidates(text, quoted, after_redirect, after_cd):
+        for cand in _candidates(text, quoted, after_redirect, after_cd, powershell or verb in SWITCH_VERBS):
             # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對
             for form in dict.fromkeys((cand, _ESCAPE.sub("", cand))):
                 p = normalize(form, base)
@@ -186,10 +194,10 @@ def _walk(command, cwd):
                     yield form, p
 
 
-def extract_paths(command, cwd):
+def extract_paths(command, cwd, powershell=False):
     """抽路徑：引號內字串、含 / 或 \\ 的 token、導向目標、token 裡夾的絕對路徑；去符號後正規化。變數（$X、%X%）不算。"""
     found = []
-    for _raw, p in _walk(command, cwd):
+    for _raw, p in _walk(command, cwd, powershell):
         if p not in found:
             found.append(p)
     return found

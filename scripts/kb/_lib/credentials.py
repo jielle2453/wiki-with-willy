@@ -25,8 +25,8 @@ KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
 SECRET_WORDS = ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey",
                 "api_key", "api-key", "密码", "passphrase", "pin", "pin碼", "驗證碼", "otp")
 MASK = "███"
-# 子句尾（第六輪 W3）：只有全形標點與換行；空白與半形標點都不是停止符（my password is hunter2 要整句遮）
-_STOP = "，。；、！？\n"
+# 子句尾（第六輪 W3、第七輪 X4）：只有全形標點與連續兩個換行；空白、半形標點、單一換行都不是停止符（password:\nhunter2 要遮）
+_STOP = "，。；、！？"
 # 短字要整字邊界（typing 裡的 pin、stopwatch 裡的 pw 不算）；長字允許前綴（PGPASSWORD=、accessToken=、mySecret 要遮）
 SHORT_WORDS = ("pw", "pin", "otp")
 
@@ -40,7 +40,7 @@ def _keyword_pattern(word):
 
 _WORDS_ALT = "|".join(_keyword_pattern(w) for w in sorted(SECRET_WORDS, key=len, reverse=True))
 # 關鍵詞之後到子句尾（至少一字）全部換成 ███：連接詞、值、子句裡再出現的關鍵詞都在裡面
-_SECRET = re.compile(rf"(?P<kw>{_WORDS_ALT})(?P<rest>[^{_STOP}]+)", re.IGNORECASE)
+_SECRET = re.compile(rf"(?P<kw>{_WORDS_ALT})(?P<rest>(?:[^{_STOP}\n]|\n(?!\n))+)", re.IGNORECASE)
 
 
 def mask_secrets(text):

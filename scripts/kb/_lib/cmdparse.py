@@ -244,24 +244,10 @@ def glob_prefixes(command, cwd):
 
 
 def unresolved_paths(command):
-    """第九輪 Z3：帶 $變數／%變數% 展不開的路徑 token——含 / 或 \\ 的、導向目標、cd 目標（網址與丟掉輸出的 >$null 不算）。
-    呼叫端對寫入指令有這種 token 就 deny unparsed（看不出會寫到哪）；讀取指令不看。"""
-    out, expect_cd = [], False
-    for text, _quoted, after_redirect, _first in _tokens(DISCARD_OUTPUT.sub(" ", command)):
-        is_cd_target = False
-        if expect_cd:
-            if text.startswith("-"):
-                continue
-            expect_cd = False
-            is_cd_target = bool(text)
-        elif text.lower() in _CD:
-            expect_cd = True
-            continue
-        if not text or _URL.match(text) or ("$" not in text and "%" not in text):
-            continue
-        if "/" in text or "\\" in text or after_redirect or is_cd_target:
-            out.append(text)
-    return out
+    """第九輪 Z3（裁定 3）：帶 $變數／%變數% 展不開的 token 全部回報——帶斜線的、導向目標、cd 目標，與沒斜線的裸變數（$X、%X%、$f）；
+    網址與丟掉輸出的 >$null、| Out-Null 不算。呼叫端對寫入指令有這種 token 就 deny unparsed（I-031：看不懂的寫入一律擋）；讀取指令不看。"""
+    return [text for text, _quoted, _after_redirect, _first in _tokens(DISCARD_OUTPUT.sub(" ", command))
+            if text and not _URL.match(text) and ("$" in text or "%" in text)]
 
 
 def is_write(command):

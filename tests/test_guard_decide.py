@@ -832,6 +832,18 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("Bash", f'cat "{r}/$X"')
         self.assertEqual(d.decision, "pass", d)
 
+    # 第九輪裁定 3／驗收 88：寫入指令裡沒斜線的裸變數（$X、%X%、$f）也 deny unparsed，多擋接受（I-031）；讀取照舊
+    def test_88_bare_variable_in_write_is_unparsed(self):
+        for tool, cmd in (("Bash", 'rm -rf "$X" /tmp/y'), ("PowerShell", "Remove-Item $f"), ("Bash", "echo $PASSWORD > /tmp/x"),
+                          ("Bash", "rm -rf %X% /tmp/y")):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "unparsed"), d)
+        for tool, cmd in (("Bash", "echo $PASSWORD"), ("Bash", "cat $f"), ("PowerShell", "Get-Content $f")):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual(d.decision, "pass", d)
+
     # 第九輪 Z4／驗收 86：不存在的裸 token 要已知副檔名才算新檔
     def test_86_bare_token_needs_known_extension_to_be_a_new_file(self):
         for cmd in ("echo v1.2 > /tmp/ver.txt", "wget example.com -O /tmp/x"):

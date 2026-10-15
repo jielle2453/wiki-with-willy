@@ -76,13 +76,17 @@ class ExtractPaths(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_unresolved_variable_paths(self):
-        """第九輪 Z3：帶 $變數／%變數% 展不開的路徑 token（含斜線、導向目標、cd 目標）回報出來，呼叫端對寫入指令 deny unparsed。"""
+        """第九輪 Z3（裁定 3）：帶 $變數／%變數% 展不開的 token 全部回報（含沒斜線的裸變數），呼叫端對寫入指令 deny unparsed。"""
         self.assertEqual(cmdparse.unresolved_paths('rm -rf "C:/raw/$X" /tmp/y'), ["C:/raw/$X"])
         self.assertEqual(cmdparse.unresolved_paths('rm -rf "%RAW%/a" '), ["%RAW%/a"])
         self.assertEqual(cmdparse.unresolved_paths("echo x > $OUT"), ["$OUT"])
         self.assertEqual(cmdparse.unresolved_paths('cd "$HOME/x" && rm a.txt'), ["$HOME/x"])
         self.assertEqual(cmdparse.unresolved_paths("Remove-Item $env:TEMP\\a.txt"), ["$env:TEMP\\a.txt"])
-        for cmd in ("rm -rf /tmp/y", "echo $PASSWORD", "date +%Y", "curl https://x/$id > /tmp/a", "ls 2>$null", "echo x > $null"):
+        self.assertEqual(cmdparse.unresolved_paths('rm -rf "$X" /tmp/y'), ["$X"])
+        self.assertEqual(cmdparse.unresolved_paths("Remove-Item $f"), ["$f"])
+        self.assertEqual(cmdparse.unresolved_paths("echo $PASSWORD > /tmp/x"), ["$PASSWORD"])
+        self.assertEqual(cmdparse.unresolved_paths("rm -rf %X% /tmp/y"), ["%X%"])
+        for cmd in ("rm -rf /tmp/y", "curl https://x/$id > /tmp/a", "ls 2>$null", "echo x > $null", "ls | Out-Null"):
             with self.subTest(cmd=cmd):
                 self.assertEqual(cmdparse.unresolved_paths(cmd), [], cmd)
 

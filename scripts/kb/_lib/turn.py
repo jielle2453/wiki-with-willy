@@ -52,7 +52,7 @@ def journal_key(data):
 
 def start(vault, session_id, prompt, inherit=None):
     """開新回合：寫 turns/<sid>.json（有 sid 才寫）與 current.json。回回合 dict。
-    inherit（工作日誌第二輪 R2-M2）：對話裡退回自己這句時，新回合接著原回合，繼承它的問、note，
+    inherit（工作日誌第二輪 R2-M2）：對話裡退回自己這句時，新回合接著原回合，繼承它的問、note、approved，
     並記 journal_turn（原回合的 journal_turn，沒有就原回合），Stop 與補記才收原回合那一行。"""
     now = _now().replace(microsecond=0)  # 代號只到秒，比較也只到秒
     head = inherit.get("prompt_head", "") if inherit else prompt_head(vault, prompt)
@@ -67,7 +67,7 @@ def start(vault, session_id, prompt, inherit=None):
         "session_id": str(session_id) if session_id else "",
         "started": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "prompt_head": head,
-        "approved": False,
+        "approved": bool(inherit.get("approved")) if inherit else False,  # 同一句話的同意不因退回失效（D-075）
         "note": inherit.get("note", "") if inherit else "",  # 模型叫 kb turn note 給的「做了」（D-084）
         "done": False,  # Stop 或中斷補記後為 true（D-083）
     }

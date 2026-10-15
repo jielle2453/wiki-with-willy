@@ -275,10 +275,10 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
         tail = f"成品 {len(outputs)} 份留著"
     else:
         tail = "成品 0 份"
-    asked = f"（問：「{target['prompt_head']}」）" if target["prompt_head"] else ""  # L6：守門自己開的回合問是空的
-    # R2-L3：升級前沒遮好的問會被搬進來，印給人與程式段的句子整句再遮（D-086「程式段不遮」的例外）
-    sentence = credentials.mask_secrets(
-        f"已退回 {target['turn']}{asked}：還原 {len(restored)}、移除 {len(removed)}、{tail}")
+    # R2-L3：升級前沒遮好的問會被搬進來，只把「問」那段先壓空白再遮再嵌進句子，數字留著（D-086「程式段不遮」的例外）
+    head = credentials.mask_secrets(" ".join(str(target["prompt_head"] or "").split()))
+    asked = f"（問：「{head}」）" if head else ""  # L6：守門自己開的回合問是空的
+    sentence = f"已退回 {target['turn']}{asked}：還原 {len(restored)}、移除 {len(removed)}、{tail}"
     journal_cli.record_program_or_warn(
         vault, sentence,
         [{"path": rel, "action": "modify"} for rel in restored] + [{"path": rel, "action": "delete"} for rel in removed],
@@ -352,7 +352,7 @@ def _delete_outputs(vault, code, as_json, conversation=False):
     if gone_ids:
         inventory.set_status(vault, gone_ids, "deleted")
     _seal(vault, conversation)
-    sentence = credentials.mask_secrets(f"已刪 {len(deleted)} 份成品（回合 {target['turn']}）")  # R2-L3
+    sentence = f"已刪 {len(deleted)} 份成品（回合 {target['turn']}）"  # 沒有「問」，不用遮
     if deleted:  # 刪 0 份不寫段（疑義裁定 4）
         journal_cli.record_program_or_warn(vault, sentence, [{"path": rel, "action": "delete"} for rel in deleted],
                                            "versions delete-outputs", conversation)

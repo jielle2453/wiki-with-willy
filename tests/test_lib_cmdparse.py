@@ -37,6 +37,13 @@ class ExtractPaths(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_single_letter_switch_is_not_a_path(self):
+        """骨架與來源登記第六輪 V5：cmd /c、findstr /s 的單字母開關不是路徑（Git Bash 不會有人寫裸 /c）。"""
+        self.assertEqual(cmdparse.extract_paths("cmd /c ver", CWD), [])
+        self.assertEqual(cmdparse.extract_paths("findstr /s x", CWD), [])
+        self.assertEqual(cmdparse.extract_paths("robocopy /e /s", CWD), [])
+        self.assertIn(n("C:/x/a.txt"), cmdparse.extract_paths("cat /c/x/a.txt", CWD))  # 真正的 Git Bash 路徑照抽
+
     def test_relative_path_joins_cwd(self):
         tmp, V, raw = make_vault()
         try:

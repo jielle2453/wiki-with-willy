@@ -25,38 +25,29 @@ KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
 SECRET_WORDS = ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey",
                 "api_key", "api-key", "密码", "passphrase", "pin", "pin碼", "驗證碼", "otp")
 MASK = "███"
-# 停止符（V3）：空白與全形標點；半形 , ; ! ? 常是密碼的一部分，不停
+# 子句尾（第六輪 W3）：只有全形標點與換行；空白與半形標點都不是停止符（my password is hunter2 要整句遮）
 _STOP = "，。；、！？\n"
+# 短字要整字邊界（typing 裡的 pin、stopwatch 裡的 pw 不算）；長字允許前綴（PGPASSWORD=、accessToken=、mySecret 要遮）
+SHORT_WORDS = ("pw", "pin", "otp")
 
 
 def _keyword_pattern(word):
-    """英文關鍵詞要是整個字（typing 裡的 pin 不算），中文不用邊界。"""
     pat = re.escape(word)
-    if re.match(r"[a-z]", word):
-        pat = r"(?<![A-Za-z0-9])" + pat
-        if re.search(r"[a-z]$", word):
-            pat += r"(?![A-Za-z])"
+    if word in SHORT_WORDS:
+        pat = r"(?<![A-Za-z0-9])" + pat + r"(?![A-Za-z])"
     return pat
 
 
 _WORDS_ALT = "|".join(_keyword_pattern(w) for w in sorted(SECRET_WORDS, key=len, reverse=True))
-# 關鍵詞、連接（是／為／:／：／=／空白任意組合）、值（至少一字，到下一個空白、全形標點、關鍵詞或句尾之前；值自己以關鍵詞開頭也照遮）
-_SECRET = re.compile(
-    rf"(?P<kw>{_WORDS_ALT})(?P<sep>[是為:：=\s]*)(?P<val>[^\s{_STOP}]+?)(?=[\s{_STOP}]|{_WORDS_ALT}|$)",
-    re.IGNORECASE,
-)
+# 關鍵詞之後到子句尾（至少一字）全部換成 ███：連接詞、值、子句裡再出現的關鍵詞都在裡面
+_SECRET = re.compile(rf"(?P<kw>{_WORDS_ALT})(?P<rest>[^{_STOP}]+)", re.IGNORECASE)
 
 
 def mask_secrets(text):
-    """不分大小寫找關鍵詞，把它後面的值換成 ███；關鍵詞本身留著，連接只是空白時保留一個空白。沒命中原樣回。"""
+    """不分大小寫找關鍵詞，把它之後到子句尾的字換成 ███；關鍵詞本身留著。沒命中原樣回；空字串回空字串。"""
     if not text:
         return text
-
-    def repl(m):
-        sep = " " if m.group("sep") and m.group("sep").isspace() else ""
-        return m.group("kw") + sep + MASK
-
-    return _SECRET.sub(repl, str(text))
+    return _SECRET.sub(lambda m: m.group("kw") + MASK, str(text))
 
 
 def looks_like_filename(segment):

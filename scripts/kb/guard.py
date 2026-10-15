@@ -241,9 +241,34 @@ def _stages(command):
 
 
 _CD_VERBS = cmdparse._CD | {"push-location"}  # V6：Push-Location 也是 cd
-_ARCHIVE_VERB = re.compile(r"(?<![.\w-])(?:tar|zip|7z|rar|compress-archive)\b", re.IGNORECASE)  # 打包：輸入路徑是讀取範圍
 _SINGLE_SWITCH = re.compile(r"^/[a-zA-Z]$")  # V5：cmd /c、findstr /s 的單字母開關不是路徑
-_DRIVE_ROOT = re.compile(r"^[a-zA-Z]:/$")
+COPY_VERBS = {"cp", "mv", "copy", "move", "copy-item", "move-item", "rsync", "robocopy"}  # 最後一個路徑是寫入目標，其餘是讀
+
+
+def _special_roles(verb, tokens):
+    """動詞以 token 為單位判寫入目標在哪（第六輪打包例外收窄）。回 (有沒有特別規則, 寫入目標的 token 序號集合)。
+    tar c 模式：f 後面那個檔是寫入、輸入是讀；tar x／t 模式：-C 的目標是寫入；zip／7z a／Compress-Archive：輸出是寫入、輸入是讀；
+    unzip -d、cp／mv／Copy-Item 的最後一個路徑是寫入。沒特別規則的動詞回 (False, set())，交給 WRITE_WORDS 整段判。"""
+    texts = [t[0] for t in tokens]
+    n = len(texts)
+    if verb == "tar" and n > 1:
+        mode = texts[1].lstrip("-").lower()
+        if "c" in mode:
+            return True, ({2} if "f" in mode and n > 2 else set())
+        return True, {i + 1 for i, t in enumerate(texts) if t == "-C" and i + 1 < n}
+    if verb == "zip":
+        paths = [i for i, t in enumerate(texts) if i > 0 and not t.startswith("-")]
+        return True, ({paths[0]} if paths else set())
+    if verb == "7z" and n > 2 and texts[1].lower() == "a":
+        return True, {2}
+    if verb == "compress-archive":
+        return True, {i + 1 for i, t in enumerate(texts) if t.lower() == "-destinationpath" and i + 1 < n}
+    if verb == "unzip":
+        return True, {i + 1 for i, t in enumerate(texts) if t == "-d" and i + 1 < n}
+    if verb in COPY_VERBS:
+        paths = [i for i, t in enumerate(texts) if i > 0 and not t.startswith("-") and not _SINGLE_SWITCH.match(t)]
+        return True, ({paths[-1]} if len(paths) > 1 else set())
+    return False, set()
 
 
 def _norm(tok, base):
@@ -268,15 +293,20 @@ def _analyze(command, cwd, vault_n, tool="Bash"):
     token：第二道命中的段（只在效用 cwd 不在總資料夾裡、或推不出效用 cwd 時比）。效用 cwd 跨管線段、跨子指令延續。"""
     cleaned = cmdparse.DISCARD_OUTPUT.sub(" ", command)
     base = normalize(cwd, None)
-    out = {"read_dirs": [], "read_paths": set(), "write_targets": set(), "globs": [], "token": None}
+    out = {"read_dirs": [], "read_paths": set(), "write_targets": set(), "globs": [], "cd_dirs": [], "token": None}
     for _sub, _stage, text in _stages(cleaned):
         tokens = _tokens_q(text, globs_in_quotes=(tool == "PowerShell"))
         bare = cmdparse.outside_quotes(text)
         verb_write = bool(cmdparse.WRITE_WORDS.search(bare if bare is not None else text))
-        verbs_archive = bool(_ARCHIVE_VERB.search(bare if bare is not None else text))  # tar czf 的輸出是 f 後面那個檔，其他路徑是輸入
+        verb = tokens[0][0].lower().replace("\\", "/").rsplit("/", 1)[-1] if tokens else ""
+        handled, write_idx = _special_roles(verb, tokens)
+
+        def is_write(i):
+            return (i in write_idx) if handled else verb_write
+
         expect_cd, has_read_path = False, False
         verbs, flags = [], []
-        for tok, quoted, glob_out, after_redirect in tokens:
+        for idx, (tok, quoted, glob_out, after_redirect) in enumerate(tokens):
             low = tok.lower()
             if expect_cd:
                 if tok.startswith("-"):
@@ -288,9 +318,10 @@ def _analyze(command, cwd, vault_n, tool="Bash"):
                     base = None  # $HOME、%USERPROFILE% 展不開：效用 cwd 推不出來（V6）
                 elif glob_out:
                     p = _norm(tok, base)
-                    if p is not None:
-                        out["globs"].append(p)  # cd 到萬用字元路徑：走訪前綴夾（V2），效用 cwd 當成前綴夾
-                        base = _pattern_head(p) or base
+                    hits = [h for h in _expand_glob(p, hidden=True)] if p is not None else []
+                    dirs = [h for h in hits if os.path.isdir(h)]
+                    out["cd_dirs"].extend(dirs)  # cd 到萬用字元路徑：用展開後的夾走訪與區判斷（W4），效用 cwd 當成第一個
+                    base = dirs[0] if dirs else None
                 else:
                     base = _norm(tok, base)
                 continue
@@ -319,12 +350,12 @@ def _analyze(command, cwd, vault_n, tool="Bash"):
                 p = _norm(tok, base)
                 if p is None:
                     continue
-                if verb_write and not verbs_archive:
-                    out["write_targets"].add(p)  # rm -rf .：寫入動詞那段的 . 是寫入目標
+                if is_write(idx):
+                    out["write_targets"].add(p)  # rm -rf .、cp x .、tar x -C .：寫入目標
                     continue
                 has_read_path = True
                 out["read_paths"].add(p)
-                out["read_dirs"].append(p)  # Q8：讀取那段（含 tee 之前、tar 的輸入）的 . 與 .. 是讀取範圍
+                out["read_dirs"].append(p)  # Q8：讀取那段（含 tee 之前、tar c 的輸入）的 . 與 .. 是讀取範圍
                 continue
             if glob_out:
                 has_read_path = True
@@ -337,11 +368,13 @@ def _analyze(command, cwd, vault_n, tool="Bash"):
             if any(ch in _NOT_FILENAME_CHARS for ch in tok) and not quoted:
                 continue
             p = _norm(tok, base)
-            if p is None or not os.path.exists(p):
-                continue  # 樣式參數（"2026/10"、TODO/FIXME）不存在就不算路徑
-            if verb_write:
-                out["write_targets"].add(p)
+            if p is None:
                 continue
+            if is_write(idx):
+                out["write_targets"].add(p)  # 寫入目標不用存在（新檔）
+                continue
+            if not os.path.exists(p):
+                continue  # 樣式參數（"2026/10"、TODO/FIXME）不存在就不算路徑
             has_read_path = True
             out["read_paths"].add(p)
             if os.path.isdir(p):
@@ -495,7 +528,7 @@ def _shell_tool(tool, command, cwd, vault, sources):
         if head and head not in heads:
             heads.append(head)
         glob_hits.extend(_expand_glob(token, hidden=(tool == "PowerShell")))
-    head_classified = [(p, *classify(p, vault_n, sources)) for p in heads]
+    head_classified = [(p, *classify(p, vault_n, sources)) for p in heads + info["cd_dirs"]]  # cd 到萬用字元的展開夾一併走訪（W4）
     glob_classified = head_classified + [(p, *classify(p, vault_n, sources)) for p in glob_hits]
     # 憑證三道先於區（D-079 補、D-081）。第一道：抽出的每個路徑、萬用字元前綴夾與展開命中的段（P2）；命中排除項目的交 Z10（Q5）
     for p, zone, _alias in classified + glob_classified:
@@ -512,8 +545,8 @@ def _shell_tool(tool, command, cwd, vault, sources):
     extra = [(p, *classify(p, vault_n, sources)) for p in info["read_dirs"]]
     scanned = []
     for p, zone, _alias in classified + head_classified + extra:
-        if p in scanned or p in info["write_targets"] or zone == "Z10" or _DRIVE_ROOT.match(p) or p == "/" or not os.path.isdir(p):
-            continue  # 整顆磁碟不走訪（V5：cmd /c 的 /c 被抽成 C:/）
+        if p in scanned or p in info["write_targets"] or zone == "Z10" or not os.path.isdir(p):
+            continue  # 真正的磁碟根照走訪，撞上限就「範圍太大」（W2）；/c 這種開關 cmdparse 已不當路徑（V5）
         scanned.append(p)
         scan_zone = _scan_zone(p, zone, vault_n, sources)
         if not scan_zone:
@@ -528,8 +561,9 @@ def _shell_tool(tool, command, cwd, vault, sources):
             return deny(zone, code, reason)
 
     for p, zone, alias in classified:
-        # Q8：寫入欄只套在寫入目標上；確知是讀取路徑的（存在的檔或夾、.／..）只套讀取欄，其餘保守當寫入
-        writes_here = write and p not in info["read_paths"]
+        # Q8／W1：寫入欄以路徑為單位：出現在任何寫入目標就套寫入欄（cat f; echo x > f 也擋）；確知只是讀取的（存在的檔或夾、.／..）
+        # 只套讀取欄；其餘保守當寫入
+        writes_here = write and (p in info["write_targets"] or p not in info["read_paths"])
         columns = ("read",)
         if writes_here:
             columns = ("read", "shell_write" if "shell_write" in ZONES[zone] else "write")

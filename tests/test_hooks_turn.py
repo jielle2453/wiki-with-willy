@@ -49,7 +49,8 @@ class TurnHook(unittest.TestCase):
         r = run_hook(prompt_payload(self.V, "幫我登入 ERP，帳號 jie 密碼 abc123"))
         self.assertEqual(r.returncode, 0, r.stderr)
         sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
-        self.assertEqual(sess["prompt_head"], "幫我登入 ERP，帳號 ███ 密碼 ███")
+        self.assertEqual(sess["prompt_head"], "幫我登入 ERP，帳號███")  # 第六輪 W3：遮到子句尾
+        self.assertNotIn("jie", sess["prompt_head"])
         from kb._lib import turn
         turn.backup(self.V, "案子/信義王/信義王.md", sess["turn"])
         kb = ROOT / "scripts" / "kb.py"

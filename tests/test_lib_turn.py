@@ -43,7 +43,7 @@ class Start(unittest.TestCase):
     def test_prompt_head_masks_secrets_before_cut(self):
         """第 5b 節（D-081、B-027）：先遮值再壓空白、截 80 字。"""
         t = turn.start(self.V, SID, "幫我登入 ERP，帳號 jie  密碼 abc123")
-        self.assertEqual(t["prompt_head"], "幫我登入 ERP，帳號 ███ 密碼 ███")
+        self.assertEqual(t["prompt_head"], "幫我登入 ERP，帳號███")  # 第六輪 W3：遮到子句尾
         t2 = turn.start(self.V, SID, "密碼是" + "x" * 200 + "，謝謝")
         self.assertNotIn("xxx", t2["prompt_head"])
         self.assertLessEqual(len(t2["prompt_head"]), 80)

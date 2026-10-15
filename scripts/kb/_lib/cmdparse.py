@@ -126,6 +126,8 @@ def _candidates(text, quoted, after_redirect, after_cd):
         return []
     if text in (".", ".."):
         return [text]  # 不帶斜線的 . 與 .. 也是路徑，要經區判斷（骨架與來源登記第三輪 S1：grep -r X .. 走 Z10b）
+    if re.match(r"^/[a-zA-Z]$", text):
+        return []  # cmd /c、findstr /s 的單字母開關不是路徑；Git Bash 不會有人寫裸 /c（骨架與來源登記第六輪 V5）
     matches = list(ABS_PATH.finditer(text))
     if matches and matches[0].start() > 0:
         # 夾在中間的絕對路徑（python -c "open('C:/…')"、P=C:/…）

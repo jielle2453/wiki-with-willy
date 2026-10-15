@@ -721,6 +721,67 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("Bash", 'cd "$HOME/x" && echo $PASSWORD')
         self.assertNotEqual(d.reason_code, "credential", d)
 
+    # 第六輪 W1：寫入欄以路徑為單位，同一路徑一段讀一段寫也套寫入欄
+    def test_69_path_read_then_written_gets_write_column(self):
+        a = (self.client / "a.txt").as_posix()
+        d = self.decide("Bash", f'cat "{a}"; echo x > "{a}"')
+        self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
+        d = self.decide("PowerShell", f'(Get-Content "{a}") -replace "a","b" | Set-Content "{a}"')
+        self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
+        d = self.decide("Bash", "cat .system/sources.json && rm .system/sources.json")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
+        d = self.decide("PowerShell", '(Get-Content .system/sources.json) -replace "hidden","x" | Set-Content .system/sources.json')
+        self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
+        d = self.decide("Bash", "cat .system/sources.json")  # 只讀照舊
+        self.assertEqual(d.decision, "pass", d)
+
+    # 第六輪 W2：真正的磁碟根照走訪（上限住 config）
+    def test_70_real_drive_root_is_scanned(self):
+        drive = self.V.drive.upper() + "/" if self.V.drive else "/"
+        for cmd in (f"grep -r X {drive}", f"rg X {drive}"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual(d.decision, "deny", d)
+                self.assertIn(d.reason_code, ("credential_inside", "credential_scan_limit"), d)
+        d = self.decide("Bash", "grep -r X ..")  # .. 是 tmp，含 V 與 raw：走訪，fixture 乾淨 → Z10b
+        self.assertEqual(d.decision, "deny", d)
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        d = self.decide("Bash", "grep -r X ..")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+
+    # 第六輪 V5 另一半：cmd /c 的 /c 不是路徑，區判斷也不是 Z10b
+    def test_71_cmd_slash_c_is_pass(self):
+        for cmd in ("cmd /c ver", "cmd /c dir"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("pass", ""), d)
+
+    # 第六輪 W4：cd 經萬用字元進乾淨夾，用展開後的夾走訪
+    def test_72_cd_wildcard_uses_expanded_folder(self):
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        d = self.decide("Bash", f'cd "{self.raw.as_posix()}"/行*/請款 && ls')
+        self.assertNotIn(d.reason_code, ("credential_inside", "credential_scan_limit"), d)
+        d = self.decide("Bash", f'cd "{self.raw.as_posix()}"/客戶* && ls')
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        d = self.decide("Bash", f'cd "{self.raw.as_posix()}"/行*/薪資 && ls')  # 展開後是排除夾：交 Z10
+        self.assertEqual((d.decision, d.zone), ("deny", "Z10"), d)
+
+    # 第六輪 打包例外收窄：只對打包的輸入；tar x／-C、cp／mv 的第二個參數是寫入目標；動詞以 token 比
+    def test_73_archive_exception_only_for_pack_inputs(self):
+        for tool, cmd in (("Bash", "tar xzf /tmp/a.tgz -C ."), ("Bash", "cp C:/tmp/zip/a.txt ."), ("PowerShell", "Copy-Item C:/tmp/a.txt ."),
+                          ("Bash", "mv /tmp/x.md ."), ("Bash", "tar -xf /tmp/a.tar -C ."), ("Bash", "unzip /tmp/a.zip -d .")):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
+        for tool, cmd in (("Bash", "tar czf /tmp/b.tgz 收件匣"), ("Bash", "tar -czf /tmp/b.tgz ."), ("Bash", "zip -r /tmp/b.zip 收件匣"),
+                          ("Bash", "7z a /tmp/b.7z 收件匣"), ("PowerShell", "Compress-Archive -Path 收件匣 -DestinationPath /tmp/b.zip")):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertNotEqual(d.reason_code, "protected", d)
+                self.assertEqual(d.decision, "pass", d)
+        info = self.analyze("cp C:/tmp/zip/a.txt .", cwd=self.V)
+        self.assertIn(paths_normalize(str(self.V), None), info["write_targets"], info)
+
     # 第五輪 V5：單字母 /x token 不當路徑、不走訪整顆磁碟
     def test_67_single_letter_slash_token_is_not_a_path(self):
         for cmd in ("cmd /c ver", "findstr /s x *.txt", "cmd /c dir", "robocopy /e a b"):

@@ -599,16 +599,53 @@ class VersionsJournal(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.program_rows(), [])
 
+    def test_revert_after_stop_opens_cli_turn_and_next_prompt_has_no_fake_interrupt(self):
+        """觀察 (b) 裁定：對話答完（done true）後終端機退回，動作回合用 session_id None（尾 0000），
+        turns/<sid>.json 仍是原回合、下一句話不會被 flush 出假的「退回 …」中斷段。"""
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+
+        def hook(name, data):
+            r = subprocess.run([sys.executable, str(ROOT / "hooks" / name)], input=json.dumps(data, ensure_ascii=False),
+                               capture_output=True, text=True, encoding="utf-8", env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            if name == "guard.py":
+                self.assertIn('"allow"', r.stdout)
+            else:
+                self.assertEqual(r.stdout, "")
+
+        base = {"session_id": SID, "cwd": str(self.V)}
+        hook("turn.py", dict(base, prompt="改信義王", hook_event_name="UserPromptSubmit"))
+        hook("guard.py", dict(base, tool_name="Write", hook_event_name="PreToolUse",
+                              tool_input={"file_path": str(self.card), "content": "改過了\n"}))
+        self.card.write_text("改過了\n", encoding="utf-8")
+        hook("stop.py", dict(base, hook_event_name="Stop", stop_hook_active=False, last_assistant_message="改好了"))
+        sess_file = self.V / ".system" / "turns" / f"{SID}.json"
+        original = json.loads(sess_file.read_text(encoding="utf-8"))
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.card.read_bytes(), self.original)
+        sess = json.loads(sess_file.read_text(encoding="utf-8"))
+        self.assertEqual((sess["turn"], sess["done"]), (original["turn"], True))
+        cur = json.loads((self.V / ".system" / "turns" / "current.json").read_text(encoding="utf-8"))
+        self.assertEqual(cur["session_id"], "")
+        self.assertTrue(cur["turn"].endswith("-0000"), cur["turn"])
+        hook("turn.py", dict(base, prompt="下一句", hook_event_name="UserPromptSubmit"))
+        from kb._lib import journal
+        rows = [x for m in journal.months(self.V) for x in journal.read_lines(self.V, m)]
+        self.assertEqual([x for x in rows if x.get("interrupted")], [])
+
     def test_finished_conversation_turn_writes_program_line_with_new_turn(self):
-        """D-085 補：對話已答完（done true）後在終端機退回，寫程式段，turn 不掛到那個對話回合。"""
+        """D-085 補：對話已答完（done true）後在終端機退回，寫程式段，turn 不掛到那個對話回合；
+        動作回合不帶 sid（尾 0000），程式段沿用它。"""
         t = self.modify_card_in_turn()
         turn.set_done(self.V, SID)
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         rows = self.program_rows()
         self.assertEqual(len(rows), 1)
-        self.assertNotIn(rows[0]["turn"], (t["turn"], turn.current(self.V)["turn"]))
+        self.assertNotEqual(rows[0]["turn"], t["turn"])
         self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")
+        self.assertEqual(rows[0]["turn"], turn.current(self.V)["turn"])
 
 
 if __name__ == "__main__":

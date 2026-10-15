@@ -134,10 +134,13 @@ def _rel_of(entry):
 
 
 def _acting_turn(vault, target_turn):
-    """退回動作本身的回合；若等於要退的回合，開一個新的（現況要有別的回合可備）。"""
+    """退回動作本身的回合；若等於要退的回合，開一個新的（現況要有別的回合可備）。
+    目前回合已答完（done true）就是終端機在跑，新回合不帶 sid（尾 0000）：不留一個帶 sid、done false、
+    沒有 Stop 會收的回合，下一句話才不會被補記成假的「退回 …」中斷段。還沒答完才沿用 sid（對話裡叫的）。"""
     rt = turn.current(vault)
     if rt["turn"] == target_turn:
-        rt = turn.start(vault, rt.get("session_id") or None, f"退回 {target_turn}")
+        sid = None if rt.get("done") else (rt.get("session_id") or None)
+        rt = turn.start(vault, sid, f"退回 {target_turn}")
     return rt
 
 

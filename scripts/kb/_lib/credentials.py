@@ -21,14 +21,28 @@ CREDENTIAL_PATTERNS = (
 
 # 沒副檔名也算檔名的樣式（金鑰檔慣例沒有副檔名）
 KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
-# 遮值關鍵詞（第 5b 節）：關鍵詞留著，後面的值換成 ███。長的排前面，password 不被 pw 搶走
-SECRET_WORDS = ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey")
+# 遮值關鍵詞（第 5b 節、第五輪 V4）：關鍵詞留著，後面的值換成 ███。長的排前面，password 不被 pw 搶走
+SECRET_WORDS = ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey",
+                "api_key", "api-key", "密码", "passphrase", "pin", "pin碼", "驗證碼", "otp")
 MASK = "███"
-_WORDS_ALT = "|".join(re.escape(w) for w in sorted(SECRET_WORDS, key=len, reverse=True))
-_PUNCT = "，。；、,;!?！？\n"
-# 關鍵詞、連接（是／為／:／：／=／空白任意組合）、值（到下一個標點、下一個關鍵詞或句尾之前）
+# 停止符（V3）：空白與全形標點；半形 , ; ! ? 常是密碼的一部分，不停
+_STOP = "，。；、！？\n"
+
+
+def _keyword_pattern(word):
+    """英文關鍵詞要是整個字（typing 裡的 pin 不算），中文不用邊界。"""
+    pat = re.escape(word)
+    if re.match(r"[a-z]", word):
+        pat = r"(?<![A-Za-z0-9])" + pat
+        if re.search(r"[a-z]$", word):
+            pat += r"(?![A-Za-z])"
+    return pat
+
+
+_WORDS_ALT = "|".join(_keyword_pattern(w) for w in sorted(SECRET_WORDS, key=len, reverse=True))
+# 關鍵詞、連接（是／為／:／：／=／空白任意組合）、值（至少一字，到下一個空白、全形標點、關鍵詞或句尾之前；值自己以關鍵詞開頭也照遮）
 _SECRET = re.compile(
-    rf"(?P<kw>{_WORDS_ALT})(?P<sep>[是為:：=\s]*)(?P<val>[^{_PUNCT}]*?)(?=\s*(?:{_WORDS_ALT}|[{_PUNCT}]|$))",
+    rf"(?P<kw>{_WORDS_ALT})(?P<sep>[是為:：=\s]*)(?P<val>[^\s{_STOP}]+?)(?=[\s{_STOP}]|{_WORDS_ALT}|$)",
     re.IGNORECASE,
 )
 
@@ -39,8 +53,6 @@ def mask_secrets(text):
         return text
 
     def repl(m):
-        if not m.group("val"):
-            return m.group(0)
         sep = " " if m.group("sep") and m.group("sep").isspace() else ""
         return m.group("kw") + sep + MASK
 

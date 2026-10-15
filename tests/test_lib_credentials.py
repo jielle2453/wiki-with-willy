@@ -138,14 +138,18 @@ class MaskSecrets(unittest.TestCase):
     """第 5b 節（D-081、B-027）：關鍵詞後的值換成 ███，關鍵詞留著。"""
 
     def test_cases_from_acceptance_62(self):
+        """第五輪 V3：停止符是空白與全形標點（半形 , ; ! ? 常是密碼的一部分）；值以關鍵詞開頭照遮。空白當停止符這一種寫死。"""
         m = credentials.mask_secrets
-        self.assertEqual(m("密碼是abc 123，謝謝"), "密碼███，謝謝")
-        self.assertEqual(m("Password: Abc_9!"), "Password███!")
-        self.assertIn(m("api key = sk-xyz 請存"), ("api key███ 請存", "api key███"))
+        self.assertEqual(m("密碼是abc 123，謝謝"), "密碼███ 123，謝謝")
+        self.assertEqual(m("Password: Abc_9!"), "Password███")
+        self.assertEqual(m("密碼 P@ss!word123"), "密碼 ███")
+        self.assertEqual(m("我的密碼是 Secret!23"), "我的密碼███")
+        self.assertEqual(m("API_KEY=sk-xyz 請存"), "API_KEY███ 請存")
         self.assertIn("███", m("門禁密碼多少"))
         self.assertEqual(m("今天天氣好"), "今天天氣好")
         self.assertEqual(m(""), "")
         self.assertEqual(m("幫我登入 ERP，帳號 jie 密碼 abc123"), "幫我登入 ERP，帳號 ███ 密碼 ███")
+        self.assertEqual(m("密碼：a,b;c!d?e 謝謝"), "密碼███ 謝謝")
 
     def test_keywords_case_insensitive_and_bare_keyword_untouched(self):
         m = credentials.mask_secrets
@@ -153,8 +157,14 @@ class MaskSecrets(unittest.TestCase):
         self.assertEqual(m("secret"), "secret")
         self.assertEqual(m("金鑰：xyz。"), "金鑰███。")
         self.assertNotIn("abc", m("pw abc"))
-        for w in credentials.SECRET_WORDS:
-            self.assertIn(w, ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey"))
+        for text in ("api-key: k1", "api_key k2", "密码是k3", "passphrase k4", "pin 1234", "PIN碼 5678", "驗證碼 999", "otp=12"):
+            with self.subTest(text=text):
+                self.assertIn("███", m(text))
+                self.assertNotIn(text.split()[-1].split("=")[-1].split("是")[-1].split(":")[-1], m(text))
+        self.assertEqual(m("typing fast"), "typing fast")  # 英文關鍵詞要是整個字，pin 不在 typing 裡
+        for w in ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey",
+                  "api_key", "api-key", "密码", "passphrase", "pin", "pin碼", "驗證碼", "otp"):
+            self.assertIn(w, credentials.SECRET_WORDS)
 
 
 if __name__ == "__main__":

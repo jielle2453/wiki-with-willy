@@ -470,9 +470,8 @@ class CredentialRound1(unittest.TestCase):
         p = self.client.as_posix()
         return f'Set-Location "{p}"; {cmd}' if tool == "PowerShell" else f'cd "{p}" && {cmd}'
 
-    def analyze(self, cmd, cwd=None):
-        from kb._lib.paths import normalize
-        return guard._analyze(cmd, str(cwd or self.client), normalize(str(self.V), None))
+    def analyze(self, cmd, cwd=None, tool="Bash"):
+        return guard._analyze(cmd, str(cwd or self.client), paths_normalize(str(self.V), None), tool)
 
     def assert_deny(self, d, code, zone=None, contains=None):
         self.assertEqual((d.decision, d.reason_code), ("deny", code), d)
@@ -671,6 +670,65 @@ class CredentialRound1(unittest.TestCase):
         self.assertNotIn(client_n, info["write_targets"], info)
         d = self.decide("Bash", self.in_client("ls . | tee /tmp/a"))
         self.assertNotEqual(d.reason_code, "protected", d)
+        # 第五輪 Q8：區判斷的寫入目標也用這題的定義；在總資料夾裡 . 是讀取範圍，tee 與 tar 的輸出在知識庫外
+        for cmd in ("ls . | tee /tmp/a", "grep -r X . | tee /tmp/h", "tar czf ../bak.tgz ."):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertNotEqual(d.reason_code, "protected", d)
+                self.assertEqual(d.decision, "pass", d)
+        d = self.decide("Bash", "echo x > CLAUDE.md")  # 導向目標照舊是寫入
+        self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
+        d = self.decide("Bash", "rm -rf .")
+        self.assertEqual(d.decision, "deny", d)
+
+    # 第五輪 V1：PowerShell 的 cmdlet 會展開引號裡的 *；Bash 不會
+    def test_64_powershell_quoted_wildcards_expand(self):
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        (self.raw / "行政" / "薪資" / "s2.txt").write_text("x", encoding="utf-8")
+        r = self.client.as_posix()
+        d = self.decide("PowerShell", f'Get-Content "{r}/*"')
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential"), d)
+        self.assertIn(".env", d.reason)
+        admin = (self.raw / "行政").as_posix()
+        for cmd in (f'Get-Content "{admin}/*/s2.txt"', f'Get-ChildItem "{admin}/*" -Recurse | Get-Content'):
+            with self.subTest(cmd=cmd):
+                d = self.decide("PowerShell", cmd)
+                self.assertEqual(d.decision, "deny", d)
+                self.assertIn(d.reason_code, ("excluded", "excluded_inside"), d)
+        d = self.decide("Bash", 'echo "*.md"')
+        self.assertEqual(d.decision, "pass", d)
+        self.assertEqual(self.analyze('echo "*.md"', cwd=self.V)["globs"], [])
+        self.assertEqual(len(guard._analyze('echo "*.md"', str(self.V), paths_normalize(str(self.V), None), "PowerShell")["globs"]), 1)
+
+    # 第五輪 V2：cd 到萬用字元路徑時走訪前綴夾
+    def test_65_cd_to_wildcard_scans_prefix_folder(self):
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        d = self.decide("Bash", f"cd {self.raw.as_posix()}/客戶* && grep -r sk")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        self.assertIn(".env", d.reason)
+        d = self.decide("PowerShell", f'Set-Location "{self.raw.as_posix()}/客戶*"; Get-ChildItem -Recurse')
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+
+    # 第五輪 V6：推不出效用 cwd 時第二道照跑、不豁免；Push-Location 也是 cd
+    def test_66_unresolvable_cwd_keeps_token_gate(self):
+        for tool, cmd in (("PowerShell", "Push-Location ~\\.ssh; Get-Content id_rsa"), ("Bash", 'cd "$HOME/.ssh" && cat id_rsa'),
+                          ("Bash", "type %USERPROFILE%\\.ssh\\id_rsa"), ("Bash", 'cd "$HOME/.ssh" && cat $HOME/.ssh/id_rsa'),
+                          ("PowerShell", 'Push-Location "$env:USERPROFILE\\.ssh"; Get-Content id_rsa')):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "credential"), d)
+                self.assertIn("id_rsa", d.reason)
+        d = self.decide("Bash", 'cd "$HOME/x" && echo $PASSWORD')
+        self.assertNotEqual(d.reason_code, "credential", d)
+
+    # 第五輪 V5：單字母 /x token 不當路徑、不走訪整顆磁碟
+    def test_67_single_letter_slash_token_is_not_a_path(self):
+        for cmd in ("cmd /c ver", "findstr /s x *.txt", "cmd /c dir", "robocopy /e a b"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertNotIn(d.reason_code, ("credential_inside", "credential_scan_limit"), d)
+                info = self.analyze(cmd, cwd=self.V)
+                self.assertFalse(any(len(p) <= 3 for p in info["read_dirs"]), info)
         r = str(self.client).replace("\\", "/")
         d = self.decide("Bash", f'rm -rf "{r}"')  # 寫入目標本身不走訪（35 的案例照舊）
         self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)

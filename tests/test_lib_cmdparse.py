@@ -26,6 +26,143 @@ class ExtractPaths(unittest.TestCase):
         got = cmdparse.extract_paths("type C:\\x\\raw\\行政\\薪資\\s.xlsx", CWD)
         self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
 
+    def test_dot_and_dotdot_are_paths(self):
+        """骨架與來源登記第三輪 S1：不帶斜線的 . 與 .. 也當路徑抽出來，經區判斷（grep -r X .. 要走 Z10b）。"""
+        tmp, V, _raw = make_vault()
+        try:
+            self.assertIn(paths.normalize(str(tmp), None), cmdparse.extract_paths("grep -r X ..", str(V)))
+            self.assertIn(paths.normalize(str(V), None), cmdparse.extract_paths("ls .", str(V)))
+            self.assertIn(paths.normalize(str(tmp), None), cmdparse.extract_paths("cd 收件匣 && cat ../..", str(V)))
+            self.assertEqual(cmdparse.extract_paths("echo a.b", str(V)), [])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_write_words_round8_additions(self):
+        """骨架與來源登記第八輪：find -delete、shred、unlink、Tee-Object 等是寫入。"""
+        for cmd in ("find C:/x -delete", "shred C:/x/a.txt", "unlink C:/x/a.txt", "Get-Content a | Tee-Object -FilePath C:/x/a.txt",
+                    "Set-Content C:/x/a.txt x", "Out-File -FilePath C:/x/a.txt", "robocopy a b", "xcopy a b /s", "rsync -a a b",
+                    "Remove-Item a", "Move-Item a b", "Copy-Item a b", "cp.exe a b", "sed -E -i s/a/b/ x.md"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(cmdparse.is_write(cmd), cmd)
+        for cmd in ("cat C:/x/a.txt", "find C:/x -name a", "git status", "echo unlinked"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(cmdparse.is_write(cmd), cmd)
+
+    def test_bare_filename_token_is_a_path_when_command_writes(self):
+        """第八輪驗收 73：cp /tmp/a 新檔.md 的 新檔.md 要抽成路徑（寫入指令裡像檔名的裸 token）。"""
+        tmp, V, _raw = make_vault()
+        try:
+            self.assertIn(paths.normalize(str(V / "新檔.md"), None), cmdparse.extract_paths("cp /tmp/a 新檔.md", str(V)))
+            self.assertIn(paths.normalize(str(V / "新檔.md"), None), cmdparse.extract_paths("echo x > 新檔.md", str(V)))
+            self.assertNotIn(paths.normalize(str(V / "notes.txt"), None), cmdparse.extract_paths("grep x notes.txt", str(V)))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_bare_token_existing_under_cwd_or_known_extension(self):
+        """第九輪 Z2／Z4：寫入指令裡效用 cwd 下存在的裸夾名或檔名（沒副檔名）算路徑；不存在的裸 token 要已知副檔名才算新檔。"""
+        tmp, V, _raw = make_vault()
+        try:
+            v = str(V)
+            self.assertIn(paths.normalize(str(V / "案子"), None), cmdparse.extract_paths("rm -rf 案子 /tmp/x", v))
+            self.assertIn(paths.normalize(str(V / "收件匣"), None), cmdparse.extract_paths("mv 收件匣 /tmp/", v))
+            self.assertIn(paths.normalize(str(V / "收件匣"), None), cmdparse.extract_paths("tar czf /tmp/b.tgz 收件匣", v))
+            self.assertNotIn(paths.normalize(str(V / "czf"), None), cmdparse.extract_paths("tar czf /tmp/b.tgz 收件匣", v))
+            self.assertNotIn(paths.normalize(str(V / "v1.2"), None), cmdparse.extract_paths("echo v1.2 > /tmp/ver.txt", v))
+            self.assertNotIn(paths.normalize(str(V / "example.com"), None), cmdparse.extract_paths("wget example.com -O /tmp/x", v))
+            self.assertIn(paths.normalize(str(V / "新檔.xlsx"), None), cmdparse.extract_paths("cp /tmp/a 新檔.xlsx", v))
+            self.assertIn(paths.normalize(str(V / "report.PDF"), None), cmdparse.extract_paths("cp /tmp/a report.PDF", v))
+            self.assertNotIn(paths.normalize(str(V / "案子"), None), cmdparse.extract_paths("ls 案子", v))  # 讀取指令照舊
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_unresolved_variable_paths(self):
+        """第九輪 Z3（裁定 3）：帶 $變數／%變數% 展不開的 token 全部回報（含沒斜線的裸變數），呼叫端對寫入指令 deny unparsed。"""
+        self.assertEqual(cmdparse.unresolved_paths('rm -rf "C:/raw/$X" /tmp/y'), ["C:/raw/$X"])
+        self.assertEqual(cmdparse.unresolved_paths('rm -rf "%RAW%/a" '), ["%RAW%/a"])
+        self.assertEqual(cmdparse.unresolved_paths("echo x > $OUT"), ["$OUT"])
+        self.assertEqual(cmdparse.unresolved_paths('cd "$HOME/x" && rm a.txt'), ["$HOME/x"])
+        self.assertEqual(cmdparse.unresolved_paths("Remove-Item $env:TEMP\\a.txt"), ["$env:TEMP\\a.txt"])
+        self.assertEqual(cmdparse.unresolved_paths('rm -rf "$X" /tmp/y'), ["$X"])
+        self.assertEqual(cmdparse.unresolved_paths("Remove-Item $f"), ["$f"])
+        self.assertEqual(cmdparse.unresolved_paths("echo $PASSWORD > /tmp/x"), ["$PASSWORD"])
+        self.assertEqual(cmdparse.unresolved_paths("rm -rf %X% /tmp/y"), ["%X%"])
+        for cmd in ("rm -rf /tmp/y", "curl https://x/$id > /tmp/a", "ls 2>$null", "echo x > $null", "ls | Out-Null"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(cmdparse.unresolved_paths(cmd), [], cmd)
+
+    def test_unresolved_paths_narrowed_round10(self):
+        """第十輪 A5：裸變數只在整個 token 是 $X、${X}、$X/…、$X\\…（PowerShell 另加 %X%、%X%\\…）才算；
+        單引號裡、格式字串（+%Y%m%d、--format=%H）、旗標黏值（-Confirm:$false）、PowerShell 自動變數都不算。"""
+        u = cmdparse.unresolved_paths
+        self.assertEqual(u("rm -rf ${X} /tmp/y"), ["${X}"])
+        self.assertEqual(u("rm -rf $X\\a /tmp/y"), ["$X\\a"])
+        self.assertEqual(u("Remove-Item %X%\\a", powershell=True), ["%X%\\a"])
+        self.assertEqual(u('echo x > "out$Y"'), ["out$Y"])  # 導向目標裡有變數：還是看不出寫到哪
+        for cmd in ("date +%Y%m%d > /tmp/d.txt", "awk '{print $1}' a.txt > /tmp/x", "printf '%s\\n' a > /tmp/p", "git log --format=%H > /tmp/g",
+                    "echo '$HOME/x' > /tmp/q", "echo a$b > /tmp/r"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(u(cmd), [], cmd)
+        for cmd in ("Remove-Item /tmp/x -Confirm:$false", "gci /tmp | ForEach-Object { $_ } | Out-File /tmp/o", "Remove-Item /tmp/x; $null",
+                    "Remove-Item $true $false $PSItem $args $LASTEXITCODE $?"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(u(cmd, powershell=True), [], cmd)
+        self.assertEqual(u("rm -rf $null /tmp/y"), ["$null"])  # Bash 沒有自動變數
+
+    def test_brace_expand(self):
+        """第十輪 A1：token 含 {a,b} 展開成各組合（上限 20 組）；沒逗號的大括號不展開。"""
+        self.assertEqual(cmdparse.brace_expand("../raw/行政/{薪資,x}/s.xlsx"), ["../raw/行政/薪資/s.xlsx", "../raw/行政/x/s.xlsx"])
+        self.assertEqual(cmdparse.brace_expand("../r{2,3}"), ["../r2", "../r3"])
+        self.assertEqual(cmdparse.brace_expand("a{1,2}{x,y}"), ["a1x", "a1y", "a2x", "a2y"])
+        self.assertEqual(cmdparse.brace_expand("{print $1}"), ["{print $1}"])
+        self.assertEqual(cmdparse.brace_expand("plain"), ["plain"])
+        self.assertEqual(len(cmdparse.brace_expand("{1,2,3,4,5}{1,2,3,4,5}")), 20)
+        got = cmdparse.extract_paths("cat C:/x/raw/行政/{薪資,x}/s.xlsx", CWD)
+        self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
+        self.assertIn(n("C:/x/raw/行政/x/s.xlsx"), got)
+        self.assertIn(n("C:/x/r3"), cmdparse.extract_paths("rm -rf C:/x/r{2,3}", CWD))
+
+    def test_brace_head(self):
+        """第十一輪保底：含 { 的 token 回 { 之前的資料夾（沒分隔符就是 .）；{ 在開頭或前面是 $／@ 的回 None。"""
+        self.assertEqual(cmdparse.brace_head("../raw/行政/{薪資,x}/s.xlsx"), "../raw/行政")
+        self.assertEqual(cmdparse.brace_head("../r{2..3}"), "..")
+        self.assertEqual(cmdparse.brace_head("C:\\x\\r{2,3}"), "C:\\x")
+        self.assertEqual(cmdparse.brace_head("r{2,3}"), ".")
+        for text in ("{", "{a,b}", "${X}", "plain", ""):
+            with self.subTest(text=text):
+                self.assertIsNone(cmdparse.brace_head(text), text)
+        # 第十二輪：@{ 只有 PowerShell 才跳過（雜湊表）；Bash 的 @{…} 照走保底
+        self.assertIsNone(cmdparse.brace_head("@{a=1}", powershell=True))
+        self.assertIsNone(cmdparse.brace_head("../raw/行政/@{a,b}/p.txt", powershell=True))
+        self.assertEqual(cmdparse.brace_head("../raw/行政/@{a,b}/p.txt"), "../raw/行政")
+        self.assertEqual(cmdparse.brace_head("@{a=1}"), ".")
+        got = cmdparse.extract_paths("cat C:/x/raw/行政/{a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,薪資}/s.xlsx", CWD)
+        self.assertIn(n("C:/x/raw/行政"), got)
+        self.assertIn(n("C:/x"), cmdparse.extract_paths("rm -rf C:/x/r{2..3}", CWD))
+
+    def test_is_wildcard(self):
+        """第十輪 A6：候選要含 *，或同時含 ?／[ 與路徑分隔符且不是網址。"""
+        for text in ("*.md", "../客戶*", "a/?b", "../r[^x]", "C:\\x\\[a]", "薪?/"):
+            with self.subTest(text=text):
+                self.assertTrue(cmdparse.is_wildcard(text), text)
+        for text in ("[", "]", "Is this ok?", "https://a.b/?x=1", "a?b", "{print $1}", "plain", ""):
+            with self.subTest(text=text):
+                self.assertFalse(cmdparse.is_wildcard(text), text)
+        self.assertEqual(cmdparse.glob_prefixes("echo Is this ok? > /tmp/z", CWD), [])
+        self.assertEqual(cmdparse.glob_tokens('curl https://a.b/?x=1 > /tmp/x', CWD), [])
+
+    def test_single_letter_switch_is_not_a_path(self):
+        """骨架與來源登記第六輪 V5：cmd /c、findstr /s 的單字母開關不是路徑（Git Bash 不會有人寫裸 /c）。"""
+        self.assertEqual(cmdparse.extract_paths("cmd /c ver", CWD), [])
+        self.assertEqual(cmdparse.extract_paths("findstr /s x", CWD), [])
+        self.assertEqual(cmdparse.extract_paths("robocopy /e /s", CWD), [])
+        self.assertEqual(cmdparse.extract_paths("ls; cmd /c dir", CWD), [])
+        self.assertIn(n("C:/x/a.txt"), cmdparse.extract_paths("cat /c/x/a.txt", CWD))  # 真正的 Git Bash 路徑照抽
+        # 第七輪 X3：只有開關式指令（cmd、findstr、robocopy、xcopy、dir、attrib、icacls）或 PowerShell 才把 /x 當旗標
+        self.assertIn(n("C:/"), cmdparse.extract_paths("grep -r TODO /c", CWD))
+        self.assertIn(n("C:/"), cmdparse.extract_paths('find /c -name "*.env"', CWD))
+        self.assertEqual(cmdparse.extract_paths("foo a /e", CWD, powershell=True), [])
+        self.assertIn(n("E:/"), cmdparse.extract_paths("foo a /e", CWD))
+
     def test_relative_path_joins_cwd(self):
         tmp, V, raw = make_vault()
         try:

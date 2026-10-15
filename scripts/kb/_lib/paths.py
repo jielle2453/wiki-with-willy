@@ -134,6 +134,31 @@ def inside(path, dir_):
     return path == dir_ or path.startswith(dir_ + "/")
 
 
+def compress_spec(target, vault, max_up):
+    """把絕對路徑壓成可攜 spec（D-021 補；照舊 llm-wiki 的 portable_path）。target、vault 原始大小寫，存在的部分走 realpath。
+    順序：同一顆磁碟且往上不超過 max_up 層 → 相對（../來源/x）；在家目錄底下 → ~/x；否則絕對（D:/x）。一律正斜線。
+    """
+    t = Path(target).resolve()
+    v = Path(vault).resolve()
+    try:
+        rel = os.path.relpath(str(t), str(v)).replace("\\", "/")
+        if sum(1 for seg in rel.split("/") if seg == "..") <= max_up:
+            return rel
+    except ValueError:
+        pass  # 不同磁碟
+    try:
+        return "~/" + t.relative_to(Path.home().resolve()).as_posix()
+    except ValueError:
+        pass
+    return t.as_posix()
+
+
+def is_abs_spec(spec):
+    """spec 是不是沒壓掉的絕對路徑（磁碟代號或 // 開頭）：換電腦會找不到。"""
+    s = str(spec or "").replace("\\", "/")
+    return bool(re.match(r"^[a-zA-Z]:/", s)) or s.startswith("/")
+
+
 def resolve_spec(spec, base):
     """D-021 可攜 spec：~/x、${VAR}/x、相對 base 的 x 或 ../x、絕對 C:/x。展不開的環境變數回 None。"""
     spec = str(spec).strip()

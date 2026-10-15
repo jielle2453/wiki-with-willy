@@ -2,5 +2,9 @@
   "schema_version": 1,
   "_why_schema_version": "每個設定檔都帶版本，升級時遷移（D-014）",
   "big_change_synthesis_max": 10,
-  "_why_big_change_synthesis_max": "同一句話由 AI 自己決定修改的既有綜合卡張數上限，到了就停下來問（D-075、I-028）；客戶同意後 kb turn approve 解除這一回合"
+  "_why_big_change_synthesis_max": "同一句話由 AI 自己決定修改的既有綜合卡張數上限，到了就停下來問（D-075、I-028）；客戶同意後 kb turn approve 解除這一回合",
+  "source_spec_max_up": 4,
+  "_why_source_spec_max_up": "相對總資料夾的來源 spec 最多往上幾層，超過改用 ~/ 或絕對路徑（D-021 補）；數字照舊 llm-wiki",
+  "credential_scan_max_entries": 5000,
+  "_why_credential_scan_max_entries": "守門對資料夾範圍找憑證檔名時最多走訪幾項，超過就擋、請縮小範圍（D-079 補，fail closed）；hook 整支要在 10 秒內"
 }

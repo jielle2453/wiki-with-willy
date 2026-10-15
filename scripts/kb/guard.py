@@ -242,25 +242,15 @@ def _stages(command):
 
 _CD_VERBS = cmdparse._CD | {"push-location"}  # V6：Push-Location 也是 cd
 _SINGLE_SWITCH = re.compile(r"^/[a-zA-Z]$")  # V5／X3：開關式指令或 PowerShell 的單字母 /x 是旗標
-# 寫入動詞（第七輪，以 token 比對）：一段裡出現任何一個，那段所有路徑都是寫入目標；接受打包類在總資料夾裡的誤擋
-WRITE_VERBS = {
-    "rm", "mv", "cp", "tee", "touch", "mkdir", "rmdir", "del", "erase", "move", "copy", "ren", "rename", "truncate", "dd",
-    "rsync", "wget", "tar", "unzip", "zip", "7z", "install", "ln", "chmod", "chown", "ri", "rd", "md", "sc", "ac", "ni", "cpi",
-    "mi", "rni", "iex", "robocopy", "xcopy", "compress-archive", "expand-archive", "remove-item", "move-item", "copy-item",
-    "rename-item", "new-item", "set-content", "add-content", "out-file", "clear-content", "set-itemproperty", "export-csv",
-    "export-clixml", "invoke-expression", "start-process",
-}
-_INPLACE_EDIT = re.compile(r"(?<![.\w-])(?:sed|perl)\s+(?:-[a-zA-Z]*i|--in-place)\b")
 
 
-def _stage_write(tokens, bare, include_redirect=True):
-    """這一段有沒有寫入：導向（> 或 >>）、任一 token 是寫入動詞、sed／perl 就地改寫。
+def _stage_has_write(tokens, bare, include_redirect=True):
+    """第三道用：這一段有沒有寫入（導向、cmdparse.WRITE_WORDS 的寫入動詞），有就那段的路徑是寫入目標、不走訪（S2）。
+    只影響憑證走訪；區判斷的寫入欄另外照整條指令的 cmdparse.is_write（第八輪，守門題原版）。
     include_redirect=False 只看動詞：導向不會讓 grep -r 的隱含 cwd 或 cat * 的讀取範圍變成不走訪。"""
     if include_redirect and ((bare is not None and ">" in bare) or any(a for _t, _q, _g, a in tokens)):
         return True
-    if any(t.lower().replace("\\", "/").rsplit("/", 1)[-1] in WRITE_VERBS for t, _q, _g, _a in tokens):
-        return True
-    return bool(_INPLACE_EDIT.search(bare if bare is not None else ""))
+    return bool(cmdparse.WRITE_WORDS.search(bare if bare is not None else ""))
 
 
 def _norm(tok, base):
@@ -279,25 +269,22 @@ def _analyze(command, cwd, vault_n, tool="Bash"):
     """第二、三道的材料（N1、P1、P4、S2、D-081 第四輪、第五輪 V1 V2 V5 V6）。回 dict：
     read_dirs：要走訪的夾（`.`／`..`、效用 cwd 底下存在的裸夾名、裸萬用字元的效用 cwd、
       cwd 在總資料夾外且該管線段有搜尋動詞又沒有存在的讀取路徑時的效用 cwd）；
-    read_paths：存在的讀取路徑（檔或夾），區判斷時不套寫入欄（Q8）；
+    read_paths：存在的讀取路徑（檔或夾），給測試與走訪對照用（區判斷不看它，第八輪照整條 is_write）；
     write_targets：導向目標、寫入動詞那一段的路徑（不走訪；`.`／`..` 只在導向後才算，Q8）；
     globs：含萬用字元的 token（Bash 只認引號外，PowerShell 引號內也收），接效用 cwd 正規化；cd 到萬用字元路徑的目標也收（V2）；
     token：第二道命中的段（只在效用 cwd 不在總資料夾裡、或推不出效用 cwd 時比）。效用 cwd 跨管線段、跨子指令延續。"""
     cleaned = cmdparse.DISCARD_OUTPUT.sub(" ", command)
     base = normalize(cwd, None)
-    out = {"read_dirs": [], "read_paths": set(), "write_targets": set(), "write_paths": [], "globs": [], "cd_dirs": [], "token": None}
+    out = {"read_dirs": [], "read_paths": set(), "write_targets": set(), "globs": [], "cd_dirs": [], "token": None}
 
-    def add_write(p, tok):
-        """寫入目標：不走訪。存在的、帶斜線的、.／.. 的也進區判斷（cat CLAUDE.md > x、tar czf x 收件匣 的裸檔名 cmdparse 抽不到）。"""
-        out["write_targets"].add(p)
-        if p not in out["write_paths"] and (tok in (".", "..") or "/" in tok or "\\" in tok or os.path.exists(p)):
-            out["write_paths"].append(p)
+    def add_write(p, _tok):
+        out["write_targets"].add(p)  # 寫入目標：第三道不走訪；區判斷另外照整條 is_write
     for _sub, _stage, text in _stages(cleaned):
         tokens = _tokens_q(text, globs_in_quotes=(tool == "PowerShell"))
         bare = cmdparse.outside_quotes(text)
         verb = tokens[0][0].lower().replace("\\", "/").rsplit("/", 1)[-1] if tokens else ""
-        verb_write = _stage_write(tokens, bare)  # 第七輪：一段有導向或寫入動詞，整段路徑都是寫入目標
-        write_verb = _stage_write(tokens, bare, include_redirect=False)  # 只有寫入動詞才讓隱含的讀取範圍不走訪
+        verb_write = _stage_has_write(tokens, bare)  # 這段有導向或寫入動詞：這段的路徑是寫入目標，第三道不走訪
+        write_verb = _stage_has_write(tokens, bare, include_redirect=False)  # 只有寫入動詞才讓隱含的讀取範圍不走訪
         switch_ok = tool == "PowerShell" or verb in cmdparse.SWITCH_VERBS  # X3
         expect_cd, has_read_path = False, False
         verbs, flags = [], []
@@ -512,7 +499,6 @@ def _shell_tool(tool, command, cwd, vault, sources):
         return Decision("deny", zone, code, reason, [_row(tool, "deny", zone, code, command)], vault)
 
     info = _analyze(command, cwd, vault_n, tool)
-    paths = paths + [p for p in info["write_paths"] if p not in paths]  # 寫入段的裸檔名（cat CLAUDE.md > x）也要區判斷
     classified = [(p, *classify(p, vault_n, sources)) for p in paths]
     # 萬用字元（Bash 只認引號外，PowerShell 引號內也算，Q7、V1）：前綴資料夾（接 cd 之後的 cwd）與實際展開的每一個命中都不能落在排除夾（或含排除夾）
     heads = []
@@ -557,17 +543,15 @@ def _shell_tool(tool, command, cwd, vault, sources):
             return deny(zone, code, reason)
 
     for p, zone, alias in classified:
-        # Q8／W1：寫入欄以路徑為單位：出現在任何寫入目標就套寫入欄（cat f; echo x > f 也擋）；確知只是讀取的（存在的檔或夾、.／..）
-        # 只套讀取欄；其餘保守當寫入
-        writes_here = write and (p in info["write_targets"] or p not in info["read_paths"])
+        # 第八輪：區判斷照守門題原版——整條指令 is_write 為真，所有抽出的路徑都套寫入欄；不分段、不分角色（誤擋併 B-110）
         columns = ("read",)
-        if writes_here:
+        if write:
             columns = ("read", "shell_write" if "shell_write" in ZONES[zone] else "write")
         for column in columns:
             decision, code, reason = _verdict(zone, column, alias)
             if decision == "deny":
                 return deny(zone, code, reason)
-        if writes_here and zone == "Z11":
+        if write and zone == "Z11":
             up_zone, up_alias = _ancestor_zone(p, vault_n, sources)
             if up_zone:
                 _d, code, reason = _verdict(up_zone, "write", up_alias)

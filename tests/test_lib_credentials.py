@@ -142,7 +142,10 @@ class MaskSecrets(unittest.TestCase):
         m = credentials.mask_secrets
         self.assertEqual(m("密碼是abc 123，謝謝"), "密碼███，謝謝")
         self.assertEqual(m("my password is hunter2"), "my password███")
-        self.assertEqual(m("密碼我設成 abc123、帳密：jie abc123"), "密碼███、帳密███")
+        self.assertEqual(m("密碼我設成 abc123、帳密：jie abc123"), "密碼███")  # 第八輪 Y6：頓號不是子句尾
+        self.assertEqual(m("帳號密碼分別是 jie、abc123"), "帳號███")
+        self.assertEqual(m("密碼 abc、之後再改"), "密碼███")
+        self.assertEqual(m("密碼 abc，之後再改"), "密碼███，之後再改")
         self.assertEqual(m("Token: Bearer eyJabc"), "Token███")
         self.assertEqual(m("PIN 碼 4821"), "PIN███")
         self.assertIn(m("PGPASSWORD=xyz 請存"), ("PGPASSWORD███", "PGPASSWORD███\n"))

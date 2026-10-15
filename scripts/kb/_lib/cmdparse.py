@@ -21,8 +21,8 @@ DISCARD_OUTPUT = re.compile(r"\d?>\s*&\s*\d|\d?>\s*/dev/null|\d?>\s*\$null|\d?>\
 _W = r"(?<![.\w-])"
 WRITE_WORDS = re.compile(
     _W + r"(?:rm|mv|cp|tee|touch|mkdir|rmdir|del|erase|move|copy|ren|rename|truncate|dd|rsync|wget|tar|unzip|install|ln|"
-    r"chmod|chown|ri|rd|md|sc|ac|ni|cpi|mi|rni|iex|robocopy|xcopy|zip|7z|compress-archive|expand-archive)\b|"
-    + _W + r"sed\s+(?:-[a-zA-Z]*i|--in-place)|" + _W + r"perl\s+-[a-zA-Z]*i|"
+    r"chmod|chown|ri|rd|md|sc|ac|ni|cpi|mi|rni|iex|robocopy|xcopy|zip|7z|compress-archive|expand-archive|shred|unlink|tee-object)\b|"
+    + _W + r"sed(?:\s+-[a-zA-Z]+)*\s+(?:-[a-zA-Z]*i|--in-place)|" + _W + r"perl(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*i|"
     + _W + r"curl\b[^|;&]*\s(?:-[a-zA-Z]*o|-O|--output)\b|-delete\b|"
     + _W + r"git\s+(?:clean|checkout|restore|reset|stash|rm|mv)\b|"
     + _W + r"(?:remove-item|move-item|copy-item|rename-item|new-item|set-content|add-content|out-file|clear-content|"
@@ -171,6 +171,7 @@ def _walk(command, cwd, powershell=False):
     """依序產出 (原字串, 正規化路徑)，cd 之後的相對路徑接 cd 的目標。powershell：單字母 /x 一律當旗標（PowerShell 沒有 Git Bash 寫法）。"""
     cleaned = DISCARD_OUTPUT.sub(" ", command)
     base, expect_cd_target, after_cd, verb = cwd, False, False, ""
+    writing = is_write(command)  # 寫入指令裡像檔名的裸 token（cp /tmp/a 新檔.md）也當路徑，要經區判斷（骨架與來源登記第八輪）
     for text, quoted, after_redirect, first in _tokens(cleaned):
         if first:
             verb = text.lower().replace("\\", "/").rsplit("/", 1)[-1]
@@ -186,7 +187,7 @@ def _walk(command, cwd, powershell=False):
         if text.lower() in _CD:
             expect_cd_target = True
             continue
-        for cand in _candidates(text, quoted, after_redirect, after_cd, powershell or verb in SWITCH_VERBS):
+        for cand in _candidates(text, quoted, after_redirect, after_cd or (writing and not first), powershell or verb in SWITCH_VERBS):
             # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對
             for form in dict.fromkeys((cand, _ESCAPE.sub("", cand))):
                 p = normalize(form, base)

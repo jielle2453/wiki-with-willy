@@ -37,6 +37,27 @@ class ExtractPaths(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_write_words_round8_additions(self):
+        """骨架與來源登記第八輪：find -delete、shred、unlink、Tee-Object 等是寫入。"""
+        for cmd in ("find C:/x -delete", "shred C:/x/a.txt", "unlink C:/x/a.txt", "Get-Content a | Tee-Object -FilePath C:/x/a.txt",
+                    "Set-Content C:/x/a.txt x", "Out-File -FilePath C:/x/a.txt", "robocopy a b", "xcopy a b /s", "rsync -a a b",
+                    "Remove-Item a", "Move-Item a b", "Copy-Item a b", "cp.exe a b", "sed -E -i s/a/b/ x.md"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(cmdparse.is_write(cmd), cmd)
+        for cmd in ("cat C:/x/a.txt", "find C:/x -name a", "git status", "echo unlinked"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(cmdparse.is_write(cmd), cmd)
+
+    def test_bare_filename_token_is_a_path_when_command_writes(self):
+        """第八輪驗收 73：cp /tmp/a 新檔.md 的 新檔.md 要抽成路徑（寫入指令裡像檔名的裸 token）。"""
+        tmp, V, _raw = make_vault()
+        try:
+            self.assertIn(paths.normalize(str(V / "新檔.md"), None), cmdparse.extract_paths("cp /tmp/a 新檔.md", str(V)))
+            self.assertIn(paths.normalize(str(V / "新檔.md"), None), cmdparse.extract_paths("echo x > 新檔.md", str(V)))
+            self.assertNotIn(paths.normalize(str(V / "notes.txt"), None), cmdparse.extract_paths("grep x notes.txt", str(V)))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_single_letter_switch_is_not_a_path(self):
         """骨架與來源登記第六輪 V5：cmd /c、findstr /s 的單字母開關不是路徑（Git Bash 不會有人寫裸 /c）。"""
         self.assertEqual(cmdparse.extract_paths("cmd /c ver", CWD), [])

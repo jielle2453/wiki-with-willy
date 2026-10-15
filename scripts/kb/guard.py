@@ -121,7 +121,7 @@ def _token_filename_hit(text):
 def token_hit(command):
     """第二道（H1；裁定 1 收窄、N3 再收）對整句：不解析路徑、不看 cwd。decide 走的是 _analyze 裡按效用 cwd 判的版本（D-081）。"""
     cleaned = cmdparse.DISCARD_OUTPUT.sub(" ", command)
-    for text, _quoted, _after_redirect, _first in cmdparse._tokens(cleaned):
+    for text, _quoted, _after_redirect, _first, _qchar in cmdparse._tokens(cleaned):
         seg = _token_filename_hit(text)
         if seg is not None:
             return seg
@@ -164,30 +164,32 @@ def _is_recursive_flag(verb, token):
 
 
 def _tokens_q(cmd, globs_in_quotes=False):
-    """跟 cmdparse._tokens 同一套切法，多記一個「有沒有萬用字元」（Q7：Bash 只認引號外；V1：PowerShell 的 cmdlet 自己會展開引號裡的，照收）。
-    回 [(字串, 有引號, 含 * ? [, 緊接在 > 後面)]。"""
-    out, buf, quote, quoted, glob_out, after_redirect, prev = [], [], None, False, False, False, ""
+    """跟 cmdparse._tokens 同一套切法，多記一個「是不是萬用字元 token」（Q7：Bash 只認引號外；V1：PowerShell 的 cmdlet 自己會展開引號裡的，照收；
+    第十輪 A6：要含 *，或 ?／[ 加路徑分隔符且不是網址）。token 含 {a,b} 先展開成各組合（第十輪 A1）。
+    回 [(字串, 有引號, 是萬用字元, 緊接在 > 後面)]。"""
+    out, buf, ubuf, quote, quoted, after_redirect, prev = [], [], [], None, False, False, ""
 
     def flush():
-        nonlocal buf, quoted, glob_out, after_redirect
+        nonlocal buf, ubuf, quoted, after_redirect
         if buf or quoted:
-            out.append(("".join(buf), quoted, glob_out, after_redirect))
+            text, unquoted = "".join(buf), "".join(ubuf)
+            for form in cmdparse.brace_expand(text):
+                out.append((form, quoted, cmdparse.is_wildcard(form, None if globs_in_quotes else unquoted), after_redirect))
             after_redirect = False
-        buf, quoted, glob_out = [], False, False
+        buf, ubuf, quoted = [], [], False
 
     for ch in cmd:
         if quote:
             if ch == quote:
                 quote = None
             else:
-                if globs_in_quotes and ch in _WILDCARD_CHARS:
-                    glob_out = True
                 buf.append(ch)
         elif ch in "\"'":
             quote = ch
             quoted = True
         elif ch == " " and prev == "\\":
             buf.append(ch)
+            ubuf.append(ch)
         elif ch.isspace() or ch in cmdparse._TOKEN_BREAK:
             flush()
             if ch == ">":
@@ -195,9 +197,8 @@ def _tokens_q(cmd, globs_in_quotes=False):
             elif ch in cmdparse._TOKEN_BREAK:
                 after_redirect = False
         else:
-            if ch in _WILDCARD_CHARS:
-                glob_out = True
             buf.append(ch)
+            ubuf.append(ch)
         prev = ch
     flush()
     return out
@@ -302,6 +303,8 @@ def _analyze(command, cwd, vault_n, tool="Bash"):
                     p = _norm(tok, base)
                     hits = [h for h in _expand_glob(p, hidden=True)] if p is not None else []
                     dirs = [h for h in hits if os.path.isdir(h)]
+                    if not dirs and p is not None and _pattern_head(p):
+                        dirs = [_pattern_head(p)]  # 第十輪 A2：[…] 字元類展不開（薪[^x]）就退回前綴夾做區判斷與走訪
                     out["cd_dirs"].extend(dirs)  # cd 到萬用字元路徑：用展開後的夾走訪與區判斷（W4），效用 cwd 當成第一個
                     base = dirs[0] if dirs else None
                 else:
@@ -316,6 +319,8 @@ def _analyze(command, cwd, vault_n, tool="Bash"):
                 p = _norm(tok, base)
                 if p is not None:
                     add_write(p, tok)
+                    if glob_out:
+                        out["globs"].append(p)  # 第十輪 A3：導向目標含萬用字元（> ../客*/a.txt），前綴夾與展開命中也進區判斷
                 continue
             word = low.replace("\\", "/").rsplit("/", 1)[-1]
             if word in SEARCH_ALWAYS or word in GREP_FAMILY or word in LIST_VERBS:
@@ -462,7 +467,7 @@ def _file_tool(tool, target, cwd, vault, sources):
 
 def _pattern_head(pattern):
     """萬用字元前的固定前綴資料夾。"""
-    m = re.search(r"[*?\[{]", pattern)
+    m = re.search(r"[*?\[]", pattern)  # 大括號已在 cmdparse.brace_expand 展開（A1）
     head = pattern[:m.start()] if m else pattern
     return head.rsplit("/", 1)[0] if "/" in head else head
 
@@ -566,7 +571,7 @@ def _shell_tool(tool, command, cwd, vault, sources):
         if zone == "Z10b":
             _d, code, reason = _verdict(zone, "read", alias)
             return deny(zone, code, reason)
-    if write and (not paths or cmdparse.unresolved_paths(command)):
+    if write and (not paths or cmdparse.unresolved_paths(command, powershell=(tool == "PowerShell"))):
         # 抽不到路徑，或有帶 $變數／%變數% 展不開的路徑（第九輪 Z3）：看不出會寫到哪，一律擋
         return Decision("deny", "", "unparsed", UNPARSED_REASON, [_row(tool, "deny", "", "unparsed", command)], vault)
     if saw_unresolved:

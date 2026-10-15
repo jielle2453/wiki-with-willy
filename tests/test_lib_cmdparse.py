@@ -90,6 +90,48 @@ class ExtractPaths(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(cmdparse.unresolved_paths(cmd), [], cmd)
 
+    def test_unresolved_paths_narrowed_round10(self):
+        """第十輪 A5：裸變數只在整個 token 是 $X、${X}、$X/…、$X\\…（PowerShell 另加 %X%、%X%\\…）才算；
+        單引號裡、格式字串（+%Y%m%d、--format=%H）、旗標黏值（-Confirm:$false）、PowerShell 自動變數都不算。"""
+        u = cmdparse.unresolved_paths
+        self.assertEqual(u("rm -rf ${X} /tmp/y"), ["${X}"])
+        self.assertEqual(u("rm -rf $X\\a /tmp/y"), ["$X\\a"])
+        self.assertEqual(u("Remove-Item %X%\\a", powershell=True), ["%X%\\a"])
+        self.assertEqual(u('echo x > "out$Y"'), ["out$Y"])  # 導向目標裡有變數：還是看不出寫到哪
+        for cmd in ("date +%Y%m%d > /tmp/d.txt", "awk '{print $1}' a.txt > /tmp/x", "printf '%s\\n' a > /tmp/p", "git log --format=%H > /tmp/g",
+                    "echo '$HOME/x' > /tmp/q", "echo a$b > /tmp/r"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(u(cmd), [], cmd)
+        for cmd in ("Remove-Item /tmp/x -Confirm:$false", "gci /tmp | ForEach-Object { $_ } | Out-File /tmp/o", "Remove-Item /tmp/x; $null",
+                    "Remove-Item $true $false $PSItem $args $LASTEXITCODE $?"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(u(cmd, powershell=True), [], cmd)
+        self.assertEqual(u("rm -rf $null /tmp/y"), ["$null"])  # Bash 沒有自動變數
+
+    def test_brace_expand(self):
+        """第十輪 A1：token 含 {a,b} 展開成各組合（上限 20 組）；沒逗號的大括號不展開。"""
+        self.assertEqual(cmdparse.brace_expand("../raw/行政/{薪資,x}/s.xlsx"), ["../raw/行政/薪資/s.xlsx", "../raw/行政/x/s.xlsx"])
+        self.assertEqual(cmdparse.brace_expand("../r{2,3}"), ["../r2", "../r3"])
+        self.assertEqual(cmdparse.brace_expand("a{1,2}{x,y}"), ["a1x", "a1y", "a2x", "a2y"])
+        self.assertEqual(cmdparse.brace_expand("{print $1}"), ["{print $1}"])
+        self.assertEqual(cmdparse.brace_expand("plain"), ["plain"])
+        self.assertEqual(len(cmdparse.brace_expand("{1,2,3,4,5}{1,2,3,4,5}")), 20)
+        got = cmdparse.extract_paths("cat C:/x/raw/行政/{薪資,x}/s.xlsx", CWD)
+        self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
+        self.assertIn(n("C:/x/raw/行政/x/s.xlsx"), got)
+        self.assertIn(n("C:/x/r3"), cmdparse.extract_paths("rm -rf C:/x/r{2,3}", CWD))
+
+    def test_is_wildcard(self):
+        """第十輪 A6：候選要含 *，或同時含 ?／[ 與路徑分隔符且不是網址。"""
+        for text in ("*.md", "../客戶*", "a/?b", "../r[^x]", "C:\\x\\[a]", "薪?/"):
+            with self.subTest(text=text):
+                self.assertTrue(cmdparse.is_wildcard(text), text)
+        for text in ("[", "]", "Is this ok?", "https://a.b/?x=1", "a?b", "{print $1}", "plain", ""):
+            with self.subTest(text=text):
+                self.assertFalse(cmdparse.is_wildcard(text), text)
+        self.assertEqual(cmdparse.glob_prefixes("echo Is this ok? > /tmp/z", CWD), [])
+        self.assertEqual(cmdparse.glob_tokens('curl https://a.b/?x=1 > /tmp/x', CWD), [])
+
     def test_single_letter_switch_is_not_a_path(self):
         """骨架與來源登記第六輪 V5：cmd /c、findstr /s 的單字母開關不是路徑（Git Bash 不會有人寫裸 /c）。"""
         self.assertEqual(cmdparse.extract_paths("cmd /c ver", CWD), [])

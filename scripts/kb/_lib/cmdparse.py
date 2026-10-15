@@ -50,7 +50,14 @@ _OPT_PREFIX = re.compile(r"^--?[\w-]+=")
 _FILENAME = re.compile(r"\.\w{1,6}$")
 # 第九輪 Z4：不存在的裸 token 只有這些副檔名才算新檔（v1.2、example.com 不算）
 _NEW_FILE_EXT = re.compile(r"\.(?:md|txt|docx|doc|xlsx|xls|csv|pdf|pptx|json|yaml|yml|ini|log|html|png|jpg|jpeg|zip)$", re.IGNORECASE)
-_GLOB = re.compile(r"[*?\[{]")
+_GLOB_CHARS = re.compile(r"[*?\[]")  # 第十輪 A6：是不是萬用字元 token 先過 is_wildcard，這只找第一個萬用字元的位置；大括號先經 brace_expand
+_BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")  # 第十輪 A1：{a,b} 展開
+BRACE_LIMIT = 20
+# 第十輪 A5：展不開的變數——整個 token 是 $X、${X}、$X/…、$X\…（PowerShell 的 $env:X 也在內）；%X%、%X%\… 另算
+_VAR_WHOLE = re.compile(r"^\$(?:\{(?P<b>[A-Za-z_][\w:]*)\}|(?P<n>[A-Za-z_][\w:]*))(?:[\\/].*)?$")
+_PCT_WHOLE = re.compile(r"^%[A-Za-z_]\w*%(?:[\\/].*)?$")
+_VAR_INSIDE = re.compile(r"\$\{?[A-Za-z_]|%[A-Za-z_]\w*%")
+PS_AUTO_VARS = {"false", "true", "null", "_", "psitem", "args", "lastexitcode"}  # PowerShell 自動變數不是展不開的路徑；$? 本來就不像變數名
 _ABS_START = re.compile(r"^(?:[A-Za-z]:|/|\\\\|~|file:)")
 _CD = {"cd", "pushd", "set-location", "sl", "chdir"}
 # token 裡夾的絕對路徑：C:\…、C:/…、/c/…
@@ -91,16 +98,16 @@ SWITCH_VERBS = {"cmd", "cmd.exe", "findstr", "robocopy", "xcopy", "dir", "attrib
 
 
 def _tokens(cmd):
-    """回 [(字串, 有引號, 緊接在 > 後面, 是不是一段的第一個 token)]。引號裡的空白與符號保留；引號沒成對就一路到底。"""
-    out, buf, quote, quoted, after_redirect, first = [], [], None, False, False, True
+    """回 [(字串, 有引號, 緊接在 > 後面, 是不是一段的第一個 token, 第一個引號字元或空字串)]。引號裡的空白與符號保留；引號沒成對就一路到底。"""
+    out, buf, quote, quoted, after_redirect, first, qchar = [], [], None, False, False, True, ""
 
     def flush():
-        nonlocal buf, quoted, after_redirect, first
+        nonlocal buf, quoted, after_redirect, first, qchar
         if buf or quoted:
-            out.append(("".join(buf), quoted, after_redirect, first))
+            out.append(("".join(buf), quoted, after_redirect, first, qchar))
             after_redirect = False
             first = False
-        buf, quoted = [], False
+        buf, quoted, qchar = [], False, ""
 
     prev = ""
     for ch in cmd:
@@ -112,6 +119,7 @@ def _tokens(cmd):
         elif ch in "\"'":
             quote = ch
             quoted = True
+            qchar = qchar or ch
         elif ch == " " and prev == "\\":
             buf.append(ch)  # 跳脫的空白是 token 的一部分（AI\ 產出），N-c 再去掉 \
         elif ch.isspace() or ch in _TOKEN_BREAK:
@@ -126,6 +134,32 @@ def _tokens(cmd):
         prev = ch
     flush()
     return out
+
+
+def brace_expand(text, limit=BRACE_LIMIT):
+    """第十輪 A1：token 含 {a,b} 就展開成各組合（cat ../raw/行政/{薪資,x}/s.xlsx、rm -rf ../r{2,3}），上限 limit 組；沒逗號的大括號不動。"""
+    out = [text]
+    while True:
+        nxt, changed = [], False
+        for t in out:
+            m = _BRACE.search(t)
+            if not m:
+                nxt.append(t)
+                continue
+            changed = True
+            nxt.extend(t[:m.start()] + alt + t[m.end():] for alt in m.group(1).split(","))
+        out = nxt[:limit]
+        if not changed or len(nxt) > limit:
+            return out
+
+
+def is_wildcard(text, unquoted=None):
+    """第十輪 A6：萬用字元候選要含 *，或同時含 ?／[ 與路徑分隔符且不是網址（://）。
+    unquoted：只算引號外的字元（Bash 引號裡的 * ? [ 是文字，Q7）；分隔符與網址看整個 token。"""
+    chars = text if unquoted is None else unquoted
+    if "*" in chars:
+        return True
+    return ("?" in chars or "[" in chars) and ("/" in text or "\\" in text) and "://" not in text
 
 
 def _bare_under(text, base):
@@ -169,7 +203,7 @@ def _candidates(text, quoted, after_redirect, after_cd, switch_ok=False, write_b
 
 def _relative_resolves(cand, path):
     """B3：相對 token 要解析後存在，或父目錄存在且最後一段像檔名（有副檔名或無空白）。含萬用字元的看前綴資料夾存不存在。"""
-    m = _GLOB.search(path)
+    m = _GLOB_CHARS.search(path) if is_wildcard(path) else None
     if m:
         head = path[:m.start()]
         head = head.rsplit("/", 1)[0] if "/" in head else head
@@ -188,28 +222,32 @@ def _walk(command, cwd, powershell=False):
     cleaned = DISCARD_OUTPUT.sub(" ", command)
     base, expect_cd_target, after_cd, verb = cwd, False, False, ""
     writing = is_write(command)  # 寫入指令裡像檔名的裸 token（cp /tmp/a 新檔.md）也當路徑，要經區判斷（骨架與來源登記第八輪）
-    for text, quoted, after_redirect, first in _tokens(cleaned):
+    for token, quoted, after_redirect, first, _qchar in _tokens(cleaned):
         if first:
-            verb = text.lower().replace("\\", "/").rsplit("/", 1)[-1]
+            verb = token.lower().replace("\\", "/").rsplit("/", 1)[-1]
         if expect_cd_target:
-            if text.startswith("-"):
+            if token.startswith("-"):
                 continue  # Set-Location -Path X、cd -- X：旗標跳過，下一個才是目標
             expect_cd_target = False
-            if text and "$" not in text and "%" not in text:
-                base = normalize(text, base)
+            if token and "$" not in token and "%" not in token:
+                forms = brace_expand(token)  # cd ../r{2,3}：每個展開都是目標，效用 cwd 取第一個（A1）
+                targets = [normalize(form, base) for form in forms]
+                base = targets[0]
                 after_cd = True
-                yield text, base
+                for form, target in zip(forms, targets):
+                    yield form, target
                 continue
-        if text.lower() in _CD:
+        if token.lower() in _CD:
             expect_cd_target = True
             continue
-        for cand in _candidates(text, quoted, after_redirect, after_cd, powershell or verb in SWITCH_VERBS,
-                                write_base=(base if writing and not first else None)):
-            # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對
-            for form in dict.fromkeys((cand, _ESCAPE.sub("", cand))):
-                p = normalize(form, base)
-                if _ABS_START.match(form) or _relative_resolves(form, p):
-                    yield form, p
+        for text in brace_expand(token):  # 第十輪 A1：{a,b} 先展開再抽
+            for cand in _candidates(text, quoted, after_redirect, after_cd, powershell or verb in SWITCH_VERBS,
+                                    write_base=(base if writing and not first else None)):
+                # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對
+                for form in dict.fromkeys((cand, _ESCAPE.sub("", cand))):
+                    p = normalize(form, base)
+                    if _ABS_START.match(form) or _relative_resolves(form, p):
+                        yield form, p
 
 
 def extract_paths(command, cwd, powershell=False):
@@ -225,7 +263,7 @@ def glob_tokens(command, cwd):
     """含萬用字元（* ? [ {）的 token，正規化後回傳（保留萬用字元），給呼叫端 glob 展開。"""
     out = []
     for raw, p in _walk(command, cwd):
-        if _GLOB.search(raw) and p not in out:
+        if is_wildcard(raw) and p not in out:
             out.append(p)
     return out
 
@@ -234,7 +272,7 @@ def glob_prefixes(command, cwd):
     """含萬用字元的 token，回萬用字元前最後一個資料夾（正規化）。shell 會展開它，守門要看它蓋到哪。"""
     out = []
     for raw, _p in _walk(command, cwd):
-        m = _GLOB.search(raw)
+        m = _GLOB_CHARS.search(raw) if is_wildcard(raw) else None
         if not m:
             continue
         head = raw[:m.start()].replace("\\", "/")
@@ -243,11 +281,26 @@ def glob_prefixes(command, cwd):
     return out
 
 
-def unresolved_paths(command):
-    """第九輪 Z3（裁定 3）：帶 $變數／%變數% 展不開的 token 全部回報——帶斜線的、導向目標、cd 目標，與沒斜線的裸變數（$X、%X%、$f）；
-    網址與丟掉輸出的 >$null、| Out-Null 不算。呼叫端對寫入指令有這種 token 就 deny unparsed（I-031：看不懂的寫入一律擋）；讀取指令不看。"""
-    return [text for text, _quoted, _after_redirect, _first in _tokens(DISCARD_OUTPUT.sub(" ", command))
-            if text and not _URL.match(text) and ("$" in text or "%" in text)]
+def unresolved_paths(command, powershell=False):
+    """第九輪 Z3、第十輪 A5：展不開的變數路徑 token——(a) 整個 token 是 $X、${X}、$X/…、$X\\…，或 %X%、%X%\\…（裸變數，第九輪裁定 3）；
+    (b) 帶變數又含 / 或 \\ 的、或是導向目標的 token（C:/raw/$X、> "out$Y"）。單引號裡（Bash 與 PowerShell 都不展開）、網址、
+    丟掉輸出的 >$null、| Out-Null，與 PowerShell 自動變數（$false $true $null $_ $PSItem $args $LASTEXITCODE）不算；
+    +%Y%m%d、--format=%H、-Confirm:$false 這些不是整個 token 是變數的也不算。呼叫端對寫入指令有就 deny unparsed（I-031）；讀取指令不看。"""
+    out = []
+    for text, _quoted, after_redirect, _first, qchar in _tokens(DISCARD_OUTPUT.sub(" ", command)):
+        if not text or qchar == "'" or _URL.match(text):
+            continue
+        m = _VAR_WHOLE.match(text)
+        if m:
+            name = (m.group("b") or m.group("n")).lower()
+            if powershell and name in PS_AUTO_VARS:
+                continue
+            out.append(text)
+        elif _PCT_WHOLE.match(text):
+            out.append(text)
+        elif _VAR_INSIDE.search(text) and ("/" in text or "\\" in text or after_redirect):
+            out.append(text)
+    return out
 
 
 def is_write(command):

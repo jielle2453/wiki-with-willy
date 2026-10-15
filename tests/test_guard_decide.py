@@ -844,6 +844,59 @@ class CredentialRound1(unittest.TestCase):
                 d = self.decide(tool, cmd)
                 self.assertEqual(d.decision, "pass", d)
 
+    def _register(self, *names):
+        """在 tmp 底下建 <name>/a.txt 並登記成來源（spec ../<name>，相對總資料夾）。"""
+        import json
+        src = self.V / ".system" / "sources.json"
+        data = json.loads(src.read_text(encoding="utf-8"))
+        for i, name in enumerate(names):
+            (self.tmp / name).mkdir()
+            (self.tmp / name / "a.txt").write_text("x", encoding="utf-8")
+            data["sources"].append({"id": f"src-a{i}00", "alias": name, "spec": f"../{name}", "excludes": []})
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    # 第十輪 A1／驗收 89：大括號 {a,b} 先展開再抽路徑
+    def test_89_brace_expansion_before_path_extraction(self):
+        d = self.decide("Bash", "cat ../raw/行政/{薪資,x}/s.xlsx")
+        self.assertEqual((d.decision, d.zone, d.reason_code), ("deny", "Z10", "excluded"), d)
+        self._register("r2", "r3")
+        d = self.decide("Bash", "rm -rf ../r{2,3}")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
+
+    # 第十輪 A2／驗收 90：cd 目標含 […] 字元類而 glob 展不開時退回前綴夾
+    def test_90_cd_char_class_falls_back_to_prefix_folder(self):
+        d = self.decide("Bash", "cd ../raw/行政/薪[^x] && cat s.xlsx")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+        self._register("r2", "r3")
+        d = self.decide("Bash", "cd ../r[^x] && rm a.txt")
+        self.assertEqual(d.decision, "deny", d)
+
+    # 第十輪 A3／驗收 91：導向目標含萬用字元時前綴夾（與展開命中）套寫入欄
+    def test_91_redirect_target_wildcard_gets_write_column(self):
+        d = self.decide("Bash", "echo x > ../raw/客*/a.txt")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
+
+    # 第十輪 A5／驗收 92：格式字串、單引號、PowerShell 自動變數不是展不開的路徑；裸 $X 仍是
+    def test_92_format_strings_and_auto_variables_are_not_unparsed(self):
+        for tool, cmd in (("Bash", "date +%Y%m%d > /tmp/d.txt"), ("Bash", "printf '%s\\n' a > /tmp/p"), ("Bash", "git log --format=%H > /tmp/g"),
+                          ("PowerShell", "Remove-Item /tmp/x -Confirm:$false"), ("PowerShell", "gci /tmp | ForEach-Object { $_ } | Out-File /tmp/o"),
+                          ("Bash", "awk '{print $1}' /tmp/a.txt > /tmp/x")):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual(d.decision, "pass", d)
+        d = self.decide("Bash", "awk '{print $1}' a.txt > /tmp/x")  # a.txt 是總資料夾第一層的新檔，擋的是 Z8，不是 unparsed
+        self.assertNotEqual(d.reason_code, "unparsed", d)
+        d = self.decide("Bash", 'rm -rf "$X" /tmp/y')
+        self.assertEqual((d.decision, d.reason_code), ("deny", "unparsed"), d)
+
+    # 第十輪 A6／驗收 93：單字 [、"Is this ok?"、網址裡的 ? 不是萬用字元，前綴夾不套寫入欄
+    def test_93_lone_bracket_and_question_mark_are_not_wildcards(self):
+        for tool, cmd in (("Bash", 'curl "https://a.b/?x=1" > /tmp/x'), ("Bash", "[ -f x ] && echo 1 > /tmp/y"),
+                          ("PowerShell", 'Write-Host "Is this ok?" > /tmp/z'), ("PowerShell", 'curl "https://a.b/?x=1" > /tmp/x')):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual(d.decision, "pass", d)
+
     # 第九輪 Z4／驗收 86：不存在的裸 token 要已知副檔名才算新檔
     def test_86_bare_token_needs_known_extension_to_be_a_new_file(self):
         for cmd in ("echo v1.2 > /tmp/ver.txt", "wget example.com -O /tmp/x"):

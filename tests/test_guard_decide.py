@@ -804,6 +804,45 @@ class CredentialRound1(unittest.TestCase):
             self.assertNotIn(name, src, name)
         self.assertEqual(src.count("cmdparse.is_write("), 1)
 
+    # 第九輪 Z1／驗收 83：寫入指令裡萬用字元的展開命中與前綴夾也套寫入欄（fixture 的來源在 ../raw/ 底下，spec 的 ../客戶* 對應 ../raw/客戶*）
+    def test_83_wildcard_hits_and_prefix_get_write_column(self):
+        for cmd, code in (("rm -rf ../raw/客戶*", "readonly_source"), ("rm -rf .sys* /tmp/x", "protected"),
+                          ("cd ../raw/客戶* && rm a.txt", "readonly_source"), ("sed -i ../raw/客*/a.txt", "readonly_source")):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", code), d)
+
+    # 第九輪 Z2／驗收 84：效用 cwd 下存在的裸夾名（沒副檔名）也是路徑
+    def test_84_existing_bare_folder_name_is_a_path(self):
+        d = self.decide("Bash", "rm -rf 案子 /tmp/x")
+        self.assertEqual(d.decision, "deny", d)
+        self.assertNotIn(d.reason_code, ("credential", "credential_inside", "credential_scan_limit", "unparsed"), d)
+        for cmd in ("mv 收件匣 /tmp/", "tar czf /tmp/b.tgz 收件匣"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.zone, d.reason_code), ("deny", "Z4", "inbox"), d)
+
+    # 第九輪 Z3／驗收 85：寫入指令裡帶 $變數／%變數% 展不開的路徑一律 deny unparsed；讀取照舊不表態
+    def test_85_unexpandable_variable_path_in_write_is_unparsed(self):
+        r = self.client.as_posix()
+        for cmd in (f'rm -rf "{r}/$X" /tmp/y', 'rm -rf "%RAW%/a" '):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "unparsed"), d)
+        d = self.decide("Bash", f'cat "{r}/$X"')
+        self.assertEqual(d.decision, "pass", d)
+
+    # 第九輪 Z4／驗收 86：不存在的裸 token 要已知副檔名才算新檔
+    def test_86_bare_token_needs_known_extension_to_be_a_new_file(self):
+        for cmd in ("echo v1.2 > /tmp/ver.txt", "wget example.com -O /tmp/x"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertNotEqual(d.reason_code, "protected", d)
+        for cmd in ("cp /tmp/a 新檔.md", "echo x > 新檔.md"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
+
     # 第七輪 X1：mv 的來源也是寫入目標
     def test_75_move_source_is_a_write_target(self):
         a = (self.client / "a.txt").as_posix()

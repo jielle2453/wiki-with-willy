@@ -48,6 +48,8 @@ _TOKEN_BREAK = set(";|&<>()")
 _URL = re.compile(r"^(?!file:)\w+://")
 _OPT_PREFIX = re.compile(r"^--?[\w-]+=")
 _FILENAME = re.compile(r"\.\w{1,6}$")
+# 第九輪 Z4：不存在的裸 token 只有這些副檔名才算新檔（v1.2、example.com 不算）
+_NEW_FILE_EXT = re.compile(r"\.(?:md|txt|docx|doc|xlsx|xls|csv|pdf|pptx|json|yaml|yml|ini|log|html|png|jpg|jpeg|zip)$", re.IGNORECASE)
 _GLOB = re.compile(r"[*?\[{]")
 _ABS_START = re.compile(r"^(?:[A-Za-z]:|/|\\\\|~|file:)")
 _CD = {"cd", "pushd", "set-location", "sl", "chdir"}
@@ -126,8 +128,20 @@ def _tokens(cmd):
     return out
 
 
-def _candidates(text, quoted, after_redirect, after_cd, switch_ok=False):
-    """一個 token 裡可能是路徑的字串。夾在中間的絕對路徑先抽；沒有就看整個 token 像不像路徑。"""
+def _bare_under(text, base):
+    """第九輪 Z2：裸 token（原樣或去跳脫）接效用 cwd 後存在就是路徑（rm -rf 案子、mv 收件匣 /tmp/）。"""
+    for form in dict.fromkeys((text, _ESCAPE.sub("", text))):
+        try:
+            if os.path.exists(normalize(form, base)):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _candidates(text, quoted, after_redirect, after_cd, switch_ok=False, write_base=None):
+    """一個 token 裡可能是路徑的字串。夾在中間的絕對路徑先抽；沒有就看整個 token 像不像路徑。
+    write_base：寫入指令裡的裸 token（不是段動詞）要看效用 cwd——存在的算路徑，不存在的要已知副檔名才算新檔（第八輪裁定 1、第九輪 Z2 Z4）。"""
     if not text or _URL.match(text):
         return []
     if text in (".", ".."):
@@ -147,6 +161,8 @@ def _candidates(text, quoted, after_redirect, after_cd, switch_ok=False):
     if "/" in text or "\\" in text or after_redirect:
         return [_OPT_PREFIX.sub("", text)]
     if (quoted or after_cd) and _FILENAME.search(text):
+        return [text]
+    if write_base is not None and (_bare_under(text, write_base) or _NEW_FILE_EXT.search(text)):
         return [text]
     return []
 
@@ -187,7 +203,8 @@ def _walk(command, cwd, powershell=False):
         if text.lower() in _CD:
             expect_cd_target = True
             continue
-        for cand in _candidates(text, quoted, after_redirect, after_cd or (writing and not first), powershell or verb in SWITCH_VERBS):
+        for cand in _candidates(text, quoted, after_redirect, after_cd, powershell or verb in SWITCH_VERBS,
+                                write_base=(base if writing and not first else None)):
             # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對
             for form in dict.fromkeys((cand, _ESCAPE.sub("", cand))):
                 p = normalize(form, base)
@@ -223,6 +240,27 @@ def glob_prefixes(command, cwd):
         head = raw[:m.start()].replace("\\", "/")
         head = head.rsplit("/", 1)[0] if "/" in head else "."
         out.append(normalize(head, cwd) if head != "." else normalize(cwd, None))
+    return out
+
+
+def unresolved_paths(command):
+    """第九輪 Z3：帶 $變數／%變數% 展不開的路徑 token——含 / 或 \\ 的、導向目標、cd 目標（網址與丟掉輸出的 >$null 不算）。
+    呼叫端對寫入指令有這種 token 就 deny unparsed（看不出會寫到哪）；讀取指令不看。"""
+    out, expect_cd = [], False
+    for text, _quoted, after_redirect, _first in _tokens(DISCARD_OUTPUT.sub(" ", command)):
+        is_cd_target = False
+        if expect_cd:
+            if text.startswith("-"):
+                continue
+            expect_cd = False
+            is_cd_target = bool(text)
+        elif text.lower() in _CD:
+            expect_cd = True
+            continue
+        if not text or _URL.match(text) or ("$" not in text and "%" not in text):
+            continue
+        if "/" in text or "\\" in text or after_redirect or is_cd_target:
+            out.append(text)
     return out
 
 

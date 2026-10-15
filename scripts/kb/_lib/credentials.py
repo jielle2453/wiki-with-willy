@@ -25,9 +25,10 @@ KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
 SECRET_WORDS = ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey",
                 "api_key", "api-key", "密码", "passphrase", "pin", "pin碼", "驗證碼", "otp")
 MASK = "███"
-# 子句尾（第六輪 W3、第七輪 X4、第八輪 Y6）：只有全形標點（頓號不算：「jie、abc123」要整段遮）與連續兩個換行；
-# 空白、半形標點、單一換行都不是停止符（password:\nhunter2 要遮）
-_STOP = "，。；！？"
+# 子句尾（第六輪 W3、第七輪 X4、第八輪 Y6、第九輪 Z5）：只有 。！？ 與連續兩個換行；
+# ，；、 都不是（「jie，abc123」「jie、abc123」要整段遮，「密碼 abc，謝謝」把謝謝一起遮掉，接受）；
+# 空白、半形標點、單一換行也不是停止符（password:\nhunter2 要遮）
+_STOP = "。！？"
 # 短字要整字邊界（typing 裡的 pin、stopwatch 裡的 pw 不算）；長字允許前綴（PGPASSWORD=、accessToken=、mySecret 要遮）
 SHORT_WORDS = ("pw", "pin", "otp")
 

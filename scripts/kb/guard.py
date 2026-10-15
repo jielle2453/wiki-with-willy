@@ -510,8 +510,11 @@ def _shell_tool(tool, command, cwd, vault, sources):
         if head and head not in heads:
             heads.append(head)
         glob_hits.extend(_expand_glob(token, hidden=(tool == "PowerShell")))
-    head_classified = [(p, *classify(p, vault_n, sources)) for p in heads + info["cd_dirs"]]  # cd 到萬用字元的展開夾一併走訪（W4）
-    glob_classified = head_classified + [(p, *classify(p, vault_n, sources)) for p in glob_hits]
+    prefix_classified = [(p, *classify(p, vault_n, sources)) for p in heads]
+    cd_classified = [(p, *classify(p, vault_n, sources)) for p in info["cd_dirs"]]
+    head_classified = prefix_classified + cd_classified  # 第三道走訪：前綴夾與 cd 到萬用字元的展開夾（W4）
+    # 區判斷與 Z10 用：展開命中與 cd 展開夾比前綴夾具體，排前面（第九輪 Z1：rm -rf ../客戶* 報 readonly_source，不報前綴夾的 Z10b）
+    glob_classified = [(p, *classify(p, vault_n, sources)) for p in glob_hits] + cd_classified + prefix_classified
     # 憑證三道先於區（D-079 補、D-081）。第一道：抽出的每個路徑、萬用字元前綴夾與展開命中的段（P2）；命中排除項目的交 Z10（Q5）
     for p, zone, _alias in classified + glob_classified:
         if zone == "Z10" or (not os.path.exists(p) and any(ch in _REGEX_ONLY_CHARS for ch in p)):
@@ -542,8 +545,9 @@ def _shell_tool(tool, command, cwd, vault, sources):
             _d, code, reason = _verdict(zone, "read", alias)
             return deny(zone, code, reason)
 
-    for p, zone, alias in classified:
-        # 第八輪：區判斷照守門題原版——整條指令 is_write 為真，所有抽出的路徑都套寫入欄；不分段、不分角色（誤擋併 B-110）
+    # 第八輪：區判斷照守門題原版——整條指令 is_write 為真，所有抽出的路徑都套寫入欄；不分段、不分角色（誤擋併 B-110）。
+    # 第九輪 Z1：寫入時萬用字元的展開命中、cd 展開夾與前綴夾也套寫入欄（rm -rf ../客戶*、cd ../客戶* && rm a.txt、sed -i ../客*/a.txt）
+    for p, zone, alias in classified + (glob_classified if write else []):
         columns = ("read",)
         if write:
             columns = ("read", "shell_write" if "shell_write" in ZONES[zone] else "write")
@@ -562,7 +566,8 @@ def _shell_tool(tool, command, cwd, vault, sources):
         if zone == "Z10b":
             _d, code, reason = _verdict(zone, "read", alias)
             return deny(zone, code, reason)
-    if write and not paths:
+    if write and (not paths or cmdparse.unresolved_paths(command)):
+        # 抽不到路徑，或有帶 $變數／%變數% 展不開的路徑（第九輪 Z3）：看不出會寫到哪，一律擋
         return Decision("deny", "", "unparsed", UNPARSED_REASON, [_row(tool, "deny", "", "unparsed", command)], vault)
     if saw_unresolved:
         rows = _unresolved_rows(tool, sources, command)

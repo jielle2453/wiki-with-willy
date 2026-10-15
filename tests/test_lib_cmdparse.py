@@ -58,6 +58,34 @@ class ExtractPaths(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_bare_token_existing_under_cwd_or_known_extension(self):
+        """第九輪 Z2／Z4：寫入指令裡效用 cwd 下存在的裸夾名或檔名（沒副檔名）算路徑；不存在的裸 token 要已知副檔名才算新檔。"""
+        tmp, V, _raw = make_vault()
+        try:
+            v = str(V)
+            self.assertIn(paths.normalize(str(V / "案子"), None), cmdparse.extract_paths("rm -rf 案子 /tmp/x", v))
+            self.assertIn(paths.normalize(str(V / "收件匣"), None), cmdparse.extract_paths("mv 收件匣 /tmp/", v))
+            self.assertIn(paths.normalize(str(V / "收件匣"), None), cmdparse.extract_paths("tar czf /tmp/b.tgz 收件匣", v))
+            self.assertNotIn(paths.normalize(str(V / "czf"), None), cmdparse.extract_paths("tar czf /tmp/b.tgz 收件匣", v))
+            self.assertNotIn(paths.normalize(str(V / "v1.2"), None), cmdparse.extract_paths("echo v1.2 > /tmp/ver.txt", v))
+            self.assertNotIn(paths.normalize(str(V / "example.com"), None), cmdparse.extract_paths("wget example.com -O /tmp/x", v))
+            self.assertIn(paths.normalize(str(V / "新檔.xlsx"), None), cmdparse.extract_paths("cp /tmp/a 新檔.xlsx", v))
+            self.assertIn(paths.normalize(str(V / "report.PDF"), None), cmdparse.extract_paths("cp /tmp/a report.PDF", v))
+            self.assertNotIn(paths.normalize(str(V / "案子"), None), cmdparse.extract_paths("ls 案子", v))  # 讀取指令照舊
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_unresolved_variable_paths(self):
+        """第九輪 Z3：帶 $變數／%變數% 展不開的路徑 token（含斜線、導向目標、cd 目標）回報出來，呼叫端對寫入指令 deny unparsed。"""
+        self.assertEqual(cmdparse.unresolved_paths('rm -rf "C:/raw/$X" /tmp/y'), ["C:/raw/$X"])
+        self.assertEqual(cmdparse.unresolved_paths('rm -rf "%RAW%/a" '), ["%RAW%/a"])
+        self.assertEqual(cmdparse.unresolved_paths("echo x > $OUT"), ["$OUT"])
+        self.assertEqual(cmdparse.unresolved_paths('cd "$HOME/x" && rm a.txt'), ["$HOME/x"])
+        self.assertEqual(cmdparse.unresolved_paths("Remove-Item $env:TEMP\\a.txt"), ["$env:TEMP\\a.txt"])
+        for cmd in ("rm -rf /tmp/y", "echo $PASSWORD", "date +%Y", "curl https://x/$id > /tmp/a", "ls 2>$null", "echo x > $null"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(cmdparse.unresolved_paths(cmd), [], cmd)
+
     def test_single_letter_switch_is_not_a_path(self):
         """骨架與來源登記第六輪 V5：cmd /c、findstr /s 的單字母開關不是路徑（Git Bash 不會有人寫裸 /c）。"""
         self.assertEqual(cmdparse.extract_paths("cmd /c ver", CWD), [])

@@ -140,12 +140,18 @@ class MaskSecrets(unittest.TestCase):
     def test_cases_from_acceptance_62(self):
         """第六輪 W3：關鍵詞之後遮到子句尾（全形標點或換行），空白與半形標點都不是停止符；子句裡再出現的關鍵詞一起遮。"""
         m = credentials.mask_secrets
-        self.assertEqual(m("密碼是abc 123，謝謝"), "密碼███，謝謝")
+        self.assertEqual(m("密碼是abc 123，謝謝"), "密碼███")  # 第九輪 Z5：全形逗號不是子句尾，謝謝一起遮掉（接受）
         self.assertEqual(m("my password is hunter2"), "my password███")
         self.assertEqual(m("密碼我設成 abc123、帳密：jie abc123"), "密碼███")  # 第八輪 Y6：頓號不是子句尾
         self.assertEqual(m("帳號密碼分別是 jie、abc123"), "帳號███")
         self.assertEqual(m("密碼 abc、之後再改"), "密碼███")
-        self.assertEqual(m("密碼 abc，之後再改"), "密碼███，之後再改")
+        self.assertEqual(m("密碼 abc，之後再改"), "密碼███")
+        # 第九輪 Z5／驗收 87：子句尾只剩 。！？ 與連續兩個換行；，；、 都不是
+        self.assertEqual(m("帳號密碼分別是 jie，abc123"), "帳號███")
+        self.assertEqual(m("密碼 abc；謝謝"), "密碼███")
+        self.assertEqual(m("密碼 abc。謝謝"), "密碼███。謝謝")
+        self.assertEqual(m("密碼 abc！謝謝"), "密碼███！謝謝")
+        self.assertEqual(m("密碼是多少？abc"), "密碼███？abc")
         self.assertEqual(m("Token: Bearer eyJabc"), "Token███")
         self.assertEqual(m("PIN 碼 4821"), "PIN███")
         self.assertIn(m("PGPASSWORD=xyz 請存"), ("PGPASSWORD███", "PGPASSWORD███\n"))
@@ -160,7 +166,7 @@ class MaskSecrets(unittest.TestCase):
         self.assertEqual(m("password:\nhunter2"), "password███")
         self.assertEqual(m("密碼\nabc123"), "密碼███")
         self.assertEqual(m("密碼：abc\n\n另外"), "密碼███\n\n另外")
-        self.assertEqual(m("第一行密碼 a\n第二行沒有，好"), "第一行密碼███，好")
+        self.assertEqual(m("第一行密碼 a\n第二行沒有，好"), "第一行密碼███")  # 第九輪 Z5：單一換行與全形逗號都不停
 
     def test_keywords_case_insensitive_and_bare_keyword_untouched(self):
         m = credentials.mask_secrets

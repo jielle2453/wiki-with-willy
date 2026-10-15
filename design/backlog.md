@@ -35,7 +35,7 @@
 | B-024 | 2026-10-13 | deferred | 守門誤擋：Bash heredoc 內文提到總資料夾第一層路徑（寫知識庫外的報告）被當寫入目標 deny Z8；引號內與 heredoc 內的路徑要不要算寫入目標，併 B-110 看誤擋率 | 事務層確認 |
 | B-019 | 2026-10-13 | deferred | `kb.py` 由模型呼叫時拿不到 session_id，CLI 用 `turns/current.json`，兩個對話同開同一知識庫時可能記到另一個 session 的回合；collab（B-206）時解 | 事務層設計 |
 | B-025 | 2026-10-14 | deferred | 高風險子命令（restore、relocate、全部重做）的「問一句」由守門對那幾個 kb.py 呼叫回 ask，不寫 settings 的 permissions.ask：守門對 kb.py 回 allow 會蓋過 ask（D-079）；那些子命令出現的那題做 | 骨架與來源登記設計 |
-| B-026 | 2026-10-15 | deferred | 骨架與來源登記測試低項：展不開的來源（`${NAS}/…`）不參與 add 的重疊比對；`_survey` 每份檔重比每層夾名；理由句 `_original_segment` 引號黏在段尾找不回原始大小寫；guard 重用 `cmdparse._tokens`，要公開改名；第二輪 N5：走訪遇到夾名命中憑證樣式就剪掉，`folders add` 漏掉藏在底下的另一個知識庫與份數；走訪跳過排除夾用字串比對，排除根經 junction 或 8.3 短名另寫時跳不過（只多擋）；第三輪低項：`cd -`／裸 `cd` 吞下一個字、`dir /s` 不走訪、junction 指向排除夾、`ls \| grep md` 被當 unparsed 寫入（守門題舊）；第四輪：`\"` 黏住子指令、行尾 `\` 續行、`rg.exe`；第五輪程式整理：guard 與 cmdparse 兩套切字器合一、`_tokens_q` 是複製、`token_hit` 測試對不到正式碼、`folder_scan` 每次重讀 config；`glob.glob(include_hidden)` 是 3.11 起，3.10 上 PowerShell 的 `*` 展不到點開頭檔、只靠第三道；第六輪：`$HOME/.aws/credentials` 屬 `$VAR` 界線、`tar czf … 案子/信義王` 被 entity_file 擋（守門題舊）；第七輪：旗標黏值 `7z x -o"<R>/…"` 抽不到、guard `WRITE_VERBS` 與 cmdparse `WRITE_WORDS` 兩份動詞清單 | 骨架與來源登記測試第一～七輪 |
+| B-026 | 2026-10-15 | deferred | 骨架與來源登記測試低項：展不開的來源（`${NAS}/…`）不參與 add 的重疊比對；`_survey` 每份檔重比每層夾名；理由句 `_original_segment` 引號黏在段尾找不回原始大小寫；guard 重用 `cmdparse._tokens`，要公開改名；第二輪 N5：走訪遇到夾名命中憑證樣式就剪掉，`folders add` 漏掉藏在底下的另一個知識庫與份數；走訪跳過排除夾用字串比對，排除根經 junction 或 8.3 短名另寫時跳不過（只多擋）；第三輪低項：`cd -`／裸 `cd` 吞下一個字、`dir /s` 不走訪、junction 指向排除夾、`ls \| grep md` 被當 unparsed 寫入（守門題舊）；第四輪：`\"` 黏住子指令、行尾 `\` 續行、`rg.exe`；第五輪程式整理：guard 與 cmdparse 兩套切字器合一、`_tokens_q` 是複製、`token_hit` 測試對不到正式碼、`folder_scan` 每次重讀 config；`glob.glob(include_hidden)` 是 3.11 起，3.10 上 PowerShell 的 `*` 展不到點開頭檔、只靠第三道；第六輪：`$HOME/.aws/credentials` 屬 `$VAR` 界線、`tar czf … 案子/信義王` 被 entity_file 擋（守門題舊）；第七輪：旗標黏值 `7z x -o"<R>/…"` 抽不到、guard `WRITE_VERBS` 與 cmdparse `WRITE_WORDS` 兩份動詞清單（第八輪已退回只剩 cmdparse 一份）；第八輪舊洞：`git -C <raw> clean`、`sed -E -i`、`mv * ../archive/`、`[IO.File]::Delete` | 骨架與來源登記測試第一～八輪 |
 | B-027 | 2026-10-15 | open | 工作日誌題：「問」那行用 `credentials.mask_secrets` 同一個函式遮值；加 AI 第二層 `kb turn redact`（客戶給帳密時 AI 把這回合的問改成它認出的遮法，補程式猜不到的寫法）；建置告知加一句「敏感帳密不要打在對話裡，Claude Code 自己的紀錄與雲端都有」（D-081） | 骨架與來源登記設計 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
@@ -51,7 +51,7 @@
 | B-107 | 2026-10-11 | deferred | API 製卡執行器：到時才加 config 鍵與 kb/executors/，規則檔不動（D-053） | kb/executors/ |
 | B-108 | 2026-10-11 | deferred | 額度與時間估算更準、建置分天 | kb inventory、build-cards |
 | B-109 | 2026-10-11 | deferred | 回答末尾建議問題、交付速查卡 | rules/next-step.md、build-finish |
-| B-110 | 2026-10-11 | deferred | 守門誤擋率、失敗訊息白話化 | guard.py、rules/core.md |
+| B-110 | 2026-10-11 | deferred | 守門誤擋率、失敗訊息白話化。骨架與來源登記第八輪起已知誤擋：整條指令被判寫入就全部路徑套寫入欄，`grep -r X . \| tee /tmp/h`、`cat CLAUDE.md > /tmp/c.md`、`curl … > /tmp/x`（網址當路徑）、`tar czf` 在總資料夾裡都被擋；憑證走訪的「範圍太大」；`ls C:/` 沒排除夾時被擋 | guard.py、rules/core.md |
 | B-111 | 2026-10-11 | deferred | Mac | _lib/paths、envcheck |
 
 ## 選取型延伸（依客戶特質開關）

@@ -268,6 +268,48 @@ class BeginTurn(Base):
         self.assertEqual(self.rows("2026-10")[0]["prompt"], "十月")
 
 
+class JournalTurn(Base):
+    """第二輪 R2-M2：對話裡退回自己這句後，回合檔是新代號 N、journal_turn 是原回合 T；日誌那行的 key 是 T。"""
+
+    def test_complete_with_journal_turn_updates_original_line_and_keeps_time(self):
+        t = turn_data("20261015-180536-test", "改一下卡")
+        journal.begin_turn(self.V, None, t)
+        n = dict(turn_data("20261015-180540-test", "改一下卡"), journal_turn=t["turn"])
+        journal.complete_turn(self.V, n, "改了又退回了", "沒有改動", "program", [], False)
+        rows = self.rows("2026-10")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["turn"], rows[0]["time"], rows[0]["result"]),
+                         (t["turn"], "2026-10-15T18:05:36", "改了又退回了"))
+
+    def test_flush_with_journal_turn_marks_original_line(self):
+        t = turn_data("20261015-180536-test", "改一下卡")
+        journal.begin_turn(self.V, None, t)
+        n = dict(turn_data("20261015-180540-test", "改一下卡"), journal_turn=t["turn"], note="退了")
+        journal.begin_turn(self.V, n, turn_data("20261015-180600-test", "下一句"))
+        rows = {r["turn"]: r for r in self.rows("2026-10")}
+        self.assertEqual(set(rows), {t["turn"], "20261015-180600-test"})
+        self.assertEqual((rows[t["turn"]]["interrupted"], rows[t["turn"]]["note"]), (True, "退了"))
+
+    def test_finish_fields_unions_two_manifests_later_action_wins(self):
+        tid, nid = "20261015-180536-test", "20261015-180540-test"
+        turn.backup(self.V, "案子/信義王/信義王.md", tid)            # modify
+        turn.backup(self.V, "AI 產出/x.md", tid)                     # create
+        turn.backup(self.V, "AI 產出/x.md", nid, "delete")           # 後者：delete
+        turn.backup(self.V, ".system/sources.json", nid)             # modify
+        note, by, changed = journal.finish_fields(self.V, dict(turn_data(nid), journal_turn=tid))
+        self.assertEqual(changed, [{"path": "案子/信義王/信義王.md", "action": "modify"},
+                                   {"path": "AI 產出/x.md", "action": "delete"},
+                                   {"path": ".system/sources.json", "action": "modify"}])
+        self.assertEqual((note, by), ("改了 1 張綜合卡、刪了 1 份 AI 產出、改了設定與狀態檔", "program"))
+
+    def test_update_turn_by_journal_key(self):
+        t = turn_data("20261015-180536-test")
+        journal.begin_turn(self.V, None, t)
+        n = dict(turn_data("20261015-180540-test"), journal_turn=t["turn"])
+        self.assertTrue(journal.update_turn(self.V, turn.journal_key(n), note="退了", note_by="ai"))
+        self.assertEqual(self.rows("2026-10")[0]["note"], "退了")
+
+
 class LockPermission(Base):
     def test_permission_error_until_deadline_is_timeout(self):
         """測試後修正 L1：_lock 到期還是 PermissionError 也算逾時（TimeoutError）。"""
@@ -329,6 +371,17 @@ class CutResult(unittest.TestCase):
     def test_value_after_blank_line_is_masked(self):
         """M2：值跟關鍵詞隔空行，先壓空白再遮才遮得到。"""
         self.assertEqual(journal.cut_result("密碼如下：\n\nabc123", 300), ("密碼███", False))
+
+    def test_acceptance_38_keyword_outside_conclusion_section(self):
+        """第二輪 R2-M1 裁定：全文壓一行遮過有東西被遮，就不抽段、用整段遮過的結果；三句都不能漏值。"""
+        for text in ("## 結論：新的管理員密碼\n\nabc123\n\n其他", "密碼是\n## 結論\nabc123", "新的密碼如下\n\n## 結論\nabc123"):
+            with self.subTest(text=text):
+                out, _cut = journal.cut_result(text, 300)
+                self.assertNotIn("abc123", out)
+                self.assertIn("███", out)
+
+    def test_no_secret_still_takes_conclusion(self):
+        self.assertEqual(journal.cut_result("前言很多\n\n## 結論\n改好了", 300), ("改好了", False))
 
     def test_mask_before_cut(self):
         """先遮再截：遮掉的值不佔字數（先截會截在 x 中間、判成被截斷）。"""

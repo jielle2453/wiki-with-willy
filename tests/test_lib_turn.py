@@ -469,8 +469,8 @@ class BeforeWrite(unittest.TestCase):
         self.assertEqual((self.V / ".system" / "versions" / t["turn"] / "files" / "AI 產出" / "x.md").read_text(encoding="utf-8"), "舊")
 
 
-class Mint(unittest.TestCase):
-    """測試後修正 M1：只產代號、不寫 turns/ 的回合（退回動作用），尾 0000、單調遞增。"""
+class Inherit(unittest.TestCase):
+    """測試後修正第二輪 R2-M2：對話裡退回自己這句，新回合繼承原回合的問、note，記 journal_turn（一路繼承）。"""
 
     def setUp(self):
         self.tmp, self.V, self.raw = make_vault()
@@ -478,23 +478,28 @@ class Mint(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_mint_writes_nothing_under_turns(self):
-        t = turn.mint(self.V, "退回 x")
-        self.assertRegex(t["turn"], r"^\d{8}-\d{6}-0000$")
-        self.assertEqual((t["session_id"], t["prompt_head"]), ("", "退回 x"))
-        self.assertFalse((self.V / ".system" / "turns").exists())
-
-    def test_mint_sorts_after_existing_turns_and_leaves_them(self):
-        from datetime import datetime
-        from unittest import mock
-        with mock.patch.object(turn, "_now", lambda: datetime(2026, 10, 13, 15, 30, 12)):
-            a = turn.start(self.V, SID, "一")
-            turn.backup(self.V, "案子/信義王/信義王.md", a["turn"])
-            m = turn.mint(self.V, "退回")
-        self.assertGreater(m["turn"][:15], a["turn"][:15])
+    def test_inherit_keeps_prompt_note_and_records_journal_turn(self):
+        t = turn.start(self.V, SID, "改一下卡")
+        t = turn.set_note(self.V, SID, "改了卡")
+        n1 = turn.start(self.V, SID, "退回 x", inherit=t)
+        self.assertNotEqual(n1["turn"], t["turn"])
+        self.assertTrue(n1["turn"].endswith("-test"))
+        self.assertEqual((n1["prompt_head"], n1["note"], n1["journal_turn"], n1["done"]),
+                         ("改一下卡", "改了卡", t["turn"], False))
+        n2 = turn.start(self.V, SID, "退回 y", inherit=n1)
+        self.assertEqual(n2["journal_turn"], t["turn"])
         sess = json.loads((self.V / ".system" / "turns" / f"{SID}.json").read_text(encoding="utf-8"))
         cur = json.loads((self.V / ".system" / "turns" / "current.json").read_text(encoding="utf-8"))
-        self.assertEqual((sess["turn"], cur["turn"]), (a["turn"], a["turn"]))
+        self.assertEqual((sess["turn"], cur["turn"], sess["journal_turn"]), (n2["turn"],) * 2 + (t["turn"],))
+
+    def test_plain_start_has_no_journal_turn(self):
+        self.assertNotIn("journal_turn", turn.start(self.V, SID, "一"))
+        self.assertFalse(hasattr(turn, "mint"))
+
+    def test_journal_key(self):
+        t = turn.start(self.V, SID, "一")
+        self.assertEqual(turn.journal_key(t), t["turn"])
+        self.assertEqual(turn.journal_key(turn.start(self.V, SID, "退回", inherit=t)), t["turn"])
 
 
 class PromptHeadOrder(unittest.TestCase):

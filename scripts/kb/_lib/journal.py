@@ -171,8 +171,9 @@ def _mask_result(result, truncated):
 
 
 def _open_row(turn_data):
+    """這一行的 turn 是 journal_key：退回自己這句時開的新回合，寫回原回合那一行（第二輪 R2-M2）。"""
     return {
-        "schema_version": SCHEMA_VERSION, "kind": "turn", "turn": turn_data["turn"],
+        "schema_version": SCHEMA_VERSION, "kind": "turn", "turn": turn.journal_key(turn_data),
         "session_id": turn_data.get("session_id") or "",
         "time": turn_data.get("started") or _iso(_now()),
         "prompt": _mask(turn_data.get("prompt_head", "")),
@@ -181,14 +182,14 @@ def _open_row(turn_data):
 
 
 def _upsert_rows(rows):
-    """edit 函式：每一行照 turn 代號換掉同回合那行，沒有就追加。"""
+    """edit 函式：每一行照 turn 代號換掉同回合那行（time 留原來開口的），沒有就追加。"""
     def edit(items):
         for row in rows:
             i = _find_turn(items, row["turn"])
             if i is None:
                 items.append((None, row))
             else:
-                items[i] = (None, row)
+                items[i] = (None, dict(row, time=items[i][1].get("time", row["time"])))
         return True
     return edit
 
@@ -221,13 +222,17 @@ def complete_turn(vault, turn_data, result, note, note_by, changed, interrupted,
 
 
 def finish_fields(vault, turn_data):
-    """Stop 與中斷補記共用（D-084）：(做了, note_by, 改了)。模型叫過 turn note 就用它（ai），沒有才地板句（program）。"""
-    tid = turn_data["turn"]
+    """Stop 與中斷補記共用（D-084）：(做了, note_by, 改了)。模型叫過 turn note 就用它（ai），沒有才地板句（program）。
+    改了取 journal_turn 與目前回合兩份 manifest 的聯集，同路徑取後者的 action，地板句照聯集算（第二輪 R2-M2）。"""
+    merged = {}
+    for tid in dict.fromkeys((turn.journal_key(turn_data), turn_data["turn"])):
+        for e in turn.entries(vault, tid):
+            merged[e["path"]] = e.get("action")
+    changed = [{"path": p, "action": a} for p, a in merged.items()]
     note = turn_data.get("note") or ""
-    changed = _clean_changed(turn.entries(vault, tid))
     if note:
         return note, "ai", changed
-    return floor_note(vault, tid), "program", changed
+    return _floor(vault, changed), "program", changed
 
 
 def update_turn(vault, turn_id, **fields):
@@ -292,8 +297,11 @@ def record_program(vault, note, changed, command):
 
 def floor_note(vault, turn_id):
     """「做了」的程式地板（D-084）：manifest 按區、按 action 數。"""
+    return _floor(vault, turn.entries(vault, turn_id))
+
+
+def _floor(vault, rows):
     from kb._lib import sources as sources_lib
-    rows = turn.entries(vault, turn_id)
     if not rows:
         return NO_CHANGES
     sources = sources_lib.load(vault)
@@ -321,9 +329,14 @@ def floor_note(vault, turn_id):
 
 
 def cut_result(text, max_chars):
-    """結果截斷（D-061）：有「結論」或「摘要」標題就取那一段（要換行才抽得到），沒有取整段；
-    再把空白壓成單一空格、再 mask_secrets、再截，超過 max_chars 截掉加尾句（測試後修正 M2，結果一律一行）。"""
+    """結果截斷（D-061）：全文壓成一行再遮得 M；M 跟壓過的原文不同（全文有任何一處被遮）就不抽段、直接用 M 截，
+    抽段會把關鍵詞和值切開（第二輪 R2-M1 裁定）。沒有被遮才取「結論」或「摘要」標題那一段（要換行才抽得到），
+    沒有標題取整段，再壓空白；超過 max_chars 截掉加尾句。結果一律一行。"""
     text = str(text or "")
+    flat = " ".join(text.split())
+    masked = _mask(flat)
+    if masked != flat:
+        return _cut(masked, max_chars)
     lines = text.split("\n")
     body = None
     for i, ln in enumerate(lines):
@@ -340,7 +353,10 @@ def cut_result(text, max_chars):
         break
     if not body:
         body = text
-    body = _mask(" ".join(body.split()))
+    return _cut(" ".join(body.split()), max_chars)
+
+
+def _cut(body, max_chars):
     if not body:
         return NO_TEXT_RESULT, False
     if len(body) > max_chars:

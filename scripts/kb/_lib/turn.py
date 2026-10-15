@@ -45,24 +45,17 @@ def prompt_head(vault, prompt):
     return credentials.mask_secrets(" ".join(str(prompt or "").split()))[:config.get(vault, "prompt_head_max")]
 
 
-def mint(vault, prompt):
-    """只產一個回合 dict、不寫 turns/（退回動作用，工作日誌測試後修正 M1）：代號尾 0000、照既有回合單調遞增。
-    呼叫端用 turn_dir(vault, id, info) 建 versions/<id>/turn.json；current.json 與 turns/<sid>.json 都不動。"""
-    now = _now().replace(microsecond=0)
-    latest = _latest_turn_time(vault, None, now)
-    if latest is not None and now <= latest:
-        now = latest + timedelta(seconds=1)
-    return {
-        "schema_version": 1, "turn": f"{now:%Y%m%d-%H%M%S}-0000", "session_id": "",
-        "started": now.strftime("%Y-%m-%dT%H:%M:%S"), "prompt_head": prompt_head(vault, prompt),
-        "approved": False, "note": "", "done": True,
-    }
+def journal_key(data):
+    """這個回合在工作日誌裡那一行的 key：退回自己這句時開的新回合記著原回合（journal_turn），沒有就是自己。"""
+    return data.get("journal_turn") or data["turn"]
 
 
-def start(vault, session_id, prompt):
-    """開新回合：寫 turns/<sid>.json（有 sid 才寫）與 current.json。回回合 dict。"""
+def start(vault, session_id, prompt, inherit=None):
+    """開新回合：寫 turns/<sid>.json（有 sid 才寫）與 current.json。回回合 dict。
+    inherit（工作日誌第二輪 R2-M2）：對話裡退回自己這句時，新回合接著原回合，繼承它的問、note，
+    並記 journal_turn（原回合的 journal_turn，沒有就原回合），Stop 與補記才收原回合那一行。"""
     now = _now().replace(microsecond=0)  # 代號只到秒，比較也只到秒
-    head = prompt_head(vault, prompt)
+    head = inherit.get("prompt_head", "") if inherit else prompt_head(vault, prompt)
     tag = _safe_sid(session_id)[:4] if session_id else "0000"
     # 代號單調遞增：取 max(現在, 既有最大代號 + 1 秒)。同一秒幾句話不撞，時鐘落後也不會排到舊回合前面
     latest = _latest_turn_time(vault, session_id, now)
@@ -75,9 +68,11 @@ def start(vault, session_id, prompt):
         "started": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "prompt_head": head,
         "approved": False,
-        "note": "",  # 模型叫 kb turn note 給的「做了」（D-084）
+        "note": inherit.get("note", "") if inherit else "",  # 模型叫 kb turn note 給的「做了」（D-084）
         "done": False,  # Stop 或中斷補記後為 true（D-083）
     }
+    if inherit:
+        data["journal_turn"] = journal_key(inherit)
     (Path(vault) / TURNS_REL).mkdir(parents=True, exist_ok=True)
     if session_id:
         write_json_atomic(_session_file(vault, session_id), data)

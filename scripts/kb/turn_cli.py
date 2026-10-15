@@ -34,7 +34,7 @@ def add_arguments(sub):
 def _note(vault, text):
     t = turn.current(vault)
     note = credentials.mask_secrets(" ".join(str(text).split()))  # 先壓空白再遮（M2「一律」，驗收 37）
-    journal.update_turn(vault, t["turn"], note=note, note_by="ai")
+    journal.update_turn(vault, turn.journal_key(t), note=note, note_by="ai")  # 退回後接著的回合寫回原回合那行
     turn.set_note(vault, t.get("session_id"), note)
     print("記下了")
     return 0
@@ -43,13 +43,14 @@ def _note(vault, text):
 def _redact(vault, text):
     t = turn.current(vault)
     head = turn.prompt_head(vault, text)
-    journal.update_turn(vault, t["turn"], prompt=head)
+    journal.update_turn(vault, turn.journal_key(t), prompt=head)
     turn.set_prompt_head(vault, t.get("session_id"), head)
-    meta = Path(vault) / turn.VERSIONS_REL / t["turn"] / "turn.json"
-    if meta.is_file():
-        data = read_json(meta, {}) or {}
-        data["prompt_head"] = head
-        write_json_atomic(meta, data)
+    for tid in dict.fromkeys((turn.journal_key(t), t["turn"])):  # 原回合與接著的回合，turn.json 都存著這句問
+        meta = Path(vault) / turn.VERSIONS_REL / tid / "turn.json"
+        if meta.is_file():
+            data = read_json(meta, {}) or {}
+            data["prompt_head"] = head
+            write_json_atomic(meta, data)
     print(f"這一句的問已改成：「{head}」")
     return 0
 

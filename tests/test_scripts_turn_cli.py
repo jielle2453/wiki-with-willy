@@ -1,4 +1,4 @@
-"""kb turn current／approve 黑箱：subprocess 跑 kb.py，cwd 在 vault。"""
+"""kb turn current／approve／note／redact 黑箱：subprocess 跑 kb.py，cwd 在 vault。"""
 import json
 import os
 import shutil
@@ -7,7 +7,7 @@ import sys
 import unittest
 
 from tests._guard_fixture import KB, ROOT, make_vault
-from kb._lib import turn  # noqa: E402
+from kb._lib import journal, turn  # noqa: E402
 
 SID = "test-sid"
 
@@ -75,6 +75,93 @@ class Approve(unittest.TestCase):
         r = run_kb("turn", "approve", "--json", cwd=self.V)
         data = json.loads(r.stdout)
         self.assertEqual(data, {"turn": t["turn"], "approved": True})
+
+
+class JournalBase(unittest.TestCase):
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        self.t = turn.start(self.V, SID, "改一下")
+        journal.open_turn(self.V, self.t)
+        self.month = journal.month_of(self.t["turn"])
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def row(self):
+        return [r for r in journal.read_lines(self.V, self.month) if r["turn"] == self.t["turn"]][0]
+
+    def sess(self):
+        return json.loads((self.V / ".system" / "turns" / f"{SID}.json").read_text(encoding="utf-8"))
+
+    def md(self):
+        return journal.md_path(self.V, self.month).read_text(encoding="utf-8")
+
+    def stop(self):
+        data = turn.current(self.V, SID)
+        journal.complete_turn(self.V, data, "好了", data["note"] or "沒有改動", "ai" if data["note"] else "program", [], False)
+        turn.set_done(self.V, SID)
+
+
+class Note(JournalBase):
+    def test_note_writes_turn_file_and_journal(self):
+        r = run_kb("turn", "note", "把現況改成已完工", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "記下了"), r.stderr)
+        self.assertEqual(self.sess()["note"], "把現況改成已完工")
+        self.assertEqual((self.row()["note"], self.row()["note_by"]), ("把現況改成已完工", "ai"))
+        self.stop()
+        self.assertEqual((self.row()["note"], self.row()["note_by"]), ("把現況改成已完工", "ai"))
+
+    def test_note_after_stop_still_rewrites_journal_and_md(self):
+        self.stop()
+        self.assertIn("- 做了：沒有改動", self.md())
+        r = run_kb("turn", "note", "改口", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.row()["note"], self.row()["note_by"]), ("改口", "ai"))
+        self.assertIn("- 做了：改口", self.md())
+
+    def test_note_is_masked(self):
+        run_kb("turn", "note", "用密碼 abc123 登入了", cwd=self.V)
+        self.assertEqual(self.sess()["note"], "用密碼███")
+        self.assertEqual(self.row()["note"], "用密碼███")
+
+    def test_note_outside_vault_exits_2(self):
+        r = run_kb("turn", "note", "x", cwd=self.tmp)
+        self.assertEqual(r.returncode, 2)
+
+
+class Redact(JournalBase):
+    def setUp(self):
+        super().setUp()
+        turn.backup(self.V, "案子/信義王/信義王.md", self.t["turn"])  # versions/<回合>/turn.json 存在
+        self.meta = self.V / ".system" / "versions" / self.t["turn"] / "turn.json"
+
+    def three(self):
+        return (self.sess()["prompt_head"], json.loads(self.meta.read_text(encoding="utf-8"))["prompt_head"],
+                self.row()["prompt"])
+
+    def test_redact_rewrites_three_places_and_md(self):
+        r = run_kb("turn", "redact", "幫我登入 ERP，已遮", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "這一句的問已改成：「幫我登入 ERP，已遮」"), r.stderr)
+        self.assertEqual(self.three(), ("幫我登入 ERP，已遮",) * 3)
+        self.assertIn("- 問：幫我登入 ERP，已遮", self.md())
+        self.assertNotIn("- 問：改一下", self.md())
+
+    def test_redact_value_is_masked_again(self):
+        r = run_kb("turn", "redact", "登入 ERP 帳號 x", cwd=self.V)
+        self.assertEqual(r.stdout.strip(), "這一句的問已改成：「登入 ERP 帳號███」")
+        self.assertEqual(self.three(), ("登入 ERP 帳號███",) * 3)
+
+    def test_redact_without_versions_dir_does_not_create_it(self):
+        shutil.rmtree(self.V / ".system" / "versions")
+        r = run_kb("turn", "redact", "已遮", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.meta.exists())
+        self.assertEqual(self.row()["prompt"], "已遮")
+
+    def test_redact_cut_at_prompt_head_max(self):
+        (self.V / ".system" / "config.json").write_text(json.dumps({"prompt_head_max": 5}), encoding="utf-8")
+        run_kb("turn", "redact", "一二三四五六七", cwd=self.V)
+        self.assertEqual(self.three(), ("一二三四五",) * 3)
 
 
 if __name__ == "__main__":

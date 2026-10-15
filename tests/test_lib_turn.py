@@ -36,18 +36,80 @@ class Start(unittest.TestCase):
         self.assertTrue(t["turn"].endswith("-test"), t["turn"])
         self.assertRegex(t["turn"], r"^\d{8}-\d{6}-test$")
 
-    def test_prompt_head_cut_at_80(self):
-        t = turn.start(self.V, SID, "一" * 100)
-        self.assertEqual(len(t["prompt_head"]), 80)
+    def test_prompt_head_cut_at_config_prompt_head_max(self):
+        """工作日誌（B-028 第 2 項）：上限從 80 改讀 config prompt_head_max，預設 200；客戶端可覆寫。"""
+        t = turn.start(self.V, SID, "一" * 250)
+        self.assertEqual(len(t["prompt_head"]), 200)
+        self.assertEqual(len(turn.start(self.V, SID, "二" * 150)["prompt_head"]), 150)
+        (self.V / ".system" / "config.json").write_text(json.dumps({"prompt_head_max": 10}), encoding="utf-8")
+        self.assertEqual(len(turn.start(self.V, SID, "三" * 50)["prompt_head"]), 10)
+        self.assertFalse(hasattr(turn, "PROMPT_HEAD_MAX"))
 
     def test_prompt_head_masks_secrets_before_cut(self):
-        """第 5b 節（D-081、B-027）：先遮值再壓空白、截 80 字。"""
+        """第 5b 節（D-081、B-027）：先遮值再壓空白、截 prompt_head_max 字。"""
         t = turn.start(self.V, SID, "幫我登入 ERP，帳號 jie  密碼 abc123")
         self.assertEqual(t["prompt_head"], "幫我登入 ERP，帳號███")  # 第六輪 W3：遮到子句尾
-        t2 = turn.start(self.V, SID, "密碼是" + "x" * 200 + "，謝謝")
+        t2 = turn.start(self.V, SID, "密碼是" + "x" * 300 + "，謝謝")
         self.assertNotIn("xxx", t2["prompt_head"])
-        self.assertLessEqual(len(t2["prompt_head"]), 80)
+        self.assertLessEqual(len(t2["prompt_head"]), 200)
         self.assertEqual(turn.start(self.V, SID, "今天天氣好")["prompt_head"], "今天天氣好")
+
+    def test_start_writes_note_and_done(self):
+        t = turn.start(self.V, SID, "改一下")
+        self.assertEqual((t["note"], t["done"]), ("", False))
+        sess = json.loads((self.V / ".system" / "turns" / f"{SID}.json").read_text(encoding="utf-8"))
+        self.assertEqual((sess["note"], sess["done"]), ("", False))
+
+    def test_old_turn_file_without_note_and_done(self):
+        """疑義裁定 3：舊回合檔缺 done 視為 true（升級前那一句不補記），缺 note 視為空字串，不遷移。"""
+        d = self.V / ".system" / "turns"
+        d.mkdir(parents=True)
+        old = {"schema_version": 1, "turn": "20261014-100000-test", "session_id": SID,
+               "started": "2026-10-14T10:00:00", "prompt_head": "舊的", "approved": False}
+        (d / f"{SID}.json").write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
+        t = turn.current(self.V, SID)
+        self.assertEqual((t["note"], t["done"]), ("", True))
+        self.assertNotIn("done", json.loads((d / f"{SID}.json").read_text(encoding="utf-8")))
+
+
+class SetFields(unittest.TestCase):
+    """set_note／set_done／set_prompt_head：改 turns/<sid>.json，current.json 是同回合時一起改。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        self.d = self.V / ".system" / "turns"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def read(self, name):
+        return json.loads((self.d / name).read_text(encoding="utf-8"))
+
+    def test_set_note_done_prompt_head_on_session_and_current(self):
+        turn.start(self.V, SID, "改一下")
+        self.assertEqual(turn.set_note(self.V, SID, "改了現況")["note"], "改了現況")
+        turn.set_done(self.V, SID)
+        turn.set_prompt_head(self.V, SID, "遮好了")
+        for name in (f"{SID}.json", "current.json"):
+            data = self.read(name)
+            self.assertEqual((data["note"], data["done"], data["prompt_head"]), ("改了現況", True, "遮好了"), name)
+
+    def test_current_of_other_turn_is_not_touched(self):
+        turn.start(self.V, SID, "我的")
+        other = turn.start(self.V, "other-sid", "別人的")
+        turn.set_note(self.V, SID, "只改我的")
+        self.assertEqual(self.read(f"{SID}.json")["note"], "只改我的")
+        self.assertEqual(self.read("current.json")["turn"], other["turn"])
+        self.assertEqual(self.read("current.json")["note"], "")
+
+    def test_without_session_id_changes_current(self):
+        turn.start(self.V, None, "CLI")
+        turn.set_note(self.V, "", "程式做的")
+        self.assertEqual(self.read("current.json")["note"], "程式做的")
+
+    def test_missing_turn_returns_none(self):
+        self.assertIsNone(turn.set_done(self.V, "nobody"))
+        self.assertFalse((self.d / "nobody.json").exists())
 
     def test_no_session_id_uses_0000_and_only_current(self):
         t = turn.start(self.V, None, "x")

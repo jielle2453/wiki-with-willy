@@ -455,5 +455,63 @@ class List(Base):
         self.assertEqual(r.stdout.strip(), "還沒有登記任何來源")
 
 
+class FoldersJournal(Base):
+    """工作日誌程式段（D-085）：add、exclude 成功後多一行 kind program，note 等於印出的第一行；
+    list、--check 不寫；對話開的回合裡叫的不寫（改動併進那一句）。"""
+
+    def program_rows(self):
+        from kb._lib import journal
+        return [r for m in journal.months(self.V) for r in journal.read_lines(self.V, m)
+                if r["kind"] == "program" and r["command"] != "init"]
+
+    def test_add_and_exclude_write_program_lines(self):
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["command"], rows[0]["note"]), ("folders add", r.stdout.splitlines()[0]))
+        self.assertEqual(rows[0]["changed"], [{"path": ".system/sources.json", "action": "modify"}])
+        cur = json.loads((self.V / ".system" / "turns" / "current.json").read_text(encoding="utf-8"))
+        self.assertEqual(rows[0]["turn"], cur["turn"])
+        r = self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual((rows[1]["command"], rows[1]["note"]), ("folders exclude", r.stdout.splitlines()[0]))
+        self.assertEqual(rows[1]["changed"], [{"path": ".system/sources.json", "action": "modify"}])
+
+    def test_list_check_and_rejection_write_nothing(self):
+        self.folders("list")
+        self.add("../raw/行政", "--check")
+        self.add("../raw/不存在")
+        self.assertEqual(self.program_rows(), [])
+
+    def test_json_mode_also_writes(self):
+        r = self.add("../raw/行政", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["note"], "已登記「行政」（../raw/行政，3 份）")
+
+    def test_journal_failure_prints_stderr_and_keeps_exit_code(self):
+        shutil.rmtree(self.V / ".system" / "journal")
+        (self.V / ".system" / "journal").write_text("不是資料夾", encoding="utf-8")
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "已登記「行政」（../raw/行政，3 份）")
+        self.assertTrue(r.stderr.startswith("工作日誌沒記到："), r.stderr)
+        self.assertEqual(len(r.stderr.splitlines()), 1)
+
+    def test_inside_conversation_turn_writes_nothing(self):
+        turns = self.V / ".system" / "turns"
+        turns.mkdir(parents=True, exist_ok=True)
+        (turns / "current.json").write_text(json.dumps({"schema_version": 1, "turn": "20261016-100000-test",
+                                                        "session_id": "test-sid", "started": "2026-10-16T10:00:00",
+                                                        "prompt_head": "加資料夾", "approved": False}), encoding="utf-8")
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.program_rows(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

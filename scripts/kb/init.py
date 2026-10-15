@@ -3,13 +3,14 @@
 缺的才建，既有檔一律不碰（I-066）；.gitkeep 只為了讓 git 留住空夾，不複製；.system/ 不在骨架裡，由這裡建。
 目標的上層已是知識庫就拒絕（I-054，用 guard.find_vault 找）。CLAUDE.md、.claude/、.system/ 在 Windows 設隱藏屬性，設不成只印一句。
 不開回合、不備份、不寫 ledger：init 之前還沒有知識庫。
+有建東西就寫一段工作日誌程式段（D-085），代號用現在時間、不碰 turns/；日誌自己的檔不在骨架計畫裡，不算項數。
 """
 import argparse
 import json
 import os
 from pathlib import Path
 
-from kb import guard
+from kb import guard, journal_cli
 from kb._lib import sources as sources_lib
 from kb._lib.io import read_text, write_text_atomic
 from kb._lib.paths import plugin_root
@@ -120,6 +121,9 @@ def run(args):
             why = _hide(p / name)
             if why:
                 notes.append(f"隱藏屬性沒設成：{name}，{why}")
+    if created:  # 程式段（D-085）：只數骨架項目；沒有缺的不寫；不開回合
+        note = f"建立知識庫：建了 {len(created)} 項" if not existed else f"補齊了 {len(created)} 項"
+        journal_cli.record_program_or_warn(p, note, [{"path": rel, "action": "create"} for rel in created], "init")
     if as_json:
         print(json.dumps({"vault": str(p), "created": created, "existing": existing}, ensure_ascii=False))
     elif not existed:

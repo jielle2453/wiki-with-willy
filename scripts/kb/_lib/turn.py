@@ -16,7 +16,6 @@ from kb._lib.io import FileLock, read_json, write_json_atomic
 TURNS_REL = Path(".system") / "turns"
 VERSIONS_REL = Path(".system") / "versions"
 CURRENT_NAME = "current.json"
-PROMPT_HEAD_MAX = 80
 BIG_CHANGE_REASON = ("這一題已經改了 {n} 張綜合卡，先停下來告訴客戶還有幾張、為什麼；"
                      "客戶同意後用知識庫腳本 turn approve 解除再繼續。")
 BACKUP_FAILED_REASON = "備份失敗，這次不寫。說「檢查」我看原因"
@@ -40,11 +39,15 @@ def _current_file(vault):
     return Path(vault) / TURNS_REL / CURRENT_NAME
 
 
+def prompt_head(vault, prompt):
+    """先遮帳密再壓空白、截 prompt_head_max 字（D-081、B-027、B-028）：回合檔、versions/<回合>/turn.json、工作日誌的「問」都從這裡來。"""
+    return " ".join(credentials.mask_secrets(str(prompt or "")).split())[:config.get(vault, "prompt_head_max")]
+
+
 def start(vault, session_id, prompt):
     """開新回合：寫 turns/<sid>.json（有 sid 才寫）與 current.json。回回合 dict。"""
     now = _now().replace(microsecond=0)  # 代號只到秒，比較也只到秒
-    # 先遮帳密再壓空白、截 80 字（D-081、B-027）：回合檔與 versions/<回合>/turn.json 的「問」都從這裡來
-    head = " ".join(credentials.mask_secrets(str(prompt or "")).split())[:PROMPT_HEAD_MAX]
+    head = prompt_head(vault, prompt)
     tag = _safe_sid(session_id)[:4] if session_id else "0000"
     # 代號單調遞增：取 max(現在, 既有最大代號 + 1 秒)。同一秒幾句話不撞，時鐘落後也不會排到舊回合前面
     latest = _latest_turn_time(vault, session_id, now)
@@ -57,6 +60,8 @@ def start(vault, session_id, prompt):
         "started": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "prompt_head": head,
         "approved": False,
+        "note": "",  # 模型叫 kb turn note 給的「做了」（D-084）
+        "done": False,  # Stop 或中斷補記後為 true（D-083）
     }
     (Path(vault) / TURNS_REL).mkdir(parents=True, exist_ok=True)
     if session_id:
@@ -117,11 +122,16 @@ def current(vault, session_id=None):
 
 
 def _read_turn(path):
+    """讀回合檔。舊檔少 note、done 兩鍵：note 視為空字串、done 視為 true（升級前的回合不補記，不遷移）。"""
     try:
         data = read_json(path)
     except ValueError:
         return None
-    return data if isinstance(data, dict) and data.get("turn") else None
+    if not (isinstance(data, dict) and data.get("turn")):
+        return None
+    data.setdefault("note", "")
+    data.setdefault("done", True)
+    return data
 
 
 def _write_turn(vault, data):
@@ -138,6 +148,29 @@ def approve(vault, session_id=None):
     data["approved"] = True
     _write_turn(vault, data)
     return data
+
+
+def _set(vault, session_id, **fields):
+    """改 turns/<sid>.json（沒有 sid 改 current.json）；current.json 是同回合時一起改。回合不存在回 None，不開新的。"""
+    path = _session_file(vault, session_id) if session_id else _current_file(vault)
+    data = _read_turn(path)
+    if data is None:
+        return None
+    data.update(fields)
+    _write_turn(vault, data)
+    return data
+
+
+def set_note(vault, session_id, text):
+    return _set(vault, session_id, note=text)
+
+
+def set_done(vault, session_id):
+    return _set(vault, session_id, done=True)
+
+
+def set_prompt_head(vault, session_id, text):
+    return _set(vault, session_id, prompt_head=text)
 
 
 def _realcase(p):

@@ -2,6 +2,8 @@
 
 不開回合的情況：不在知識庫裡；prompt 開頭是 <task-notification（I-035）、<cross-session-message、<system-reminder（L-3）；
 payload 有 source 且不是 user／sdk。
+工作日誌（D-083）：開新回合前先替這個 session 上一句沒等到 Stop 的回合補記「中斷」，開完寫這一句的第一次。
+兩步各自包 try、失敗只寫 log；一支 hook 最多等一次鎖，補記鎖逾時就不寫這一句（hook 整支要在 5 秒內）。
 任何例外寫 .system/hook-errors.log，永遠 exit 0、不輸出，不能擋住客戶提問。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
 """
@@ -43,7 +45,22 @@ def main():
             prompt = payload.get("user_prompt") or ""
         if str(prompt).lstrip().startswith(NOT_A_PROMPT):
             return
-        turn.start(vault, payload.get("session_id"), prompt)
+        from kb._lib import journal
+
+        sid = payload.get("session_id")
+        lock_timed_out = False
+        try:
+            journal.flush_unfinished(vault, sid)
+        except BaseException as e:  # noqa: BLE001  日誌失敗不影響開回合
+            lock_timed_out = isinstance(e, TimeoutError)
+            _log(e, payload)
+        data = turn.start(vault, sid, prompt)
+        if lock_timed_out:
+            return  # 已等過一次鎖，不再等第二次（hook timeout 5 秒）
+        try:
+            journal.open_turn(vault, data)
+        except BaseException as e:  # noqa: BLE001
+            _log(e, payload)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
         _log(e, payload)
 

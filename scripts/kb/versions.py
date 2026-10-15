@@ -6,6 +6,7 @@
 退回標記是回合夾裡的 reverted.json，不改夾名；退回動作的回合在 turn.json 記 reverted_turn，退掉它時撤原回合的標記（第二輪 R2-4）。
 刪成品前三道關：這一句話已經改過的不刪（R2-2）、指紋跟清冊不同的不刪（R2-3）、檔已不在只改 status（R2-L1）。
 CLI 的鎖等 30 秒（hook 維持 3，第二輪 R2-L3）。
+revert、delete-outputs 成功後記一段工作日誌程式段（D-085），note 是「已退回 …」「已刪 N 份成品（回合 …）」那句；刪 0 份不記。
 """
 import argparse
 import json
@@ -14,7 +15,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from kb import guard
+from kb import guard, journal_cli
 from kb._lib import inventory, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
@@ -254,6 +255,17 @@ def _revert(vault, code, delete_outputs, as_json):
                       {"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "by_turn": rt["turn"]})
 
     deleted_n = len(outputs) - len(set(kept_ids))
+    if outputs and delete_outputs:
+        tail = f"成品 {deleted_n} 份刪了" + (f"、{len(set(kept_ids))} 份留著" if kept_ids else "")
+    elif outputs:
+        tail = f"成品 {len(outputs)} 份留著"
+    else:
+        tail = "成品 0 份"
+    sentence = f"已退回 {target['turn']}（問：「{target['prompt_head']}」）：還原 {len(restored)}、移除 {len(removed)}、{tail}"
+    journal_cli.record_program_or_warn(
+        vault, sentence,
+        [{"path": rel, "action": "modify"} for rel in restored] + [{"path": rel, "action": "delete"} for rel in removed],
+        "versions revert", turn_id=rt["turn"])
     if as_json:
         print(json.dumps({
             "turn": target["turn"], "prompt_head": target["prompt_head"], "by_turn": rt["turn"],
@@ -264,13 +276,7 @@ def _revert(vault, code, delete_outputs, as_json):
         return 0
     if lost:
         print(f"無法還原 {len(lost)} 檔（備份已不在）：" + "、".join(lost))
-    if outputs and delete_outputs:
-        tail = f"成品 {deleted_n} 份刪了" + (f"、{len(set(kept_ids))} 份留著" if kept_ids else "")
-    elif outputs:
-        tail = f"成品 {len(outputs)} 份留著"
-    else:
-        tail = "成品 0 份"
-    print(f"已退回 {target['turn']}（問：「{target['prompt_head']}」）：還原 {len(restored)}、移除 {len(removed)}、{tail}")
+    print(sentence)
     for rel in out_rels:
         print(f"    {rel}")
     for msg in kept_msgs:
@@ -328,12 +334,16 @@ def _delete_outputs(vault, code, as_json):
         gone_ids.append(o["id"])
     if gone_ids:
         inventory.set_status(vault, gone_ids, "deleted")
+    sentence = f"已刪 {len(deleted)} 份成品（回合 {target['turn']}）"
+    if deleted:  # 刪 0 份不寫段（疑義裁定 4）
+        journal_cli.record_program_or_warn(vault, sentence, [{"path": rel, "action": "delete"} for rel in deleted],
+                                           "versions delete-outputs", turn_id=rt["turn"])
     if as_json:
         print(json.dumps({"turn": target["turn"], "by_turn": rt["turn"], "deleted": deleted, "missing": missing,
                           "kept": kept_msgs}, ensure_ascii=False))
         return 0
     if deleted:
-        print(f"已刪 {len(deleted)} 份成品（回合 {target['turn']}）：")
+        print(f"{sentence}：")
         for rel in deleted:
             print(f"    {rel}")
     for rel in missing:

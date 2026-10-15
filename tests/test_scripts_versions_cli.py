@@ -530,5 +530,75 @@ class DeleteOutputs(Base):
         self.assertFalse((self.V / rel).exists())
 
 
+class VersionsJournal(Base):
+    """工作日誌程式段（D-085）：CLI 自己的回合（session_id 空）裡 revert、delete-outputs 成功多一行 kind program；
+    對話開的回合裡叫的不寫；delete-outputs 刪 0 份不寫（疑義裁定 4）。"""
+
+    def program_rows(self):
+        from kb._lib import journal
+        return [r for m in journal.months(self.V) for r in journal.read_lines(self.V, m) if r["kind"] == "program"]
+
+    def cli_turn_with(self, rel, text, register=False):
+        """像守門自己開的回合（payload 沒 session_id）：備份、真的寫。"""
+        t = turn.start(self.V, None, "")
+        turn.backup(self.V, rel, t["turn"])
+        (self.V / rel).parent.mkdir(parents=True, exist_ok=True)
+        (self.V / rel).write_text(text, encoding="utf-8")
+        if register:
+            inventory.register_output(self.V, rel, t["turn"])
+        return t
+
+    def test_revert_writes_program_line_with_printed_sentence(self):
+        self.cli_turn_with(self.card_rel, "改過了\n")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["command"], "versions revert")
+        self.assertEqual(rows[0]["note"], r.stdout.splitlines()[0])
+        self.assertTrue(rows[0]["note"].startswith("已退回 "))
+        self.assertEqual(rows[0]["changed"], [{"path": self.card_rel, "action": "modify"}])
+
+    def test_revert_removed_file_is_delete(self):
+        self.cli_turn_with("案子/新案/新案.md", "新卡\n")
+        run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(self.program_rows()[0]["changed"], [{"path": "案子/新案/新案.md", "action": "delete"}])
+
+    def test_delete_outputs_writes_program_line(self):
+        t = self.cli_turn_with("AI 產出/y.md", "草稿\n", register=True)
+        run_kb("versions", "revert", cwd=self.V)
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["command"], "versions delete-outputs")
+        self.assertEqual(rows[1]["note"], f"已刪 1 份成品（回合 {t['turn']}）")
+        self.assertEqual(rows[1]["changed"], [{"path": "AI 產出/y.md", "action": "delete"}])
+
+    def test_delete_outputs_of_zero_writes_nothing(self):
+        t = self.cli_turn_with("AI 產出/y.md", "草稿\n", register=True)
+        run_kb("versions", "revert", cwd=self.V)
+        os.remove(self.V / "AI 產出" / "y.md")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([x["command"] for x in self.program_rows()], ["versions revert"])
+        self.assertTrue(t)
+
+    def test_json_mode_also_writes(self):
+        self.cli_turn_with(self.card_rel, "改過了\n")
+        r = run_kb("versions", "revert", "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["note"].startswith("已退回 "))
+
+    def test_inside_conversation_turn_writes_nothing(self):
+        self.modify_card_in_turn()
+        self.new_turn()
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.program_rows(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

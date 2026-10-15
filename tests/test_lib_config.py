@@ -31,6 +31,14 @@ class Get(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertIn(f"_why_{key}", data)
 
+    def test_journal_keys_have_defaults_and_why(self):
+        """工作日誌：prompt_head_max 200（B-028）、journal_result_max 300（D-061），各有 _why。"""
+        data = json.loads((ROOT / "config" / "defaults.json").read_text(encoding="utf-8"))
+        self.assertEqual(config.get(self.vault, "prompt_head_max"), 200)
+        self.assertEqual(config.get(self.vault, "journal_result_max"), 300)
+        for key in ("prompt_head_max", "journal_result_max"):
+            self.assertTrue(data.get(f"_why_{key}"), key)
+
     def test_client_override_wins(self):
         (self.vault / ".system" / "config.json").write_text(
             json.dumps({"schema_version": 1, "big_change_synthesis_max": 3}), encoding="utf-8")

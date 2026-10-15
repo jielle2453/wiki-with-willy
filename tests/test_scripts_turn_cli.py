@@ -81,7 +81,7 @@ class JournalBase(unittest.TestCase):
     def setUp(self):
         self.tmp, self.V, self.raw = make_vault()
         self.t = turn.start(self.V, SID, "改一下")
-        journal.open_turn(self.V, self.t)
+        journal.begin_turn(self.V, None, self.t)
         self.month = journal.month_of(self.t["turn"])
 
     def tearDown(self):
@@ -123,6 +123,13 @@ class Note(JournalBase):
         run_kb("turn", "note", "用密碼 abc123 登入了", cwd=self.V)
         self.assertEqual(self.sess()["note"], "用密碼███")
         self.assertEqual(self.row()["note"], "用密碼███")
+
+    def test_acceptance_37_note_value_after_blank_line_is_masked(self):
+        """驗收 37（M2「一律」）：turn note 的句子也先壓空白再遮，回合檔與 jsonl 都是「密碼███」。"""
+        r = run_kb("turn", "note", "密碼如下：\n\nabc123", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.sess()["note"], "密碼███")
+        self.assertEqual(self.row()["note"], "密碼███")
 
     def test_note_outside_vault_exits_2(self):
         r = run_kb("turn", "note", "x", cwd=self.tmp)

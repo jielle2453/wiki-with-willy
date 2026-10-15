@@ -64,7 +64,7 @@ class Paths(Base):
 class OpenComplete(Base):
     def test_open_then_complete_is_one_line(self):
         td = turn_data("20261015-180536-test", "改一下")
-        journal.open_turn(self.V, td)
+        journal.begin_turn(self.V, None, td)
         rows = self.rows("2026-10")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0], {"schema_version": 1, "kind": "turn", "turn": "20261015-180536-test", "session_id": SID,
@@ -85,9 +85,9 @@ class OpenComplete(Base):
 
     def test_open_twice_does_not_duplicate(self):
         td = turn_data("20261015-180536-test")
-        journal.open_turn(self.V, td)
-        journal.open_turn(self.V, td)
-        journal.open_turn(self.V, turn_data("20261015-180600-test", "第二句"))
+        journal.begin_turn(self.V, None, td)
+        journal.begin_turn(self.V, None, td)
+        journal.begin_turn(self.V, None, turn_data("20261015-180600-test", "第二句"))
         self.assertEqual([r["turn"] for r in self.rows("2026-10")], ["20261015-180536-test", "20261015-180600-test"])
 
     def test_complete_without_open_writes_line(self):
@@ -104,14 +104,14 @@ class OpenComplete(Base):
         self.assertEqual(self.rows("2026-10")[0]["changed"], [{"path": "案子/信義王/信義王.md", "action": "modify"}])
 
     def test_open_renders_md(self):
-        journal.open_turn(self.V, turn_data("20261015-180536-test"))
+        journal.begin_turn(self.V, None, turn_data("20261015-180536-test"))
         md = journal.md_path(self.V, "2026-10").read_text(encoding="utf-8")
         self.assertTrue(md.startswith("# 工作日誌 2026-10\n\n這是什麼："), md)
         self.assertIn("- 結果：（還沒結束）", md)
 
     def test_cross_month_turn_stays_in_opening_month(self):
         td = turn_data("20260930-235959-test")
-        journal.open_turn(self.V, td)
+        journal.begin_turn(self.V, None, td)
         journal.complete_turn(self.V, td, "好了", "沒有改動", "program", [], False)
         self.assertEqual(len(self.rows("2026-09")), 1)
         self.assertTrue(self.rows("2026-09")[0]["done"])
@@ -121,7 +121,7 @@ class OpenComplete(Base):
 class Masking(Base):
     def test_result_prompt_and_ai_note_are_masked(self):
         td = turn_data("20261015-180536-test", "幫我登入，密碼 abc")
-        journal.open_turn(self.V, td)
+        journal.begin_turn(self.V, None, td)
         journal.complete_turn(self.V, td, "已用密碼 abc 登入", "記下密碼 abc", "ai", [], False)
         r = self.rows("2026-10")[0]
         self.assertEqual(r["prompt"], "幫我登入，密碼███")
@@ -148,7 +148,7 @@ class Masking(Base):
 class UpdateTurn(Base):
     def test_update_changes_only_given_fields(self):
         td = turn_data("20261015-180536-test")
-        journal.open_turn(self.V, td)
+        journal.begin_turn(self.V, None, td)
         self.assertTrue(journal.update_turn(self.V, td["turn"], note="改口", note_by="ai"))
         r = self.rows("2026-10")[0]
         self.assertEqual((r["note"], r["note_by"], r["prompt"], r["done"]), ("改口", "ai", "改一下", False))
@@ -199,16 +199,16 @@ class BadLines(Base):
         self.assertEqual(len(self.errors()), 0)  # 測試後修正 L3：只有寫入路徑記
         journal.read_lines(self.V, "2026-10", log=True)
         self.assertEqual(len(self.errors()), 1)
-        journal.open_turn(self.V, turn_data("20261015-180536-test"))
+        journal.begin_turn(self.V, None, turn_data("20261015-180536-test"))
         lines = p.read_text(encoding="utf-8").splitlines()
         self.assertIn("{bad", lines)
         self.assertEqual(len(lines), 3)
-        self.assertEqual(len(self.errors()), 2)  # open_turn 記一次；渲染不再記
+        self.assertEqual(len(self.errors()), 2)  # begin_turn 記一次；渲染不再記
         md = journal.md_path(self.V, "2026-10").read_text(encoding="utf-8")
         self.assertIn("程式 init", md)
 
     def test_recent_does_not_log_bad_lines(self):
-        journal.open_turn(self.V, turn_data(month_turn_id(this_month())))
+        journal.begin_turn(self.V, None, turn_data(month_turn_id(this_month())))
         p = journal.jsonl_path(self.V, this_month())
         p.write_text(p.read_text(encoding="utf-8") + "{bad\n", encoding="utf-8")
         self.assertEqual(len(journal.recent(self.V, 5)), 1)
@@ -221,7 +221,7 @@ class RenderFailure(Base):
         md = journal.md_path(self.V, "2026-10")
         md.mkdir(parents=True)
         td = turn_data("20261015-180536-test")
-        journal.open_turn(self.V, td)
+        journal.begin_turn(self.V, None, td)
         journal.complete_turn(self.V, td, "好了", "沒有改動", "program", [], False)
         self.assertTrue(self.rows("2026-10")[0]["done"])
         self.assertEqual(len(self.errors()), 2)
@@ -233,7 +233,7 @@ class BeginTurn(Base):
 
     def test_flush_previous_and_open_new_in_one_lock(self):
         prev = turn_data("20261015-180536-test", "第一句")
-        journal.open_turn(self.V, prev)
+        journal.begin_turn(self.V, None, prev)
         new = turn_data("20261015-180600-test", "第二句")
         calls = []
         real = journal._lock
@@ -276,7 +276,7 @@ class LockPermission(Base):
         with mock.patch.object(kio, "LOCK_TIMEOUT", 0.3), \
                 mock.patch.object(journal.FileLock, "__enter__", side_effect=PermissionError("拒絕")):
             with self.assertRaises(TimeoutError):
-                journal.open_turn(self.V, turn_data("20261015-180536-test"))
+                journal.begin_turn(self.V, None, turn_data("20261015-180536-test"))
 
 
 class FloorNote(Base):
@@ -348,9 +348,9 @@ class Recent(Base):
     def test_recent_across_months_newest_first(self):
         cur = this_month()
         prev = prev_month(cur)
-        journal.open_turn(self.V, turn_data(month_turn_id(prev, "10"), "上月一"))
-        journal.open_turn(self.V, turn_data(month_turn_id(prev, "11"), "上月二"))
-        journal.open_turn(self.V, turn_data(month_turn_id(cur, "01")))
+        journal.begin_turn(self.V, None, turn_data(month_turn_id(prev, "10"), "上月一"))
+        journal.begin_turn(self.V, None, turn_data(month_turn_id(prev, "11"), "上月二"))
+        journal.begin_turn(self.V, None, turn_data(month_turn_id(cur, "01")))
         self.assertEqual([r["prompt"] for r in journal.recent(self.V, 2)], ["改一下", "上月二"])
         self.assertEqual(len(journal.recent(self.V, 10)), 3)
 
@@ -375,7 +375,7 @@ sys.path.insert(0, sys.argv[1])
 from kb._lib import journal
 vault, tag = sys.argv[2], sys.argv[3]
 for i in range(6):
-    journal.open_turn(vault, {"turn": f"20261015-1200{i:02d}-{tag}", "session_id": tag,
+    journal.begin_turn(vault, None, {"turn": f"20261015-1200{i:02d}-{tag}", "session_id": tag,
                               "started": f"2026-10-15T12:00:{i:02d}", "prompt_head": tag + str(i)})
 """
 

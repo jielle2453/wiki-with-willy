@@ -33,7 +33,7 @@ def add_arguments(sub):
 
 def _note(vault, text):
     t = turn.current(vault)
-    note = credentials.mask_secrets(str(text))
+    note = credentials.mask_secrets(" ".join(str(text).split()))  # 先壓空白再遮（M2「一律」，驗收 37）
     journal.update_turn(vault, t["turn"], note=note, note_by="ai")
     turn.set_note(vault, t.get("session_id"), note)
     print("記下了")

@@ -39,7 +39,7 @@ class Recent(Base):
     def test_lines_newest_first_with_program_prefix_and_in_progress(self):
         journal.record_program(self.V, "建立知識庫：建了 9 項", [], "init")
         prog = journal.recent(self.V, 1)[0]
-        journal.open_turn(self.V, {"turn": prog["turn"][:15] + "-test", "session_id": "s",
+        journal.begin_turn(self.V, None, {"turn": prog["turn"][:15] + "-test", "session_id": "s",
                                    "started": prog["time"], "prompt_head": "改一下"})
         r = run_kb("journal", "recent", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)

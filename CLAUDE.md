@@ -29,7 +29,7 @@
 | `scripts/kb/_lib/io.py` | UTF-8、LF、原子寫入的讀寫函式；`os.replace` 被拒重試（I-018）；`FileLock` 鎖檔（hook 等 3 秒、CLI 30 秒、殘留 30 秒；鎖檔建不起來直接丟錯） |
 | `scripts/kb/_lib/config.py` | `get(vault, key)`：`defaults.json` 為底，客戶端 `.system/config.json` 同鍵覆寫 |
 | `scripts/kb/_lib/turn.py` | 回合：`start`（`prompt_head` 先 `mask_secrets` 再截 `prompt_head_max`；回合檔帶 `note`、`done`）、`mint`（只產代號不寫 `turns/`，退回動作用）、`set_note`／`set_done`／`set_prompt_head`、`current`、`approve`、`rel_path`（原始大小寫）、`backup`、`before_write`（大改動門檻加備份） |
-| `scripts/kb/_lib/journal.py` | 工作日誌（D-082～D-086）：真相 `.system/journal/YYYY-MM.jsonl`，`begin_turn`（中斷補記加開口，同月一把鎖）、`open_turn`／`complete_turn`（同一行 upsert）、`finish_fields`（做了：AI 優先、地板句）、`update_turn`、`record_program`（代號一律現在時間）、`floor_note`、`cut_result`（抽段、壓一行、遮、截）、`recent`、`render`（整月寫 `系統/工作日誌/YYYY-MM.md`，最新在上）；鎖住讀改寫，渲染失敗只記 log，壞行跳過留著 |
+| `scripts/kb/_lib/journal.py` | 工作日誌（D-082～D-086）：真相 `.system/journal/YYYY-MM.jsonl`，`begin_turn`（中斷補記加開口，同月一把鎖）、`complete_turn`（同一行 upsert）、`finish_fields`（做了：AI 優先、地板句）、`update_turn`、`record_program`（代號一律現在時間）、`floor_note`、`cut_result`（抽段、壓一行、遮、截）、`recent`、`render`（整月寫 `系統/工作日誌/YYYY-MM.md`，最新在上）；鎖住讀改寫，渲染失敗只記 log，壞行跳過留著 |
 | `scripts/kb/_lib/inventory.py` | 清冊最小版（D-076）：`.system/inventory.json`，`register_output`、`outputs_of_turn`、`set_status` |
 | `scripts/kb/_lib/cmdparse.py` | 指令字串解析：`extract_paths`（`.`、`..` 也算路徑）、`is_write`、`is_single_plugin_call` |
 | `scripts/kb/_lib/sources.py` | 讀 `.system/sources.json`，`lookup` 查登記／排除；`load_raw` 給 `kb folders` 讀原始 dict（格式不對丟 `ValueError`），`new_id`、`RESERVED_ALIASES` |

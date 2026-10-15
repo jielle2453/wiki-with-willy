@@ -193,11 +193,6 @@ def _upsert_rows(rows):
     return edit
 
 
-def open_turn(vault, turn_data):
-    """回合開口：寫入或換掉這回合那一行，done false。"""
-    _locked_edit(vault, month_of(turn_data["turn"]), _upsert_rows([_open_row(turn_data)]))
-
-
 def _clean_changed(changed):
     return [{"path": c.get("path"), "action": c.get("action")} for c in (changed or [])]
 

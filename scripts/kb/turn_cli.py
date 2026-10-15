@@ -45,10 +45,15 @@ def _redact(vault, text):
     head = turn.prompt_head(vault, text)
     journal.update_turn(vault, turn.journal_key(t), prompt=head)
     turn.set_prompt_head(vault, t.get("session_id"), head)
-    for tid in dict.fromkeys((turn.journal_key(t), t["turn"])):  # 原回合與接著的回合，turn.json 都存著這句問
-        meta = Path(vault) / turn.VERSIONS_REL / tid / "turn.json"
-        if meta.is_file():
+    # 原回合與接著它的每個回合（連退幾次就幾個），turn.json 都存著這句問：turn 或 journal_turn 等於 key 的都改（R3-L2）
+    key = turn.journal_key(t)
+    root = Path(vault) / turn.VERSIONS_REL
+    for meta in sorted(root.glob("*/turn.json")) if root.is_dir() else []:
+        try:
             data = read_json(meta, {}) or {}
+        except ValueError:
+            continue
+        if key in (data.get("turn"), data.get("journal_turn")):
             data["prompt_head"] = head
             write_json_atomic(meta, data)
     print(f"這一句的問已改成：「{head}」")

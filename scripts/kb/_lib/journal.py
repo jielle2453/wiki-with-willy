@@ -218,7 +218,7 @@ def _complete_row(turn_data, result, note, note_by, changed, interrupted, result
 def complete_turn(vault, turn_data, result, note, note_by, changed, interrupted, result_truncated=None):
     """回合補完（Stop 或中斷補記）：同一行換成完整的一行，done true。"""
     row = _complete_row(turn_data, result, note, note_by, changed, interrupted, result_truncated)
-    _locked_edit(vault, month_of(turn_data["turn"]), _upsert_rows([row]))
+    _locked_edit(vault, month_of(row["turn"]), _upsert_rows([row]))  # row["turn"] 是 journal_key：跨月的退回寫回原月（R3-L1）
 
 
 def finish_fields(vault, turn_data):
@@ -268,8 +268,8 @@ def begin_turn(vault, previous, turn_data):
     if previous and not previous.get("done", True):
         note, note_by, changed = finish_fields(vault, previous)
         rows.append(_complete_row(previous, INTERRUPTED_RESULT, note, note_by, changed, True, False))
-    month = month_of(turn_data["turn"])
     opened = _open_row(turn_data)
+    month = month_of(opened["turn"])
     if not rows or month_of(rows[0]["turn"]) == month:
         _locked_edit(vault, month, _upsert_rows(rows + [opened]))
         return

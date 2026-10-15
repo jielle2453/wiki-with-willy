@@ -134,16 +134,17 @@ def _rel_of(entry):
 
 
 def _acting_turn(vault, target_turn):
-    """退回動作本身的回合；若等於要退的回合，開新回合並成為目前回合（工作日誌第二輪 R2-M2、M3）：
-    - 目前回合 sid 空或已答完（done true）：turn.start(None)，只換 current.json，之後的寫入不會記進已退回的回合。
-    - 對話裡、還沒答完（sid 有、done false）：turn.start(sid, inherit=目前回合)，新回合繼承問與 note、記 journal_turn，
+    """退回／刪成品動作本身的回合（工作日誌第二輪 R2-M2、M3，第三輪 R3-M1）：
+    - 目前回合 sid 空或已答完（done true，終端機在跑）：不論目標，一律 turn.start(None) 開新動作回合，只換 current.json；
+      做完再由 _seal 封住，之後的指令進新回合，下一次退回不會連先前的退回一起撤掉。
+    - 對話裡、還沒答完（sid 有、done false）：目前回合就是這句話，動作記在它裡面；只有它正好是要退的回合時，
+      turn.start(sid, inherit=目前回合) 開新回合接著這句，繼承問、note、approved，記 journal_turn，
       換掉 turns/<sid>.json 與 current.json；Stop 收原回合那一行。連續退回每次再開一個，journal_turn 一路繼承。"""
     rt = turn.current(vault)
+    if not rt.get("session_id") or rt.get("done"):
+        return turn.start(vault, None, f"退回 {target_turn}")
     if rt["turn"] == target_turn:
-        if rt.get("session_id") and not rt.get("done"):
-            rt = turn.start(vault, rt["session_id"], f"退回 {target_turn}", inherit=rt)
-        else:
-            rt = turn.start(vault, None, f"退回 {target_turn}")
+        rt = turn.start(vault, rt["session_id"], f"退回 {target_turn}", inherit=rt)
     return rt
 
 

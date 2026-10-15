@@ -736,6 +736,78 @@ class VersionsJournal(Base):
         notes = [x["note"] for x in self.program_rows()]
         self.assertEqual(notes, [line])
 
+    def test_acceptance_44_terminal_delete_outputs_opens_own_turn(self):
+        """驗收 44（R3-M1）：對話裡建 z.md、同一句退回、Stop；終端機 delete-outputs 再 revert：z.md 回來、status active，
+        卡片與 T 的 reverted.json 都不變；versions/ 多兩個尾 0000 的回合夾。"""
+        base = {"session_id": SID, "cwd": str(self.V)}
+        z = self.V / "AI 產出" / "z.md"
+        self.hook("turn.py", dict(base, prompt="寫 z", hook_event_name="UserPromptSubmit"))
+        t_turn = self.sess()["turn"]
+        self.hook("guard.py", dict(base, tool_name="Write", hook_event_name="PreToolUse",
+                                   tool_input={"file_path": str(z), "content": "z\n"}))
+        z.write_text("z\n", encoding="utf-8")
+        self.hook("output_log.py", dict(base, tool_name="Write", hook_event_name="PostToolUse",
+                                        tool_input={"file_path": str(z)}))
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.stop("退好了")
+        marker = self.versions_dir(t_turn) / "reverted.json"
+        before = (self.card.read_bytes(), marker.read_bytes())
+        vroot = self.V / ".system" / "versions"
+        dirs = {p.name for p in vroot.iterdir()}
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(z.exists())
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(z.is_file())
+        entry = [e for e in inventory.load(self.V)["entries"] if "file://AI 產出/z.md" in e.get("locations", [])][-1]
+        self.assertEqual(entry["status"], "active")
+        self.assertEqual((self.card.read_bytes(), marker.read_bytes()), before)
+        new = {p.name for p in vroot.iterdir()} - dirs
+        self.assertEqual(len(new), 2, new)
+        self.assertTrue(all(n.endswith("-0000") for n in new), new)
+
+    def test_acceptance_45_revert_across_month_completes_original_month_line(self):
+        """驗收 45（R3-L1）：原回合是上個月的，同一句退回後 Stop，補完的是上個月那行，本月不多行。"""
+        from datetime import date
+        from kb._lib import journal
+        self.hook("turn.py", {"session_id": SID, "cwd": str(self.V), "prompt": "改卡", "hook_event_name": "UserPromptSubmit"})
+        old = "20260930-235900-test"
+        this_month = date.today().strftime("%Y-%m")
+        jsonl = journal.jsonl_path(self.V, this_month)
+        jsonl.unlink()
+        data = dict(self.sess(), turn=old, started="2026-09-30T23:59:00")
+        for f in (self.V / ".system" / "turns" / f"{SID}.json", self.V / ".system" / "turns" / "current.json"):
+            f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        journal.begin_turn(self.V, None, data)
+        self.hook("guard.py", {"session_id": SID, "cwd": str(self.V), "tool_name": "Write", "hook_event_name": "PreToolUse",
+                               "tool_input": {"file_path": str(self.card), "content": "改過了\n"}})
+        self.card.write_text("改過了\n", encoding="utf-8")
+        self.assertEqual(run_kb("versions", "revert", cwd=self.V).returncode, 0)
+        self.stop("退好了")
+        sept = journal.read_lines(self.V, "2026-09")
+        self.assertEqual(len(sept), 1)
+        self.assertEqual((sept[0]["turn"], sept[0]["done"], sept[0]["result"]), (old, True, "退好了"))
+        self.assertEqual(journal.read_lines(self.V, this_month), [])
+
+    def test_acceptance_46_redact_after_two_reverts_rewrites_whole_chain(self):
+        """驗收 46（R3-L2）：同一句連退兩次後 redact，versions/ 底下 turn 或 journal_turn 是 T 的 turn.json 都改，versions list 印不出原句。"""
+        self.prompt_and_write_card("原本的問")
+        t_turn = self.sess()["turn"]
+        for _ in range(2):
+            self.assertEqual(run_kb("versions", "revert", cwd=self.V).returncode, 0)
+        r = run_kb("turn", "redact", "已遮", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        metas = []
+        for p in (self.V / ".system" / "versions").glob("*/turn.json"):
+            meta = json.loads(p.read_text(encoding="utf-8"))
+            if t_turn in (meta.get("turn"), meta.get("journal_turn")):
+                metas.append(meta)
+        self.assertGreaterEqual(len(metas), 3)
+        self.assertEqual({m["prompt_head"] for m in metas}, {"已遮"})
+        self.assertNotIn("原本的問", run_kb("versions", "list", cwd=self.V).stdout)
+
     def test_inherit_keeps_approval_in_same_sentence(self):
         """D-075：同一句話的同意不因退回失效；inherit 時 approved 一起繼承，退回後再改超過上限的卡仍放行。
         上限用 .system/config.json 調成 1，不用真的改 11 張。"""

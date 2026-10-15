@@ -213,18 +213,21 @@ def rel_path(vault, target, cwd):
 
 
 def turn_dir(vault, turn_id, info=None):
-    """.system/versions/<turn_id>/，第一次建時寫 turn.json。"""
+    """.system/versions/<turn_id>/，第一次建時寫 turn.json。接著原回合的回合帶 journal_turn，redact 才找得到整條鏈（R3-L2）。"""
     vdir = Path(vault) / VERSIONS_REL / turn_id
     vdir.mkdir(parents=True, exist_ok=True)
     meta = vdir / "turn.json"
     if not meta.exists():
         info = info or _find_turn(vault, turn_id) or {}
-        write_json_atomic(meta, {
+        data = {
             "schema_version": 1, "turn": turn_id,
             "session_id": info.get("session_id", ""),
             "started": info.get("started", _now().strftime("%Y-%m-%dT%H:%M:%S")),
             "prompt_head": info.get("prompt_head", ""),
-        })
+        }
+        if info.get("journal_turn"):
+            data["journal_turn"] = info["journal_turn"]
+        write_json_atomic(meta, data)
     return vdir
 
 

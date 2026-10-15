@@ -879,6 +879,16 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("PowerShell", "gci /tmp | ForEach-Object { $_ } | Out-File /tmp/o")  # 單獨的 { 沒有前綴，不當路徑
         self.assertEqual(d.decision, "pass", d)
 
+    # 第十二輪：@{ 只有 PowerShell 才跳過保底（@{a=1} 是雜湊表）；Bash 的 @{…,…} 照走前綴夾
+    def test_96_at_brace_skips_head_only_in_powershell(self):
+        groups = ",".join("abcdefghijklmnopqrst") + ",私"  # 21 組，超過展開上限
+        d = self.decide("Bash", f"cat ../raw/行政/@{{{groups}}}/p.txt")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+        d = self.decide("PowerShell", "$h = @{a=1}; Get-Content /tmp/a.txt")
+        self.assertEqual(d.decision, "pass", d)
+        d = self.decide("PowerShell", "Set-Content /tmp/o.txt @{a=1}")
+        self.assertEqual(d.decision, "pass", d)
+
     # 第十一輪補：Glob／Grep 的 path 含 *（不含 {）時，萬用字元前的前綴夾也過 _file_tool
     def test_95_glob_path_wildcard_prefix_is_checked(self):
         for tool in ("Glob", "Grep"):

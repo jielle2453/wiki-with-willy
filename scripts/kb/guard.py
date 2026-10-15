@@ -175,7 +175,7 @@ def _tokens_q(cmd, globs_in_quotes=False):
             text, unquoted = "".join(buf), "".join(ubuf)
             for form in cmdparse.brace_expand(text):
                 out.append((form, quoted, cmdparse.is_wildcard(form, None if globs_in_quotes else unquoted), after_redirect))
-            head = cmdparse.brace_head(text) if "{" in text else None
+            head = cmdparse.brace_head(text, powershell=globs_in_quotes) if "{" in text else None  # globs_in_quotes 只在 PowerShell 為真
             if head is not None:
                 out.append((head, quoted, False, False))  # 第十一輪保底：{ 之前的資料夾也當路徑（讀取就走訪）
             after_redirect = False

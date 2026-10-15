@@ -127,9 +127,14 @@ class ExtractPaths(unittest.TestCase):
         self.assertEqual(cmdparse.brace_head("../r{2..3}"), "..")
         self.assertEqual(cmdparse.brace_head("C:\\x\\r{2,3}"), "C:\\x")
         self.assertEqual(cmdparse.brace_head("r{2,3}"), ".")
-        for text in ("{", "{a,b}", "${X}", "@{a=1}", "plain", ""):
+        for text in ("{", "{a,b}", "${X}", "plain", ""):
             with self.subTest(text=text):
                 self.assertIsNone(cmdparse.brace_head(text), text)
+        # 第十二輪：@{ 只有 PowerShell 才跳過（雜湊表）；Bash 的 @{…} 照走保底
+        self.assertIsNone(cmdparse.brace_head("@{a=1}", powershell=True))
+        self.assertIsNone(cmdparse.brace_head("../raw/行政/@{a,b}/p.txt", powershell=True))
+        self.assertEqual(cmdparse.brace_head("../raw/行政/@{a,b}/p.txt"), "../raw/行政")
+        self.assertEqual(cmdparse.brace_head("@{a=1}"), ".")
         got = cmdparse.extract_paths("cat C:/x/raw/行政/{a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,薪資}/s.xlsx", CWD)
         self.assertIn(n("C:/x/raw/行政"), got)
         self.assertIn(n("C:/x"), cmdparse.extract_paths("rm -rf C:/x/r{2..3}", CWD))

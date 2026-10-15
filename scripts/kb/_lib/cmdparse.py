@@ -153,14 +153,15 @@ def brace_expand(text, limit=BRACE_LIMIT):
             return out
 
 
-def brace_head(text):
+def brace_head(text, powershell=False):
     """第十一輪保底：token 含 { 就回 { 之前的資料夾（跟原守門 eba223d 的萬用字元前綴夾一樣）——有分隔符取最後一個夾，沒有就是 .；
-    { 在開頭（ForEach-Object { $_ }）或前面是 $／@（${X}、@{a=1}）回 None。展開截斷（超過上限）、{N..M} 不展開都不影響這個保底。"""
+    { 在開頭（ForEach-Object { $_ }）或前面是 $（${X}）回 None；前面是 @ 只有 PowerShell 才回 None（@{a=1} 是雜湊表，第十二輪），
+    Bash 的 @{…,…} 照走保底。展開截斷（超過上限）、{N..M} 不展開都不影響這個保底。"""
     idx = text.find("{")
     if idx <= 0:
         return None
     head = text[:idx]
-    if head[-1] in "$@":
+    if head[-1] == "$" or (powershell and head[-1] == "@"):
         return None
     if "/" in head or "\\" in head:
         folder = re.split(r"[\\/]", head)
@@ -242,7 +243,7 @@ def _walk(command, cwd, powershell=False):
         if first:
             verb = token.lower().replace("\\", "/").rsplit("/", 1)[-1]
         # 第十一輪保底：{ 之前的資料夾一律是候選，經區判斷（Z10／Z10b／上層）；排在展開之後，展開命中的理由（readonly_source）比前綴夾具體
-        head = brace_head(token) if "{" in token and not (first and not expect_cd_target) else None
+        head = brace_head(token, powershell) if "{" in token and not (first and not expect_cd_target) else None
         head_p = normalize(head, base) if head is not None else None
         if expect_cd_target:
             if token.startswith("-"):

@@ -879,6 +879,17 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("PowerShell", "gci /tmp | ForEach-Object { $_ } | Out-File /tmp/o")  # 單獨的 { 沒有前綴，不當路徑
         self.assertEqual(d.decision, "pass", d)
 
+    # 第十一輪補：Glob／Grep 的 path 含 *（不含 {）時，萬用字元前的前綴夾也過 _file_tool
+    def test_95_glob_path_wildcard_prefix_is_checked(self):
+        for tool in ("Glob", "Grep"):
+            with self.subTest(tool=tool):
+                d = guard.decide({"tool_name": tool, "tool_input": {"path": "../raw/行政/*", "pattern": "*"}, "cwd": str(self.V)})
+                self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+        d = guard.decide({"tool_name": "Glob", "tool_input": {"path": "../raw/行政/*/薪資", "pattern": "*"}, "cwd": str(self.V)})
+        self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+        d = guard.decide({"tool_name": "Glob", "tool_input": {"path": "../raw/客戶案件/*", "pattern": "*"}, "cwd": str(self.V)})
+        self.assertEqual(d.decision, "allow", d)
+
     # 第十輪 A2／驗收 90：cd 目標含 […] 字元類而 glob 展不開時退回前綴夾
     def test_90_cd_char_class_falls_back_to_prefix_folder(self):
         d = self.decide("Bash", "cd ../raw/行政/薪[^x] && cat s.xlsx")

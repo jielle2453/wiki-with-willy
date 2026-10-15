@@ -611,6 +611,11 @@ def decide(payload):
         sources = sources_lib.load(vault)
         if tool in ("Glob", "Grep"):
             target_n = normalize(str(target), cwd)
+            # 第十一輪補：path 含萬用字元時，萬用字元前的前綴夾先做區判斷（Glob path "../raw/行政/*" 要 Z10b）
+            if cmdparse.is_wildcard(str(target)):
+                d = _file_tool(tool, _pattern_head(target_n), cwd, vault, sources)
+                if d.decision == "deny":
+                    return d
             # 第十一輪保底：path 或樣式含 { 時，{ 之前的資料夾先做區判斷（Glob path "../raw/行政/{薪資,x}/*" 要 Z10b）
             for text, base in ((str(target), cwd), (str(ti.get("pattern") or ""), target_n), (str(ti.get("glob") or ""), target_n)):
                 head = cmdparse.brace_head(text) if "{" in text else None

@@ -44,6 +44,24 @@ class TurnHook(unittest.TestCase):
         self.assertEqual(sess["prompt_head"], "改一下")
         self.assertFalse(sess["approved"])
 
+    def test_61_63_prompt_head_is_masked_everywhere(self):
+        """D-081、B-027：帳密不進回合檔；versions list 印的問也是遮過的。"""
+        r = run_hook(prompt_payload(self.V, "幫我登入 ERP，帳號 jie 密碼 abc123"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
+        self.assertEqual(sess["prompt_head"], "幫我登入 ERP，帳號 ███ 密碼 ███")
+        from kb._lib import turn
+        turn.backup(self.V, "案子/信義王/信義王.md", sess["turn"])
+        kb = ROOT / "scripts" / "kb.py"
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        out = subprocess.run([sys.executable, str(kb), "versions", "list"], capture_output=True, text=True, encoding="utf-8",
+                             cwd=str(self.V), env=env).stdout
+        self.assertIn("███", out)
+        self.assertNotIn("abc123", out)
+        for p in (self.V / ".system").rglob("*"):
+            if p.is_file():
+                self.assertNotIn("abc123", p.read_text(encoding="utf-8", errors="ignore"), p)
+
     def test_task_notification_does_not_open(self):
         r = run_hook(prompt_payload(self.V, "<task-notification>done</task-notification>"))
         self.assertEqual(r.returncode, 0, r.stderr)

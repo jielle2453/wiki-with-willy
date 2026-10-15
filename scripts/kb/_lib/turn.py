@@ -10,7 +10,7 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from kb._lib import config, ledger
+from kb._lib import config, credentials, ledger
 from kb._lib.io import FileLock, read_json, write_json_atomic
 
 TURNS_REL = Path(".system") / "turns"
@@ -43,7 +43,8 @@ def _current_file(vault):
 def start(vault, session_id, prompt):
     """開新回合：寫 turns/<sid>.json（有 sid 才寫）與 current.json。回回合 dict。"""
     now = _now().replace(microsecond=0)  # 代號只到秒，比較也只到秒
-    head = " ".join(str(prompt or "").split())[:PROMPT_HEAD_MAX]
+    # 先遮帳密再壓空白、截 80 字（D-081、B-027）：回合檔與 versions/<回合>/turn.json 的「問」都從這裡來
+    head = " ".join(credentials.mask_secrets(str(prompt or "")).split())[:PROMPT_HEAD_MAX]
     tag = _safe_sid(session_id)[:4] if session_id else "0000"
     # 代號單調遞增：取 max(現在, 既有最大代號 + 1 秒)。同一秒幾句話不撞，時鐘落後也不會排到舊回合前面
     latest = _latest_turn_time(vault, session_id, now)

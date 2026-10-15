@@ -1,13 +1,17 @@
-"""憑證檔名樣式（D-079、D-079 補、I-032）：樣式寫死在這一份，不讀 config、不讀客戶設定、關不掉；守門與 kb folders 共用。
+"""憑證檔名樣式（D-079、D-079 補、D-081、I-032）：樣式寫死在這一份，不讀 config、不讀客戶設定；預設擋，例外是個案裁示（D-081）。
+守門與 kb folders 共用。
 
 match_segment：一串路徑段任一段對任一樣式 fnmatch（小寫比對）就回那一段。
 scan_dir：守門對「讀取範圍是資料夾」走訪找憑證檔名，容錯（os.walk onerror 略過、不跟隨連結，I-021），
-夾名與檔名都比，命中回第一個命中的相對路徑；走訪項數超過 max_entries 就停、truncated=True（fail closed 由呼叫端擋）。
+夾名與檔名都比，命中回第一個命中的相對路徑；走訪項數超過 max_entries 就停、truncated=True（fail closed 由呼叫端擋）；
+skip 裡的夾與檔（排除項目、總資料夾整棵）不進去、不比、不算。
 scan_all：kb folders add 用，收全部命中、數檔案份數，碰到含 stop_marker 的夾就停（另一個知識庫）。
-不含「憑證」：會計憑證、報關憑證是客戶的正常文件。寧可多擋（D-034，誤擋率併 B-110）。
+mask_secrets：回合 prompt_head 的遮值（第 5b 節、B-027），關鍵詞後的值換成 ███。
+不含「憑證」：會計憑證、報關憑證是客戶的正常文件。寧可多擋、多遮（D-034，誤擋率併 B-110）。
 """
 import fnmatch
 import os
+import re
 
 CREDENTIAL_PATTERNS = (
     ".env", ".env.*", "*.pem", "*.ppk", "*.kdbx", "id_rsa*", "id_ed25519*",
@@ -17,8 +21,30 @@ CREDENTIAL_PATTERNS = (
 
 # 沒副檔名也算檔名的樣式（金鑰檔慣例沒有副檔名）
 KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
-# 程式獨占的夾（O2）：裡面沒有要讀的東西，走訪不進去（.system/versions 幾千個備份檔會白白撞上限）
-PROGRAM_DIRS = (".system", ".claude")
+# 遮值關鍵詞（第 5b 節）：關鍵詞留著，後面的值換成 ███。長的排前面，password 不被 pw 搶走
+SECRET_WORDS = ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey")
+MASK = "███"
+_WORDS_ALT = "|".join(re.escape(w) for w in sorted(SECRET_WORDS, key=len, reverse=True))
+_PUNCT = "，。；、,;!?！？\n"
+# 關鍵詞、連接（是／為／:／：／=／空白任意組合）、值（到下一個標點、下一個關鍵詞或句尾之前）
+_SECRET = re.compile(
+    rf"(?P<kw>{_WORDS_ALT})(?P<sep>[是為:：=\s]*)(?P<val>[^{_PUNCT}]*?)(?=\s*(?:{_WORDS_ALT}|[{_PUNCT}]|$))",
+    re.IGNORECASE,
+)
+
+
+def mask_secrets(text):
+    """不分大小寫找關鍵詞，把它後面的值換成 ███；關鍵詞本身留著，連接只是空白時保留一個空白。沒命中原樣回。"""
+    if not text:
+        return text
+
+    def repl(m):
+        if not m.group("val"):
+            return m.group(0)
+        sep = " " if m.group("sep") and m.group("sep").isspace() else ""
+        return m.group("kw") + sep + MASK
+
+    return _SECRET.sub(repl, str(text))
 
 
 def looks_like_filename(segment):
@@ -60,8 +86,8 @@ def _scan(path, max_entries, first_only, stop_marker, skip=()):
         rel_dir = os.path.relpath(dirpath, root).replace("\\", "/")
         prefix = "" if rel_dir == "." else rel_dir + "/"
         for name in list(dirnames):
-            if name in PROGRAM_DIRS or (skip_keys and _key(os.path.join(dirpath, name)) in skip_keys):
-                dirnames.remove(name)  # 排除夾、程式獨占的夾：不進去、不比、不算項數
+            if skip_keys and _key(os.path.join(dirpath, name)) in skip_keys:
+                dirnames.remove(name)  # 排除夾、總資料夾整棵：不進去、不比、不算項數
                 continue
             seen += 1
             if max_entries is not None and seen > max_entries:

@@ -98,15 +98,21 @@ class ScanDir(unittest.TestCase):
         self.assertEqual(credentials.scan_dir(self.tmp, 100, skip=skip), (None, False))
         self.assertEqual(credentials.scan_dir(self.tmp, 100), ("a/密碼單.txt", False))
 
-    def test_system_and_claude_folders_are_skipped(self):
-        for d in (".system", ".claude"):
-            (self.tmp / d).mkdir()
-            (self.tmp / d / "password.json").write_text("{}", encoding="utf-8")
-            for i in range(50):
-                (self.tmp / d / f"f{i}.json").write_text("{}", encoding="utf-8")
-        self.assertEqual(credentials.scan_dir(self.tmp, 20), (None, False))
-        _hits, files, _t, _m = credentials.scan_all(self.tmp)
-        self.assertEqual(files, 3)
+    def test_dot_claude_is_not_special_only_skip_list_counts(self):
+        """第四輪 Q4：跳的是呼叫端給的夾（總資料夾根），不是 .claude／.system 這些夾名。"""
+        vault = self.tmp / "vault"
+        (vault / ".system" / "versions").mkdir(parents=True)
+        for i in range(300):
+            (vault / ".system" / "versions" / f"f{i}.json").write_text("{}", encoding="utf-8")
+        (self.tmp / "raw" / "proj" / ".claude").mkdir(parents=True)
+        (self.tmp / "raw" / "proj" / ".claude" / ".credentials.json").write_text("{}", encoding="utf-8")
+        skip = {str(vault).replace("\\", "/")}
+        if os.name == "nt":
+            skip = {s.lower() for s in skip}
+        hit, truncated = credentials.scan_dir(self.tmp, 100, skip=skip)
+        self.assertEqual((hit, truncated), ("raw/proj/.claude/.credentials.json", False))
+        hit, truncated = credentials.scan_dir(self.tmp, 100)
+        self.assertTrue(truncated or hit, (hit, truncated))
 
     def test_scan_all_counts_files_and_collects_every_hit(self):
         (self.tmp / "a" / "b" / ".env").write_text("x", encoding="utf-8")
@@ -126,6 +132,29 @@ class ScanDir(unittest.TestCase):
     def test_scan_all_with_limit_truncates(self):
         _hits, _files, truncated, _m = credentials.scan_all(self.tmp, max_entries=2)
         self.assertTrue(truncated)
+
+
+class MaskSecrets(unittest.TestCase):
+    """第 5b 節（D-081、B-027）：關鍵詞後的值換成 ███，關鍵詞留著。"""
+
+    def test_cases_from_acceptance_62(self):
+        m = credentials.mask_secrets
+        self.assertEqual(m("密碼是abc 123，謝謝"), "密碼███，謝謝")
+        self.assertEqual(m("Password: Abc_9!"), "Password███!")
+        self.assertIn(m("api key = sk-xyz 請存"), ("api key███ 請存", "api key███"))
+        self.assertIn("███", m("門禁密碼多少"))
+        self.assertEqual(m("今天天氣好"), "今天天氣好")
+        self.assertEqual(m(""), "")
+        self.assertEqual(m("幫我登入 ERP，帳號 jie 密碼 abc123"), "幫我登入 ERP，帳號 ███ 密碼 ███")
+
+    def test_keywords_case_insensitive_and_bare_keyword_untouched(self):
+        m = credentials.mask_secrets
+        self.assertEqual(m("TOKEN=abcd"), "TOKEN███")
+        self.assertEqual(m("secret"), "secret")
+        self.assertEqual(m("金鑰：xyz。"), "金鑰███。")
+        self.assertNotIn("abc", m("pw abc"))
+        for w in credentials.SECRET_WORDS:
+            self.assertIn(w, ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey"))
 
 
 if __name__ == "__main__":

@@ -40,6 +40,15 @@ class Start(unittest.TestCase):
         t = turn.start(self.V, SID, "一" * 100)
         self.assertEqual(len(t["prompt_head"]), 80)
 
+    def test_prompt_head_masks_secrets_before_cut(self):
+        """第 5b 節（D-081、B-027）：先遮值再壓空白、截 80 字。"""
+        t = turn.start(self.V, SID, "幫我登入 ERP，帳號 jie  密碼 abc123")
+        self.assertEqual(t["prompt_head"], "幫我登入 ERP，帳號 ███ 密碼 ███")
+        t2 = turn.start(self.V, SID, "密碼是" + "x" * 200 + "，謝謝")
+        self.assertNotIn("xxx", t2["prompt_head"])
+        self.assertLessEqual(len(t2["prompt_head"]), 80)
+        self.assertEqual(turn.start(self.V, SID, "今天天氣好")["prompt_head"], "今天天氣好")
+
     def test_no_session_id_uses_0000_and_only_current(self):
         t = turn.start(self.V, None, "x")
         self.assertTrue(t["turn"].endswith("-0000"))

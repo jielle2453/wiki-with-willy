@@ -6,6 +6,7 @@ import unittest
 
 from tests._guard_fixture import ROOT, make_vault, payload
 from kb import guard  # noqa: E402
+from kb._lib.paths import normalize as paths_normalize  # noqa: E402
 
 
 class DecideBase(unittest.TestCase):
@@ -414,12 +415,21 @@ class Credential(DecideBase):
         d = self.credential("Read", self.raw / "客戶案件" / "PASSWORD.TXT")
         self.assertIn("PASSWORD.TXT", d.reason)
 
-    def test_glob_and_write_in_vault_denied(self):
-        d = self.credential("Glob", self.V / "AI 產出" / "secret" / "*.md")
-        self.assertEqual(d.zone, "Z3")
-        d = self.credential("Write", self.V / "AI 產出" / "password.docx")
-        self.assertEqual(d.zone, "Z3")
-        self.credential("Edit", self.V / "AI 產出" / "password.docx")
+    def test_28_vault_interior_is_exempt(self):
+        """D-081 內部豁免：總資料夾內部（Z1～Z8）不比憑證樣式，照區判。"""
+        for tool, p, zone in (("Glob", self.V / "AI 產出" / "secret" / "*.md", "Z3"), ("Write", self.V / "AI 產出" / "password.docx", "Z3"),
+                              ("Edit", self.V / "AI 產出" / "password.docx", "Z3"), ("Read", self.V / "收件匣" / ".env", "Z4"),
+                              ("Read", self.V / "案子" / "大樓" / "門禁密碼.md", "Z2"), ("Read", self.V / "案子" / "密碼" / "密碼.md", "Z1")):
+            with self.subTest(tool=tool, p=str(p)):
+                d = self.decide(tool, p)
+                self.assertEqual((d.decision, d.zone, d.reason_code), ("allow", zone, ""), d)
+        d = self.decide("Write", self.V / "收件匣" / "password.txt")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "inbox"), d)
+
+    def test_60_reason_mentions_customer_not_unswitchable(self):
+        d = self.credential("Read", self.raw / "客戶案件" / ".env")
+        self.assertIn("客戶沒說", d.reason)
+        self.assertNotIn("關不掉", d.reason)
 
     def test_bash_cat_env_denied(self):
         p = str(self.raw).replace("\\", "/")
@@ -454,6 +464,15 @@ class CredentialRound1(unittest.TestCase):
 
     def grep(self, path, cwd=None):
         return guard.decide({"tool_name": "Grep", "tool_input": {"path": str(path), "pattern": "x"}, "cwd": str(cwd or self.V)})
+
+    def in_client(self, cmd, tool="Bash"):
+        """效用 cwd 在 raw/客戶案件：對話開在總資料夾，指令先 cd 進來源。"""
+        p = self.client.as_posix()
+        return f'Set-Location "{p}"; {cmd}' if tool == "PowerShell" else f'cd "{p}" && {cmd}'
+
+    def analyze(self, cmd, cwd=None):
+        from kb._lib.paths import normalize
+        return guard._analyze(cmd, str(cwd or self.client), normalize(str(self.V), None))
 
     def assert_deny(self, d, code, zone=None, contains=None):
         self.assertEqual((d.decision, d.reason_code), ("deny", code), d)
@@ -500,48 +519,76 @@ class CredentialRound1(unittest.TestCase):
         self.assert_deny(self.decide("PowerShell", f'Select-String -Path "{r}" -Pattern 報價'), "credential_inside", "Z9")
         self.assert_deny(self.decide("Bash", f'cd "{r}" && cat *'), "credential_inside", "Z9")
         self.assert_deny(self.decide("Bash", f'cd "{r}" && cat id_rsa'), "credential", contains="id_rsa")
-        self.assert_deny(self.decide("Bash", "cat id_rsa"), "credential", contains="id_rsa")
-        self.assert_deny(self.decide("Bash", "cat id_rsa", cwd=self.V / "AI 產出"), "credential")
-        self.assert_deny(self.decide("Bash", "type .env"), "credential", contains=".env")
-        self.assert_deny(self.decide("PowerShell", "Get-Content 網站密碼.txt"), "credential", contains="網站密碼.txt")
-        self.assert_deny(self.decide("Bash", "cat sub\\dir\\PASSWORD.TXT"), "credential", contains="PASSWORD.TXT")
+        self.assert_deny(self.decide("Bash", self.in_client("cat id_rsa")), "credential", contains="id_rsa")
+        self.assert_deny(self.decide("Bash", f'cd "{(self.raw / "行政").as_posix()}" && type .env'), "credential", contains=".env")
+        self.assert_deny(self.decide("PowerShell", self.in_client("Get-Content 網站密碼.txt", "PowerShell")), "credential", contains="網站密碼.txt")
+        self.assert_deny(self.decide("Bash", self.in_client("cat sub\\dir\\PASSWORD.TXT")), "credential", contains="PASSWORD.TXT")
+        for cmd in ("cat id_rsa", "type .env", "cat passwords.txt"):  # D-081：效用 cwd 在總資料夾裡，第二道不做
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd, cwd=self.V)
+                self.assertNotEqual(d.reason_code, "credential", d)
+                d = self.decide("Bash", cmd, cwd=self.V / "AI 產出")
+                self.assertNotEqual(d.reason_code, "credential", d)
+        d = self.decide("Bash", f'cd "{self.client.as_posix()}" && cd "{self.V.as_posix()}" && cat id_rsa')  # cd 回總資料夾後也豁免
+        self.assertNotEqual(d.reason_code, "credential", d)
 
     def test_45_bare_token_only_when_it_looks_like_a_filename(self):
         """第一輪修正裁定 1 收窄：搜尋詞、變數、旗標、沒副檔名的字不因第二道擋；有 . 的檔名與 id_rsa*、id_ed25519* 照擋。"""
+        # 效用 cwd 在 raw 裡：對話開在總資料夾、指令先 cd 進來源（payload cwd 在知識庫外時守門本來就不表態）
         for cmd in ("grep -i password notes.txt", "echo $PASSWORD", "curl --password=x https://a.b/", "cat passwords",
                     "Get-ChildItem -Filter secret", "echo 密碼", "python -c \"print('secret')\"", "ls -la --secret-flag"):
             with self.subTest(cmd=cmd):
-                d = self.decide("Bash", cmd)
+                d = self.decide("Bash", self.in_client(cmd))
                 self.assertNotEqual(d.reason_code, "credential", d)
                 self.assertNotEqual(d.reason_code, "credential_inside", d)
         for cmd in ("cat passwords.txt", "cat id_rsa", "type .env", "Get-Content 網站密碼.txt",
                     "cat id_ed25519", "cat .env.local", "cat sub/id_rsa.pub", "cat 公司/密碼.txt"):
+            tool = "PowerShell" if cmd.startswith("Get-") else "Bash"
             with self.subTest(cmd=cmd):
-                d = self.decide("PowerShell" if cmd.startswith("Get-") else "Bash", cmd)
+                d = self.decide(tool, self.in_client(cmd, tool))
                 self.assertEqual((d.decision, d.reason_code), ("deny", "credential"), d)
+                d = self.decide(tool, cmd, cwd=self.V)  # 總資料夾裡豁免
+                self.assertNotEqual(d.reason_code, "credential", d)
         self.assertEqual(guard.token_hit("cat passwords"), None)
         self.assertEqual(guard.token_hit("cat passwords.txt"), "passwords.txt")
         self.assertEqual(guard.token_hit("echo $PASSWORD.txt"), None)
         self.assertEqual(guard.token_hit("x --secret.txt"), None)
 
-    # 第二輪 N1：cwd 本身、裸夾名、不給路徑的範圍搜尋
-    def test_46_cwd_itself_bare_folder_and_search_without_path(self):
+    # 第二輪 N1、第四輪 D-081：cwd 在總資料夾裡永不走訪 cwd；cwd 在 raw 裡時動詞任一處、只認存在的路徑
+    def test_46_cwd_scan_only_outside_vault(self):
         (self.V / "收件匣" / "網站密碼.txt").write_text("x", encoding="utf-8")
-        for tool, cmd in (("Bash", "grep -r 帳號 ."), ("Bash", "grep -rn 帳號"), ("Bash", "rg -i 帳號"), ("Bash", "cat *"),
-                          ("PowerShell", "Get-ChildItem -Recurse | Select-String 帳號"), ("Bash", 'grep -r "" 收件匣'),
-                          ("Bash", "find . -name '*.txt'"), ("Bash", "ls -R"), ("PowerShell", "gci -r"), ("Bash", "tree"),
-                          ("Bash", "cat ../vault/*"), ("Bash", "cd 收件匣 && cat *"), ("Bash", "cd .. && grep -r x vault")):
-            with self.subTest(cmd=cmd):
-                d = self.decide(tool, cmd)
-                self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
-                self.assertIn("網站密碼.txt", d.reason)
-        for cmd in ("ls", "git status", "ls -la", "cat 系統/待處理.md", "cat CLAUDE.md", "python --version"):
+        for cmd in ("grep -r 帳號 .", "grep -rn 帳號", "rg -i 帳號", "cat *", 'grep -r "" 收件匣', "find . -name '*.txt'", "ls -R",
+                    "tree", "cd 收件匣 && cat *", "ls", "git status", "cat 系統/待處理.md", "cat CLAUDE.md", "grep -r 帳號 案子"):
             with self.subTest(cmd=cmd):
                 d = self.decide("Bash", cmd)
                 self.assertNotIn(d.reason_code, ("credential", "credential_inside", "credential_scan_limit"), d)
-        d = self.decide("Bash", "cat 系統/待處理.md")
-        self.assertEqual(d.decision, "pass", d)
-        d = self.decide("Bash", "grep -r 帳號 案子")  # 裸夾名、裡面沒憑證
+        self.assertEqual(self.decide("Bash", "cat 系統/待處理.md").decision, "pass")
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        (self.client / "子夾").mkdir()
+        (self.client / "子夾" / "b.txt").write_text("x", encoding="utf-8")
+        (self.client / "a.txt").write_text("x", encoding="utf-8")
+        client_n = paths_normalize(str(self.client), None)
+        # 效用 cwd 在 raw 裡：「走訪 cwd」的規則用 _analyze 直接驗（payload cwd 在知識庫外時守門不表態；cd 進來源時 cd 目標本身也會走訪）
+        hits = ("grep -r 帳號 .", "grep -rn 帳號", "rg -i 帳號", "cat *", "time rg 帳號", "LC_ALL=C grep -r 帳號", "sudo grep -r 帳號",
+                'rg "2026/10"', "grep -rn TODO/FIXME", "dir -r | sls 帳號", "ls -R | sls 帳號", "Get-ChildItem -Recurse | Select-String 帳號",
+                "$f = Get-ChildItem -Recurse -File; $f | Select-String 帳號", 'grep -r "" 子夾', "rg 帳號 | grep 案子",
+                "findstr /s 帳號", "tree", "find . -name '*.md'")
+        for cmd in hits:
+            with self.subTest(cmd=cmd):
+                dirs = self.analyze(cmd)["read_dirs"]
+                self.assertTrue(any(d in (client_n, client_n + "/子夾") for d in dirs), (cmd, dirs))
+                tool = "PowerShell" if cmd.startswith(("dir", "ls -R", "Get-", "$f")) else "Bash"
+                d = self.decide(tool, self.in_client(cmd, tool))
+                self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+                self.assertIn(".env", d.reason)
+        for cmd in ("ls", "git status", 'echo "what?"', 'git commit -m "fix?"', "git log | grep fix", "cat a.txt | grep 帳號",
+                    "cat a.txt", "grep 帳號 a.txt", "grep -r 帳號 a.txt", "python --version", "grep -rn 帳號 a.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.analyze(cmd)["read_dirs"], [], cmd)
+        self.assertEqual(self.analyze("grep -r 帳號 子夾")["read_dirs"], [client_n + "/子夾"])
+        d = self.decide("Bash", self.in_client("grep -r 帳號 子夾"))  # 走訪 子夾（沒憑證）與 cd 目標 客戶案件（有 .env）
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        d = self.decide("Bash", f'cd "{(self.client / "子夾").as_posix()}" && grep -r 帳號')
         self.assertEqual(d.decision, "pass", d)
 
     # 第二輪 N2：含來源根的上層夾也走訪
@@ -585,12 +632,15 @@ class CredentialRound1(unittest.TestCase):
         admin = self.raw / "行政"
         (admin / "薪資" / "網站密碼.txt").write_text("x", encoding="utf-8")
         (admin / "舊檔" / ".env").write_text("x", encoding="utf-8")
-        for d in (self.grep(admin), self.decide("Bash", f'grep -r x "{admin.as_posix()}"'),
-                  self.decide("Bash", f'cd "{admin.as_posix()}" && cat *')):
+        for d in (self.grep(admin), self.decide("Bash", f'grep -r x "{admin.as_posix()}"')):
             with self.subTest(d=d):
                 self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
                 self.assertNotIn("網站密碼", d.reason)
                 self.assertNotIn(".env", d.reason)
+        d = self.decide("Bash", f'cd "{admin.as_posix()}" && cat *')  # * 展開命中排除夾本身：Z10 自己那句（Q5）
+        self.assertEqual(d.decision, "deny", d)
+        self.assertIn(d.reason_code, ("excluded", "excluded_inside"), d)
+        self.assertNotIn("網站密碼", d.reason)
         (admin / "請款" / "id_rsa").write_text("x", encoding="utf-8")
         d = self.grep(admin)
         self.assert_deny(d, "credential_inside", "Z10b", "請款/id_rsa")
@@ -606,34 +656,46 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("Bash", "rm -rf ..")
         self.assertEqual(d.decision, "deny", d)
 
-    # 第三輪 S2：有寫入仍走訪讀取範圍，只有寫入目標不走訪
+    # 第三輪 S2、第四輪 Q8：有寫入仍走訪讀取範圍，只有寫入目標不走訪；. 只在導向或寫入動詞那段才算寫入目標
     def test_52_read_range_scanned_even_when_command_writes(self):
-        (self.V / "收件匣" / ".env").write_text("x", encoding="utf-8")
-        for cmd in ("grep -r TOKEN . | tee /tmp/hits.txt", "grep -r TOKEN > /tmp/hits.txt", "cat 收件匣/* > /tmp/all.txt"):
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        client_n = paths_normalize(str(self.client), None)
+        for cmd in ("grep -r TOKEN . | tee /tmp/hits.txt", "grep -r TOKEN > /tmp/hits.txt", "cat * > /tmp/all.txt", "tar czf ../bak.tgz ."):
             with self.subTest(cmd=cmd):
-                d = self.decide("Bash", cmd)
+                info = self.analyze(cmd)
+                self.assertIn(client_n, info["read_dirs"], (cmd, info))
+                self.assertNotIn(client_n, info["write_targets"], (cmd, info))
+                d = self.decide("Bash", self.in_client(cmd))
                 self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        info = self.analyze("ls . | tee /tmp/a")
+        self.assertNotIn(client_n, info["write_targets"], info)
+        d = self.decide("Bash", self.in_client("ls . | tee /tmp/a"))
+        self.assertNotEqual(d.reason_code, "protected", d)
         r = str(self.client).replace("\\", "/")
         d = self.decide("Bash", f'rm -rf "{r}"')  # 寫入目標本身不走訪（35 的案例照舊）
         self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
 
-    # 第三輪 P1、P4：引號裡的萬用字元、管線第二段、沒遞迴旗標的 grep 不走訪；子指令各自判
-    def test_53_quoted_wildcards_and_second_stage_grep_do_not_scan(self):
+    # 第三輪 P1、第四輪 D-081：總資料夾裡一張叫「門禁密碼」的卡不再擋整庫；含 V 的上層夾走訪時跳過 V
+    def test_53_vault_card_named_password_does_not_block(self):
         (self.V / "案子" / "大樓").mkdir()
         (self.V / "案子" / "大樓" / "門禁密碼.md").write_text("x", encoding="utf-8")
-        (self.V / "收件匣" / "n.md").write_text("x", encoding="utf-8")
-        for tool, cmd in (("Bash", 'echo "what?"'), ("Bash", 'git commit -m "fix?"'), ("Bash", 'python -c "x=[0]"'),
-                          ("Bash", "git log | grep fix"), ("Bash", "ps aux | grep python"), ("Bash", "cat 收件匣/n.md | grep 帳號"),
-                          ("Bash", "grep 帳號"), ("Bash", "grep -in 帳號"), ("PowerShell", "Select-String 帳號"), ("Bash", "ls"),
-                          ("Bash", "echo 'a*b'")):
+        d = self.decide("Read", self.V / "案子" / "大樓" / "門禁密碼.md")
+        self.assertEqual((d.decision, d.zone), ("allow", "Z2"), d)  # 跟夾不同名是實體夾原檔（Z2）；同名綜合卡是 Z1，都 allow
+        for tool, cmd in (("Bash", "grep -r 帳號"), ("Bash", "rg 帳號"), ("Bash", 'echo "what?"'), ("Bash", 'git commit -m "fix?"'),
+                          ("Bash", 'python -c "x=[0]"'), ("Bash", 'find 案子 -name "*.md"'), ("Bash", "git log | grep fix"),
+                          ("PowerShell", "Get-ChildItem -Recurse | Select-String 帳號"), ("Bash", "grep -r 帳號 案子")):
             with self.subTest(cmd=cmd):
                 d = self.decide(tool, cmd)
                 self.assertNotIn(d.reason_code, ("credential", "credential_inside", "credential_scan_limit"), d)
-        for cmd in ("grep -r 帳號", "rg 帳號", "grep -rn 帳號", "grep -R 帳號", "grep --recursive 帳號", "findstr /s 帳號"):
-            with self.subTest(cmd=cmd):
-                d = self.decide("Bash", cmd)
-                self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
-                self.assertIn("門禁密碼.md", d.reason)
+        d = self.grep(self.V / "案子")  # 型別夾根是 Z8，內部不走訪
+        self.assertEqual(d.decision, "allow", d)
+        d = self.grep(self.V / "案子" / "大樓")
+        self.assertEqual((d.decision, d.zone), ("allow", "Z2"), d)
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        d = self.grep(self.tmp)  # P 底下有 V 與含 .env 的 raw
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        self.assertIn(".env", d.reason)
+        self.assertNotIn("門禁密碼", d.reason)
 
     # 第三輪 P2：萬用字元展開命中照第一道比段
     def test_54_glob_expansion_hits_go_through_segment_gate(self):
@@ -673,28 +735,64 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("Read", billing / "密碼單.txt")
         self.assertEqual((d.decision, d.zone), ("deny", "Z10"), d)
 
-    # 第三輪 P4：子指令各自判「沒給路徑」
+    # 第三輪 P4：子指令各自判「沒給路徑」（cwd 在 raw 裡）
     def test_56_each_subcommand_judged_separately(self):
-        (self.V / "收件匣" / "網站密碼.txt").write_text("x", encoding="utf-8")
-        (self.V / "收件匣" / "n.md").write_text("x", encoding="utf-8")
-        for cmd in ("cat 收件匣/n.md && grep -r 帳號", "cat 收件匣/n.md; rg 帳號", "cat 收件匣/n.md || grep -r 帳號"):
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        (self.client / "a.txt").write_text("x", encoding="utf-8")
+        client_n = paths_normalize(str(self.client), None)
+        for cmd in ("cat a.txt && grep -r 帳號", "cat a.txt; rg 帳號", "cat a.txt || grep -r 帳號"):
             with self.subTest(cmd=cmd):
-                d = self.decide("Bash", cmd)
+                self.assertIn(client_n, self.analyze(cmd)["read_dirs"], cmd)
+                d = self.decide("Bash", self.in_client(cmd))
                 self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
-        d = self.decide("Bash", "cat 收件匣/n.md && grep 帳號")  # 第二段沒遞迴，不走訪
-        self.assertNotIn(d.reason_code, ("credential", "credential_inside"), d)
+        self.assertEqual(self.analyze("cat a.txt && grep 帳號")["read_dirs"], [])  # 第二個子指令沒遞迴，不走訪
 
-    # 第三輪 O2：走訪跳過 .system/ 與 .claude/
-    def test_57_scan_skips_system_and_claude_folders(self):
+    # 第三輪 O2、第四輪 Q4：走訪含總資料夾的上層夾時跳過總資料夾整棵；raw 裡的 .claude 照比
+    def test_57_scan_skips_whole_vault_but_not_dot_claude_in_raw(self):
         big = self.V / ".system" / "versions" / "20261015-000000-0000" / "files"
         big.mkdir(parents=True)
         for i in range(6000):
             (big / f"f{i}.txt").write_bytes(b"")
         (self.V / ".claude" / "password.json").write_text("{}", encoding="utf-8")
-        d = self.decide("Bash", "grep -r 帳號")
+        d = self.grep(self.tmp)  # P 底下只有 V 與乾淨的 raw（raw 的排除夾跳過）
+        self.assertNotEqual(d.reason_code, "credential_scan_limit", d)
+        self.assertNotIn(d.reason_code, ("credential", "credential_inside"), d)
+        (self.raw / "proj" / ".claude").mkdir(parents=True)
+        (self.raw / "proj" / ".claude" / ".credentials.json").write_text("{}", encoding="utf-8")
+        d = self.grep(self.tmp)
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        self.assertIn(".credentials.json", d.reason)
+
+    # 第四輪 Q5：萬用字元展開命中排除檔交 Z10，不印檔名
+    def test_58_glob_hit_on_excluded_file_goes_to_z10(self):
+        import json
+        billing = self.raw / "行政" / "請款"
+        (billing / "密碼單.txt").write_text("x", encoding="utf-8")
+        src = self.V / ".system" / "sources.json"
+        data = json.loads(src.read_text(encoding="utf-8"))
+        data["sources"][1]["excludes"].append({"spec": "請款/密碼單.txt", "kind": "hidden", "reason": "", "added": "2026-10-15"})
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        d = self.decide("Bash", f'cat "{billing.as_posix()}/"*.txt')
+        self.assertEqual((d.decision, d.zone, d.reason_code), ("deny", "Z10", "excluded"), d)
+        self.assertNotIn("密碼單", d.reason)
+
+    # 第四輪 Q7：引號裡的字不當萬用字元
+    def test_59_quoted_wildcards_are_not_globs(self):
+        (self.client / ".env").write_text("x", encoding="utf-8")
+        (self.client / "子夾").mkdir()
+        (self.client / "子夾" / "b.md").write_text("x", encoding="utf-8")
+        client_n = paths_normalize(str(self.client), None)
+        for cmd in ('find 子夾 -name "*.md"', 'git commit -m "update *.md"', "echo '*'"):
+            with self.subTest(cmd=cmd):
+                info = self.analyze(cmd)
+                self.assertEqual(info["globs"], [], (cmd, info))
+                self.assertNotIn(client_n, info["read_dirs"], (cmd, info))
+        self.assertEqual(self.analyze("cat 子夾/*.md")["read_dirs"], [])
+        self.assertEqual(self.analyze("cat 子夾/*.md")["globs"], [client_n + "/子夾/*.md"])
+        d = self.decide("Bash", f'cd "{(self.client / "子夾").as_posix()}" && cat *.md')
         self.assertEqual(d.decision, "pass", d)
-        d = self.grep(self.V)
-        self.assertEqual(d.decision, "allow", d)
+        d = self.decide("Bash", self.in_client("cat *.md"))
+        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
 
     def test_35_write_command_over_folder_is_not_scanned(self):
         (self.client / ".env").write_text("K=1", encoding="utf-8")
@@ -749,7 +847,7 @@ class CredentialRound1(unittest.TestCase):
         d = guard.decide(payload("Read", v2 / "案子" / "信義王" / "信義王.md", v2))
         self.assertEqual((d.decision, d.zone), ("allow", "Z1"), d)
         d = guard.decide(payload("Write", v2 / "AI 產出" / "password.docx", v2))
-        self.assertEqual((d.decision, d.reason_code), ("deny", "credential"), d)
+        self.assertEqual((d.decision, d.zone, d.reason_code), ("allow", "Z3", ""), d)  # D-081 內部豁免
 
 
 if __name__ == "__main__":

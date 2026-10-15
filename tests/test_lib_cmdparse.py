@@ -26,6 +26,17 @@ class ExtractPaths(unittest.TestCase):
         got = cmdparse.extract_paths("type C:\\x\\raw\\行政\\薪資\\s.xlsx", CWD)
         self.assertIn(n("C:/x/raw/行政/薪資/s.xlsx"), got)
 
+    def test_dot_and_dotdot_are_paths(self):
+        """骨架與來源登記第三輪 S1：不帶斜線的 . 與 .. 也當路徑抽出來，經區判斷（grep -r X .. 要走 Z10b）。"""
+        tmp, V, _raw = make_vault()
+        try:
+            self.assertIn(paths.normalize(str(tmp), None), cmdparse.extract_paths("grep -r X ..", str(V)))
+            self.assertIn(paths.normalize(str(V), None), cmdparse.extract_paths("ls .", str(V)))
+            self.assertIn(paths.normalize(str(tmp), None), cmdparse.extract_paths("cd 收件匣 && cat ../..", str(V)))
+            self.assertEqual(cmdparse.extract_paths("echo a.b", str(V)), [])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_relative_path_joins_cwd(self):
         tmp, V, raw = make_vault()
         try:

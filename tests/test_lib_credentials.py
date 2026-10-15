@@ -90,6 +90,24 @@ class ScanDir(unittest.TestCase):
         (self.tmp / "網站密碼.txt").write_text("x", encoding="utf-8")
         self.assertEqual(credentials.scan_dir(self.tmp, 100, skip=skip), ("網站密碼.txt", False))
 
+    def test_skip_list_can_name_single_files(self):
+        (self.tmp / "a" / "密碼單.txt").write_text("x", encoding="utf-8")
+        skip = {str(self.tmp / "a" / "密碼單.txt").replace("\\", "/")}
+        if os.name == "nt":
+            skip = {s.lower() for s in skip}
+        self.assertEqual(credentials.scan_dir(self.tmp, 100, skip=skip), (None, False))
+        self.assertEqual(credentials.scan_dir(self.tmp, 100), ("a/密碼單.txt", False))
+
+    def test_system_and_claude_folders_are_skipped(self):
+        for d in (".system", ".claude"):
+            (self.tmp / d).mkdir()
+            (self.tmp / d / "password.json").write_text("{}", encoding="utf-8")
+            for i in range(50):
+                (self.tmp / d / f"f{i}.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(credentials.scan_dir(self.tmp, 20), (None, False))
+        _hits, files, _t, _m = credentials.scan_all(self.tmp)
+        self.assertEqual(files, 3)
+
     def test_scan_all_counts_files_and_collects_every_hit(self):
         (self.tmp / "a" / "b" / ".env").write_text("x", encoding="utf-8")
         (self.tmp / "網站密碼.txt").write_text("x", encoding="utf-8")

@@ -17,6 +17,8 @@ CREDENTIAL_PATTERNS = (
 
 # 沒副檔名也算檔名的樣式（金鑰檔慣例沒有副檔名）
 KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
+# 程式獨占的夾（O2）：裡面沒有要讀的東西，走訪不進去（.system/versions 幾千個備份檔會白白撞上限）
+PROGRAM_DIRS = (".system", ".claude")
 
 
 def looks_like_filename(segment):
@@ -58,8 +60,8 @@ def _scan(path, max_entries, first_only, stop_marker, skip=()):
         rel_dir = os.path.relpath(dirpath, root).replace("\\", "/")
         prefix = "" if rel_dir == "." else rel_dir + "/"
         for name in list(dirnames):
-            if skip_keys and _key(os.path.join(dirpath, name)) in skip_keys:
-                dirnames.remove(name)
+            if name in PROGRAM_DIRS or (skip_keys and _key(os.path.join(dirpath, name)) in skip_keys):
+                dirnames.remove(name)  # 排除夾、程式獨占的夾：不進去、不比、不算項數
                 continue
             seen += 1
             if max_entries is not None and seen > max_entries:
@@ -70,6 +72,8 @@ def _scan(path, max_entries, first_only, stop_marker, skip=()):
                 if first_only:
                     return hits, files, False, None
         for name in filenames:
+            if skip_keys and _key(os.path.join(dirpath, name)) in skip_keys:
+                continue  # 排除的單檔：不比、不算
             seen += 1
             if max_entries is not None and seen > max_entries:
                 return hits, files, True, None

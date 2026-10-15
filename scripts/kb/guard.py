@@ -89,9 +89,12 @@ def credential_hit(path, zone, vault_n, sources):
 
 
 _NOT_FILENAME_CHARS = set("*?[]^$()|")  # 正規式與萬用字元：含這些的 token 不是檔名（N3）
-# 範圍搜尋類指令（寫死）：沒給任何路徲時走訪效用 cwd（N1）
-SEARCH_VERBS = {"grep", "egrep", "fgrep", "rg", "findstr", "select-string", "sls", "find", "tree"}
-LIST_VERBS = {"ls", "dir", "get-childitem", "gci"}  # 只有帶遞迴旗標才算範圍搜尋
+_REGEX_ONLY_CHARS = set("^$()|+")  # 是正規式、不是萬用字元的字元（P2）：不存在又含這些的「路徑」是搜尋樣式，不當檔名比
+_WILDCARD_CHARS = set("*?[")
+# 範圍搜尋類指令（寫死）：子指令是管線第一段、沒給任何讀取路徑時走訪效用 cwd（N1、P1、P4）
+SEARCH_ALWAYS = {"rg", "find", "tree"}  # 本來就遞迴
+GREP_FAMILY = {"grep", "egrep", "fgrep", "findstr", "select-string", "sls"}  # 要帶 -r／-R／--recursive／/s
+LIST_VERBS = {"ls", "dir", "get-childitem", "gci"}  # 要帶遞迴旗標
 
 
 def token_hit(command):
@@ -130,7 +133,10 @@ def _scan_zone(path, zone, vault_n, sources):
 
 
 def _is_recursive_flag(verb, token):
+    """這個旗標讓 verb 變成範圍搜尋：grep 家族 -r／-R／--recursive（可併 -rn）、findstr／dir 的 /s、ls -R、Get-ChildItem -Recurse／-r。"""
     low = token.lower()
+    if verb in GREP_FAMILY:
+        return low in ("--recursive", "/s") or (token.startswith("-") and not token.startswith("--") and any(c in "rR" for c in token[1:]))
     if verb == "ls":
         return low == "--recursive" or (token.startswith("-") and not token.startswith("--") and "R" in token)
     if verb == "dir":
@@ -138,55 +144,106 @@ def _is_recursive_flag(verb, token):
     return low in ("-r", "-recurse") or low.startswith("-rec")
 
 
-def _scan_targets(command, cwd, has_paths):
-    """第三道的額外夾（N1）：`.`／`..`、效用 cwd（cd 之後）底下存在的裸夾名 token、範圍搜尋類指令沒給任何路徑時的效用 cwd。回正規化的夾清單。"""
+def _stages(command):
+    """把指令切成子指令與管線段：回 [(子指令序號, 段序號, 段字串)]。引號外的 ; && || & 與換行切子指令，| 切管線段。引號保留給 _tokens 去。"""
+    out, buf, quote, prev = [], [], None, ""
+    sub = stage = 0
+    i = 0
+
+    def flush():
+        text = "".join(buf).strip()
+        if text:
+            out.append((sub, stage, text))
+        buf.clear()
+
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote and prev != "\\":
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+            buf.append(ch)
+        elif ch in ";\n" or command.startswith("&&", i) or command.startswith("||", i) or ch == "&":
+            flush()
+            sub, stage = sub + 1, 0
+            if command.startswith("&&", i) or command.startswith("||", i):
+                i += 1
+        elif ch == "|":
+            flush()
+            stage += 1
+        else:
+            buf.append(ch)
+        prev = ch
+        i += 1
+    flush()
+    return out
+
+
+def _verb_of(tokens):
+    text = tokens[0][0] if tokens else ""
+    return text, text.lower().replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _analyze(command, cwd):
+    """第三道的材料（N1、P1、P4、S2）。回 (read_dirs, write_targets)，都是正規化路徑。
+    read_dirs：`.`／`..`、效用 cwd（cd 之後）底下存在的裸夾名、引號外裸萬用字元的效用 cwd、
+    範圍搜尋類子指令（管線第一段）沒給任何讀取路徑時的效用 cwd。write_targets：導向目標、寫入動詞那一段的路徑，不走訪。"""
     cleaned = cmdparse.DISCARD_OUTPUT.sub(" ", command)
     base = normalize(cwd, None)
-    dirs, has_target = [], has_paths
-    expect_cd, search, list_verb, recursive = False, False, None, False
-    for text, _quoted, _after_redirect in cmdparse._tokens(cleaned):
-        if expect_cd:
-            if text.startswith("-"):
+    read_dirs, write_targets = [], set()
+    subs = {}  # 子指令序號 -> {"target": 有沒有讀取目標, "search": 範圍搜尋沒給路徑時要走訪的 cwd}
+    for sub, stage, text in _stages(cleaned):
+        info = subs.setdefault(sub, {"target": False, "search": None})
+        tokens = cmdparse._tokens(text)
+        verb_token, verb = _verb_of(tokens)
+        bare = cmdparse.outside_quotes(text)
+        verb_write = bool(cmdparse.WRITE_WORDS.search(bare if bare is not None else text))
+        expect_cd, recursive = verb in cmdparse._CD, False
+        for tok, quoted, after_redirect in tokens[1:]:
+            if expect_cd:
+                if tok.startswith("-"):
+                    continue
+                expect_cd = False
+                if tok and "$" not in tok and "%" not in tok:
+                    base = normalize(tok, base)
                 continue
-            expect_cd = False
-            if text and "$" not in text and "%" not in text:
-                base = normalize(text, base)
-            continue
-        low = text.lower()
-        if low in cmdparse._CD:
-            expect_cd = True
-            continue
-        verb = low.replace("\\", "/").rsplit("/", 1)[-1]
-        if verb in SEARCH_VERBS:
-            search = True
-            continue
-        if verb in LIST_VERBS:
-            list_verb = verb
-            continue
-        if list_verb and _is_recursive_flag(list_verb, text):
-            recursive = True
-            continue
-        if text in (".", ".."):
-            dirs.append(normalize(text, base))
-            has_target = True
-            continue
-        if not text or text[0] in "-$%":
-            continue
-        if "/" not in text and "\\" not in text and any(ch in "*?[" for ch in text):
-            dirs.append(base)  # 裸萬用字元（cat *）：前綴夾就是效用 cwd；帶斜線的由 glob_tokens 處理
-            has_target = True
-            continue
-        if "/" in text or "\\" in text or any(ch in _NOT_FILENAME_CHARS for ch in text):
-            continue
-        p = normalize(text, base)
-        if os.path.isdir(p):
-            dirs.append(p)
-            has_target = True
-        elif os.path.isfile(p):
-            has_target = True
-    if (search or (list_verb and recursive)) and not has_target:
-        dirs.append(base)
-    return dirs
+            if not tok or tok[0] in "$%":
+                continue
+            if after_redirect:
+                write_targets.add(normalize(tok, base))
+                continue
+            if tok.startswith("-") or (verb in ("findstr", "dir") and tok.startswith("/") and len(tok) == 2):
+                recursive = recursive or _is_recursive_flag(verb, tok)
+                continue
+            if tok in (".", ".."):
+                p = normalize(tok, base)
+            elif not quoted and any(ch in _WILDCARD_CHARS for ch in tok):
+                info["target"] = True
+                if "/" not in tok and "\\" not in tok and not verb_write:
+                    read_dirs.append(base)  # 裸萬用字元（cat *）：前綴夾就是效用 cwd；帶斜線的由 glob_tokens 處理
+                continue
+            elif "/" in tok or "\\" in tok or tok.startswith("~"):
+                p = normalize(tok, base)
+            elif any(ch in _NOT_FILENAME_CHARS for ch in tok):
+                continue
+            else:
+                p = normalize(tok, base)
+                if not os.path.exists(p):
+                    continue
+            if verb_write:
+                write_targets.add(p)
+                continue
+            info["target"] = True
+            if os.path.isdir(p):
+                read_dirs.append(p)
+        if stage == 0 and not verb_write and (verb in SEARCH_ALWAYS or (verb in GREP_FAMILY | LIST_VERBS and recursive)):
+            info["search"] = base
+    for info in subs.values():
+        if info["search"] and not info["target"]:
+            read_dirs.append(info["search"])
+    return read_dirs, write_targets
 
 
 def _original_segment(target, seg):
@@ -267,7 +324,7 @@ def _file_tool(tool, target, cwd, vault, sources):
     if seg is not None:  # 憑證第一道先於區（D-079 補）
         reason = CREDENTIAL_REASON.format(seg=_original_segment(target, seg))
         return Decision("deny", zone, "credential", reason, [_row(tool, "deny", zone, "credential", target)], vault)
-    if tool == "Grep" and os.path.isdir(path):  # 第三道：Grep 整夾會讀內容；Glob 只列檔名不走訪
+    if tool == "Grep" and zone != "Z10" and os.path.isdir(path):  # 第三道：Grep 整夾會讀內容；Glob 只列檔名不走訪；起點是排除夾交 Z10（P3）
         scan_zone = _scan_zone(path, zone, vault_n, sources)
         if scan_zone:
             code, reason = folder_scan(vault, path, sources)
@@ -329,10 +386,10 @@ def _shell_tool(tool, command, cwd, vault, sources):
         glob_hits.extend(_expand_glob(token))
     head_classified = [(p, *classify(p, vault_n, sources)) for p in heads]
     glob_classified = head_classified + [(p, *classify(p, vault_n, sources)) for p in glob_hits]
-    # 憑證三道先於區（D-079 補）。第一道：抽出的每個路徑與萬用字元前綴夾的段（展開命中的內容交第三道走訪）
-    for p, zone, _alias in classified + head_classified:
-        if not os.path.exists(p) and any(ch in _NOT_FILENAME_CHARS for ch in p):
-            continue  # N3：引號裡帶副檔名的正規式（"密碼[0-9]+\.log"）會被抽成路徑；不存在又含正規式字元的不當檔名比
+    # 憑證三道先於區（D-079 補）。第一道：抽出的每個路徑、萬用字元前綴夾與展開命中的段（P2）
+    for p, zone, _alias in classified + glob_classified:
+        if not os.path.exists(p) and any(ch in _REGEX_ONLY_CHARS for ch in p):
+            continue  # N3／P2：引號裡帶副檔名的正規式（"密碼[0-9]+\.log"）會被抽成路徑；不存在又含正規式字元的不當檔名比
         seg = credential_hit(p, zone, vault_n, sources)
         if seg is not None:
             return deny(zone, "credential", CREDENTIAL_REASON.format(seg=_original_segment(command, seg)))
@@ -340,20 +397,21 @@ def _shell_tool(tool, command, cwd, vault, sources):
     seg = token_hit(command)
     if seg is not None:
         return deny("", "credential", CREDENTIAL_REASON.format(seg=seg))
-    # 第三道：讀取範圍是資料夾（抽出的路徑、cd 目標、萬用字元前綴夾、.／..、裸夾名、範圍搜尋沒給路徑的 cwd）；寫入不適用
-    if not write:
-        extra = [(p, *classify(p, vault_n, sources)) for p in _scan_targets(command, cwd, bool(paths))]
-        scanned = []
-        for p, zone, _alias in classified + head_classified + extra:
-            if p in scanned or not os.path.isdir(p):
-                continue
-            scanned.append(p)
-            scan_zone = _scan_zone(p, zone, vault_n, sources)
-            if not scan_zone:
-                continue
-            code, reason = folder_scan(vault, p, sources)
-            if code:
-                return deny(scan_zone, code, reason)
+    # 第三道：讀取範圍是資料夾（抽出的路徑、cd 目標、萬用字元前綴夾、.／..、裸夾名、範圍搜尋沒給路徑的 cwd）。
+    # 有寫入時讀取範圍照走訪，只有寫入目標不走訪（S2）；起點是排除夾或排除單檔交 Z10（P3）
+    read_dirs, write_targets = _analyze(command, cwd)
+    extra = [(p, *classify(p, vault_n, sources)) for p in read_dirs]
+    scanned = []
+    for p, zone, _alias in classified + head_classified + extra:
+        if p in scanned or p in write_targets or zone == "Z10" or not os.path.isdir(p):
+            continue
+        scanned.append(p)
+        scan_zone = _scan_zone(p, zone, vault_n, sources)
+        if not scan_zone:
+            continue
+        code, reason = folder_scan(vault, p, sources)
+        if code:
+            return deny(scan_zone, code, reason)
     # 直接命中排除夾（Z10）比「範圍含排除夾」（Z10b）具體，先報它
     for _p, zone, alias in classified + glob_classified:
         if zone == "Z10":

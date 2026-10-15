@@ -596,6 +596,106 @@ class CredentialRound1(unittest.TestCase):
         self.assert_deny(d, "credential_inside", "Z10b", "請款/id_rsa")
         self.assertNotIn("網站密碼", d.reason)
 
+    # 第三輪 S1：不帶斜線的 .. 也經區判斷
+    def test_51_dotdot_goes_through_zones(self):
+        for cmd in ("grep -r SALARY ..", "rg SALARY .."):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+        self.assertEqual(self.decide("Bash", "cat ../raw/客戶案件/a.txt").decision, "pass")
+        d = self.decide("Bash", "rm -rf ..")
+        self.assertEqual(d.decision, "deny", d)
+
+    # 第三輪 S2：有寫入仍走訪讀取範圍，只有寫入目標不走訪
+    def test_52_read_range_scanned_even_when_command_writes(self):
+        (self.V / "收件匣" / ".env").write_text("x", encoding="utf-8")
+        for cmd in ("grep -r TOKEN . | tee /tmp/hits.txt", "grep -r TOKEN > /tmp/hits.txt", "cat 收件匣/* > /tmp/all.txt"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        r = str(self.client).replace("\\", "/")
+        d = self.decide("Bash", f'rm -rf "{r}"')  # 寫入目標本身不走訪（35 的案例照舊）
+        self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
+
+    # 第三輪 P1、P4：引號裡的萬用字元、管線第二段、沒遞迴旗標的 grep 不走訪；子指令各自判
+    def test_53_quoted_wildcards_and_second_stage_grep_do_not_scan(self):
+        (self.V / "案子" / "大樓").mkdir()
+        (self.V / "案子" / "大樓" / "門禁密碼.md").write_text("x", encoding="utf-8")
+        (self.V / "收件匣" / "n.md").write_text("x", encoding="utf-8")
+        for tool, cmd in (("Bash", 'echo "what?"'), ("Bash", 'git commit -m "fix?"'), ("Bash", 'python -c "x=[0]"'),
+                          ("Bash", "git log | grep fix"), ("Bash", "ps aux | grep python"), ("Bash", "cat 收件匣/n.md | grep 帳號"),
+                          ("Bash", "grep 帳號"), ("Bash", "grep -in 帳號"), ("PowerShell", "Select-String 帳號"), ("Bash", "ls"),
+                          ("Bash", "echo 'a*b'")):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertNotIn(d.reason_code, ("credential", "credential_inside", "credential_scan_limit"), d)
+        for cmd in ("grep -r 帳號", "rg 帳號", "grep -rn 帳號", "grep -R 帳號", "grep --recursive 帳號", "findstr /s 帳號"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+                self.assertIn("門禁密碼.md", d.reason)
+
+    # 第三輪 P2：萬用字元展開命中照第一道比段
+    def test_54_glob_expansion_hits_go_through_segment_gate(self):
+        other = self.tmp / "other"
+        (other / ".ssh").mkdir(parents=True)
+        (other / ".ssh" / "id_rsa").write_text("x", encoding="utf-8")
+        (other / "proj").mkdir()
+        (other / "proj" / ".env").write_text("x", encoding="utf-8")
+        s = other.as_posix()
+        self.assert_deny(self.decide("Bash", f"cat {s}/.ssh/id_*"), "credential", contains="id_rsa")
+        self.assert_deny(self.decide("Bash", f"cat {s}/proj/.env*"), "credential", contains=".env")
+        d = self.decide("Bash", 'grep -rn "密碼[0-9]+\\.log" 收件匣')
+        self.assertNotEqual(d.reason_code, "credential", d)
+
+    # 第三輪 P3：走訪起點是排除夾或排除單檔就不走訪，交 Z10；排除單檔名不進理由句
+    def test_55_excluded_start_point_is_not_scanned(self):
+        salary = self.raw / "行政" / "薪資"
+        (salary / "網站密碼.txt").write_text("x", encoding="utf-8")
+        for d in (self.grep(salary), self.decide("Bash", f'grep -r x "{salary.as_posix()}"'),
+                  self.decide("Bash", f'cd "{salary.as_posix()}" && cat *')):
+            with self.subTest(d=d):
+                self.assertEqual((d.decision, d.zone, d.reason_code), ("deny", "Z10", "excluded"), d)
+                self.assertNotIn("網站密碼", d.reason)
+        import json
+        billing = self.raw / "行政" / "請款"
+        (billing / "密碼單.txt").write_text("x", encoding="utf-8")
+        src = self.V / ".system" / "sources.json"
+        data = json.loads(src.read_text(encoding="utf-8"))
+        data["sources"][1]["excludes"].append({"spec": "請款/密碼單.txt", "kind": "hidden", "reason": "", "added": "2026-10-15"})
+        src.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        d = self.grep(billing)  # 夾裡有排除單檔：範圍含排除（Z10b）用自己的理由句，排除單檔名不進理由句
+        self.assertEqual((d.decision, d.zone, d.reason_code), ("deny", "Z10b", "excluded_inside"), d)
+        self.assertNotIn("密碼單", d.reason)
+        (billing / "x.txt").write_text("x", encoding="utf-8")
+        d = self.decide("Bash", f'cat "{(billing / "x.txt").as_posix()}"')
+        self.assertEqual(d.decision, "pass", d)
+        d = self.decide("Read", billing / "密碼單.txt")
+        self.assertEqual((d.decision, d.zone), ("deny", "Z10"), d)
+
+    # 第三輪 P4：子指令各自判「沒給路徑」
+    def test_56_each_subcommand_judged_separately(self):
+        (self.V / "收件匣" / "網站密碼.txt").write_text("x", encoding="utf-8")
+        (self.V / "收件匣" / "n.md").write_text("x", encoding="utf-8")
+        for cmd in ("cat 收件匣/n.md && grep -r 帳號", "cat 收件匣/n.md; rg 帳號", "cat 收件匣/n.md || grep -r 帳號"):
+            with self.subTest(cmd=cmd):
+                d = self.decide("Bash", cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        d = self.decide("Bash", "cat 收件匣/n.md && grep 帳號")  # 第二段沒遞迴，不走訪
+        self.assertNotIn(d.reason_code, ("credential", "credential_inside"), d)
+
+    # 第三輪 O2：走訪跳過 .system/ 與 .claude/
+    def test_57_scan_skips_system_and_claude_folders(self):
+        big = self.V / ".system" / "versions" / "20261015-000000-0000" / "files"
+        big.mkdir(parents=True)
+        for i in range(6000):
+            (big / f"f{i}.txt").write_bytes(b"")
+        (self.V / ".claude" / "password.json").write_text("{}", encoding="utf-8")
+        d = self.decide("Bash", "grep -r 帳號")
+        self.assertEqual(d.decision, "pass", d)
+        d = self.grep(self.V)
+        self.assertEqual(d.decision, "allow", d)
+
     def test_35_write_command_over_folder_is_not_scanned(self):
         (self.client / ".env").write_text("K=1", encoding="utf-8")
         r = str(self.client).replace("\\", "/")

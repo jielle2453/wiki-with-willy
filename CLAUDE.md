@@ -18,7 +18,7 @@
 | `scripts/kb.py` | 唯一 CLI 入口（D-013）。不動 `sys.path` |
 | `scripts/kb/cli.py` | argparse 主程式；子命令註冊表 `COMMANDS` |
 | `scripts/kb/version.py` | 子命令 `version` |
-| `scripts/kb/guard.py` | 守門判斷：`find_vault`、`classify`、`decide`，決策表 `ZONES`（Z1／Z3／Z5 多一欄 `shell_write`）；憑證三道在區之前、關不掉（D-079 補）：`credential_hit`（段）、`token_hit`（裸 token）、`folder_scan`（資料夾範圍走訪）。純函式，hook 與 CLI 共用 |
+| `scripts/kb/guard.py` | 守門判斷：`find_vault`、`classify`、`decide`，決策表 `ZONES`（Z1／Z3／Z5 多一欄 `shell_write`）；憑證三道在區之前、關不掉（D-079 補）：`credential_hit`（段）、`token_hit`（裸 token）、`folder_scan`（資料夾範圍走訪，材料由 `_analyze` 按子指令與管線段算）。純函式，hook 與 CLI 共用 |
 | `scripts/kb/guard_cli.py` | 子命令 `guard decide`：模擬一次判斷，查「為什麼擋」，不留痕、不備份 |
 | `scripts/kb/versions.py` | 子命令 `versions list`／`revert`／`delete-outputs`：列回合、退回最近一次、刪已退回回合留著的成品（D-074、D-011） |
 | `scripts/kb/turn_cli.py` | 子命令 `turn current`／`approve`：看目前回合、解除綜合卡張數上限（D-075） |
@@ -29,7 +29,7 @@
 | `scripts/kb/_lib/config.py` | `get(vault, key)`：`defaults.json` 為底，客戶端 `.system/config.json` 同鍵覆寫 |
 | `scripts/kb/_lib/turn.py` | 回合：`start`、`current`、`approve`、`rel_path`（原始大小寫）、`backup`、`before_write`（大改動門檻加備份） |
 | `scripts/kb/_lib/inventory.py` | 清冊最小版（D-076）：`.system/inventory.json`，`register_output`、`outputs_of_turn`、`set_status` |
-| `scripts/kb/_lib/cmdparse.py` | 指令字串解析：`extract_paths`、`is_write`、`is_single_plugin_call` |
+| `scripts/kb/_lib/cmdparse.py` | 指令字串解析：`extract_paths`（`.`、`..` 也算路徑）、`is_write`、`is_single_plugin_call` |
 | `scripts/kb/_lib/sources.py` | 讀 `.system/sources.json`，`lookup` 查登記／排除；`load_raw` 給 `kb folders` 讀原始 dict（格式不對丟 `ValueError`），`new_id`、`RESERVED_ALIASES` |
 | `scripts/kb/_lib/credentials.py` | 憑證檔名樣式 `CREDENTIAL_PATTERNS`（寫死、不讀 config）、`match_segment`、`looks_like_filename`、`scan_dir`（守門走訪、有上限、跳過排除夾）、`scan_all`（`kb folders add` 數檔與收憑證清單） |
 | `scripts/kb/_lib/ledger.py` | 留痕：`ledger.tsv` 事件帳、`guard-status` 每日一次、`hook-errors.log` |

@@ -124,6 +124,8 @@ def _candidates(text, quoted, after_redirect, after_cd):
     """一個 token 裡可能是路徑的字串。夾在中間的絕對路徑先抽；沒有就看整個 token 像不像路徑。"""
     if not text or _URL.match(text):
         return []
+    if text in (".", ".."):
+        return [text]  # 不帶斜線的 . 與 .. 也是路徑，要經區判斷（骨架與來源登記第三輪 S1：grep -r X .. 走 Z10b）
     matches = list(ABS_PATH.finditer(text))
     if matches and matches[0].start() > 0:
         # 夾在中間的絕對路徑（python -c "open('C:/…')"、P=C:/…）

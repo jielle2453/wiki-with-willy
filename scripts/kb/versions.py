@@ -134,13 +134,18 @@ def _rel_of(entry):
 
 
 def _acting_turn(vault, target_turn):
-    """退回動作本身的回合；若等於要退的回合，開一個新的（現況要有別的回合可備）。
-    目前回合已答完（done true）就是終端機在跑，新回合不帶 sid（尾 0000）：不留一個帶 sid、done false、
-    沒有 Stop 會收的回合，下一句話才不會被補記成假的「退回 …」中斷段。還沒答完才沿用 sid（對話裡叫的）。"""
+    """退回動作本身的回合；若等於要退的回合，另開一個（現況要有別的回合可備）。工作日誌測試後修正 M1 裁定 (a)：
+    - 目前回合是對話開的（帶 sid，不論 done）：另產的回合只住 versions/（turn.mint 加 turn_dir），不寫 turns/，
+      current.json 與 turns/<sid>.json 不動，Stop 照常收原回合，下一句話也不會被補記出假的中斷段。
+    - 目前回合是 CLI 自己的（sid 空）：照舊 turn.start(None)，只換 current.json；那個回合沒有 Stop，
+      換掉之後的寫入才不會記進已退回的回合。"""
     rt = turn.current(vault)
     if rt["turn"] == target_turn:
-        sid = None if rt.get("done") else (rt.get("session_id") or None)
-        rt = turn.start(vault, sid, f"退回 {target_turn}")
+        if rt.get("session_id"):
+            rt = turn.mint(vault, f"退回 {target_turn}")
+            turn.turn_dir(vault, rt["turn"], rt)
+        else:
+            rt = turn.start(vault, None, f"退回 {target_turn}")
     return rt
 
 
@@ -264,7 +269,8 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
         tail = f"成品 {len(outputs)} 份留著"
     else:
         tail = "成品 0 份"
-    sentence = f"已退回 {target['turn']}（問：「{target['prompt_head']}」）：還原 {len(restored)}、移除 {len(removed)}、{tail}"
+    asked = f"（問：「{target['prompt_head']}」）" if target["prompt_head"] else ""  # L6：守門自己開的回合問是空的
+    sentence = f"已退回 {target['turn']}{asked}：還原 {len(restored)}、移除 {len(removed)}、{tail}"
     journal_cli.record_program_or_warn(
         vault, sentence,
         [{"path": rel, "action": "modify"} for rel in restored] + [{"path": rel, "action": "delete"} for rel in removed],

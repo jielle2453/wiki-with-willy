@@ -288,14 +288,19 @@ class Revert(Base):
         self.assertFalse(data["outputs_deleted"])
 
     def test_revert_in_same_turn_as_target_opens_new_turn(self):
-        """退回動作的回合不能等於要退的回合（不然現況沒處備）。"""
+        """退回動作的回合不能等於要退的回合（不然現況沒處備）。測試後修正 M1：動作回合只在 versions/，
+        尾 0000，turns/ 與 current.json 不動。"""
         t = self.modify_card_in_turn()
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.card.read_bytes(), self.original)
-        rt = turn.current(self.V)
-        self.assertNotEqual(rt["turn"], t["turn"])
-        self.assertEqual([e["action"] for e in turn.entries(self.V, rt["turn"])], ["modify"])
+        self.assertEqual(turn.current(self.V)["turn"], t["turn"])
+        self.assertEqual(turn.current(self.V, SID)["turn"], t["turn"])
+        by = json.loads((self.versions_dir(t["turn"]) / "reverted.json").read_text(encoding="utf-8"))["by_turn"]
+        self.assertNotEqual(by, t["turn"])
+        self.assertTrue(by.endswith("-0000"), by)
+        self.assertTrue((self.versions_dir(by) / "turn.json").is_file())
+        self.assertEqual([e["action"] for e in turn.entries(self.V, by)], ["modify"])
 
     def test_three_turns_in_one_second_revert_hits_the_last(self):
         """驗收 29：同一秒開三個回合、各改一張不同的 Z1 卡，revert 退的是代號最大的第三個。"""
@@ -599,44 +604,92 @@ class VersionsJournal(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.program_rows(), [])
 
-    def test_revert_after_stop_opens_cli_turn_and_next_prompt_has_no_fake_interrupt(self):
-        """觀察 (b) 裁定：對話答完（done true）後終端機退回，動作回合用 session_id None（尾 0000），
-        turns/<sid>.json 仍是原回合、下一句話不會被 flush 出假的「退回 …」中斷段。"""
+    def hook(self, name, data):
         env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        r = subprocess.run([sys.executable, str(ROOT / "hooks" / name)], input=json.dumps(data, ensure_ascii=False),
+                           capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        if name == "guard.py":
+            self.assertIn('"allow"', r.stdout)
+        else:
+            self.assertEqual(r.stdout, "")
 
-        def hook(name, data):
-            r = subprocess.run([sys.executable, str(ROOT / "hooks" / name)], input=json.dumps(data, ensure_ascii=False),
-                               capture_output=True, text=True, encoding="utf-8", env=env)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            if name == "guard.py":
-                self.assertIn('"allow"', r.stdout)
-            else:
-                self.assertEqual(r.stdout, "")
-
+    def prompt_and_write_card(self, prompt):
         base = {"session_id": SID, "cwd": str(self.V)}
-        hook("turn.py", dict(base, prompt="改信義王", hook_event_name="UserPromptSubmit"))
-        hook("guard.py", dict(base, tool_name="Write", hook_event_name="PreToolUse",
-                              tool_input={"file_path": str(self.card), "content": "改過了\n"}))
+        self.hook("turn.py", dict(base, prompt=prompt, hook_event_name="UserPromptSubmit"))
+        self.hook("guard.py", dict(base, tool_name="Write", hook_event_name="PreToolUse",
+                                   tool_input={"file_path": str(self.card), "content": "改過了\n"}))
         self.card.write_text("改過了\n", encoding="utf-8")
-        hook("stop.py", dict(base, hook_event_name="Stop", stop_hook_active=False, last_assistant_message="改好了"))
+
+    def stop(self, message):
+        self.hook("stop.py", {"session_id": SID, "cwd": str(self.V), "hook_event_name": "Stop",
+                              "stop_hook_active": False, "last_assistant_message": message})
+
+    def test_acceptance_27_revert_after_stop_leaves_turn_files_and_no_fake_interrupt(self):
+        """驗收 27（測試後修正 M1）：答完後終端機退回，turns/<sid>.json 仍是 done true 的原回合、current.json 不變，
+        下一句話不會被補記出假的「退回 …」中斷段。"""
+        self.prompt_and_write_card("改信義王")
+        self.stop("改好了")
         sess_file = self.V / ".system" / "turns" / f"{SID}.json"
-        original = json.loads(sess_file.read_text(encoding="utf-8"))
+        cur_file = self.V / ".system" / "turns" / "current.json"
+        before = (sess_file.read_bytes(), cur_file.read_bytes())
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.card.read_bytes(), self.original)
-        sess = json.loads(sess_file.read_text(encoding="utf-8"))
-        self.assertEqual((sess["turn"], sess["done"]), (original["turn"], True))
-        cur = json.loads((self.V / ".system" / "turns" / "current.json").read_text(encoding="utf-8"))
-        self.assertEqual(cur["session_id"], "")
-        self.assertTrue(cur["turn"].endswith("-0000"), cur["turn"])
-        hook("turn.py", dict(base, prompt="下一句", hook_event_name="UserPromptSubmit"))
+        self.assertEqual((sess_file.read_bytes(), cur_file.read_bytes()), before)
+        self.assertTrue(json.loads(sess_file.read_text(encoding="utf-8"))["done"])
+        self.hook("turn.py", {"session_id": SID, "cwd": str(self.V), "prompt": "下一句", "hook_event_name": "UserPromptSubmit"})
         from kb._lib import journal
         rows = [x for m in journal.months(self.V) for x in journal.read_lines(self.V, m)]
         self.assertEqual([x for x in rows if x.get("interrupted")], [])
 
+    def test_acceptance_28_revert_inside_same_sentence_then_stop_closes_original_turn(self):
+        """驗收 28（測試後修正 M1）：同一句裡改卡又退回，再 Stop：jsonl 只有那一行且答完；回合檔不變；
+        versions/ 多一個尾 0000 的動作回合夾、有 turn.json；turns/ 沒有多檔。"""
+        self.prompt_and_write_card("改一下卡")
+        turns_dir = self.V / ".system" / "turns"
+        names = sorted(p.name for p in turns_dir.iterdir())
+        sess_turn = json.loads((turns_dir / f"{SID}.json").read_text(encoding="utf-8"))["turn"]
+        vdirs = {p.name for p in (self.V / ".system" / "versions").iterdir()}
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.card.read_bytes(), self.original)
+        self.stop("改了又退回了")
+        from kb._lib import journal
+        rows = [x for m in journal.months(self.V) for x in journal.read_lines(self.V, m)]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["prompt"], rows[0]["done"], rows[0]["result"]), ("改一下卡", True, "改了又退回了"))
+        for name in (f"{SID}.json", "current.json"):
+            self.assertEqual(json.loads((turns_dir / name).read_text(encoding="utf-8"))["turn"], sess_turn, name)
+        self.assertEqual(sorted(p.name for p in turns_dir.iterdir()), names)
+        new = {p.name for p in (self.V / ".system" / "versions").iterdir()} - vdirs
+        self.assertEqual(len(new), 1)
+        acting = new.pop()
+        self.assertTrue(acting.endswith("-0000"), acting)
+        self.assertTrue((self.V / ".system" / "versions" / acting / "turn.json").is_file())
+
+    def test_cli_turn_revert_rotates_current_only(self):
+        """M1 裁定 (a)：目前回合是 CLI 自己的（sid 空）就照舊 turn.start(None) 換 current.json，
+        之後的寫入不會記進已退回的回合；turns/ 只有 current.json。"""
+        t = self.cli_turn_with(self.card_rel, "改過了\n")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cur = turn.current(self.V)
+        self.assertNotEqual(cur["turn"], t["turn"])
+        self.assertEqual((cur["session_id"], cur["turn"][-4:]), ("", "0000"))
+        self.assertEqual(sorted(p.name for p in (self.V / ".system" / "turns").iterdir()), ["current.json"])
+
+    def test_acceptance_35_empty_prompt_head_is_left_out_of_sentence(self):
+        """測試後修正 L6：守門自己開的回合問是空的，退回句與程式段 note 不印「（問：「」）」。"""
+        t = self.cli_turn_with(self.card_rel, "改過了\n")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = r.stdout.splitlines()[0]
+        self.assertEqual(line, f"已退回 {t['turn']}：還原 1、移除 0、成品 0 份")
+        self.assertEqual(self.program_rows()[0]["note"], line)
+
     def test_finished_conversation_turn_writes_program_line_with_new_turn(self):
-        """D-085 補：對話已答完（done true）後在終端機退回，寫程式段，turn 不掛到那個對話回合；
-        動作回合不帶 sid（尾 0000），程式段沿用它。"""
+        """D-085 補：對話已答完（done true）後在終端機退回，寫程式段，turn 是現在時間的新代號（L2）。"""
         t = self.modify_card_in_turn()
         turn.set_done(self.V, SID)
         r = run_kb("versions", "revert", cwd=self.V)
@@ -645,7 +698,7 @@ class VersionsJournal(Base):
         self.assertEqual(len(rows), 1)
         self.assertNotEqual(rows[0]["turn"], t["turn"])
         self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")
-        self.assertEqual(rows[0]["turn"], turn.current(self.V)["turn"])
+        self.assertEqual(turn.current(self.V)["turn"], t["turn"])  # M1：current.json 不動
 
 
 if __name__ == "__main__":

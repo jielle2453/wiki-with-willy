@@ -471,8 +471,7 @@ class FoldersJournal(Base):
         self.assertEqual(len(rows), 1)
         self.assertEqual((rows[0]["command"], rows[0]["note"]), ("folders add", r.stdout.splitlines()[0]))
         self.assertEqual(rows[0]["changed"], [{"path": ".system/sources.json", "action": "modify"}])
-        cur = json.loads((self.V / ".system" / "turns" / "current.json").read_text(encoding="utf-8"))
-        self.assertEqual(rows[0]["turn"], cur["turn"])
+        self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")  # 測試後修正 L2：一律新代號
         r = self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         rows = self.program_rows()
@@ -525,6 +524,23 @@ class FoldersJournal(Base):
         self.assertEqual(len(rows), 1)
         self.assertNotEqual(rows[0]["turn"], cur["turn"])
         self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")
+
+    def test_acceptance_33_old_cli_turn_from_last_month_does_not_pull_line_back(self):
+        """測試後修正 L2：current.json 是上個月的 CLI 回合，程式段照樣寫進本月、本月新代號。"""
+        turns = self.V / ".system" / "turns"
+        turns.mkdir(parents=True, exist_ok=True)
+        (turns / "current.json").write_text(json.dumps({"schema_version": 1, "turn": "20260901-120000-0000",
+                                                        "session_id": "", "started": "2026-09-01T12:00:00",
+                                                        "prompt_head": "", "approved": False, "note": "",
+                                                        "done": False}), encoding="utf-8")
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        from kb._lib import journal
+        month = date.today().strftime("%Y-%m")
+        rows = [x for x in journal.read_lines(self.V, month) if x["kind"] == "program" and x["command"] == "folders add"]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["turn"].startswith(date.today().strftime("%Y%m%d")), rows[0]["turn"])
+        self.assertNotEqual(rows[0]["turn"], "20260901-120000-0000")
 
     def test_acceptance_25_after_stop_folders_add_writes_program_line(self):
         """驗收 25：UserPromptSubmit、Stop（回合 done），再在終端機跑 folders add → 多一行 program，turn 不是那回合。"""

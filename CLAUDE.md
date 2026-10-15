@@ -28,8 +28,8 @@
 | `scripts/kb/_lib/paths.py` | `plugin_root()`、`read_manifest()`：從 `__file__` 往上找，不寫死路徑；`normalize`、`inside`、`resolve_spec`、`compress_spec`（D-021 補）、`is_abs_spec` |
 | `scripts/kb/_lib/io.py` | UTF-8、LF、原子寫入的讀寫函式；`os.replace` 被拒重試（I-018）；`FileLock` 鎖檔（hook 等 3 秒、CLI 30 秒、殘留 30 秒；鎖檔建不起來直接丟錯） |
 | `scripts/kb/_lib/config.py` | `get(vault, key)`：`defaults.json` 為底，客戶端 `.system/config.json` 同鍵覆寫 |
-| `scripts/kb/_lib/turn.py` | 回合：`start`（`prompt_head` 先 `mask_secrets` 再截 `prompt_head_max`；回合檔帶 `note`、`done`）、`set_note`／`set_done`／`set_prompt_head`、`current`、`approve`、`rel_path`（原始大小寫）、`backup`、`before_write`（大改動門檻加備份） |
-| `scripts/kb/_lib/journal.py` | 工作日誌（D-082～D-086）：真相 `.system/journal/YYYY-MM.jsonl`，`open_turn`／`complete_turn`（同一行 upsert）、`update_turn`、`flush_unfinished`（中斷補記）、`record_program`、`floor_note`、`cut_result`、`recent`、`render`（整月寫 `系統/工作日誌/YYYY-MM.md`，最新在上）；鎖住讀改寫，壞行跳過留著 |
+| `scripts/kb/_lib/turn.py` | 回合：`start`（`prompt_head` 先 `mask_secrets` 再截 `prompt_head_max`；回合檔帶 `note`、`done`）、`mint`（只產代號不寫 `turns/`，退回動作用）、`set_note`／`set_done`／`set_prompt_head`、`current`、`approve`、`rel_path`（原始大小寫）、`backup`、`before_write`（大改動門檻加備份） |
+| `scripts/kb/_lib/journal.py` | 工作日誌（D-082～D-086）：真相 `.system/journal/YYYY-MM.jsonl`，`begin_turn`（中斷補記加開口，同月一把鎖）、`open_turn`／`complete_turn`（同一行 upsert）、`finish_fields`（做了：AI 優先、地板句）、`update_turn`、`record_program`（代號一律現在時間）、`floor_note`、`cut_result`（抽段、壓一行、遮、截）、`recent`、`render`（整月寫 `系統/工作日誌/YYYY-MM.md`，最新在上）；鎖住讀改寫，渲染失敗只記 log，壞行跳過留著 |
 | `scripts/kb/_lib/inventory.py` | 清冊最小版（D-076）：`.system/inventory.json`，`register_output`、`outputs_of_turn`、`set_status` |
 | `scripts/kb/_lib/cmdparse.py` | 指令字串解析：`extract_paths`（`.`、`..` 也算路徑）、`is_write`、`is_single_plugin_call` |
 | `scripts/kb/_lib/sources.py` | 讀 `.system/sources.json`，`lookup` 查登記／排除；`load_raw` 給 `kb folders` 讀原始 dict（格式不對丟 `ValueError`），`new_id`、`RESERVED_ALIASES` |
@@ -39,7 +39,7 @@
 | `hooks/guard.py` | PreToolUse 守門入口：讀 stdin、呼叫 `kb.guard.decide`，寫 Z1／Z3／Z5 放行前先 `turn.before_write` 備份，印 allow／deny 或不印，永遠 exit 0 |
 | `hooks/turn.py` | UserPromptSubmit：每句話開一個回合，寫 `.system/turns/<sid>.json` 與 `current.json`；先補記上一句的中斷，再寫這一句的日誌開口 |
 | `hooks/output_log.py` | PostToolUse：檔案工具寫進 AI 產出後登記到 `inventory.json` |
-| `hooks/stop.py` | Stop：AI 答完把這回合的日誌那行補完（結果取 `last_assistant_message` 遮值再截、做了、改了），只收第一次 |
+| `hooks/stop.py` | Stop：AI 答完把這回合的日誌那行補完（結果取 `last_assistant_message` 壓一行遮值再截、做了、改了），只收第一次 |
 | `tests/` | `unittest`；`test_budget.py` 守常駐預算（D-070）、`test_version_sync.py` 守版號對齊、`test_repo_hygiene.py` 守編碼、行尾與 `sys.path` |
 | `tests/fixtures/` | 測試用範例檔；`vault/` 與 `raw/` 是守門的假總資料夾與來源，測試時整包複製到 tmp；`journal/` 是渲染的範例輸入與期望輸出（D-067） |
 | `design/` | 流程、約定、架構、決策、spec。實作 session 只能在 `backlog.md` 新增一行 |

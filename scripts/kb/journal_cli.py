@@ -1,6 +1,6 @@
 """kb journal recent／render：印最近幾段工作日誌（回答「最近改了什麼」，D-065）；從 jsonl 重渲染 md（D-067，給 lint 與排除題用）。
 record_program_or_warn 給 init、folders、versions 寫程式段（D-085）：對話裡叫的（有 sid 且還沒答完）不寫，
-寫失敗印一行到 stderr，不改 exit code。
+代號一律用現在時間組（L2）；寫失敗印一行到 stderr，不改 exit code。CLI 鎖等 30 秒，等不到印一句 exit 3（M4）。
 """
 import argparse
 import json
@@ -10,9 +10,22 @@ import sys
 
 from kb import guard
 from kb._lib import journal, turn
+from kb._lib import io as kio
 
 NOT_IN_VAULT = "不在知識庫裡：這裡往上找不到 .system/sources.json"
 EMPTY = "還沒有工作日誌"
+CLI_LOCK_TIMEOUT = 30
+LOCK_BUSY = "等不到工作日誌的鎖（別的指令正在寫），沒有寫入；請稍後再試"
+
+
+def _positive(text):
+    try:
+        n = int(text)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"要是 1 以上的整數：{text}")
+    return n
 
 
 def _month(text):
@@ -24,7 +37,7 @@ def _month(text):
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="journal_command", metavar="<子子命令>", required=True)
     rc = subs.add_parser("recent", help="由新到舊印最近幾段：時間｜做了", description="由新到舊印最近幾段工作日誌。")
-    rc.add_argument("--n", type=int, default=5, help="印幾段，預設 5")
+    rc.add_argument("--n", type=_positive, default=5, help="印幾段（1 以上），預設 5")
     rc.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
     rd = subs.add_parser("render", help="從 .system/journal 重寫 系統/工作日誌 的月檔", description="重寫工作日誌月檔。")
     rd.add_argument("month", nargs="?", type=_month, help="YYYY-MM；沒給就全部有紀錄的月")
@@ -69,15 +82,20 @@ def run(args):
     if vault is None:
         print(NOT_IN_VAULT)
         return 2
+    kio.LOCK_TIMEOUT = CLI_LOCK_TIMEOUT
     as_json = getattr(args, "json", False)
-    if args.journal_command == "recent":
-        return _recent(vault, args.n, as_json)
-    return _render(vault, args.month, as_json)
+    try:
+        if args.journal_command == "recent":
+            return _recent(vault, args.n, as_json)
+        return _render(vault, args.month, as_json)
+    except TimeoutError:
+        print(LOCK_BUSY)
+        return 3
 
 
 def in_conversation(vault):
     """對話裡叫的（D-085 補）：current.json 有 session_id 且 done 為 false，改動併進那一句、Stop 會補記，不另寫程式段。
-    對話答完（done true）後在終端機跑的不算。只讀不開新回合；指令一開始就判斷（退回會自己開帶 sid 的回合）。"""
+    對話答完（done true）後在終端機跑的不算。只讀不開新回合；versions 在動作前判斷。"""
     try:
         data = turn._read_turn(turn._current_file(vault))
     except OSError:
@@ -85,18 +103,12 @@ def in_conversation(vault):
     return bool(data and data.get("session_id") and not data.get("done"))
 
 
-def record_program_or_warn(vault, note, changed, command, conversation, cli_turn=True):
-    """程式段：conversation（指令開始時的 in_conversation）為真不寫。代號：cli_turn 且 current.json 是 CLI 自己的回合
-    （session_id 空）就沿用它，否則 None 讓 record_program 用現在時間組（不掛到已結束的對話回合）。
+def record_program_or_warn(vault, note, changed, command, conversation):
+    """程式段：conversation（in_conversation 的結果）為真不寫；代號由 record_program 用現在時間組（L2）。
     寫失敗（鎖、IO）印一行到 stderr，不擋指令。"""
     try:
         if conversation:
             return
-        turn_id = None
-        if cli_turn:
-            cur = turn._read_turn(turn._current_file(vault))
-            if cur and not cur.get("session_id"):
-                turn_id = cur["turn"]
-        journal.record_program(vault, note, changed, command, turn_id=turn_id)
+        journal.record_program(vault, note, changed, command)
     except Exception as e:  # noqa: BLE001  日誌沒記到不能讓指令失敗
         print(f"工作日誌沒記到：{type(e).__name__}: {e}", file=sys.stderr)

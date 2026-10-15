@@ -1,10 +1,13 @@
 """工作日誌（D-082～D-086、D-061、D-065、D-067）：每句話一段，程式自己做的事也一段。
 真相是 .system/journal/YYYY-MM.jsonl（一行一個 JSON，每行帶 schema_version），給人看的是 系統/工作日誌/YYYY-MM.md，
 每次寫完 jsonl 整月重渲染（最新在上）。一行的月由回合代號的日期決定，跨月的回合留在開口那個月。
-回合行分兩次寫：UserPromptSubmit 開口（open_turn），Stop 補完（complete_turn），同一行 upsert；程式行只追加。
+回合行分兩次寫：UserPromptSubmit 開口（begin_turn，順便補記上一句的中斷，同月一把鎖），Stop 補完（complete_turn），
+同一行 upsert；程式行只追加，代號一律用現在時間組。
 讀改寫 jsonl 整段包在 FileLock 裡（hook 3 秒、CLI 30 秒，拿不到丟 TimeoutError 給呼叫端）；渲染不在鎖裡，重讀檔案，
-最後一個寫的人渲染的就是最新。壞行跳過並寫一行 hook-errors.log，重寫時原樣留著（I-046）。
+最後一個寫的人渲染的就是最新；渲染失敗只寫 log 不往上丟（md 可用 journal render 重建）。
+壞行跳過，只有寫入路徑寫一行 hook-errors.log，重寫時原樣留著（I-046）。
 從人或模型來的欄位（prompt、result、AI 的 note）寫入前一律過 mask_secrets（D-086，多遮不改）；程式的 note 不遮。
+結果先壓成一行再遮再截（值跟關鍵詞隔空行也遮得到，測試後修正 M2）。
 """
 import contextlib
 import json
@@ -106,24 +109,24 @@ def _save(vault, month, items):
     write_text_atomic(p, text)
 
 
-def read_lines(vault, month):
-    """這個月的每一行（dict），追加順序；壞行跳過並寫 log。"""
-    return [obj for _raw, obj in _load(vault, month) if obj is not None]
+def read_lines(vault, month, log=False):
+    """這個月的每一行（dict），追加順序；壞行跳過。log 只給寫入路徑用（L3）：recent、render 不記。"""
+    return [obj for _raw, obj in _load(vault, month, log=log) if obj is not None]
 
 
 @contextlib.contextmanager
 def _lock(p):
-    """FileLock 加一層重試：Windows 上鎖檔剛被別人刪掉時 O_EXCL 會丟 PermissionError，
-    FileLock 再看已不存在就當成建不起來直接丟；這裡在同一個逾時內重來。真的建不起來等到逾時再丟。"""
+    """FileLock 加一層重試（B-029）：Windows 上鎖檔剛被別人刪掉時 O_EXCL 會丟 PermissionError，
+    FileLock 再看已不存在就當成建不起來直接丟；這裡在同一個逾時內重來，到期還是 PermissionError 也算逾時（L1）。"""
     deadline = time.time() + kio.LOCK_TIMEOUT
     while True:
         lock = FileLock(p, timeout=max(0.0, deadline - time.time()))
         try:
             lock.__enter__()
             break
-        except PermissionError:
+        except PermissionError as e:
             if time.time() >= deadline:
-                raise
+                raise TimeoutError(f"等待檔案鎖逾時：{p}.lock（{type(e).__name__}: {e}）") from e
             time.sleep(0.05)
     try:
         yield
@@ -132,7 +135,7 @@ def _lock(p):
 
 
 def _locked_edit(vault, month, edit):
-    """鎖住讀改寫：edit(items) 回 True 才寫回。之後在鎖外重渲染。回 edit 的結果。"""
+    """鎖住讀改寫：edit(items) 回 True 才寫回。之後在鎖外重渲染，渲染失敗只寫 log（M3）。回 edit 的結果。"""
     p = jsonl_path(vault, month)
     p.parent.mkdir(parents=True, exist_ok=True)
     with _lock(p):
@@ -141,7 +144,10 @@ def _locked_edit(vault, month, edit):
         if changed:
             _save(vault, month, items)
     if changed:
-        render(vault, month)
+        try:
+            render(vault, month)
+        except Exception as e:  # noqa: BLE001  md 寫不了不能讓 Stop 跳過 set_done；journal render 可重建
+            ledger.log_error(vault, f"工作日誌渲染失敗 {month}: {type(e).__name__}: {e}", source="journal")
     return changed
 
 
@@ -174,28 +180,29 @@ def _open_row(turn_data):
     }
 
 
-def _upsert_turn(vault, turn_data, row):
+def _upsert_rows(rows):
+    """edit 函式：每一行照 turn 代號換掉同回合那行，沒有就追加。"""
     def edit(items):
-        i = _find_turn(items, turn_data["turn"])
-        if i is None:
-            items.append((None, row))
-        else:
-            items[i] = (None, row)
+        for row in rows:
+            i = _find_turn(items, row["turn"])
+            if i is None:
+                items.append((None, row))
+            else:
+                items[i] = (None, row)
         return True
-    _locked_edit(vault, month_of(turn_data["turn"]), edit)
+    return edit
 
 
 def open_turn(vault, turn_data):
     """回合開口：寫入或換掉這回合那一行，done false。"""
-    _upsert_turn(vault, turn_data, _open_row(turn_data))
+    _locked_edit(vault, month_of(turn_data["turn"]), _upsert_rows([_open_row(turn_data)]))
 
 
 def _clean_changed(changed):
     return [{"path": c.get("path"), "action": c.get("action")} for c in (changed or [])]
 
 
-def complete_turn(vault, turn_data, result, note, note_by, changed, interrupted, result_truncated=None):
-    """回合補完（Stop 或中斷補記）：同一行換成完整的一行，done true。"""
+def _complete_row(turn_data, result, note, note_by, changed, interrupted, result_truncated=None):
     if result_truncated is None:
         result_truncated = str(result or "").endswith(TRUNCATED_TAIL)
     row = _open_row(turn_data)
@@ -209,7 +216,23 @@ def complete_turn(vault, turn_data, result, note, note_by, changed, interrupted,
         "note_by": note_by,
         "changed": _clean_changed(changed),
     })
-    _upsert_turn(vault, turn_data, row)
+    return row
+
+
+def complete_turn(vault, turn_data, result, note, note_by, changed, interrupted, result_truncated=None):
+    """回合補完（Stop 或中斷補記）：同一行換成完整的一行，done true。"""
+    row = _complete_row(turn_data, result, note, note_by, changed, interrupted, result_truncated)
+    _locked_edit(vault, month_of(turn_data["turn"]), _upsert_rows([row]))
+
+
+def finish_fields(vault, turn_data):
+    """Stop 與中斷補記共用（D-084）：(做了, note_by, 改了)。模型叫過 turn note 就用它（ai），沒有才地板句（program）。"""
+    tid = turn_data["turn"]
+    note = turn_data.get("note") or ""
+    changed = _clean_changed(turn.entries(vault, tid))
+    if note:
+        return note, "ai", changed
+    return floor_note(vault, tid), "program", changed
 
 
 def update_turn(vault, turn_id, **fields):
@@ -236,27 +259,31 @@ def update_turn(vault, turn_id, **fields):
     return _locked_edit(vault, month, edit)
 
 
-def flush_unfinished(vault, session_id):
-    """這個 session 上一回合沒等到 Stop（被中斷）：用中斷句、做了、manifest 補記那行並標 done。回有沒有補。
-    做了跟 Stop 同一條規則（D-084）：中斷前模型叫過 turn note 就用它（note_by ai），沒有才地板句。"""
-    if not session_id:
-        return False
-    data = turn._read_turn(turn._session_file(vault, session_id))
-    if not data or data.get("done", True):
-        return False
-    tid = data["turn"]
-    note = data.get("note") or ""
-    note_by = "ai" if note else "program"
-    complete_turn(vault, data, INTERRUPTED_RESULT, note or floor_note(vault, tid), note_by, turn.entries(vault, tid),
-                  interrupted=True, result_truncated=False)
-    turn.set_done(vault, session_id)
-    return True
+def begin_turn(vault, previous, turn_data):
+    """UserPromptSubmit 用：previous 是開新回合前這個 session 的回合檔（沒有給 None）。
+    previous 還沒答完（done false，被中斷）就用中斷句、finish_fields 補記那行；再寫這一句的開口。
+    同月一把鎖（L1）；跨月才兩次，先寫這一句（逾時往上丟），補記那月失敗只寫 log。
+    previous 的回合檔會被新回合換掉，不用另標 done；補記沒寫成的舊行留 done false（接受，lint 題清）。"""
+    rows = []
+    if previous and not previous.get("done", True):
+        note, note_by, changed = finish_fields(vault, previous)
+        rows.append(_complete_row(previous, INTERRUPTED_RESULT, note, note_by, changed, True, False))
+    month = month_of(turn_data["turn"])
+    opened = _open_row(turn_data)
+    if not rows or month_of(rows[0]["turn"]) == month:
+        _locked_edit(vault, month, _upsert_rows(rows + [opened]))
+        return
+    _locked_edit(vault, month, _upsert_rows([opened]))
+    try:
+        _locked_edit(vault, month_of(rows[0]["turn"]), _upsert_rows(rows))
+    except Exception as e:  # noqa: BLE001  第二把鎖不再往上丟（hook 整支要在 5 秒內）
+        ledger.log_error(vault, f"工作日誌補記上個月中斷沒寫成：{type(e).__name__}: {e}", source="journal")
 
 
-def record_program(vault, note, changed, command, turn_id=None):
-    """程式段（D-085）：追加一行 kind program。turn_id None 用現在時間組代號，不碰 turns/（kb init 用）。"""
+def record_program(vault, note, changed, command):
+    """程式段（D-085）：追加一行 kind program。代號一律用現在時間組（尾 0000，L2），月份就是現在；不碰 turns/。"""
     now = _now()
-    tid = turn_id or f"{now:%Y%m%d-%H%M%S}-0000"
+    tid = f"{now:%Y%m%d-%H%M%S}-0000"
     row = {
         "schema_version": SCHEMA_VERSION, "kind": "program", "turn": tid, "time": _iso(now),
         "command": command, "note": str(note or ""), "changed": _clean_changed(changed),
@@ -299,7 +326,8 @@ def floor_note(vault, turn_id):
 
 
 def cut_result(text, max_chars):
-    """結果截斷（D-061）：有「結論」或「摘要」標題就取那一段，沒有取整段；超過 max_chars 截掉加尾句。不壓空白。"""
+    """結果截斷（D-061）：有「結論」或「摘要」標題就取那一段（要換行才抽得到），沒有取整段；
+    再把空白壓成單一空格、再 mask_secrets、再截，超過 max_chars 截掉加尾句（測試後修正 M2，結果一律一行）。"""
     text = str(text or "")
     lines = text.split("\n")
     body = None
@@ -316,7 +344,8 @@ def cut_result(text, max_chars):
         body = "\n".join(lines[i + 1:end]).strip()
         break
     if not body:
-        body = text.strip()
+        body = text
+    body = _mask(" ".join(body.split()))
     if not body:
         return NO_TEXT_RESULT, False
     if len(body) > max_chars:

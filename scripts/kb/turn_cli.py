@@ -2,6 +2,7 @@
 note 給這一句的「做了」一句白話（D-084，AI 覆寫程式地板）；redact 把這一句的「問」換成遮好的句子（D-086、B-027）。
 CLI 由模型呼叫時拿不到 session_id，用 .system/turns/current.json（最近一句話的回合，B-019）。
 note、redact 進來的字一律再過 mask_secrets（多遮不改）；工作日誌那行存在才改，改了就重渲染。
+note、redact 先改 jsonl（永久紀錄優先）再改回合檔；鎖等 30 秒，等不到印一句 exit 3、什麼都沒寫（測試後修正 M4）。
 """
 import argparse
 import json
@@ -10,9 +11,12 @@ from pathlib import Path
 
 from kb import guard
 from kb._lib import credentials, journal, turn
+from kb._lib import io as kio
 from kb._lib.io import read_json, write_json_atomic
 
 NOT_IN_VAULT = "不在知識庫裡：這裡往上找不到 .system/sources.json"
+CLI_LOCK_TIMEOUT = 30
+LOCK_BUSY = "等不到工作日誌的鎖（別的指令正在寫），沒有寫入；請稍後再試"
 
 
 def add_arguments(sub):
@@ -30,8 +34,8 @@ def add_arguments(sub):
 def _note(vault, text):
     t = turn.current(vault)
     note = credentials.mask_secrets(str(text))
-    turn.set_note(vault, t.get("session_id"), note)
     journal.update_turn(vault, t["turn"], note=note, note_by="ai")
+    turn.set_note(vault, t.get("session_id"), note)
     print("記下了")
     return 0
 
@@ -39,13 +43,13 @@ def _note(vault, text):
 def _redact(vault, text):
     t = turn.current(vault)
     head = turn.prompt_head(vault, text)
+    journal.update_turn(vault, t["turn"], prompt=head)
     turn.set_prompt_head(vault, t.get("session_id"), head)
     meta = Path(vault) / turn.VERSIONS_REL / t["turn"] / "turn.json"
     if meta.is_file():
         data = read_json(meta, {}) or {}
         data["prompt_head"] = head
         write_json_atomic(meta, data)
-    journal.update_turn(vault, t["turn"], prompt=head)
     print(f"這一句的問已改成：「{head}」")
     return 0
 
@@ -55,11 +59,16 @@ def run(args):
     if vault is None:
         print(NOT_IN_VAULT)
         return 2
+    kio.LOCK_TIMEOUT = CLI_LOCK_TIMEOUT  # CLI 不受 hook 的時限，跟 folders／versions 一樣等 30 秒
     as_json = getattr(args, "json", False)
-    if args.turn_command == "note":
-        return _note(vault, args.text)
-    if args.turn_command == "redact":
-        return _redact(vault, args.text)
+    try:
+        if args.turn_command == "note":
+            return _note(vault, args.text)
+        if args.turn_command == "redact":
+            return _redact(vault, args.text)
+    except TimeoutError:
+        print(LOCK_BUSY)
+        return 3
     if args.turn_command == "approve":
         t = turn.approve(vault)
         if as_json:

@@ -59,6 +59,13 @@ class Recent(Base):
     def test_outside_vault_exits_2(self):
         self.assertEqual(run_kb("journal", "recent", cwd=self.tmp).returncode, 2)
 
+    def test_acceptance_34_n_must_be_positive(self):
+        """測試後修正 L4：--n 0、-1 是 argparse 錯誤，exit 2。"""
+        for n in ("0", "-1"):
+            r = run_kb("journal", "recent", "--n", n, cwd=self.V)
+            self.assertEqual(r.returncode, 2, n)
+            self.assertIn("--n", r.stderr)
+
 
 class Render(Base):
     def test_render_month_and_all(self):

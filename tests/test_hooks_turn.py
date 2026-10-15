@@ -150,6 +150,18 @@ class TurnHook(unittest.TestCase):
         run_hook(prompt_payload(self.V, "幫我登入 ERP，帳號 jie 密碼 abc123"))
         self.assertEqual(self.journal_rows()[0]["prompt"], "幫我登入 ERP，帳號███")
 
+    def test_acceptance_29_prompt_value_after_blank_line_is_masked(self):
+        """測試後修正 M2：回合檔、versions/<回合>/turn.json、jsonl 三處都 grep 不到值。"""
+        run_hook(prompt_payload(self.V, "幫我登入，密碼如下：\n\nabc123"))
+        sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
+        from kb._lib import turn
+        turn.before_write(self.V, str(self.V / "案子" / "信義王" / "信義王.md"), str(self.V), "Z1", SID)
+        meta = self.V / ".system" / "versions" / sess["turn"] / "turn.json"
+        self.assertTrue(meta.is_file())
+        for p in (self.turns / f"{SID}.json", meta, journal.jsonl_path(self.V, date.today().strftime("%Y-%m"))):
+            self.assertNotIn("abc123", p.read_text(encoding="utf-8"), p)
+        self.assertEqual(sess["prompt_head"], "幫我登入，密碼███")
+
     def test_previous_turn_without_stop_is_flushed_as_interrupted(self):
         run_hook(prompt_payload(self.V, "第三句"))
         run_hook(prompt_payload(self.V, "第四句"))
@@ -230,8 +242,8 @@ class TurnHook(unittest.TestCase):
         run_hook(prompt_payload(self.V, "鎖舊了"))
         self.assertIn("鎖舊了", [r["prompt"] for r in self.journal_rows()])
 
-    def test_flush_lock_timeout_skips_open_turn(self):
-        """疑義裁定 2：一支 hook 最多等一次鎖；flush 逾時就跳過 open_turn，回合照開。"""
+    def test_acceptance_32_unfinished_previous_and_held_lock_waits_once(self):
+        """驗收 32（L1）：前一回合 done false 時鎖被占著，補記與開口同一把鎖只等一次，5 秒內結束、log 一行、回合照開。"""
         run_hook(prompt_payload(self.V, "第一句"))
         p = journal.jsonl_path(self.V, date.today().strftime("%Y-%m"))
         lock = p.with_name(p.name + ".lock")

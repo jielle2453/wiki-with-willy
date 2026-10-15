@@ -164,5 +164,55 @@ class Redact(JournalBase):
         self.assertEqual(self.three(), ("一二三四五",) * 3)
 
 
+class LockTimeout(JournalBase):
+    """測試後修正 M4（驗收 31 的程式面）：CLI 等鎖 CLI_LOCK_TIMEOUT 秒，逾時印中文一句 exit 3、什麼都沒寫。
+    在程序內跑、把等待縮短，不用真的等 30 秒。"""
+
+    def setUp(self):
+        super().setUp()
+        turn.backup(self.V, "案子/信義王/信義王.md", self.t["turn"])
+        self.meta = self.V / ".system" / "versions" / self.t["turn"] / "turn.json"
+        p = journal.jsonl_path(self.V, self.month)
+        self.lock = p.with_name(p.name + ".lock")
+        self.lock.write_text("", encoding="utf-8")
+
+    def run_in_process(self, *argv):
+        import contextlib
+        import io
+        from unittest import mock
+        from kb import cli, turn_cli
+        from kb._lib import io as kio
+        out = io.StringIO()
+        cwd = os.getcwd()
+        os.chdir(self.V)
+        try:
+            with mock.patch.object(turn_cli, "CLI_LOCK_TIMEOUT", 0.5), \
+                    mock.patch.object(kio, "LOCK_TIMEOUT", kio.LOCK_TIMEOUT), contextlib.redirect_stdout(out):
+                code = cli.main(list(argv))
+        finally:
+            os.chdir(cwd)
+        return code, out.getvalue()
+
+    def test_cli_lock_timeout_is_30_seconds(self):
+        from kb import turn_cli
+        self.assertEqual(turn_cli.CLI_LOCK_TIMEOUT, 30)
+
+    def test_note_lock_timeout_exit_3_with_chinese_line(self):
+        code, out = self.run_in_process("turn", "note", "x")
+        self.assertEqual(code, 3)
+        self.assertEqual(out.strip(), "等不到工作日誌的鎖（別的指令正在寫），沒有寫入；請稍後再試")
+        self.assertEqual(self.sess()["note"], "")
+
+    def test_redact_lock_timeout_leaves_everything(self):
+        before = (self.sess(), self.meta.read_bytes())
+        cur = (self.V / ".system" / "turns" / "current.json").read_bytes()
+        code, out = self.run_in_process("turn", "redact", "y")
+        self.assertEqual(code, 3)
+        self.assertEqual(out.strip(), "等不到工作日誌的鎖（別的指令正在寫），沒有寫入；請稍後再試")
+        self.assertEqual((self.sess(), self.meta.read_bytes()), before)
+        self.assertEqual((self.V / ".system" / "turns" / "current.json").read_bytes(), cur)
+        self.assertEqual(self.row()["prompt"], "改一下")
+
+
 if __name__ == "__main__":
     unittest.main()

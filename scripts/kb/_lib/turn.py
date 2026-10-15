@@ -40,8 +40,23 @@ def _current_file(vault):
 
 
 def prompt_head(vault, prompt):
-    """先遮帳密再壓空白、截 prompt_head_max 字（D-081、B-027、B-028）：回合檔、versions/<回合>/turn.json、工作日誌的「問」都從這裡來。"""
-    return " ".join(credentials.mask_secrets(str(prompt or "")).split())[:config.get(vault, "prompt_head_max")]
+    """先壓空白再遮帳密、截 prompt_head_max 字（D-081、B-027、B-028）：回合檔、versions/<回合>/turn.json、工作日誌的「問」都從這裡來。
+    先壓再遮：值跟關鍵詞隔一個空行時 mask_secrets 會停在空行，壓成一行才遮得到（工作日誌測試後修正 M2）。"""
+    return credentials.mask_secrets(" ".join(str(prompt or "").split()))[:config.get(vault, "prompt_head_max")]
+
+
+def mint(vault, prompt):
+    """只產一個回合 dict、不寫 turns/（退回動作用，工作日誌測試後修正 M1）：代號尾 0000、照既有回合單調遞增。
+    呼叫端用 turn_dir(vault, id, info) 建 versions/<id>/turn.json；current.json 與 turns/<sid>.json 都不動。"""
+    now = _now().replace(microsecond=0)
+    latest = _latest_turn_time(vault, None, now)
+    if latest is not None and now <= latest:
+        now = latest + timedelta(seconds=1)
+    return {
+        "schema_version": 1, "turn": f"{now:%Y%m%d-%H%M%S}-0000", "session_id": "",
+        "started": now.strftime("%Y-%m-%dT%H:%M:%S"), "prompt_head": prompt_head(vault, prompt),
+        "approved": False, "note": "", "done": True,
+    }
 
 
 def start(vault, session_id, prompt):

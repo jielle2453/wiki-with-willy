@@ -1,6 +1,7 @@
 """Stop 工作日誌入口（D-083）：AI 答完一句話，把這回合那一行補完：結果、做了、改了、done。
 
-結果取 payload 的 last_assistant_message，先遮值再截（D-061、D-086）；沒有這個鍵（舊版 Claude Code）寫固定句，不解析 transcript。
+結果取 payload 的 last_assistant_message，壓成一行、遮值再截（D-061、D-086）；沒有這個鍵（舊版 Claude Code）寫固定句，不解析 transcript。
+日誌寫成後才 set_done；md 渲染失敗只寫 log，不擋 set_done。
 做了：模型叫過 kb turn note 就用它（note_by ai），否則程式地板句（note_by program，D-084）；改了：這回合的 manifest。
 只收第一次 Stop：回合檔 done 已是 true 就不做；turns/<sid>.json 不存在也不做，不退到 current.json（會記到別的對話）。
 stop_hook_active 不理：從不 block。任何例外寫 .system/hook-errors.log（source stop），永遠 exit 0、不輸出。
@@ -36,23 +37,17 @@ def main():
         sid = payload.get("session_id")
         if not sid:
             return
-        from kb._lib import config, credentials, journal, turn
+        from kb._lib import config, journal, turn
 
         data = turn._read_turn(turn._session_file(vault, sid))
         if not data or data.get("done"):
             return
         message = payload.get("last_assistant_message")
-        if isinstance(message, str):
-            result, truncated = journal.cut_result(credentials.mask_secrets(message),
-                                                   config.get(vault, "journal_result_max"))
+        if isinstance(message, str):  # cut_result 先抽段、壓成一行、遮值、再截（M2）
+            result, truncated = journal.cut_result(message, config.get(vault, "journal_result_max"))
         else:
             result, truncated = NO_MESSAGE, False
-        tid = data["turn"]
-        note = data.get("note") or ""
-        note_by = "ai" if note else "program"
-        if not note:
-            note = journal.floor_note(vault, tid)
-        changed = [{"path": e.get("path"), "action": e.get("action")} for e in turn.entries(vault, tid)]
+        note, note_by, changed = journal.finish_fields(vault, data)
         journal.complete_turn(vault, data, result, note, note_by, changed, interrupted=False, result_truncated=truncated)
         turn.set_done(vault, sid)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉

@@ -158,20 +158,25 @@ class UpdateTurn(Base):
         self.assertFalse(journal.jsonl_path(self.V, "2026-10").exists())
 
     def test_update_does_not_touch_program_line_with_same_turn(self):
-        journal.record_program(self.V, "已登記", [], "folders add", turn_id="20261015-180536-0000")
-        self.assertFalse(journal.update_turn(self.V, "20261015-180536-0000", note="x"))
+        journal.record_program(self.V, "已登記", [], "folders add")
+        tid = self.rows(this_month())[0]["turn"]
+        self.assertFalse(journal.update_turn(self.V, tid, note="x"))
 
 
 class Program(Base):
     def test_record_program_appends_and_never_upserts(self):
-        journal.record_program(self.V, "一", [], "folders add", turn_id="20261015-180536-0000")
-        journal.record_program(self.V, "二", [{"path": ".system/sources.json", "action": "modify"}], "folders exclude",
-                               turn_id="20261015-180536-0000")
-        rows = self.rows("2026-10")
+        journal.record_program(self.V, "一", [], "folders add")
+        journal.record_program(self.V, "二", [{"path": ".system/sources.json", "action": "modify"}], "folders exclude")
+        rows = self.rows(this_month())
         self.assertEqual([r["note"] for r in rows], ["一", "二"])
-        self.assertEqual(rows[1], {"schema_version": 1, "kind": "program", "turn": "20261015-180536-0000",
+        self.assertEqual(rows[1], {"schema_version": 1, "kind": "program", "turn": rows[1]["turn"],
                                    "time": rows[1]["time"], "command": "folders exclude", "note": "二",
                                    "changed": [{"path": ".system/sources.json", "action": "modify"}]})
+
+    def test_record_program_has_no_turn_id_parameter(self):
+        """測試後修正 L2：程式段一律用現在時間組新代號，月份就是現在。"""
+        with self.assertRaises(TypeError):
+            journal.record_program(self.V, "x", [], "folders add", turn_id="20260901-120000-0000")
 
     def test_record_program_without_turn_uses_now_and_does_not_touch_turns(self):
         journal.record_program(self.V, "建立知識庫：建了 3 項", [], "init")
@@ -191,14 +196,87 @@ class BadLines(Base):
         p.write_text(good + "\n{bad\n", encoding="utf-8")
         rows = journal.read_lines(self.V, "2026-10")
         self.assertEqual([r["note"] for r in rows], ["建立"])
+        self.assertEqual(len(self.errors()), 0)  # 測試後修正 L3：只有寫入路徑記
+        journal.read_lines(self.V, "2026-10", log=True)
         self.assertEqual(len(self.errors()), 1)
         journal.open_turn(self.V, turn_data("20261015-180536-test"))
         lines = p.read_text(encoding="utf-8").splitlines()
         self.assertIn("{bad", lines)
         self.assertEqual(len(lines), 3)
-        self.assertEqual(len(self.errors()), 2)  # read_lines 一次、open_turn 一次；渲染不再記
+        self.assertEqual(len(self.errors()), 2)  # open_turn 記一次；渲染不再記
         md = journal.md_path(self.V, "2026-10").read_text(encoding="utf-8")
         self.assertIn("程式 init", md)
+
+    def test_recent_does_not_log_bad_lines(self):
+        journal.open_turn(self.V, turn_data(month_turn_id(this_month())))
+        p = journal.jsonl_path(self.V, this_month())
+        p.write_text(p.read_text(encoding="utf-8") + "{bad\n", encoding="utf-8")
+        self.assertEqual(len(journal.recent(self.V, 5)), 1)
+        self.assertEqual(self.errors(), [])
+
+
+class RenderFailure(Base):
+    def test_render_error_is_logged_not_raised(self):
+        """測試後修正 M3：md 寫不了只寫 log，jsonl 照寫、呼叫端不知道（md 可用 journal render 重建）。"""
+        md = journal.md_path(self.V, "2026-10")
+        md.mkdir(parents=True)
+        td = turn_data("20261015-180536-test")
+        journal.open_turn(self.V, td)
+        journal.complete_turn(self.V, td, "好了", "沒有改動", "program", [], False)
+        self.assertTrue(self.rows("2026-10")[0]["done"])
+        self.assertEqual(len(self.errors()), 2)
+        self.assertEqual(self.errors()[0].split("\t")[1], "journal")
+
+
+class BeginTurn(Base):
+    """測試後修正 L1：上一句中斷補記與這一句開口同月就一次鎖。"""
+
+    def test_flush_previous_and_open_new_in_one_lock(self):
+        prev = turn_data("20261015-180536-test", "第一句")
+        journal.open_turn(self.V, prev)
+        new = turn_data("20261015-180600-test", "第二句")
+        calls = []
+        real = journal._lock
+
+        def counting(p):
+            calls.append(p)
+            return real(p)
+        from unittest import mock
+        with mock.patch.object(journal, "_lock", counting):
+            journal.begin_turn(self.V, prev, new)
+        self.assertEqual(len(calls), 1)
+        rows = {r["prompt"]: r for r in self.rows("2026-10")}
+        self.assertEqual((rows["第一句"]["interrupted"], rows["第一句"]["result"]), (True, journal.INTERRUPTED_RESULT))
+        self.assertFalse(rows["第二句"]["done"])
+
+    def test_previous_done_or_missing_only_opens(self):
+        prev = dict(turn_data("20261015-180536-test", "第一句"), done=True)
+        journal.begin_turn(self.V, prev, turn_data("20261015-180600-test", "第二句"))
+        journal.begin_turn(self.V, None, turn_data("20261015-180700-test", "第三句"))
+        self.assertEqual([r["prompt"] for r in self.rows("2026-10")], ["第二句", "第三句"])
+
+    def test_previous_ai_note_is_kept(self):
+        prev = dict(turn_data("20261015-180536-test", "第一句"), note="中斷前記的")
+        journal.begin_turn(self.V, prev, turn_data("20261015-180600-test", "第二句"))
+        first = self.rows("2026-10")[0]
+        self.assertEqual((first["note"], first["note_by"]), ("中斷前記的", "ai"))
+
+    def test_cross_month_previous_goes_to_its_month(self):
+        prev = turn_data("20260930-235959-test", "九月")
+        journal.begin_turn(self.V, prev, turn_data("20261001-000010-test", "十月"))
+        self.assertTrue(self.rows("2026-09")[0]["interrupted"])
+        self.assertEqual(self.rows("2026-10")[0]["prompt"], "十月")
+
+
+class LockPermission(Base):
+    def test_permission_error_until_deadline_is_timeout(self):
+        """測試後修正 L1：_lock 到期還是 PermissionError 也算逾時（TimeoutError）。"""
+        from unittest import mock
+        from kb._lib import io as kio
+        with mock.patch.object(kio, "LOCK_TIMEOUT", 0.3), \
+                mock.patch.object(journal.FileLock, "__enter__", side_effect=PermissionError("拒絕")):
+            with self.assertRaises(TimeoutError):
+                journal.open_turn(self.V, turn_data("20261015-180536-test"))
 
 
 class FloorNote(Base):
@@ -236,8 +314,9 @@ class FloorNote(Base):
 
 
 class CutResult(unittest.TestCase):
-    def test_whole_text(self):
-        self.assertEqual(journal.cut_result("  好了。\n\n下一步看合約。 \n", 300), ("好了。\n\n下一步看合約。", False))
+    def test_whole_text_is_one_line(self):
+        """測試後修正 M2：抽段後一律壓成一行再遮再截。"""
+        self.assertEqual(journal.cut_result("  好了。\n\n下一步看合約。 \n", 300), ("好了。 下一步看合約。", False))
 
     def test_conclusion_section(self):
         text = "改好了。\n\n## 結論\n信義王改成已完工。\n\n## 細節\n很多字"
@@ -245,7 +324,15 @@ class CutResult(unittest.TestCase):
 
     def test_summary_section_runs_to_next_same_or_higher_heading(self):
         text = "# 報告\n前言\n## 摘要\n第一段\n### 小節\n小節內容\n## 其他\n不要"
-        self.assertEqual(journal.cut_result(text, 300), ("第一段\n### 小節\n小節內容", False))
+        self.assertEqual(journal.cut_result(text, 300), ("第一段 ### 小節 小節內容", False))
+
+    def test_value_after_blank_line_is_masked(self):
+        """M2：值跟關鍵詞隔空行，先壓空白再遮才遮得到。"""
+        self.assertEqual(journal.cut_result("密碼如下：\n\nabc123", 300), ("密碼███", False))
+
+    def test_mask_before_cut(self):
+        """先遮再截：遮掉的值不佔字數（先截會截在 x 中間、判成被截斷）。"""
+        self.assertEqual(journal.cut_result("字" * 290 + "，密碼 " + "x" * 50, 300), ("字" * 290 + "，密碼███", False))
 
     def test_truncated_adds_tail(self):
         out, cut = journal.cut_result("字" * 400, 300)
@@ -261,10 +348,10 @@ class Recent(Base):
     def test_recent_across_months_newest_first(self):
         cur = this_month()
         prev = prev_month(cur)
-        journal.record_program(self.V, "上月一", [], "init", turn_id=month_turn_id(prev, "10"))
-        journal.record_program(self.V, "上月二", [], "folders add", turn_id=month_turn_id(prev, "11"))
+        journal.open_turn(self.V, turn_data(month_turn_id(prev, "10"), "上月一"))
+        journal.open_turn(self.V, turn_data(month_turn_id(prev, "11"), "上月二"))
         journal.open_turn(self.V, turn_data(month_turn_id(cur, "01")))
-        self.assertEqual([r.get("note", r.get("prompt")) for r in journal.recent(self.V, 2)], ["改一下", "上月二"])
+        self.assertEqual([r["prompt"] for r in journal.recent(self.V, 2)], ["改一下", "上月二"])
         self.assertEqual(len(journal.recent(self.V, 10)), 3)
 
     def test_recent_empty(self):

@@ -124,7 +124,7 @@ def run(args):
     if created:  # 程式段（D-085）：只數骨架項目；沒有缺的不寫；不開回合
         note = f"建立知識庫：建了 {len(created)} 項" if not existed else f"補齊了 {len(created)} 項"
         journal_cli.record_program_or_warn(p, note, [{"path": rel, "action": "create"} for rel in created], "init",
-                                           journal_cli.in_conversation(p), cli_turn=False)
+                                           journal_cli.in_conversation(p))
     if as_json:
         print(json.dumps({"vault": str(p), "created": created, "existing": existing}, ensure_ascii=False))
     elif not existed:

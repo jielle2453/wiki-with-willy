@@ -121,6 +121,19 @@ class ExtractPaths(unittest.TestCase):
         self.assertIn(n("C:/x/raw/行政/x/s.xlsx"), got)
         self.assertIn(n("C:/x/r3"), cmdparse.extract_paths("rm -rf C:/x/r{2,3}", CWD))
 
+    def test_brace_head(self):
+        """第十一輪保底：含 { 的 token 回 { 之前的資料夾（沒分隔符就是 .）；{ 在開頭或前面是 $／@ 的回 None。"""
+        self.assertEqual(cmdparse.brace_head("../raw/行政/{薪資,x}/s.xlsx"), "../raw/行政")
+        self.assertEqual(cmdparse.brace_head("../r{2..3}"), "..")
+        self.assertEqual(cmdparse.brace_head("C:\\x\\r{2,3}"), "C:\\x")
+        self.assertEqual(cmdparse.brace_head("r{2,3}"), ".")
+        for text in ("{", "{a,b}", "${X}", "@{a=1}", "plain", ""):
+            with self.subTest(text=text):
+                self.assertIsNone(cmdparse.brace_head(text), text)
+        got = cmdparse.extract_paths("cat C:/x/raw/行政/{a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,薪資}/s.xlsx", CWD)
+        self.assertIn(n("C:/x/raw/行政"), got)
+        self.assertIn(n("C:/x"), cmdparse.extract_paths("rm -rf C:/x/r{2..3}", CWD))
+
     def test_is_wildcard(self):
         """第十輪 A6：候選要含 *，或同時含 ?／[ 與路徑分隔符且不是網址。"""
         for text in ("*.md", "../客戶*", "a/?b", "../r[^x]", "C:\\x\\[a]", "薪?/"):

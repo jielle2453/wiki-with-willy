@@ -175,6 +175,9 @@ def _tokens_q(cmd, globs_in_quotes=False):
             text, unquoted = "".join(buf), "".join(ubuf)
             for form in cmdparse.brace_expand(text):
                 out.append((form, quoted, cmdparse.is_wildcard(form, None if globs_in_quotes else unquoted), after_redirect))
+            head = cmdparse.brace_head(text) if "{" in text else None
+            if head is not None:
+                out.append((head, quoted, False, False))  # 第十一輪保底：{ 之前的資料夾也當路徑（讀取就走訪）
             after_redirect = False
         buf, ubuf, quoted = [], [], False
 
@@ -607,10 +610,18 @@ def decide(payload):
             return Decision("pass", "", "", "", [], vault)
         sources = sources_lib.load(vault)
         if tool in ("Glob", "Grep"):
+            target_n = normalize(str(target), cwd)
+            # 第十一輪保底：path 或樣式含 { 時，{ 之前的資料夾先做區判斷（Glob path "../raw/行政/{薪資,x}/*" 要 Z10b）
+            for text, base in ((str(target), cwd), (str(ti.get("pattern") or ""), target_n), (str(ti.get("glob") or ""), target_n)):
+                head = cmdparse.brace_head(text) if "{" in text else None
+                if head is not None:
+                    d = _file_tool(tool, normalize(head, base), cwd, vault, sources)
+                    if d.decision == "deny":
+                        return d
             # pattern／glob 帶絕對路徑或 .. 時，它的固定前綴也是讀的目標（審閱補）
             pattern = str(ti.get("pattern") or ti.get("glob") or "").replace("\\", "/")
             if pattern and (re.match(r"^([a-zA-Z]:/|/)", pattern) or ".." in pattern.split("/")):
-                head = normalize(_pattern_head(pattern), normalize(str(target), cwd))
+                head = normalize(_pattern_head(pattern), target_n)
                 d = _file_tool(tool, head, cwd, vault, sources)
                 if d.decision == "deny":
                     return d

@@ -863,6 +863,22 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("Bash", "rm -rf ../r{2,3}")
         self.assertEqual((d.decision, d.reason_code), ("deny", "readonly_source"), d)
 
+    # 第十一輪／驗收 94：含 { 的 token 或 Glob／Grep 樣式，一律先拿 { 之前的資料夾做區判斷（保底），展開只拿來多擋
+    def test_94_brace_head_folder_is_always_a_candidate(self):
+        groups = ",".join("abcdefghijklmnopqrst") + ",薪資"  # 21 組，超過展開上限，薪資被截掉
+        d = self.decide("Bash", f"cat ../raw/行政/{{{groups}}}/s.xlsx")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+        self._register("r2", "r3")
+        d = self.decide("Bash", "rm -rf ../r{2..3}")  # {N..M} 不展開，.. 是 tmp，含排除夾
+        self.assertEqual(d.decision, "deny", d)
+        self.assertIn(d.reason_code, ("excluded_inside", "readonly_source"), d)
+        d = guard.decide({"tool_name": "Glob", "tool_input": {"path": "../raw/行政/{薪資,x}/*", "pattern": "*"}, "cwd": str(self.V)})
+        self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+        d = guard.decide({"tool_name": "Grep", "tool_input": {"path": "../raw/行政", "pattern": "x", "glob": "{薪資,x}/*"}, "cwd": str(self.V)})
+        self.assertEqual((d.decision, d.reason_code), ("deny", "excluded_inside"), d)
+        d = self.decide("PowerShell", "gci /tmp | ForEach-Object { $_ } | Out-File /tmp/o")  # 單獨的 { 沒有前綴，不當路徑
+        self.assertEqual(d.decision, "pass", d)
+
     # 第十輪 A2／驗收 90：cd 目標含 […] 字元類而 glob 展不開時退回前綴夾
     def test_90_cd_char_class_falls_back_to_prefix_folder(self):
         d = self.decide("Bash", "cd ../raw/行政/薪[^x] && cat s.xlsx")

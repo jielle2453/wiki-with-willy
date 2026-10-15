@@ -153,6 +153,22 @@ def brace_expand(text, limit=BRACE_LIMIT):
             return out
 
 
+def brace_head(text):
+    """第十一輪保底：token 含 { 就回 { 之前的資料夾（跟原守門 eba223d 的萬用字元前綴夾一樣）——有分隔符取最後一個夾，沒有就是 .；
+    { 在開頭（ForEach-Object { $_ }）或前面是 $／@（${X}、@{a=1}）回 None。展開截斷（超過上限）、{N..M} 不展開都不影響這個保底。"""
+    idx = text.find("{")
+    if idx <= 0:
+        return None
+    head = text[:idx]
+    if head[-1] in "$@":
+        return None
+    if "/" in head or "\\" in head:
+        folder = re.split(r"[\\/]", head)
+        folder = "/".join(folder[:-1]) if "/" in head else "\\".join(folder[:-1])
+        return folder or ("/" if head.startswith("/") else None)
+    return "."
+
+
 def is_wildcard(text, unquoted=None):
     """第十輪 A6：萬用字元候選要含 *，或同時含 ?／[ 與路徑分隔符且不是網址（://）。
     unquoted：只算引號外的字元（Bash 引號裡的 * ? [ 是文字，Q7）；分隔符與網址看整個 token。"""
@@ -225,6 +241,9 @@ def _walk(command, cwd, powershell=False):
     for token, quoted, after_redirect, first, _qchar in _tokens(cleaned):
         if first:
             verb = token.lower().replace("\\", "/").rsplit("/", 1)[-1]
+        # 第十一輪保底：{ 之前的資料夾一律是候選，經區判斷（Z10／Z10b／上層）；排在展開之後，展開命中的理由（readonly_source）比前綴夾具體
+        head = brace_head(token) if "{" in token and not (first and not expect_cd_target) else None
+        head_p = normalize(head, base) if head is not None else None
         if expect_cd_target:
             if token.startswith("-"):
                 continue  # Set-Location -Path X、cd -- X：旗標跳過，下一個才是目標
@@ -236,6 +255,8 @@ def _walk(command, cwd, powershell=False):
                 after_cd = True
                 for form, target in zip(forms, targets):
                     yield form, target
+                if head is not None and (_ABS_START.match(head) or _relative_resolves(head, head_p)):
+                    yield head, head_p
                 continue
         if token.lower() in _CD:
             expect_cd_target = True
@@ -248,6 +269,8 @@ def _walk(command, cwd, powershell=False):
                     p = normalize(form, base)
                     if _ABS_START.match(form) or _relative_resolves(form, p):
                         yield form, p
+        if head is not None and (_ABS_START.match(head) or _relative_resolves(head, head_p)):
+            yield head, head_p
 
 
 def extract_paths(command, cwd, powershell=False):

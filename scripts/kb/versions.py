@@ -192,7 +192,7 @@ def _undo_revert_marks(vault, original_turn):
         inventory.set_status(vault, back, "active")
 
 
-def _revert(vault, code, delete_outputs, as_json):
+def _revert(vault, code, delete_outputs, as_json, conversation=False):
     all_turns = turns(vault)
     cands = [t for t in all_turns if not t["reverted"] and (t["entries"] or t["reverted_turn"])]
     if not cands:
@@ -265,7 +265,7 @@ def _revert(vault, code, delete_outputs, as_json):
     journal_cli.record_program_or_warn(
         vault, sentence,
         [{"path": rel, "action": "modify"} for rel in restored] + [{"path": rel, "action": "delete"} for rel in removed],
-        "versions revert", turn_id=rt["turn"])
+        "versions revert", conversation)
     if as_json:
         print(json.dumps({
             "turn": target["turn"], "prompt_head": target["prompt_head"], "by_turn": rt["turn"],
@@ -288,7 +288,7 @@ def _revert(vault, code, delete_outputs, as_json):
     return 0
 
 
-def _delete_outputs(vault, code, as_json):
+def _delete_outputs(vault, code, as_json, conversation=False):
     """第一輪 H1：「退回 → 客戶說刪 → 刪」的第二步。只刪已退回回合裡 status 還是 turn_reverted 的成品；
     三道關：這一句話已經改過的不刪（R2-2，連 superseded 的也先告知）、指紋不同的不刪（R2-3）、檔已不在只改 status（R2-L1）。
     """
@@ -337,7 +337,7 @@ def _delete_outputs(vault, code, as_json):
     sentence = f"已刪 {len(deleted)} 份成品（回合 {target['turn']}）"
     if deleted:  # 刪 0 份不寫段（疑義裁定 4）
         journal_cli.record_program_or_warn(vault, sentence, [{"path": rel, "action": "delete"} for rel in deleted],
-                                           "versions delete-outputs", turn_id=rt["turn"])
+                                           "versions delete-outputs", conversation)
     if as_json:
         print(json.dumps({"turn": target["turn"], "by_turn": rt["turn"], "deleted": deleted, "missing": missing,
                           "kept": kept_msgs}, ensure_ascii=False))
@@ -362,6 +362,8 @@ def run(args):
     as_json = getattr(args, "json", False)
     if args.versions_command == "list":
         return _list(vault, args.n, as_json)
+    # 對話裡叫的要在動作前判斷：退回可能自己開一個帶 sid 的新回合（D-085 補）
+    conversation = journal_cli.in_conversation(vault)
     if args.versions_command == "delete-outputs":
-        return _delete_outputs(vault, args.code, as_json)
-    return _revert(vault, args.code, args.delete_outputs, as_json)
+        return _delete_outputs(vault, args.code, as_json, conversation)
+    return _revert(vault, args.code, args.delete_outputs, as_json, conversation)

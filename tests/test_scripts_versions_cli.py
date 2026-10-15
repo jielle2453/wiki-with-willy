@@ -599,6 +599,17 @@ class VersionsJournal(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.program_rows(), [])
 
+    def test_finished_conversation_turn_writes_program_line_with_new_turn(self):
+        """D-085 補：對話已答完（done true）後在終端機退回，寫程式段，turn 不掛到那個對話回合。"""
+        t = self.modify_card_in_turn()
+        turn.set_done(self.V, SID)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn(rows[0]["turn"], (t["turn"], turn.current(self.V)["turn"]))
+        self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")
+
 
 if __name__ == "__main__":
     unittest.main()

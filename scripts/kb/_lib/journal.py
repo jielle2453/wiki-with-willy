@@ -237,14 +237,17 @@ def update_turn(vault, turn_id, **fields):
 
 
 def flush_unfinished(vault, session_id):
-    """這個 session 上一回合沒等到 Stop（被中斷）：用中斷句、地板句、manifest 補記那行並標 done。回有沒有補。"""
+    """這個 session 上一回合沒等到 Stop（被中斷）：用中斷句、做了、manifest 補記那行並標 done。回有沒有補。
+    做了跟 Stop 同一條規則（D-084）：中斷前模型叫過 turn note 就用它（note_by ai），沒有才地板句。"""
     if not session_id:
         return False
     data = turn._read_turn(turn._session_file(vault, session_id))
     if not data or data.get("done", True):
         return False
     tid = data["turn"]
-    complete_turn(vault, data, INTERRUPTED_RESULT, floor_note(vault, tid), "program", turn.entries(vault, tid),
+    note = data.get("note") or ""
+    note_by = "ai" if note else "program"
+    complete_turn(vault, data, INTERRUPTED_RESULT, note or floor_note(vault, tid), note_by, turn.entries(vault, tid),
                   interrupted=True, result_truncated=False)
     turn.set_done(vault, session_id)
     return True

@@ -1,5 +1,5 @@
 """kb journal recent／render：印最近幾段工作日誌（回答「最近改了什麼」，D-065）；從 jsonl 重渲染 md（D-067，給 lint 與排除題用）。
-record_program_or_warn 給 init、folders、versions 寫程式段（D-085）：只在 CLI 自己的回合（session_id 空）才寫，
+record_program_or_warn 給 init、folders、versions 寫程式段（D-085）：對話裡叫的（有 sid 且還沒答完）不寫，
 寫失敗印一行到 stderr，不改 exit code。
 """
 import argparse
@@ -76,16 +76,27 @@ def run(args):
 
 
 def in_conversation(vault):
-    """目前回合是對話開的（有 session_id）：CLI 的改動併進那一句，不另寫程式段（D-085）。不開新回合。"""
-    data = turn._read_turn(turn._current_file(vault))
-    return bool(data and data.get("session_id"))
-
-
-def record_program_or_warn(vault, note, changed, command, turn_id=None):
-    """程式段：對話裡叫的不寫；寫失敗（鎖、IO）印一行到 stderr，不擋指令。"""
+    """對話裡叫的（D-085 補）：current.json 有 session_id 且 done 為 false，改動併進那一句、Stop 會補記，不另寫程式段。
+    對話答完（done true）後在終端機跑的不算。只讀不開新回合；指令一開始就判斷（退回會自己開帶 sid 的回合）。"""
     try:
-        if in_conversation(vault):
+        data = turn._read_turn(turn._current_file(vault))
+    except OSError:
+        return False
+    return bool(data and data.get("session_id") and not data.get("done"))
+
+
+def record_program_or_warn(vault, note, changed, command, conversation, cli_turn=True):
+    """程式段：conversation（指令開始時的 in_conversation）為真不寫。代號：cli_turn 且 current.json 是 CLI 自己的回合
+    （session_id 空）就沿用它，否則 None 讓 record_program 用現在時間組（不掛到已結束的對話回合）。
+    寫失敗（鎖、IO）印一行到 stderr，不擋指令。"""
+    try:
+        if conversation:
             return
+        turn_id = None
+        if cli_turn:
+            cur = turn._read_turn(turn._current_file(vault))
+            if cur and not cur.get("session_id"):
+                turn_id = cur["turn"]
         journal.record_program(vault, note, changed, command, turn_id=turn_id)
     except Exception as e:  # noqa: BLE001  日誌沒記到不能讓指令失敗
         print(f"工作日誌沒記到：{type(e).__name__}: {e}", file=sys.stderr)

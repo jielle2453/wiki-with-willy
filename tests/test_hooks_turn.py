@@ -164,6 +164,18 @@ class TurnHook(unittest.TestCase):
         md = self.md()
         self.assertLess(md.index("第四句"), md.index("第三句"))  # 最新在上
 
+    def test_acceptance_26_flush_keeps_ai_note(self):
+        """驗收 26（D-084）：中斷前模型叫過 turn note，補記的做了用它、note_by ai。"""
+        run_hook(prompt_payload(self.V, "第一句"))
+        kb = ROOT / "scripts" / "kb.py"
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        r = subprocess.run([sys.executable, str(kb), "turn", "note", "中斷前記的"], capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(self.V), env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        run_hook(prompt_payload(self.V, "第二句"))
+        first = {r["prompt"]: r for r in self.journal_rows()}["第一句"]
+        self.assertEqual((first["note"], first["note_by"], first["interrupted"]), ("中斷前記的", "ai", True))
+
     def test_old_turn_file_without_done_is_not_flushed(self):
         """疑義裁定 3：升級前的回合檔沒有 done 鍵，不補記。"""
         self.turns.mkdir(parents=True)

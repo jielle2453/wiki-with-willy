@@ -502,15 +502,46 @@ class FoldersJournal(Base):
         self.assertTrue(r.stderr.startswith("工作日誌沒記到："), r.stderr)
         self.assertEqual(len(r.stderr.splitlines()), 1)
 
-    def test_inside_conversation_turn_writes_nothing(self):
+    def write_current(self, done):
         turns = self.V / ".system" / "turns"
         turns.mkdir(parents=True, exist_ok=True)
-        (turns / "current.json").write_text(json.dumps({"schema_version": 1, "turn": "20261016-100000-test",
-                                                        "session_id": "test-sid", "started": "2026-10-16T10:00:00",
-                                                        "prompt_head": "加資料夾", "approved": False}), encoding="utf-8")
+        data = {"schema_version": 1, "turn": "20261016-100000-test", "session_id": "test-sid",
+                "started": "2026-10-16T10:00:00", "prompt_head": "加資料夾", "approved": False, "note": "", "done": done}
+        (turns / "current.json").write_text(json.dumps(data), encoding="utf-8")
+        return data
+
+    def test_inside_conversation_turn_writes_nothing(self):
+        self.write_current(done=False)
         r = self.add("../raw/行政")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.program_rows(), [])
+
+    def test_finished_conversation_turn_writes_program_line_with_new_turn(self):
+        """D-085 補（驗收 25 的程式面）：current.json 有 sid 但 done true（對話已答完）→ 寫程式段，turn 是新代號。"""
+        cur = self.write_current(done=True)
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["turn"], cur["turn"])
+        self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")
+
+    def test_acceptance_25_after_stop_folders_add_writes_program_line(self):
+        """驗收 25：UserPromptSubmit、Stop（回合 done），再在終端機跑 folders add → 多一行 program，turn 不是那回合。"""
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        for hook, data in (("turn.py", {"session_id": "test-sid", "cwd": str(self.V), "prompt": "看一下",
+                                        "hook_event_name": "UserPromptSubmit"}),
+                           ("stop.py", {"session_id": "test-sid", "cwd": str(self.V), "hook_event_name": "Stop",
+                                        "stop_hook_active": False, "last_assistant_message": "好了"})):
+            r = subprocess.run([sys.executable, str(ROOT / "hooks" / hook)], input=json.dumps(data, ensure_ascii=False),
+                               capture_output=True, text=True, encoding="utf-8", env=env)
+            self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        tid = json.loads((self.V / ".system" / "turns" / "test-sid.json").read_text(encoding="utf-8"))["turn"]
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["turn"], tid)
 
 
 if __name__ == "__main__":

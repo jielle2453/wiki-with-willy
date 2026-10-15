@@ -133,9 +133,10 @@ def _sources_path(vault):
 
 
 def _journal(vault, note, command):
-    """程式段（D-085）：note 是印給人的第一行；對話開的回合裡叫的不寫，改動已併進那一句。"""
+    """程式段（D-085）：note 是印給人的第一行；對話裡叫的（有 sid 且還沒答完）不寫，改動已併進那一句。
+    folders 不會開帶 sid 的回合，所以寫的時候判斷跟指令開始時一樣。"""
     changed = [{"path": sources_lib.SOURCES_REL, "action": "modify"}]
-    journal_cli.record_program_or_warn(vault, note, changed, command, turn_id=turn.current(vault)["turn"])
+    journal_cli.record_program_or_warn(vault, note, changed, command, journal_cli.in_conversation(vault))
 
 
 def _backup_then_write(vault, data):

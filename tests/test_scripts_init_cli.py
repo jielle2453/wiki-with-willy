@@ -216,7 +216,8 @@ class InitJournal(unittest.TestCase):
         turns.mkdir()
         (turns / "current.json").write_text(json.dumps({"schema_version": 1, "turn": "20261016-100000-test",
                                                         "session_id": "test-sid", "started": "2026-10-16T10:00:00",
-                                                        "prompt_head": "補齊", "approved": False}), encoding="utf-8")
+                                                        "prompt_head": "補齊", "approved": False, "note": "",
+                                                        "done": False}), encoding="utf-8")
         shutil.rmtree(self.V / "收件匣")
         r = run_kb("init", str(self.V), cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stderr)

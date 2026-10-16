@@ -1,12 +1,15 @@
-"""kb folders add／exclude／list：登記來源資料夾、排除裡面的夾或檔、列登記表（D-077、D-021 補、D-042、D-073）。
+"""kb folders add／exclude／remove／include／list：登記來源資料夾、排除裡面的夾或檔、拿掉來源、取消排除、列登記表
+（D-077、D-021 補、D-042、D-073、specs/2026-10-16-manage.md）。
 
 add 先過拒絕條件（不存在、整顆磁碟、系統夾、跟總資料夾或既有來源互相包含、另一個知識庫，I-050、I-054），
 再數份數並列出憑證樣式的檔（credentials.scan_all，只數、不讀內容），spec 用 paths.compress_spec 壓成可攜；
 讀、檢查重疊與別名、備份、寫四步在同一把 FileLock 裡（I-080），改 sources.json 前先備進目前回合（D-074）。
 exclude 的對象要真的存在（I-033），spec 相對該來源根；寫回時有 id 用 id、沒有用 alias，找不到就不存檔；兩種 kind 守門都不讀（D-024）。
+remove 照別名拿掉整筆（含它的排除；別名去頭尾空白與結尾的點，跟 add 擋重複一樣不分大小寫），客戶的檔不動；
+include 只比字串（排除的夾可能已被刪），刪 excludes 裡 root 相等的那列；拒絕分三種：不在登記來源、在某條排除裡面、沒被排除。
 --check 只印報告不寫；拒絕一律第一行原因、exit 3；sources.json 壞掉也是一行原因 exit 3；argparse 參數錯 exit 2。
 印給人看的路徑用原始大小寫。往上找知識庫一律 guard.find_vault。不碰 settings.json（D-079）。
-add、exclude 寫成功後記一段工作日誌程式段（D-085），note 是印給人的第一行；--check、list 不記。
+add、exclude、remove、include 寫成功後記一段工作日誌程式段（D-085），note 是印給人的第一行；--check、list 不記。
 """
 import argparse
 import contextlib
@@ -43,8 +46,12 @@ def add_arguments(sub):
     e.add_argument("path", help="來源裡的夾或檔")
     e.add_argument("--kind", required=True, choices=("hidden", "unused"), help="hidden 不想讓 AI 看到；unused 用不到")
     e.add_argument("--reason", default="", help="一句原因")
+    rm = subs.add_parser("remove", help="拿掉一個來源（含它的排除）", description="拿掉一個來源（含它的排除）；客戶的檔不動。")
+    rm.add_argument("alias", help="來源的別名")
+    inc = subs.add_parser("include", help="取消排除一個夾或檔", description="取消排除一個夾或檔；路徑不存在也可以。")
+    inc.add_argument("path", help="排除過的夾或檔")
     ls = subs.add_parser("list", help="列出登記的來源與排除", description="列出登記的來源與排除。")
-    for p in (a, e, ls):
+    for p in (a, e, rm, inc, ls):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -230,7 +237,7 @@ def _exclude(vault, args, as_json):
         if best is None:
             return _reject(f"{t} 不在任何登記的來源裡；先用 folders add 登記")
         if tn == best["root"]:
-            return _reject("整個來源的拿掉這版還沒有")
+            return _reject(f"整個來源用 folders remove {best['alias']}")
         for ex in best["excludes"]:
             if inside(tn, ex["root"]):
                 return _reject(f"已經在排除裡：{_realcase(ex['root'])}")
@@ -249,6 +256,63 @@ def _exclude(vault, args, as_json):
     _journal(vault, first, "folders exclude")
     if as_json:
         print(json.dumps({"source_id": best["id"], "alias": best["alias"], **row}, ensure_ascii=False))
+        return 0
+    print(first)
+    return 0
+
+
+def _remove(vault, args, as_json):
+    wanted = _clean_alias(args.alias.strip())
+    if not wanted:
+        return _reject("別名不能是空的；先用 folders list 看有哪些來源")
+    with FileLock(_sources_path(vault)):
+        raw = sources_lib.load_raw(vault)
+        low = wanted.lower()
+        entry = next((s for s in raw["sources"] if str(s.get("alias", "")).lower() == low), None)
+        if entry is None:
+            return _reject(f"沒有叫「{wanted}」的來源")
+        raw["sources"].remove(entry)
+        _backup_then_write(vault, raw)
+    alias = entry.get("alias", "")
+    first = f"已拿掉來源「{alias}」；你的檔案沒動，從現在起不讀它；說「退回上一版」救得回。"
+    _journal(vault, first, "folders remove")
+    if as_json:
+        print(json.dumps({"id": entry.get("id", ""), "alias": alias, "spec": entry.get("spec", "")}, ensure_ascii=False))
+        return 0
+    print(first)
+    return 0
+
+
+def _include(vault, args, as_json):
+    t = Path(args.path).resolve()
+    tn = normalize(str(t), None)
+    with FileLock(_sources_path(vault)):
+        raw = sources_lib.load_raw(vault)
+        rows, in_source = [], False  # rows：(來源, 排除列, 排除展開後的 root)
+        for src in raw["sources"]:
+            root = resolve_spec(src["spec"], str(vault)) if src.get("spec") else None
+            if root is None:
+                continue
+            in_source = in_source or inside(tn, root)
+            rows += [(src, ex, resolve_spec(ex["spec"], root)) for ex in src.get("excludes") or [] if ex.get("spec")]
+        found = next(((src, ex) for src, ex, ex_root in rows if ex_root == tn), None)
+        if found is None:
+            shown = _realcase(t)
+            outer = next(((src, ex) for src, ex, ex_root in rows if ex_root and inside(tn, ex_root)), None)
+            if outer is not None:
+                return _reject(f"{shown} 在排除「{outer[0].get('alias', '')}/{outer[1]['spec']}」裡面；要恢復就取消那條")
+            if not in_source:
+                return _reject(f"{shown} 不在任何登記的來源裡；先用 folders add 登記")
+            return _reject(f"{shown} 不在排除清單裡，本來就讀得到")
+        s, ex = found
+        s["excludes"].remove(ex)
+        _backup_then_write(vault, raw)
+    alias = s.get("alias", "")
+    first = f"已取消排除「{alias}/{ex['spec']}」，從現在起讀得到。"
+    _journal(vault, first, "folders include")
+    if as_json:
+        print(json.dumps({"source_id": s.get("id", ""), "alias": alias, "spec": ex["spec"], "kind": ex.get("kind", "")},
+                         ensure_ascii=False))
         return 0
     print(first)
     return 0
@@ -299,6 +363,10 @@ def run(args):
             return _add(vault, args, as_json)
         if args.folders_command == "exclude":
             return _exclude(vault, args, as_json)
+        if args.folders_command == "remove":
+            return _remove(vault, args, as_json)
+        if args.folders_command == "include":
+            return _include(vault, args, as_json)
         return _list(vault, as_json)
     except ValueError as e:  # L7、N6：sources.json 壞掉或格式不對
         print(f"{sources_lib.SOURCES_REL} 讀不了，請先修好它：{type(e).__name__}: {e}")

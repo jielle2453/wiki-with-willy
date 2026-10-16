@@ -11,7 +11,7 @@ COMMANDS = {
     "versions": ("kb.versions", "回合：list 列最近的改動，revert 退回最近一次，delete-outputs 刪已退回回合留著的成品"),
     "turn": ("kb.turn_cli", "目前回合：current 看狀態，approve 解除綜合卡張數上限，note 給這一句的「做了」，redact 換掉這一句的「問」"),
     "init": ("kb.init", "建總資料夾的五區骨架；--check 只看會建什麼"),
-    "folders": ("kb.folders", "來源：add 登記一個資料夾，exclude 排除裡面的夾或檔，list 列出登記表"),
+    "folders": ("kb.folders", "來源：add 登記一個資料夾，exclude 排除裡面的夾或檔，remove 拿掉一個來源，include 取消排除，list 列出登記表"),
     "journal": ("kb.journal_cli", "工作日誌：recent 印最近幾段，render 重寫月檔"),
 }
 

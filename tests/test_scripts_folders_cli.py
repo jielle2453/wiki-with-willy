@@ -1,5 +1,6 @@
-"""kb folders add／exclude／list 黑箱：用 kb init 建的 tmp vault 加複製的 tests/fixtures/raw/（specs/2026-10-14-骨架與來源登記.md 第 7 節）。
-add 成功與回合備份（D-074）、各種拒絕 exit 3、憑證樣式清單、--check、提醒；exclude 成功句與拒絕；list 人看與 --json。
+"""kb folders add／exclude／remove／include／list 黑箱：用 kb init 建的 tmp vault 加複製的 tests/fixtures/raw/（specs/2026-10-14-骨架與來源登記.md 第 7 節）。
+add 成功與回合備份（D-074）、各種拒絕 exit 3、憑證樣式清單、--check、提醒；exclude 成功句與拒絕；
+remove、include 成功句、備份、找不到 exit 3（specs/2026-10-16-manage.md 第 1 節）；list 人看與 --json。
 """
 import json
 import os
@@ -380,6 +381,192 @@ class Exclude(Base):
         self.assertIn("你說過不讀", r.stdout)
         self.assertNotIn("密碼或金鑰", r.stdout)
 
+    def test_whole_source_points_to_folders_remove(self):
+        r = self.exclude("../raw/行政", "--kind", "unused")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        first = r.stdout.splitlines()[0]
+        self.assertIn("folders remove", first)
+        self.assertIn("行政", first)
+        self.assertNotIn("還沒有", first)
+
+
+class Remove(Base):
+    def setUp(self):
+        super().setUp()
+        assert self.add("../raw/客戶案件").returncode == 0
+        assert self.add("../raw/行政").returncode == 0
+
+    def remove(self, *args, **kw):
+        return self.folders("remove", *args, **kw)
+
+    def test_removes_entry_and_backs_up(self):
+        before = len(self.versions_dirs())
+        r = self.remove("客戶案件")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0],
+                         "已拿掉來源「客戶案件」；你的檔案沒動，從現在起不讀它；說「退回上一版」救得回。")
+        self.assertEqual([s["alias"] for s in self.sources()["sources"]], ["行政"])
+        self.assertTrue((self.raw / "客戶案件" / "a.txt").is_file())
+        copies = [d / "files" / ".system" / "sources.json" for d in self.versions_dirs()]
+        self.assertTrue(any(c.is_file() for c in copies))
+        self.assertGreaterEqual(len(self.versions_dirs()), max(before, 1))
+
+    def test_removes_its_excludes_too(self):
+        assert self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden").returncode == 0
+        r = self.remove("行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([s["alias"] for s in self.sources()["sources"]], ["客戶案件"])
+
+    def test_unknown_alias_exit_3(self):
+        assert self.remove("客戶案件").returncode == 0
+        before = (self.V / ".system" / "sources.json").read_text(encoding="utf-8")
+        r = self.remove("客戶案件")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "沒有叫「客戶案件」的來源")
+        self.assertEqual((self.V / ".system" / "sources.json").read_text(encoding="utf-8"), before)
+
+    def test_json(self):
+        r = self.remove("客戶案件", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(set(data), {"id", "alias", "spec"})
+        self.assertRegex(data["id"], SRC_ID)
+        self.assertEqual((data["alias"], data["spec"]), ("客戶案件", "../raw/客戶案件"))
+
+    def test_revert_brings_it_back(self):
+        """確認情境 10：對話裡一句話一個回合，remove 備進那回合，退回就回來。"""
+        data = {"session_id": "test-sid", "cwd": str(self.V), "prompt": "客戶案件不要了", "hook_event_name": "UserPromptSubmit"}
+        r = subprocess.run([sys.executable, str(ROOT / "hooks" / "turn.py")], input=json.dumps(data, ensure_ascii=False),
+                           capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT)))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        assert self.remove("客戶案件").returncode == 0
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sorted(s["alias"] for s in self.sources()["sources"]), ["客戶案件", "行政"])
+
+    def test_vault_option_from_outside(self):
+        r = self.remove("客戶案件", "--vault", str(self.V), cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_alias_is_trimmed_and_empty_rejected(self):
+        """驗收 19：別名去頭尾空白與結尾的點；空字串 exit 3、不寫。"""
+        src = self.V / ".system" / "sources.json"
+        for bad in ("", "  ", " . "):
+            with self.subTest(alias=bad):
+                before = src.read_text(encoding="utf-8")
+                r = self.remove(bad)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertTrue(r.stdout.splitlines()[0].strip())
+                self.assertEqual(src.read_text(encoding="utf-8"), before)
+        r = self.remove(" 客戶案件 ")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0],
+                         "已拿掉來源「客戶案件」；你的檔案沒動，從現在起不讀它；說「退回上一版」救得回。")
+        r = self.remove("行政.")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.sources()["sources"], [])
+
+    def test_alias_is_case_insensitive_like_add(self):
+        """驗收 16：別名比對跟 add 擋重複一樣不分大小寫；印的與 --json 用登記的原樣。"""
+        (self.raw / "Docs").mkdir()
+        (self.raw / "Docs" / "d.txt").write_text("d", encoding="utf-8")
+        assert self.add("../raw/Docs").returncode == 0
+        r = self.remove("docs", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["alias"], "Docs")
+        self.assertEqual(sorted(s["alias"] for s in self.sources()["sources"]), ["客戶案件", "行政"])
+
+
+class Help(unittest.TestCase):
+    """驗收 14：kb --help 與 kb folders --help 的 folders 描述句含 remove、include。"""
+
+    def test_folders_description_mentions_remove_and_include(self):
+        from kb.cli import COMMANDS
+        doc = COMMANDS["folders"][1]
+        for word in ("remove", "include"):
+            self.assertIn(word, doc)
+        env = {"COLUMNS": "400"}  # 不讓 argparse 折行，才能整句比
+        for args in (("--help",), ("folders", "--help")):
+            with self.subTest(args=args):
+                r = run_kb(*args, cwd=ROOT, env_extra=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(doc, r.stdout)
+
+
+class Include(Base):
+    def setUp(self):
+        super().setUp()
+        assert self.add("../raw/行政").returncode == 0
+        assert self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden", "--reason", "薪資個資").returncode == 0
+        assert self.folders("exclude", "../raw/行政/舊檔", "--kind", "unused").returncode == 0
+
+    def include(self, *args, **kw):
+        return self.folders("include", *args, **kw)
+
+    def excludes(self):
+        return [ex["spec"] for ex in self.sources()["sources"][0]["excludes"]]
+
+    def test_removes_exclude_row(self):
+        r = self.include("../raw/行政/薪資")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "已取消排除「行政/薪資」，從現在起讀得到。")
+        self.assertEqual(self.excludes(), ["舊檔"])
+        copies = [d / "files" / ".system" / "sources.json" for d in self.versions_dirs()]
+        self.assertTrue(any(c.is_file() for c in copies))
+
+    def test_guard_allows_after_include(self):
+        target = str(self.raw / "行政" / "薪資" / "s.xlsx")
+        r = run_kb("guard", "decide", "--tool", "Read", "--path", target, cwd=self.V)
+        self.assertTrue(r.stdout.startswith("deny"), r.stdout)
+        self.include("../raw/行政/薪資")
+        r = run_kb("guard", "decide", "--tool", "Read", "--path", target, cwd=self.V)
+        self.assertTrue(r.stdout.startswith("allow"), r.stdout)
+
+    def test_not_excluded_exit_3(self):
+        before = (self.V / ".system" / "sources.json").read_text(encoding="utf-8")
+        r = self.include("../raw/行政/請款")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        first = r.stdout.splitlines()[0]
+        self.assertTrue(first.endswith(" 不在排除清單裡，本來就讀得到"), first)  # 驗收 18
+        self.assertIn((self.raw / "行政" / "請款").as_posix(), first)
+        self.assertEqual((self.V / ".system" / "sources.json").read_text(encoding="utf-8"), before)
+
+    def test_inside_an_exclude_is_not_the_exclude(self):
+        """驗收 18：在某條排除裡面但不是那條本身，指出是哪條；路徑不存在也照判（只比字串）。"""
+        for path in ("../raw/行政/薪資/s.xlsx", "../raw/行政/薪資/2025"):
+            with self.subTest(path=path):
+                r = self.include(path)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                first = r.stdout.splitlines()[0]
+                self.assertIn("在排除「行政/薪資」裡面；要恢復就取消那條", first)
+                self.assertIn((self.raw / "行政" / "薪資").as_posix(), first)
+        self.assertEqual(self.excludes(), ["薪資", "舊檔"])
+
+    def test_not_in_any_source_exit_3(self):
+        """驗收 18：remove 後的來源、從沒登記的夾，都是「不在任何登記的來源裡」。"""
+        assert self.add("../raw/客戶案件").returncode == 0
+        assert self.folders("remove", "客戶案件").returncode == 0
+        r = self.include("../raw/客戶案件")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        first = r.stdout.splitlines()[0]
+        self.assertTrue(first.endswith(" 不在任何登記的來源裡；先用 folders add 登記"), first)
+        self.assertIn((self.raw / "客戶案件").as_posix(), first)
+
+    def test_missing_folder_can_still_be_included(self):
+        shutil.rmtree(self.raw / "行政" / "舊檔")
+        r = self.include("../raw/行政/舊檔")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "已取消排除「行政/舊檔」，從現在起讀得到。")
+        self.assertEqual(self.excludes(), ["薪資"])
+
+    def test_json(self):
+        r = self.include("../raw/行政/薪資", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(set(data), {"source_id", "alias", "spec", "kind"})
+        self.assertRegex(data["source_id"], SRC_ID)
+        self.assertEqual((data["alias"], data["spec"], data["kind"]), ("行政", "薪資", "hidden"))
+
 
 class List(Base):
     def list(self, *args, **kw):
@@ -478,6 +665,22 @@ class FoldersJournal(Base):
         self.assertEqual(len(rows), 2)
         self.assertEqual((rows[1]["command"], rows[1]["note"]), ("folders exclude", r.stdout.splitlines()[0]))
         self.assertEqual(rows[1]["changed"], [{"path": ".system/sources.json", "action": "modify"}])
+
+    def test_remove_and_include_write_program_lines(self):
+        assert self.add("../raw/客戶案件").returncode == 0
+        assert self.add("../raw/行政").returncode == 0
+        assert self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden").returncode == 0
+        for args, command in ((("remove", "客戶案件"), "folders remove"), (("include", "../raw/行政/薪資"), "folders include")):
+            with self.subTest(command=command):
+                r = self.folders(*args)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                row = self.program_rows()[-1]
+                self.assertEqual((row["command"], row["note"]), (command, r.stdout.splitlines()[0]))
+                self.assertEqual(row["changed"], [{"path": ".system/sources.json", "action": "modify"}])
+        n = len(self.program_rows())
+        self.folders("remove", "沒有這個")
+        self.folders("include", "../raw/行政/請款")
+        self.assertEqual(len(self.program_rows()), n)
 
     def test_list_check_and_rejection_write_nothing(self):
         self.folders("list")

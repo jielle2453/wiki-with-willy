@@ -46,6 +46,7 @@
 | B-034 | 2026-10-16 | open | `kb journal recent` 一段一行只印「做了」，不印「改了」哪些檔，AI 回答「最近改了什麼」時無法確認檔有沒有登記，又把「程式｜」標記誤讀成登記與否；answer 題定 recent 的輸出要不要帶改了與 note_by | 開場注入與核心規則確認 |
 | B-035 | 2026-10-16 | deferred | manage 低項：巢狀排除時 `folders include` 外層後說「讀得到」但內層 hidden 仍擋，反方向（取消內層、外層仍擋）也一樣，句子要講；skill 文字守的「先問再做」沒有機器保證（同 B-025，守門對高風險 kb.py 子命令回 ask） | manage 測試 |
 | B-036 | 2026-10-16 | open | skill-creator 的 `scripts/run_eval.py` 讀 evals 沒指定 encoding（cp950 讀不了中文，要 `PYTHONUTF8=1`）、用 `select.select` 讀子程序管線，Windows 上每次 query 都 WinError 10038、全部算未觸發；路由測試要用把 select 換成「永遠就緒」的 shim 跑（原檔不動）；另外預設 10 個 worker 會把同描述的暫時指令檔同時放進同一個 `.claude/commands/`，模型挑到別人那份就算沒觸發（實測該觸發只剩 10%），要 `--num-workers 1`；之後自己寫一支 `tests/evals/run.py`，D-091 的做法到時改 | manage 測試 |
+| B-037 | 2026-10-16 | deferred | Obsidian 當客戶「看」的主要呈現（不只是依客戶習慣可用可不用的輔助）：用內建 Bases 吃綜合卡檔頭做專案總表與看板、日程改成視圖吃得到的形狀、客戶在 Obsidian 裡只看還是能打勾（雙向走 D-015／D-052）、綜合卡檔頭鍵名與 YAML 型別要讓 Obsidian 讀得懂、守門與清冊怎麼對待 `.obsidian/`、建置時服務人員裝好開好 vault。想法還不成熟，使用者說還有很多要討論；等綜合卡與日程有資料再開題，開題前先決 U-2 | 設計討論 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

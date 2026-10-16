@@ -448,6 +448,24 @@ class Remove(Base):
         r = self.remove("客戶案件", "--vault", str(self.V), cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_alias_is_trimmed_and_empty_rejected(self):
+        """驗收 19：別名去頭尾空白與結尾的點；空字串 exit 3、不寫。"""
+        src = self.V / ".system" / "sources.json"
+        for bad in ("", "  ", " . "):
+            with self.subTest(alias=bad):
+                before = src.read_text(encoding="utf-8")
+                r = self.remove(bad)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertTrue(r.stdout.splitlines()[0].strip())
+                self.assertEqual(src.read_text(encoding="utf-8"), before)
+        r = self.remove(" 客戶案件 ")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0],
+                         "已拿掉來源「客戶案件」；你的檔案沒動，從現在起不讀它；說「退回上一版」救得回。")
+        r = self.remove("行政.")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.sources()["sources"], [])
+
     def test_alias_is_case_insensitive_like_add(self):
         """驗收 16：別名比對跟 add 擋重複一樣不分大小寫；印的與 --json 用登記的原樣。"""
         (self.raw / "Docs").mkdir()
@@ -509,14 +527,30 @@ class Include(Base):
         r = self.include("../raw/行政/請款")
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         first = r.stdout.splitlines()[0]
-        self.assertTrue(first.endswith(" 不在排除清單裡"), first)
+        self.assertTrue(first.endswith(" 不在排除清單裡，本來就讀得到"), first)  # 驗收 18
         self.assertIn((self.raw / "行政" / "請款").as_posix(), first)
         self.assertEqual((self.V / ".system" / "sources.json").read_text(encoding="utf-8"), before)
 
     def test_inside_an_exclude_is_not_the_exclude(self):
-        r = self.include("../raw/行政/薪資/s.xlsx")
-        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        """驗收 18：在某條排除裡面但不是那條本身，指出是哪條；路徑不存在也照判（只比字串）。"""
+        for path in ("../raw/行政/薪資/s.xlsx", "../raw/行政/薪資/2025"):
+            with self.subTest(path=path):
+                r = self.include(path)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                first = r.stdout.splitlines()[0]
+                self.assertIn("在排除「行政/薪資」裡面；要恢復就取消那條", first)
+                self.assertIn((self.raw / "行政" / "薪資").as_posix(), first)
         self.assertEqual(self.excludes(), ["薪資", "舊檔"])
+
+    def test_not_in_any_source_exit_3(self):
+        """驗收 18：remove 後的來源、從沒登記的夾，都是「不在任何登記的來源裡」。"""
+        assert self.add("../raw/客戶案件").returncode == 0
+        assert self.folders("remove", "客戶案件").returncode == 0
+        r = self.include("../raw/客戶案件")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        first = r.stdout.splitlines()[0]
+        self.assertTrue(first.endswith(" 不在任何登記的來源裡；先用 folders add 登記"), first)
+        self.assertIn((self.raw / "客戶案件").as_posix(), first)
 
     def test_missing_folder_can_still_be_included(self):
         shutil.rmtree(self.raw / "行政" / "舊檔")

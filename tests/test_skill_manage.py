@@ -71,6 +71,12 @@ class Body(unittest.TestCase):
             with self.subTest(file=p.name):
                 self.assertNotIn("一份一份", p.read_text(encoding="utf-8"))
 
+    def test_move_row_checks_new_path_first(self):
+        """驗收 19：搬家那列先對新路徑 add --check，過了才 remove；被拒什麼都不動。"""
+        row = next(line for line in self.body.splitlines() if line.startswith("| 已經搬好"))
+        self.assertLess(row.index("--check"), row.index("remove"))
+        self.assertIn("什麼都不動", row)
+
     def test_no_absolute_paths(self):
         for text, name in ((self.body, "SKILL.md"),
                            *((p.read_text(encoding="utf-8"), p.name) for p in (SKILL_DIR / "references").glob("*.md"))):

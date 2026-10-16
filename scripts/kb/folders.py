@@ -5,7 +5,8 @@ add 先過拒絕條件（不存在、整顆磁碟、系統夾、跟總資料夾�
 再數份數並列出憑證樣式的檔（credentials.scan_all，只數、不讀內容），spec 用 paths.compress_spec 壓成可攜；
 讀、檢查重疊與別名、備份、寫四步在同一把 FileLock 裡（I-080），改 sources.json 前先備進目前回合（D-074）。
 exclude 的對象要真的存在（I-033），spec 相對該來源根；寫回時有 id 用 id、沒有用 alias，找不到就不存檔；兩種 kind 守門都不讀（D-024）。
-remove 照別名拿掉整筆（含它的排除；別名跟 add 擋重複一樣不分大小寫），客戶的檔不動；include 只比字串（排除的夾可能已被刪），刪 excludes 裡 root 相等的那列。
+remove 照別名拿掉整筆（含它的排除；別名去頭尾空白與結尾的點，跟 add 擋重複一樣不分大小寫），客戶的檔不動；
+include 只比字串（排除的夾可能已被刪），刪 excludes 裡 root 相等的那列；拒絕分三種：不在登記來源、在某條排除裡面、沒被排除。
 --check 只印報告不寫；拒絕一律第一行原因、exit 3；sources.json 壞掉也是一行原因 exit 3；argparse 參數錯 exit 2。
 印給人看的路徑用原始大小寫。往上找知識庫一律 guard.find_vault。不碰 settings.json（D-079）。
 add、exclude、remove、include 寫成功後記一段工作日誌程式段（D-085），note 是印給人的第一行；--check、list 不記。
@@ -261,12 +262,15 @@ def _exclude(vault, args, as_json):
 
 
 def _remove(vault, args, as_json):
+    wanted = _clean_alias(args.alias.strip())
+    if not wanted:
+        return _reject("別名不能是空的；先用 folders list 看有哪些來源")
     with FileLock(_sources_path(vault)):
         raw = sources_lib.load_raw(vault)
-        low = args.alias.lower()
+        low = wanted.lower()
         entry = next((s for s in raw["sources"] if str(s.get("alias", "")).lower() == low), None)
         if entry is None:
-            return _reject(f"沒有叫「{args.alias}」的來源")
+            return _reject(f"沒有叫「{wanted}」的來源")
         raw["sources"].remove(entry)
         _backup_then_write(vault, raw)
     alias = entry.get("alias", "")
@@ -284,17 +288,22 @@ def _include(vault, args, as_json):
     tn = normalize(str(t), None)
     with FileLock(_sources_path(vault)):
         raw = sources_lib.load_raw(vault)
-        found = None
-        for s in raw["sources"]:
-            root = resolve_spec(s["spec"], str(vault)) if s.get("spec") else None
-            for ex in (s.get("excludes") or []) if root else []:
-                if ex.get("spec") and resolve_spec(ex["spec"], root) == tn:
-                    found = (s, ex)
-                    break
-            if found:
-                break
+        rows, in_source = [], False  # rows：(來源, 排除列, 排除展開後的 root)
+        for src in raw["sources"]:
+            root = resolve_spec(src["spec"], str(vault)) if src.get("spec") else None
+            if root is None:
+                continue
+            in_source = in_source or inside(tn, root)
+            rows += [(src, ex, resolve_spec(ex["spec"], root)) for ex in src.get("excludes") or [] if ex.get("spec")]
+        found = next(((src, ex) for src, ex, ex_root in rows if ex_root == tn), None)
         if found is None:
-            return _reject(f"{_realcase(t)} 不在排除清單裡")
+            shown = _realcase(t)
+            outer = next(((src, ex) for src, ex, ex_root in rows if ex_root and inside(tn, ex_root)), None)
+            if outer is not None:
+                return _reject(f"{shown} 在排除「{outer[0].get('alias', '')}/{outer[1]['spec']}」裡面；要恢復就取消那條")
+            if not in_source:
+                return _reject(f"{shown} 不在任何登記的來源裡；先用 folders add 登記")
+            return _reject(f"{shown} 不在排除清單裡，本來就讀得到")
         s, ex = found
         s["excludes"].remove(ex)
         _backup_then_write(vault, raw)

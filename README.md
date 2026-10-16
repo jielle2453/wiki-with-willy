@@ -25,3 +25,5 @@ claude --plugin-dir "<repo 路徑>"
 ## 環境需求
 
 只支援 Windows。要有 Python 3.10 以上，而且 PATH 上打 `python` 要能跑到它（Windows 商店的空殼不算）：守門與備份是 hook，`python` 找不到或跑太久時 Claude Code 會當作沒有 hook，照常放行。
+
+python 壞掉時對話開頭不會有「【wiki-with-willy】」開場段，AI 會說程式沒跑起來並停手；照它說的裝好 python，再關掉 Claude Code 重開。

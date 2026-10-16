@@ -41,6 +41,13 @@ class Skeleton(unittest.TestCase):
         self.assertNotIn("CLAUDE_PLUGIN_ROOT", text)
         self.assertNotIn("scripts/", text)
 
+    def test_claude_md_has_sentinel(self):
+        """D-088：沒有「【wiki-with-willy】」開場段就是程式沒跑起來，這個對話不改任何檔。"""
+        text = (SKELETON / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn("【wiki-with-willy】", text)
+        self.assertIn("不改任何檔", text)
+        self.assertIn("（子代理沒有開場段，這段不適用）", text)  # 第一輪 D1
+
 
 class Init(unittest.TestCase):
     def setUp(self):

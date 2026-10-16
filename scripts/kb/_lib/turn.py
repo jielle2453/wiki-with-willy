@@ -40,9 +40,11 @@ def _current_file(vault):
 
 
 def prompt_head(vault, prompt):
-    """先壓空白再遮帳密、截 prompt_head_max 字（D-081、B-027、B-028）：回合檔、versions/<回合>/turn.json、工作日誌的「問」都從這裡來。
+    """先剝 <pasted_content> 標籤（B-031，標籤拿掉、內文留著）、壓空白再遮帳密、截 prompt_head_max 字（D-081、B-027、B-028）：
+    回合檔、versions/<回合>/turn.json、工作日誌的「問」都從這裡來。
     先壓再遮：值跟關鍵詞隔一個空行時 mask_secrets 會停在空行，壓成一行才遮得到（工作日誌測試後修正 M2）。"""
-    return credentials.mask_secrets(" ".join(str(prompt or "").split()))[:config.get(vault, "prompt_head_max")]
+    text = re.sub(r"</?pasted_content\b[^>]*>", "", str(prompt or ""), flags=re.IGNORECASE)
+    return credentials.mask_secrets(" ".join(text.split()))[:config.get(vault, "prompt_head_max")]
 
 
 def journal_key(data):

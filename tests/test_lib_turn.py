@@ -54,6 +54,14 @@ class Start(unittest.TestCase):
         self.assertLessEqual(len(t2["prompt_head"]), 200)
         self.assertEqual(turn.start(self.V, SID, "今天天氣好")["prompt_head"], "今天天氣好")
 
+    def test_prompt_head_strips_pasted_content_tags(self):
+        """開場注入與核心規則（B-031 第 1 項）：剝 <pasted_content ...> 與 </pasted_content>，內文留著；不分大小寫。"""
+        head = lambda p: turn.prompt_head(self.V, p)  # noqa: E731
+        self.assertEqual(head('<pasted_content id="p1">合約第三條</pasted_content> 這段什麼意思'), "合約第三條 這段什麼意思")
+        self.assertEqual(head("沒有標籤 的句子"), "沒有標籤 的句子")
+        self.assertEqual(head('<pasted_content id="p1">只有開標籤'), "只有開標籤")
+        self.assertEqual(head('<PASTED_CONTENT ID="x" a=b>內文</Pasted_Content>後'), "內文後")
+
     def test_start_writes_note_and_done(self):
         t = turn.start(self.V, SID, "改一下")
         self.assertEqual((t["note"], t["done"]), ("", False))

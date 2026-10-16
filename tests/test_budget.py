@@ -2,7 +2,12 @@
 
 檔案不存在就 skipTest；存在就量。
 """
+import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,11 +25,15 @@ SKILL_BODY_MAX_LINES = 120
 SKILL_BODY_MAX_CHARS = 5000
 REFERENCE_MAX_LINES = 150
 RESIDENT_TOTAL_MAX_CHARS = 5000
+OPENING_MAX_LINES = 8
+OPENING_MAX_CHARS = 400
 
 SKILLS_DIR = ROOT / "skills"
 CORE = ROOT / "rules" / "core.md"
 CLIENT_CLAUDE_MD = ROOT / "skeleton" / "CLAUDE.md"
 FIXTURE_TOO_LONG = ROOT / "tests" / "fixtures" / "budget" / "too_long_SKILL.md"
+SESSION_HOOK = ROOT / "hooks" / "session.py"
+FIXTURE_VAULT = ROOT / "tests" / "fixtures" / "vault"
 
 
 def read(path):
@@ -116,12 +125,43 @@ class ClientClaudeMdBudget(unittest.TestCase):
         self.assertLessEqual(len(text), CLIENT_CLAUDE_MD_MAX_CHARS)
 
 
+def opening_status(source):
+    """跑 hooks/session.py，回 additionalContext 在 core 全文之前的狀態行（不含隔開的空行）。"""
+    tmp = Path(tempfile.mkdtemp(prefix="kbbudget-"))
+    try:
+        vault = tmp / "vault"
+        shutil.copytree(FIXTURE_VAULT, vault)
+        data = {"session_id": "budget", "cwd": str(vault), "hook_event_name": "SessionStart", "source": source}
+        r = subprocess.run([sys.executable, str(SESSION_HOOK)], input=json.dumps(data), capture_output=True,
+                           text=True, encoding="utf-8", cwd=str(vault), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT)))
+        ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    core = read(CORE)
+    tail = "\n\n" + core
+    assert ctx.endswith(tail), "additionalContext 結尾不是空行加 core 全文"
+    return ctx[:-len(tail)]
+
+
+class OpeningBudget(unittest.TestCase):
+    def test_status_lines_startup_and_compact(self):
+        if not SESSION_HOOK.exists():
+            self.skipTest("hooks/session.py 尚未建立")
+        for source in ("startup", "compact"):
+            status = opening_status(source)
+            with self.subTest(source=source):
+                self.assertLessEqual(count_lines(status), OPENING_MAX_LINES)
+                self.assertLessEqual(len(status), OPENING_MAX_CHARS)
+
+
 class ResidentTotal(unittest.TestCase):
     def test_resident_total(self):
         parts = [measure_skill(p)["desc_chars"] for p in skill_files()]
         for p in (CORE, CLIENT_CLAUDE_MD):
             if p.exists():
                 parts.append(len(read(p)))
+        if SESSION_HOOK.exists():
+            parts.append(len(opening_status("compact")))
         if not parts:
             self.skipTest("常駐檔尚未建立")
         self.assertLessEqual(sum(parts), RESIDENT_TOTAL_MAX_CHARS)

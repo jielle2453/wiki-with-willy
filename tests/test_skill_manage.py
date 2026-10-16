@@ -77,6 +77,16 @@ class Body(unittest.TestCase):
         self.assertLess(row.index("--check"), row.index("remove"))
         self.assertIn("什麼都不動", row)
 
+    def test_move_row_step1_no_alias_step5_uses_old_spec(self):
+        """驗收 21：第①步不問別名、不念暫用名；第⑤步用第②步記下的舊 spec 接新路徑，不再 list。"""
+        row = next(line for line in self.body.splitlines() if line.startswith("| 已經搬好"))
+        step1 = row[row.index("①"):row.index("②")]
+        step5 = row[row.index("⑤"):row.index("⑥")]
+        self.assertNotIn("別名", step1)
+        self.assertIn("spec", step5)
+        self.assertIn("新路徑", step5)
+        self.assertNotIn("list", step5)
+
     def test_no_absolute_paths(self):
         for text, name in ((self.body, "SKILL.md"),
                            *((p.read_text(encoding="utf-8"), p.name) for p in (SKILL_DIR / "references").glob("*.md"))):

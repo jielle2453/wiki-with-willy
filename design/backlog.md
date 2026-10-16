@@ -41,6 +41,8 @@
 | B-029 | 2026-10-16 | open | `io.FileLock`：Windows 上鎖檔剛被持有者刪掉（待刪除）時 O_EXCL 丟 PermissionError，回頭看鎖檔已不存在就當成「建不起來」直接丟（R2-1），兩個程序搶同一把鎖會偶發失敗；工作日誌在 `journal._lock` 包一層同逾時內重試繞過，`turn.backup`、`folders` 仍直接用 FileLock。io.py 該題修 | 工作日誌實作 |
 | B-030 | 2026-10-16 | deferred | 工作日誌低項：flush 鎖逾時後舊回合那行永遠 done false（lint 題清）；md 渲染不擋 `![](…)`、`<img>`、`%%`（AI 本來就能寫 AI 產出，風險有限）；守門 ledger 的指令欄沒遮值，`turn note`／`redact` 的原文被記成 unparsed 時會進帳（L7、L9）；`versions revert --json` 的 `prompt_head` 原樣輸出，升級前沒遮好的回合會帶出來；第四輪：終端機 delete-outputs 的動作回合「問」寫成「退回 T」，再退時句子誤導（該用自己的句子）；redact 掃 versions/*/turn.json 遇壞檔丟英文 traceback 只改一半 | 工作日誌測試 |
 | B-031 | 2026-10-16 | open | 工作日誌確認觀察：(1) 貼上的內容送到 UserPromptSubmit 時 prompt 是 `<pasted_content id=…>` 包住的原樣，日誌「問」會印出標籤，`prompt_head` 應剝掉包裝只留內文；(2) 「結果」保留 Markdown 記號（`##`、`**`、```` ``` ````），壓成一行後不好讀，渲染時可去掉；(3) 兩個 session 開在同一知識庫時另一個 session 的訊息也被記成客戶的一句（B-019 同根）；(4) 遮值一路遮到句尾會吃掉 AI 的說明段（D-086 接受多遮，量多再談）；(5) Esc 按得早時 Claude Code 把那句拿掉、AI 沒收到，日誌已記成中斷；(6) AI 沒拒絕代登入外部系統，R-09 等 core.md；(7) AI 不知道 kb.py 在哪，要點名完整路徑，開場注入題要給 | 工作日誌確認 |
+| B-032 | 2026-10-16 | open | 子代理讀得到知識庫 CLAUDE.md 但沒有 SessionStart 注入，拿不到 core.md；哨兵句已標「子代理不適用」，但規則怎麼給子代理（SubagentStart hook 注入同一段，或 card-maker 本文指 `${CLAUDE_PLUGIN_ROOT}/rules/core.md`）等 agent 題定（D-053） | 開場注入與核心規則測試 |
+| B-033 | 2026-10-16 | deferred | 開場注入低項：`prompt_head` 剝標籤的正規式對屬性值含 `>` 留殘渣；hook-errors.log 可能含 plugin 絕對路徑（診斷檔，不算 D-019）；session.py 的 2 秒速度測試在忙的機器可能偶發紅；test_budget 用裸 assert、不看子程序 exit code | 開場注入與核心規則測試 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

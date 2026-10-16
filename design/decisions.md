@@ -664,6 +664,13 @@
 - 放棄了：問共用先記 `shared` 欄（沒人讀的 schema）；照舊 plugin 把結束碼表與接續寫進本文。
 - 重談條件：collab 或變動偵測題要共用欄位時回頭加，到時 manage 補問一句。
 
+## D-091 skill 描述的路由驗收用 skill-creator 的觸發測試
+- 日期：2026-10-16
+- 選了：每個 skill 一份 `tests/evals/<skill>.json`（skill-creator 的格式：`[{"query","should_trigger"}]`），20 句、該觸發與不該各半，不該的要是近似句。測試 session 用 `anthropic-skills:skill-creator` 的 `python -m scripts.run_eval --eval-set … --skill-path … --runs-per-query 3`（它把描述做成暫時指令檔放進專案 `.claude/commands/`、跑 `claude -p`）；驗收門檻：該觸發的觸發率 ≥ 90%、不該的誤觸 ≤ 10%。不過關才跑它的描述優化迴圈，結果仍要繁體中文、150 字內（D-070）。conventions 五的 `routing.yaml` 改為此。plugin 載入與 `/help` 可見由確認情境補（B-013）。
+- 為什麼：有數字才有下次改描述的基準；優化迴圈一開始就跑會幾百次 `claude -p`，且傾向把描述寫長、寫英文。它測的是描述放進 available skills 會不會被挑，不是裝成 plugin 的路徑，所以 plugin 那層另驗。
+- 放棄了：只靠確認情境人工打句子（沒數字）；一開始就跑優化迴圈。
+- 重談條件：skill-creator 換掉 run_eval 的機制，或六個 skill 都在時互搶要改成整套一起跑。
+
 ## 未決
 
 目前沒有未決（2026-10-15，U-1 收進 D-081）。新的未決照舊用表：編號、事、要什麼才能決。

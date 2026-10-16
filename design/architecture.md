@@ -234,7 +234,7 @@ llm-wiki-j/
 ├─ tests/
 │  ├─ test_lib_*.py  test_hooks_*.py  test_scripts_*.py  test_lint_checks.py
 │  ├─ test_skeleton_check.py  test_budget.py  test_coverage.py  test_version_sync.py  test_guard_cli.py
-│  ├─ evals/routing.yaml
+│  ├─ evals/<skill>.json                 每個 skill 20 句觸發測試（D-091）
 │  └─ fixtures/                       含每份渲染檔的範例輸出（D-067）
 └─ design/
 ```

@@ -24,7 +24,7 @@
 | `scripts/kb/turn_cli.py` | 子命令 `turn current`／`approve`／`note`／`redact`：看目前回合、解除綜合卡張數上限（D-075）、給這一句的「做了」（D-084）、換掉這一句的「問」（D-086） |
 | `scripts/kb/journal_cli.py` | 子命令 `journal recent`／`render`：印最近幾段工作日誌、從 jsonl 重寫月檔；`record_program_or_warn` 給 init、folders、versions 寫程式段（D-085，對話裡叫的不寫） |
 | `scripts/kb/init.py` | 子命令 `init <路徑>`：從 `skeleton/` 建五區骨架與 `.system/sources.json`，缺的才建、既有檔不碰；`--check` 只印計畫 |
-| `scripts/kb/folders.py` | 子命令 `folders add`／`exclude`／`list`：登記來源（拒絕條件、數份數、憑證清單、spec 壓縮）、排除夾或檔、列登記表；改 `sources.json` 前先備進回合 |
+| `scripts/kb/folders.py` | 子命令 `folders add`／`exclude`／`remove`／`include`／`list`：登記來源（拒絕條件、數份數、憑證清單、spec 壓縮）、排除夾或檔、拿掉來源（含它的排除）、取消排除（只比字串）、列登記表；改 `sources.json` 前先備進回合 |
 | `scripts/kb/_lib/paths.py` | `plugin_root()`、`read_manifest()`：從 `__file__` 往上找，不寫死路徑；`normalize`、`inside`、`resolve_spec`、`compress_spec`（D-021 補）、`is_abs_spec` |
 | `scripts/kb/_lib/io.py` | UTF-8、LF、原子寫入的讀寫函式；`os.replace` 被拒重試（I-018）；`FileLock` 鎖檔（hook 等 3 秒、CLI 30 秒、殘留 30 秒；鎖檔建不起來直接丟錯） |
 | `scripts/kb/_lib/config.py` | `get(vault, key)`：`defaults.json` 為底，客戶端 `.system/config.json` 同鍵覆寫 |
@@ -42,10 +42,11 @@
 | `hooks/output_log.py` | PostToolUse：檔案工具寫進 AI 產出後登記到 `inventory.json` |
 | `hooks/stop.py` | Stop：AI 答完把這回合的日誌那行補完（結果取 `last_assistant_message` 壓一行遮值再截、做了、改了），只收第一次 |
 | `tests/` | `unittest`；`test_budget.py` 守常駐預算（D-070）、`test_version_sync.py` 守版號對齊、`test_repo_hygiene.py` 守編碼、行尾與 `sys.path` |
+| `tests/evals/` | skill 路由的觸發句（D-091）：`<skill>.json` 20 句、該觸發與不該各半，測試 session 用 skill-creator 的 `run_eval` 跑；`test_skill_manage.py` 守形狀 |
 | `tests/fixtures/` | 測試用範例檔；`vault/` 與 `raw/` 是守門的假總資料夾與來源，測試時整包複製到 tmp；`journal/` 是渲染的範例輸入與期望輸出（D-067） |
 | `design/` | 流程、約定、架構、決策、spec。實作 session 只能在 `backlog.md` 新增一行 |
 | `rules/core.md` | 常駐核心規則 R-01～R-14（D-059），開場注入整份帶入；`test_budget` 量、`test_rules_core` 守條目 |
-| `skills/` | 尚未。六個 skill |
+| `skills/manage/` | 第一個 skill（D-089、D-090）：`SKILL.md` 只做分派，加資料夾、不讀某夾、拿掉來源、取消排除、列出，一律經 `kb folders`；`references/sources.md` 是子子命令的參數、輸出與拒絕原因怎麼說。其餘五個 skill 尚未 |
 | `commands/` | 尚未。build 與 manage 指令 |
 | `agents/` | 尚未 |
 | `templates/` | 尚未。卡與報告範本 |

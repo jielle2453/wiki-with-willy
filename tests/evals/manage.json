@@ -1,0 +1,22 @@
+[
+  {"query": "把 D:\\報價 也加進來，裡面是去年到現在的報價單", "should_trigger": true},
+  {"query": "不要讀 公司行政 裡面那個薪資的資料夾，那是私人的", "should_trigger": true},
+  {"query": "廠商資料那個資料夾不要了", "should_trigger": true},
+  {"query": "薪資那夾還是讀好了", "should_trigger": true},
+  {"query": "你現在讀哪些資料夾", "should_trigger": true},
+  {"query": "報價那個資料夾我搬到 E 槽了", "should_trigger": true},
+  {"query": "D:\\工地照片6 這個也加近來，剛從隨身碟拷進去的", "should_trigger": true},
+  {"query": "私人那個夾你之前是不是有讀到？以後別看了", "should_trigger": true},
+  {"query": "公司行政 的資料夾我改名叫 行政總務 了，你那邊要跟著改嗎", "should_trigger": true},
+  {"query": "感覺卡片都亂掉了，幫我重建知識庫好了", "should_trigger": true},
+  {"query": "幫我把信義王的報價 v2 搬到王宅那夾", "should_trigger": false},
+  {"query": "D 槽報價單裡信義王那份寫多少錢", "should_trigger": false},
+  {"query": "以後不要把私人的事記進卡", "should_trigger": false},
+  {"query": "最近改了什麼？我記得昨天好像有加一個資料夾進來", "should_trigger": false},
+  {"query": "退回上一版，剛剛那個不對", "should_trigger": false},
+  {"query": "薪資那夾裡面去年的檔有幾份？順便抓一下總金額", "should_trigger": false},
+  {"query": "幫我把王宅跟信義王兩案的報價整理成一張比較表，存到 AI 產出", "should_trigger": false},
+  {"query": "收件匣裡那份廠商新合約幫我看一下重點，有沒有要注意的", "should_trigger": false},
+  {"query": "卡片裡王宅的地址寫錯了，是信義路五段不是四段，幫我改一下", "should_trigger": false},
+  {"query": "幫我寫封信給廠商資料裡那家磁磚行，問下個月的報價", "should_trigger": false}
+]

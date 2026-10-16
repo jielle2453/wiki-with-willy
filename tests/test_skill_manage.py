@@ -87,6 +87,19 @@ class Body(unittest.TestCase):
         self.assertIn("新路徑", step5)
         self.assertNotIn("list", step5)
 
+    def test_common_section_says_traditional_chinese(self):
+        """驗收 22：共通段要求回答客戶一律繁體中文。"""
+        common = self.body[self.body.index("## 共通"):self.body.index("## 參考")]
+        self.assertIn("回答客戶一律繁體中文", common)
+
+    def test_exclude_row_checks_registration_first(self):
+        """驗收 23：不讀某夾先 list --json；沒登記就說本來就沒在讀、請客戶貼路徑，不推；在來源裡才問①②。"""
+        row = next(line for line in self.body.splitlines() if line.startswith("| 不讀某夾"))
+        self.assertIn("list --json", row)
+        self.assertLess(row.index("list --json"), row.index("①"))
+        self.assertIn("本來就沒在讀", row)
+        self.assertIn("不從別的路徑推", row)
+
     def test_no_absolute_paths(self):
         for text, name in ((self.body, "SKILL.md"),
                            *((p.read_text(encoding="utf-8"), p.name) for p in (SKILL_DIR / "references").glob("*.md"))):

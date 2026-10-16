@@ -4,6 +4,12 @@
 bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；事後補就會變成第二份會漂的清單。
 為什麼只寫 spec 或決策裡有的，查不到寫「待補」，不推測。
 
+## 0.6.0 — 2026-10-16
+- **改了什麼**：開場注入與核心規則。新 `rules/core.md` 十四條（R-01～R-14：三種真相分開、出處優先序、每句帶出處、不改原檔、退回走 `kb versions`、不猜、全庫操作不代跑、綜合卡寫法、外部動作先確認且帳密不落檔、對人中文對程式英文、建議下一步、被擋不繞路且同一回答做完、工作日誌的 `kb turn note`／`redact`／`journal recent`、kb 程式用 Bash 一次一個指令）。新 SessionStart hook `hooks/session.py`（startup｜resume｜clear｜compact）把 core.md 全文與狀態行塞進 additionalContext，狀態行第一版只有 `kb.py` 完整呼叫前綴與摺疊提示；hook 找到知識庫後出錯會印一行「開場程式出錯」。`skeleton/CLAUDE.md` 加哨兵句：沒看到開場段就是程式沒跑起來，AI 可查 python、客戶同意才裝、期間不改檔。回合的問剝掉 `<pasted_content>` 標籤。592 測試。
+- **為什麼**：常駐層一直缺規則與程式位置，AI 要被點名才會跑 `kb.py`、沒拒絕代登入（B-031）；規則在對話裡才是機器保證，給路徑靠模型記得讀（I-036、D-087）；python 不在時偵測它的 hook 自己跑不起來，能活在外面的只有 CLAUDE.md（I-103、D-088）；D-059 補 R-13、R-14。測試兩輪，第一輪 review 抓到剝標籤黏字讓短關鍵詞遮不到、子代理會誤判哨兵句、hook 自己出錯被當成 python 壞掉。
+- **commit**：e29c949、6b5e83c（實作，分支 spec/開場注入與核心規則，merge efb4422）
+- **spec**：design/specs/2026-10-16-開場注入與核心規則.md
+
 ## 0.5.0 — 2026-10-16
 - **改了什麼**：工作日誌。每句話一段記進 `系統/工作日誌/YYYY-MM.md`（真相是 `.system/journal/YYYY-MM.jsonl`，md 整月重渲染、最新在上）：問在 UserPromptSubmit 寫、結果由新的 Stop hook 從 payload 取（300 字、結論或摘要段優先、「…全文見對話」）、做了是程式地板句或 `kb turn note` 的 AI 一句、改了從回合帳抓；按 Esc 中斷的由下一句補成「（回答被中斷）」。程式自己做的事（`kb init`、`folders add|exclude`、`versions revert|delete-outputs`）在終端機跑時各記一段，對話裡叫的併進那句。新子命令 `kb turn note|redact`、`kb journal recent|render`。退回動作一律開新回合並成為目前回合，對話裡退回自己這句時新回合繼承問、做了、同意並帶 `journal_turn` 指回那句的日誌行。遮值一律先壓空白再遮，全文有遮到就不抽結論段；`prompt_head` 長度進 config（200）。573 測試。
 - **為什麼**：六個面的「剛做了什麼」要有客戶看得懂、永久留的地方（D-065、D-082～D-086）；Stop 的 payload 直接帶最後回答，不解析 transcript（D-083）；規則不是保證，做了要有程式地板（D-084）。測試四輪，三輪在修退回動作回合與目前回合的糾纏（I-107）。

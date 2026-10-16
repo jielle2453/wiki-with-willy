@@ -16,7 +16,6 @@ from kb._lib.io import FileLock, read_json, write_json_atomic
 TURNS_REL = Path(".system") / "turns"
 VERSIONS_REL = Path(".system") / "versions"
 CURRENT_NAME = "current.json"
-PROMPT_HEAD_MAX = 80
 BIG_CHANGE_REASON = ("這一題已經改了 {n} 張綜合卡，先停下來告訴客戶還有幾張、為什麼；"
                      "客戶同意後用知識庫腳本 turn approve 解除再繼續。")
 BACKUP_FAILED_REASON = "備份失敗，這次不寫。說「檢查」我看原因"
@@ -40,11 +39,23 @@ def _current_file(vault):
     return Path(vault) / TURNS_REL / CURRENT_NAME
 
 
-def start(vault, session_id, prompt):
-    """開新回合：寫 turns/<sid>.json（有 sid 才寫）與 current.json。回回合 dict。"""
+def prompt_head(vault, prompt):
+    """先壓空白再遮帳密、截 prompt_head_max 字（D-081、B-027、B-028）：回合檔、versions/<回合>/turn.json、工作日誌的「問」都從這裡來。
+    先壓再遮：值跟關鍵詞隔一個空行時 mask_secrets 會停在空行，壓成一行才遮得到（工作日誌測試後修正 M2）。"""
+    return credentials.mask_secrets(" ".join(str(prompt or "").split()))[:config.get(vault, "prompt_head_max")]
+
+
+def journal_key(data):
+    """這個回合在工作日誌裡那一行的 key：退回自己這句時開的新回合記著原回合（journal_turn），沒有就是自己。"""
+    return data.get("journal_turn") or data["turn"]
+
+
+def start(vault, session_id, prompt, inherit=None):
+    """開新回合：寫 turns/<sid>.json（有 sid 才寫）與 current.json。回回合 dict。
+    inherit（工作日誌第二輪 R2-M2）：對話裡退回自己這句時，新回合接著原回合，繼承它的問、note、approved，
+    並記 journal_turn（原回合的 journal_turn，沒有就原回合），Stop 與補記才收原回合那一行。"""
     now = _now().replace(microsecond=0)  # 代號只到秒，比較也只到秒
-    # 先遮帳密再壓空白、截 80 字（D-081、B-027）：回合檔與 versions/<回合>/turn.json 的「問」都從這裡來
-    head = " ".join(credentials.mask_secrets(str(prompt or "")).split())[:PROMPT_HEAD_MAX]
+    head = inherit.get("prompt_head", "") if inherit else prompt_head(vault, prompt)
     tag = _safe_sid(session_id)[:4] if session_id else "0000"
     # 代號單調遞增：取 max(現在, 既有最大代號 + 1 秒)。同一秒幾句話不撞，時鐘落後也不會排到舊回合前面
     latest = _latest_turn_time(vault, session_id, now)
@@ -56,8 +67,12 @@ def start(vault, session_id, prompt):
         "session_id": str(session_id) if session_id else "",
         "started": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "prompt_head": head,
-        "approved": False,
+        "approved": bool(inherit.get("approved")) if inherit else False,  # 同一句話的同意不因退回失效（D-075）
+        "note": inherit.get("note", "") if inherit else "",  # 模型叫 kb turn note 給的「做了」（D-084）
+        "done": False,  # Stop 或中斷補記後為 true（D-083）
     }
+    if inherit:
+        data["journal_turn"] = journal_key(inherit)
     (Path(vault) / TURNS_REL).mkdir(parents=True, exist_ok=True)
     if session_id:
         write_json_atomic(_session_file(vault, session_id), data)
@@ -117,11 +132,16 @@ def current(vault, session_id=None):
 
 
 def _read_turn(path):
+    """讀回合檔。舊檔少 note、done 兩鍵：note 視為空字串、done 視為 true（升級前的回合不補記，不遷移）。"""
     try:
         data = read_json(path)
     except ValueError:
         return None
-    return data if isinstance(data, dict) and data.get("turn") else None
+    if not (isinstance(data, dict) and data.get("turn")):
+        return None
+    data.setdefault("note", "")
+    data.setdefault("done", True)
+    return data
 
 
 def _write_turn(vault, data):
@@ -138,6 +158,29 @@ def approve(vault, session_id=None):
     data["approved"] = True
     _write_turn(vault, data)
     return data
+
+
+def _set(vault, session_id, **fields):
+    """改 turns/<sid>.json（沒有 sid 改 current.json）；current.json 是同回合時一起改。回合不存在回 None，不開新的。"""
+    path = _session_file(vault, session_id) if session_id else _current_file(vault)
+    data = _read_turn(path)
+    if data is None:
+        return None
+    data.update(fields)
+    _write_turn(vault, data)
+    return data
+
+
+def set_note(vault, session_id, text):
+    return _set(vault, session_id, note=text)
+
+
+def set_done(vault, session_id):
+    return _set(vault, session_id, done=True)
+
+
+def set_prompt_head(vault, session_id, text):
+    return _set(vault, session_id, prompt_head=text)
 
 
 def _realcase(p):
@@ -170,18 +213,21 @@ def rel_path(vault, target, cwd):
 
 
 def turn_dir(vault, turn_id, info=None):
-    """.system/versions/<turn_id>/，第一次建時寫 turn.json。"""
+    """.system/versions/<turn_id>/，第一次建時寫 turn.json。接著原回合的回合帶 journal_turn，redact 才找得到整條鏈（R3-L2）。"""
     vdir = Path(vault) / VERSIONS_REL / turn_id
     vdir.mkdir(parents=True, exist_ok=True)
     meta = vdir / "turn.json"
     if not meta.exists():
         info = info or _find_turn(vault, turn_id) or {}
-        write_json_atomic(meta, {
+        data = {
             "schema_version": 1, "turn": turn_id,
             "session_id": info.get("session_id", ""),
             "started": info.get("started", _now().strftime("%Y-%m-%dT%H:%M:%S")),
             "prompt_head": info.get("prompt_head", ""),
-        })
+        }
+        if info.get("journal_turn"):
+            data["journal_turn"] = info["journal_turn"]
+        write_json_atomic(meta, data)
     return vdir
 
 

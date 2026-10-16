@@ -288,14 +288,17 @@ class Revert(Base):
         self.assertFalse(data["outputs_deleted"])
 
     def test_revert_in_same_turn_as_target_opens_new_turn(self):
-        """退回動作的回合不能等於要退的回合（不然現況沒處備）。"""
+        """退回動作的回合不能等於要退的回合（不然現況沒處備）。第二輪 R2-M2：對話裡（帶 sid、還沒答完）退回自己這句，
+        開新回合並成為目前回合，繼承原回合的問、記 journal_turn。"""
         t = self.modify_card_in_turn()
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.card.read_bytes(), self.original)
-        rt = turn.current(self.V)
-        self.assertNotEqual(rt["turn"], t["turn"])
-        self.assertEqual([e["action"] for e in turn.entries(self.V, rt["turn"])], ["modify"])
+        by = json.loads((self.versions_dir(t["turn"]) / "reverted.json").read_text(encoding="utf-8"))["by_turn"]
+        self.assertNotEqual(by, t["turn"])
+        for cur in (turn.current(self.V), turn.current(self.V, SID)):
+            self.assertEqual((cur["turn"], cur["journal_turn"], cur["prompt_head"]), (by, t["turn"], t["prompt_head"]))
+        self.assertEqual([e["action"] for e in turn.entries(self.V, by)], ["modify"])
 
     def test_three_turns_in_one_second_revert_hits_the_last(self):
         """驗收 29：同一秒開三個回合、各改一張不同的 Z1 卡，revert 退的是代號最大的第三個。"""
@@ -528,6 +531,333 @@ class DeleteOutputs(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.card.read_text(encoding="utf-8"), "客戶接受的版本\n")
         self.assertFalse((self.V / rel).exists())
+
+
+class VersionsJournal(Base):
+    """工作日誌程式段（D-085）：CLI 自己的回合（session_id 空）裡 revert、delete-outputs 成功多一行 kind program；
+    對話開的回合裡叫的不寫；delete-outputs 刪 0 份不寫（疑義裁定 4）。"""
+
+    def program_rows(self):
+        from kb._lib import journal
+        return [r for m in journal.months(self.V) for r in journal.read_lines(self.V, m) if r["kind"] == "program"]
+
+    def cli_turn_with(self, rel, text, register=False):
+        """像守門自己開的回合（payload 沒 session_id）：備份、真的寫。"""
+        t = turn.start(self.V, None, "")
+        turn.backup(self.V, rel, t["turn"])
+        (self.V / rel).parent.mkdir(parents=True, exist_ok=True)
+        (self.V / rel).write_text(text, encoding="utf-8")
+        if register:
+            inventory.register_output(self.V, rel, t["turn"])
+        return t
+
+    def test_revert_writes_program_line_with_printed_sentence(self):
+        self.cli_turn_with(self.card_rel, "改過了\n")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["command"], "versions revert")
+        self.assertEqual(rows[0]["note"], r.stdout.splitlines()[0])
+        self.assertTrue(rows[0]["note"].startswith("已退回 "))
+        self.assertEqual(rows[0]["changed"], [{"path": self.card_rel, "action": "modify"}])
+
+    def test_revert_removed_file_is_delete(self):
+        self.cli_turn_with("案子/新案/新案.md", "新卡\n")
+        run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(self.program_rows()[0]["changed"], [{"path": "案子/新案/新案.md", "action": "delete"}])
+
+    def test_delete_outputs_writes_program_line(self):
+        t = self.cli_turn_with("AI 產出/y.md", "草稿\n", register=True)
+        run_kb("versions", "revert", cwd=self.V)
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["command"], "versions delete-outputs")
+        self.assertEqual(rows[1]["note"], f"已刪 1 份成品（回合 {t['turn']}）")
+        self.assertEqual(rows[1]["changed"], [{"path": "AI 產出/y.md", "action": "delete"}])
+
+    def test_delete_outputs_of_zero_writes_nothing(self):
+        t = self.cli_turn_with("AI 產出/y.md", "草稿\n", register=True)
+        run_kb("versions", "revert", cwd=self.V)
+        os.remove(self.V / "AI 產出" / "y.md")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([x["command"] for x in self.program_rows()], ["versions revert"])
+        self.assertTrue(t)
+
+    def test_json_mode_also_writes(self):
+        self.cli_turn_with(self.card_rel, "改過了\n")
+        r = run_kb("versions", "revert", "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["note"].startswith("已退回 "))
+
+    def test_inside_conversation_turn_writes_nothing(self):
+        self.modify_card_in_turn()
+        self.new_turn()
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.program_rows(), [])
+
+    def hook(self, name, data):
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        r = subprocess.run([sys.executable, str(ROOT / "hooks" / name)], input=json.dumps(data, ensure_ascii=False),
+                           capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        if name == "guard.py":
+            self.assertIn('"allow"', r.stdout)
+        else:
+            self.assertEqual(r.stdout, "")
+
+    def prompt_and_write_card(self, prompt):
+        base = {"session_id": SID, "cwd": str(self.V)}
+        self.hook("turn.py", dict(base, prompt=prompt, hook_event_name="UserPromptSubmit"))
+        self.hook("guard.py", dict(base, tool_name="Write", hook_event_name="PreToolUse",
+                                   tool_input={"file_path": str(self.card), "content": "改過了\n"}))
+        self.card.write_text("改過了\n", encoding="utf-8")
+
+    def stop(self, message):
+        self.hook("stop.py", {"session_id": SID, "cwd": str(self.V), "hook_event_name": "Stop",
+                              "stop_hook_active": False, "last_assistant_message": message})
+
+    def rows(self):
+        from kb._lib import journal
+        return [x for m in journal.months(self.V) for x in journal.read_lines(self.V, m)]
+
+    def sess(self):
+        return json.loads((self.V / ".system" / "turns" / f"{SID}.json").read_text(encoding="utf-8"))
+
+    def test_acceptance_27_revert_after_stop_leaves_session_file_and_no_fake_interrupt(self):
+        """驗收 27（第二輪）：答完後終端機退回，turns/<sid>.json 仍是 done true 的原回合，current.json 換成 sid 空的回合，
+        下一句話不會被補記出假的「退回 …」中斷段。"""
+        self.prompt_and_write_card("改信義王")
+        self.stop("改好了")
+        sess_file = self.V / ".system" / "turns" / f"{SID}.json"
+        before = sess_file.read_bytes()
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.card.read_bytes(), self.original)
+        self.assertEqual(sess_file.read_bytes(), before)
+        self.assertEqual(turn.current(self.V)["session_id"], "")
+        self.hook("turn.py", {"session_id": SID, "cwd": str(self.V), "prompt": "下一句", "hook_event_name": "UserPromptSubmit"})
+        self.assertEqual([x for x in self.rows() if x.get("interrupted")], [])
+
+    def test_acceptance_39_revert_inside_same_sentence_inherits_and_stop_closes_original(self):
+        """驗收 39（取代 28）：同一句裡改卡又退回：回合檔換成新代號、journal_turn 是 T；Stop 收 T 那一行，changed 含卡；
+        turns/ 沒有多檔。同一句再退兩次，卡片每次來回，journal_turn 一路是 T。"""
+        self.prompt_and_write_card("改一下卡")
+        turns_dir = self.V / ".system" / "turns"
+        names = sorted(p.name for p in turns_dir.iterdir())
+        t_turn = self.sess()["turn"]
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.card.read_bytes(), self.original)
+        sess = self.sess()
+        self.assertNotEqual(sess["turn"], t_turn)
+        self.assertTrue(sess["turn"].endswith("-test"), sess["turn"])
+        self.assertEqual((sess["journal_turn"], sess["prompt_head"]), (t_turn, "改一下卡"))
+        self.stop("改了又退回了")
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["turn"], rows[0]["done"], rows[0]["result"]), (t_turn, True, "改了又退回了"))
+        self.assertIn(self.card_rel, [c["path"] for c in rows[0]["changed"]])
+        self.assertEqual(sorted(p.name for p in turns_dir.iterdir()), names)
+
+    def test_acceptance_39_consecutive_reverts_in_same_sentence(self):
+        self.prompt_and_write_card("改一下卡")
+        changed = self.card.read_bytes()
+        t_turn = self.sess()["turn"]
+        states = []
+        for _ in range(3):
+            r = run_kb("versions", "revert", cwd=self.V)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(r.stdout.startswith("已退回 "), r.stdout)
+            states.append(self.card.read_bytes())
+        self.assertEqual(states, [self.original, changed, self.original])
+        self.assertEqual(self.sess()["journal_turn"], t_turn)
+
+    def test_acceptance_40_note_after_inherit_lands_on_original_line(self):
+        """驗收 40：繼承後 turn note 再 Stop，T 那行 note 是那句；改成不 Stop 直接下一句，T 那行 interrupted、note 照留。"""
+        for finish in ("stop", "prompt"):
+            with self.subTest(finish=finish):
+                self.prompt_and_write_card(f"改一下卡 {finish}")
+                t_turn = self.sess()["turn"]
+                run_kb("versions", "revert", cwd=self.V)
+                r = run_kb("turn", "note", "退了", cwd=self.V)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                if finish == "stop":
+                    self.stop("退好了")
+                else:
+                    self.hook("turn.py", {"session_id": SID, "cwd": str(self.V), "prompt": "下一句",
+                                          "hook_event_name": "UserPromptSubmit"})
+                row = [x for x in self.rows() if x["turn"] == t_turn][0]
+                self.assertEqual((row["note"], row["note_by"], row["interrupted"]), ("退了", "ai", finish == "prompt"))
+                self.card.write_bytes(self.original)
+
+    def test_acceptance_41_terminal_revert_seals_acting_turn(self):
+        """驗收 41（裁定 (ii)）：答完後終端機 revert、folders exclude、再 revert：第二次只退 exclude（sources.json 回來、卡片不變）；
+        current.json 的 session_id 空。"""
+        self.prompt_and_write_card("改信義王")
+        self.stop("改好了")
+        sources = self.V / ".system" / "sources.json"
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        card_after_first = self.card.read_bytes()
+        before_exclude = sources.read_bytes()
+        r = run_kb("folders", "exclude", "../raw/客戶案件/a.txt", "--kind", "unused", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotEqual(sources.read_bytes(), before_exclude)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(sources.read_text(encoding="utf-8")), json.loads(before_exclude.decode("utf-8")))
+        self.assertEqual(self.card.read_bytes(), card_after_first)
+        self.assertEqual(turn.current(self.V)["session_id"], "")
+
+    def test_acceptance_42_unmasked_old_prompt_head_is_masked_in_sentence(self):
+        """驗收 42（R2-L3）：升級前沒遮好的問被退回句搬出來時，印給人與程式段 note 都整句再遮。"""
+        self.hook("turn.py", {"session_id": SID, "cwd": str(self.V), "prompt": "改卡", "hook_event_name": "UserPromptSubmit"})
+        sess_file = self.V / ".system" / "turns" / f"{SID}.json"
+        data = self.sess()
+        data["prompt_head"] = "帳號 jie 密碼 abc123"
+        for f in (sess_file, self.V / ".system" / "turns" / "current.json"):  # 像升級前留下的回合檔
+            f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        self.hook("guard.py", {"session_id": SID, "cwd": str(self.V), "tool_name": "Write", "hook_event_name": "PreToolUse",
+                               "tool_input": {"file_path": str(self.card), "content": "改過了\n"}})
+        self.card.write_text("改過了\n", encoding="utf-8")
+        self.stop("改好了")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("abc123", r.stdout)
+        line = r.stdout.splitlines()[0]
+        self.assertTrue(line.endswith("（問：「帳號███」）：還原 1、移除 0、成品 0 份"), line)  # 只遮問那段，數字留著
+        notes = [x["note"] for x in self.program_rows()]
+        self.assertEqual(notes, [line])
+
+    def test_acceptance_44_terminal_delete_outputs_opens_own_turn(self):
+        """驗收 44（R3-M1）：對話裡建 z.md、同一句退回、Stop；終端機 delete-outputs 再 revert：z.md 回來、status active，
+        卡片與 T 的 reverted.json 都不變；versions/ 多兩個尾 0000 的回合夾。"""
+        base = {"session_id": SID, "cwd": str(self.V)}
+        z = self.V / "AI 產出" / "z.md"
+        self.hook("turn.py", dict(base, prompt="寫 z", hook_event_name="UserPromptSubmit"))
+        t_turn = self.sess()["turn"]
+        self.hook("guard.py", dict(base, tool_name="Write", hook_event_name="PreToolUse",
+                                   tool_input={"file_path": str(z), "content": "z\n"}))
+        z.write_text("z\n", encoding="utf-8")
+        self.hook("output_log.py", dict(base, tool_name="Write", hook_event_name="PostToolUse",
+                                        tool_input={"file_path": str(z)}))
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.stop("退好了")
+        marker = self.versions_dir(t_turn) / "reverted.json"
+        before = (self.card.read_bytes(), marker.read_bytes())
+        vroot = self.V / ".system" / "versions"
+        dirs = {p.name for p in vroot.iterdir()}
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(z.exists())
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(z.is_file())
+        entry = [e for e in inventory.load(self.V)["entries"] if "file://AI 產出/z.md" in e.get("locations", [])][-1]
+        self.assertEqual(entry["status"], "active")
+        self.assertEqual((self.card.read_bytes(), marker.read_bytes()), before)
+        new = {p.name for p in vroot.iterdir()} - dirs
+        self.assertEqual(len(new), 2, new)
+        self.assertTrue(all(n.endswith("-0000") for n in new), new)
+
+    def test_acceptance_45_revert_across_month_completes_original_month_line(self):
+        """驗收 45（R3-L1）：原回合是上個月的，同一句退回後 Stop，補完的是上個月那行，本月不多行。"""
+        from datetime import date
+        from kb._lib import journal
+        self.hook("turn.py", {"session_id": SID, "cwd": str(self.V), "prompt": "改卡", "hook_event_name": "UserPromptSubmit"})
+        old = "20260930-235900-test"
+        this_month = date.today().strftime("%Y-%m")
+        jsonl = journal.jsonl_path(self.V, this_month)
+        jsonl.unlink()
+        data = dict(self.sess(), turn=old, started="2026-09-30T23:59:00")
+        for f in (self.V / ".system" / "turns" / f"{SID}.json", self.V / ".system" / "turns" / "current.json"):
+            f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        journal.begin_turn(self.V, None, data)
+        self.hook("guard.py", {"session_id": SID, "cwd": str(self.V), "tool_name": "Write", "hook_event_name": "PreToolUse",
+                               "tool_input": {"file_path": str(self.card), "content": "改過了\n"}})
+        self.card.write_text("改過了\n", encoding="utf-8")
+        self.assertEqual(run_kb("versions", "revert", cwd=self.V).returncode, 0)
+        self.stop("退好了")
+        sept = journal.read_lines(self.V, "2026-09")
+        self.assertEqual(len(sept), 1)
+        self.assertEqual((sept[0]["turn"], sept[0]["done"], sept[0]["result"]), (old, True, "退好了"))
+        self.assertEqual(journal.read_lines(self.V, this_month), [])
+
+    def test_acceptance_46_redact_after_two_reverts_rewrites_whole_chain(self):
+        """驗收 46（R3-L2）：同一句連退兩次後 redact，versions/ 底下 turn 或 journal_turn 是 T 的 turn.json 都改，versions list 印不出原句。"""
+        self.prompt_and_write_card("原本的問")
+        t_turn = self.sess()["turn"]
+        for _ in range(2):
+            self.assertEqual(run_kb("versions", "revert", cwd=self.V).returncode, 0)
+        r = run_kb("turn", "redact", "已遮", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        metas = []
+        for p in (self.V / ".system" / "versions").glob("*/turn.json"):
+            meta = json.loads(p.read_text(encoding="utf-8"))
+            if t_turn in (meta.get("turn"), meta.get("journal_turn")):
+                metas.append(meta)
+        self.assertGreaterEqual(len(metas), 3)
+        self.assertEqual({m["prompt_head"] for m in metas}, {"已遮"})
+        self.assertNotIn("原本的問", run_kb("versions", "list", cwd=self.V).stdout)
+
+    def test_inherit_keeps_approval_in_same_sentence(self):
+        """D-075：同一句話的同意不因退回失效；inherit 時 approved 一起繼承，退回後再改超過上限的卡仍放行。
+        上限用 .system/config.json 調成 1，不用真的改 11 張。"""
+        (self.V / ".system" / "config.json").write_text(json.dumps({"big_change_synthesis_max": 1}), encoding="utf-8")
+        other = self.V / "案子" / "甲案" / "甲案.md"
+        other.parent.mkdir(parents=True)
+        other.write_text("# 甲案\n", encoding="utf-8")
+        self.prompt_and_write_card("全部改")
+        r = run_kb("turn", "approve", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.sess()["approved"])
+        ok, code, _reason = turn.before_write(self.V, str(other), str(self.V), "Z1", SID)
+        self.assertEqual((ok, code), (True, ""))
+
+    def test_cli_turn_revert_rotates_current_only(self):
+        """M1 裁定 (a)：目前回合是 CLI 自己的（sid 空）就照舊 turn.start(None) 換 current.json，
+        之後的寫入不會記進已退回的回合；turns/ 只有 current.json。"""
+        t = self.cli_turn_with(self.card_rel, "改過了\n")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cur = turn.current(self.V)
+        self.assertNotEqual(cur["turn"], t["turn"])
+        self.assertEqual((cur["session_id"], cur["turn"][-4:]), ("", "0000"))
+        self.assertEqual(sorted(p.name for p in (self.V / ".system" / "turns").iterdir()), ["current.json"])
+        by = json.loads((self.versions_dir(t["turn"]) / "reverted.json").read_text(encoding="utf-8"))["by_turn"]
+        self.assertNotEqual(cur["turn"], by)  # 裁定 (ii)：動作回合封起來，目前回合是再開的那個
+
+    def test_acceptance_35_empty_prompt_head_is_left_out_of_sentence(self):
+        """測試後修正 L6：守門自己開的回合問是空的，退回句與程式段 note 不印「（問：「」）」。"""
+        t = self.cli_turn_with(self.card_rel, "改過了\n")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = r.stdout.splitlines()[0]
+        self.assertEqual(line, f"已退回 {t['turn']}：還原 1、移除 0、成品 0 份")
+        self.assertEqual(self.program_rows()[0]["note"], line)
+
+    def test_finished_conversation_turn_writes_program_line_with_new_turn(self):
+        """D-085 補：對話已答完（done true）後在終端機退回，寫程式段，turn 是現在時間的新代號（L2）。"""
+        t = self.modify_card_in_turn()
+        turn.set_done(self.V, SID)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["turn"], t["turn"])
+        self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")
+        self.assertEqual(turn.current(self.V)["session_id"], "")  # R2-M3：答完後退回換成 sid 空的回合
+        self.assertEqual(turn.current(self.V, SID)["turn"], t["turn"])  # turns/<sid>.json 不動
 
 
 if __name__ == "__main__":

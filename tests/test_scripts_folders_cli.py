@@ -455,5 +455,110 @@ class List(Base):
         self.assertEqual(r.stdout.strip(), "還沒有登記任何來源")
 
 
+class FoldersJournal(Base):
+    """工作日誌程式段（D-085）：add、exclude 成功後多一行 kind program，note 等於印出的第一行；
+    list、--check 不寫；對話開的回合裡叫的不寫（改動併進那一句）。"""
+
+    def program_rows(self):
+        from kb._lib import journal
+        return [r for m in journal.months(self.V) for r in journal.read_lines(self.V, m)
+                if r["kind"] == "program" and r["command"] != "init"]
+
+    def test_add_and_exclude_write_program_lines(self):
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["command"], rows[0]["note"]), ("folders add", r.stdout.splitlines()[0]))
+        self.assertEqual(rows[0]["changed"], [{"path": ".system/sources.json", "action": "modify"}])
+        self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")  # 測試後修正 L2：一律新代號
+        r = self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual((rows[1]["command"], rows[1]["note"]), ("folders exclude", r.stdout.splitlines()[0]))
+        self.assertEqual(rows[1]["changed"], [{"path": ".system/sources.json", "action": "modify"}])
+
+    def test_list_check_and_rejection_write_nothing(self):
+        self.folders("list")
+        self.add("../raw/行政", "--check")
+        self.add("../raw/不存在")
+        self.assertEqual(self.program_rows(), [])
+
+    def test_json_mode_also_writes(self):
+        r = self.add("../raw/行政", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["note"], "已登記「行政」（../raw/行政，3 份）")
+
+    def test_journal_failure_prints_stderr_and_keeps_exit_code(self):
+        shutil.rmtree(self.V / ".system" / "journal")
+        (self.V / ".system" / "journal").write_text("不是資料夾", encoding="utf-8")
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "已登記「行政」（../raw/行政，3 份）")
+        self.assertTrue(r.stderr.startswith("工作日誌沒記到："), r.stderr)
+        self.assertEqual(len(r.stderr.splitlines()), 1)
+
+    def write_current(self, done):
+        turns = self.V / ".system" / "turns"
+        turns.mkdir(parents=True, exist_ok=True)
+        data = {"schema_version": 1, "turn": "20261016-100000-test", "session_id": "test-sid",
+                "started": "2026-10-16T10:00:00", "prompt_head": "加資料夾", "approved": False, "note": "", "done": done}
+        (turns / "current.json").write_text(json.dumps(data), encoding="utf-8")
+        return data
+
+    def test_inside_conversation_turn_writes_nothing(self):
+        self.write_current(done=False)
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.program_rows(), [])
+
+    def test_finished_conversation_turn_writes_program_line_with_new_turn(self):
+        """D-085 補（驗收 25 的程式面）：current.json 有 sid 但 done true（對話已答完）→ 寫程式段，turn 是新代號。"""
+        cur = self.write_current(done=True)
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["turn"], cur["turn"])
+        self.assertRegex(rows[0]["turn"], r"^\d{8}-\d{6}-0000$")
+
+    def test_acceptance_33_old_cli_turn_from_last_month_does_not_pull_line_back(self):
+        """測試後修正 L2：current.json 是上個月的 CLI 回合，程式段照樣寫進本月、本月新代號。"""
+        turns = self.V / ".system" / "turns"
+        turns.mkdir(parents=True, exist_ok=True)
+        (turns / "current.json").write_text(json.dumps({"schema_version": 1, "turn": "20260901-120000-0000",
+                                                        "session_id": "", "started": "2026-09-01T12:00:00",
+                                                        "prompt_head": "", "approved": False, "note": "",
+                                                        "done": False}), encoding="utf-8")
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        from kb._lib import journal
+        month = date.today().strftime("%Y-%m")
+        rows = [x for x in journal.read_lines(self.V, month) if x["kind"] == "program" and x["command"] == "folders add"]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["turn"].startswith(date.today().strftime("%Y%m%d")), rows[0]["turn"])
+        self.assertNotEqual(rows[0]["turn"], "20260901-120000-0000")
+
+    def test_acceptance_25_after_stop_folders_add_writes_program_line(self):
+        """驗收 25：UserPromptSubmit、Stop（回合 done），再在終端機跑 folders add → 多一行 program，turn 不是那回合。"""
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        for hook, data in (("turn.py", {"session_id": "test-sid", "cwd": str(self.V), "prompt": "看一下",
+                                        "hook_event_name": "UserPromptSubmit"}),
+                           ("stop.py", {"session_id": "test-sid", "cwd": str(self.V), "hook_event_name": "Stop",
+                                        "stop_hook_active": False, "last_assistant_message": "好了"})):
+            r = subprocess.run([sys.executable, str(ROOT / "hooks" / hook)], input=json.dumps(data, ensure_ascii=False),
+                               capture_output=True, text=True, encoding="utf-8", env=env)
+            self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        tid = json.loads((self.V / ".system" / "turns" / "test-sid.json").read_text(encoding="utf-8"))["turn"]
+        r = self.add("../raw/行政")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rows = self.program_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["turn"], tid)
+
+
 if __name__ == "__main__":
     unittest.main()

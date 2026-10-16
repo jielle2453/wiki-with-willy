@@ -6,6 +6,7 @@ add 先過拒絕條件（不存在、整顆磁碟、系統夾、跟總資料夾�
 exclude 的對象要真的存在（I-033），spec 相對該來源根；寫回時有 id 用 id、沒有用 alias，找不到就不存檔；兩種 kind 守門都不讀（D-024）。
 --check 只印報告不寫；拒絕一律第一行原因、exit 3；sources.json 壞掉也是一行原因 exit 3；argparse 參數錯 exit 2。
 印給人看的路徑用原始大小寫。往上找知識庫一律 guard.find_vault。不碰 settings.json（D-079）。
+add、exclude 寫成功後記一段工作日誌程式段（D-085），note 是印給人的第一行；--check、list 不記。
 """
 import argparse
 import contextlib
@@ -14,7 +15,7 @@ import os
 from datetime import date
 from pathlib import Path
 
-from kb import guard
+from kb import guard, journal_cli
 from kb._lib import config, credentials, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
@@ -131,6 +132,13 @@ def _sources_path(vault):
     return Path(vault) / sources_lib.SOURCES_REL
 
 
+def _journal(vault, note, command):
+    """程式段（D-085）：note 是印給人的第一行；對話裡叫的（有 sid 且還沒答完）不寫，改動已併進那一句。
+    folders 不會開帶 sid 的回合，所以寫的時候判斷跟指令開始時一樣。"""
+    changed = [{"path": sources_lib.SOURCES_REL, "action": "modify"}]
+    journal_cli.record_program_or_warn(vault, note, changed, command, journal_cli.in_conversation(vault))
+
+
 def _backup_then_write(vault, data):
     """呼叫端持有 sources.json 的鎖：先備進目前回合（D-074），再原子寫回。"""
     turn_id = turn.current(vault)["turn"]
@@ -177,11 +185,14 @@ def _add(vault, args, as_json):
             raw["sources"].append({"id": entry_id, "alias": alias, "spec": spec, "excludes": []})
             _backup_then_write(vault, raw)
 
+    first = f"{'會登記' if args.check else '已登記'}「{alias}」（{spec}，{files} 份）"
+    if not args.check:
+        _journal(vault, first, "folders add")
     if as_json:
         print(json.dumps({"id": entry_id, "alias": alias, "spec": spec, "path": str(t), "files": files,
                           "credential_files": creds, "warnings": warnings, "check": bool(args.check)}, ensure_ascii=False))
         return 0
-    print(f"{'會登記' if args.check else '已登記'}「{alias}」（{spec}，{files} 份）")
+    print(first)
     if creds:
         shown = "、".join(f"{alias}/{c}" for c in creds[:CREDENTIAL_LIST_MAX])
         more = f"…還有 {len(creds) - CREDENTIAL_LIST_MAX} 份" if len(creds) > CREDENTIAL_LIST_MAX else ""
@@ -232,12 +243,14 @@ def _exclude(vault, args, as_json):
         row = {"spec": rel, "kind": args.kind, "reason": args.reason or "", "added": added}
         entry.setdefault("excludes", []).append(row)
         _backup_then_write(vault, raw)
+    name = f"{best['alias']}/{rel}"
+    tail = HIDDEN_TAIL if args.kind == "hidden" else ""
+    first = f"已排除「{name}」（{KIND_TEXT[args.kind]}）。{tail}"
+    _journal(vault, first, "folders exclude")
     if as_json:
         print(json.dumps({"source_id": best["id"], "alias": best["alias"], **row}, ensure_ascii=False))
         return 0
-    name = f"{best['alias']}/{rel}"
-    tail = HIDDEN_TAIL if args.kind == "hidden" else ""
-    print(f"已排除「{name}」（{KIND_TEXT[args.kind]}）。{tail}")
+    print(first)
     return 0
 
 

@@ -158,5 +158,71 @@ class Init(unittest.TestCase):
         self.assertTrue((self.V / ".system" / "sources.json").is_file())
 
 
+class InitJournal(unittest.TestCase):
+    """工作日誌程式段（D-085）：init 成功寫一段 kind program；沒有缺的不寫；不開回合；對話裡叫的不寫。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kbinit-")).resolve()
+        self.V = self.tmp / "知識庫"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def rows(self):
+        from kb._lib import journal
+        return [r for m in journal.months(self.V) for r in journal.read_lines(self.V, m)]
+
+    def test_init_writes_program_line_and_md_without_turns(self):
+        r = run_kb("init", str(self.V), cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        n = int(r.stdout.split("建了 ")[1].split(" 項")[0])
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row["kind"], row["command"], row["note"]), ("program", "init", f"建立知識庫：建了 {n} 項"))
+        self.assertEqual(len(row["changed"]), n)
+        self.assertIn({"path": ".system/sources.json", "action": "create"}, row["changed"])
+        self.assertTrue(all(c["action"] == "create" for c in row["changed"]))
+        self.assertFalse([c for c in row["changed"]
+                          if c["path"].startswith((".system/journal", "系統/工作日誌/"))])  # 日誌自己的檔不算
+        from kb._lib import journal
+        md = journal.md_path(self.V, journal.month_of(row["turn"])).read_text(encoding="utf-8")
+        self.assertIn("　程式 init\n- 做了：建立知識庫：建了", md)
+        self.assertFalse((self.V / ".system" / "turns").exists())
+        self.assertFalse((self.V / ".system" / "versions").exists())
+
+    def test_rerun_without_missing_writes_nothing_and_fill_writes_one(self):
+        run_kb("init", str(self.V), cwd=self.tmp)
+        run_kb("init", str(self.V), cwd=self.tmp)
+        self.assertEqual(len(self.rows()), 1)
+        shutil.rmtree(self.V / "收件匣")
+        run_kb("init", str(self.V), cwd=self.tmp)
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["note"], "補齊了 1 項")
+        self.assertEqual(rows[1]["changed"], [{"path": "收件匣", "action": "create"}])
+
+    def test_check_writes_no_journal(self):
+        run_kb("init", str(self.V), "--check", cwd=self.tmp)
+        self.assertFalse(self.V.exists())
+
+    def test_json_mode_also_writes(self):
+        run_kb("--json", "init", str(self.V), cwd=self.tmp)
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_inside_conversation_turn_writes_nothing(self):
+        run_kb("init", str(self.V), cwd=self.tmp)
+        turns = self.V / ".system" / "turns"
+        turns.mkdir()
+        (turns / "current.json").write_text(json.dumps({"schema_version": 1, "turn": "20261016-100000-test",
+                                                        "session_id": "test-sid", "started": "2026-10-16T10:00:00",
+                                                        "prompt_head": "補齊", "approved": False, "note": "",
+                                                        "done": False}), encoding="utf-8")
+        shutil.rmtree(self.V / "收件匣")
+        r = run_kb("init", str(self.V), cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.rows()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

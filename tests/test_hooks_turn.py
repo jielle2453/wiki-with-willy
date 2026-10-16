@@ -5,9 +5,12 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import unittest
+from datetime import date
 
 from tests._guard_fixture import ROOT, make_vault
+from kb._lib import journal  # noqa: E402
 
 HOOK = ROOT / "hooks" / "turn.py"
 SID = "test-sid"
@@ -118,6 +121,141 @@ class TurnHook(unittest.TestCase):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/hooks/turn.py", cmds[0])
         self.assertEqual(groups[0]["hooks"][0]["timeout"], 5)
         self.assertEqual(len(cfg["hooks"]["PreToolUse"]), 1)  # PreToolUse 不動
+
+    def journal_rows(self):
+        return journal.read_lines(self.V, date.today().strftime("%Y-%m"))
+
+    def md(self):
+        return journal.md_path(self.V, date.today().strftime("%Y-%m")).read_text(encoding="utf-8")
+
+    def errors(self):
+        p = self.V / ".system" / "hook-errors.log"
+        return p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+
+    def test_journal_line_opened_with_in_progress_md(self):
+        """工作日誌（D-083）：開口就寫一行 done false；md 頂端三行、那段結果「（還沒結束）」。"""
+        r = run_hook(prompt_payload(self.V, "改一下"))
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        rows = self.journal_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["kind"], rows[0]["prompt"], rows[0]["done"]), ("turn", "改一下", False))
+        sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
+        self.assertEqual((sess["note"], sess["done"]), ("", False))
+        self.assertEqual(rows[0]["turn"], sess["turn"])
+        md = self.md().splitlines()
+        self.assertEqual(md[2:5], list(journal.HEADER_LINES))
+        self.assertIn("- 結果：（還沒結束）", md)
+
+    def test_journal_prompt_is_masked(self):
+        run_hook(prompt_payload(self.V, "幫我登入 ERP，帳號 jie 密碼 abc123"))
+        self.assertEqual(self.journal_rows()[0]["prompt"], "幫我登入 ERP，帳號███")
+
+    def test_acceptance_29_prompt_value_after_blank_line_is_masked(self):
+        """測試後修正 M2：回合檔、versions/<回合>/turn.json、jsonl 三處都 grep 不到值。"""
+        run_hook(prompt_payload(self.V, "幫我登入，密碼如下：\n\nabc123"))
+        sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
+        from kb._lib import turn
+        turn.before_write(self.V, str(self.V / "案子" / "信義王" / "信義王.md"), str(self.V), "Z1", SID)
+        meta = self.V / ".system" / "versions" / sess["turn"] / "turn.json"
+        self.assertTrue(meta.is_file())
+        for p in (self.turns / f"{SID}.json", meta, journal.jsonl_path(self.V, date.today().strftime("%Y-%m"))):
+            self.assertNotIn("abc123", p.read_text(encoding="utf-8"), p)
+        self.assertEqual(sess["prompt_head"], "幫我登入，密碼███")
+
+    def test_previous_turn_without_stop_is_flushed_as_interrupted(self):
+        run_hook(prompt_payload(self.V, "第三句"))
+        run_hook(prompt_payload(self.V, "第四句"))
+        rows = {r["prompt"]: r for r in self.journal_rows()}
+        self.assertEqual(len(rows), 2)
+        third = rows["第三句"]
+        self.assertTrue(third["done"])
+        self.assertTrue(third["interrupted"])
+        self.assertEqual(third["result"], "（回答被中斷，沒有結果）")
+        self.assertEqual((third["note"], third["note_by"], third["changed"]), ("沒有改動", "program", []))
+        self.assertFalse(rows["第四句"]["done"])
+        md = self.md()
+        self.assertLess(md.index("第四句"), md.index("第三句"))  # 最新在上
+
+    def test_acceptance_26_flush_keeps_ai_note(self):
+        """驗收 26（D-084）：中斷前模型叫過 turn note，補記的做了用它、note_by ai。"""
+        run_hook(prompt_payload(self.V, "第一句"))
+        kb = ROOT / "scripts" / "kb.py"
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        r = subprocess.run([sys.executable, str(kb), "turn", "note", "中斷前記的"], capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(self.V), env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        run_hook(prompt_payload(self.V, "第二句"))
+        first = {r["prompt"]: r for r in self.journal_rows()}["第一句"]
+        self.assertEqual((first["note"], first["note_by"], first["interrupted"]), ("中斷前記的", "ai", True))
+
+    def test_old_turn_file_without_done_is_not_flushed(self):
+        """疑義裁定 3：升級前的回合檔沒有 done 鍵，不補記。"""
+        self.turns.mkdir(parents=True)
+        old = {"schema_version": 1, "turn": "20261014-100000-test", "session_id": SID,
+               "started": "2026-10-14T10:00:00", "prompt_head": "舊的", "approved": False}
+        (self.turns / f"{SID}.json").write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
+        run_hook(prompt_payload(self.V, "新的"))
+        self.assertNotIn(old["turn"], [r["turn"] for r in journal.read_lines(self.V, "2026-10")])
+        self.assertEqual([r["prompt"] for r in self.journal_rows()], ["新的"])
+
+    def test_prompt_head_length_reads_config(self):
+        """B-028 第 2 項：150 字整句留著；客戶端 prompt_head_max 10 就截 10。"""
+        run_hook(prompt_payload(self.V, "長" * 150))
+        sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
+        self.assertEqual(sess["prompt_head"], "長" * 150)
+        self.assertEqual(self.journal_rows()[0]["prompt"], "長" * 150)
+        (self.V / ".system" / "config.json").write_text(json.dumps({"prompt_head_max": 10}), encoding="utf-8")
+        run_hook(prompt_payload(self.V, "短" * 50))
+        sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
+        self.assertEqual(sess["prompt_head"], "短" * 10)
+
+    def test_bad_journal_line_is_kept_and_logged(self):
+        run_hook(prompt_payload(self.V, "第一句"))
+        p = journal.jsonl_path(self.V, date.today().strftime("%Y-%m"))
+        p.write_text(p.read_text(encoding="utf-8") + "{bad\n", encoding="utf-8")
+        sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
+        sess["done"] = True  # 前一句已結束，只看開口那一次讀檔
+        (self.turns / f"{SID}.json").write_text(json.dumps(sess, ensure_ascii=False), encoding="utf-8")
+        r = run_hook(prompt_payload(self.V, "第二句"))
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertIn("{bad", p.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(len(self.errors()), 1)
+        self.assertEqual([r["prompt"] for r in self.journal_rows()], ["第一句", "第二句"])
+        self.assertIn("第二句", self.md())
+
+    def test_held_lock_still_opens_turn_and_logs(self):
+        """驗收 18：鎖被占著（mtime 現在）回合照開、日誌沒新行、log 一行、4 秒內結束；鎖殘留 60 秒前就清掉照寫。"""
+        p = journal.jsonl_path(self.V, date.today().strftime("%Y-%m"))
+        p.parent.mkdir(parents=True)
+        lock = p.with_name(p.name + ".lock")
+        lock.write_text("", encoding="utf-8")
+        t0 = time.time()
+        r = run_hook(prompt_payload(self.V, "鎖住了"))
+        elapsed = time.time() - t0
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertLess(elapsed, 4.5)
+        self.assertTrue((self.turns / f"{SID}.json").exists())
+        self.assertEqual(self.journal_rows(), [])
+        self.assertEqual(len(self.errors()), 1)
+        old = time.time() - 60
+        os.utime(lock, (old, old))
+        run_hook(prompt_payload(self.V, "鎖舊了"))
+        self.assertIn("鎖舊了", [r["prompt"] for r in self.journal_rows()])
+
+    def test_acceptance_32_unfinished_previous_and_held_lock_waits_once(self):
+        """驗收 32（L1）：前一回合 done false 時鎖被占著，補記與開口同一把鎖只等一次，5 秒內結束、log 一行、回合照開。"""
+        run_hook(prompt_payload(self.V, "第一句"))
+        p = journal.jsonl_path(self.V, date.today().strftime("%Y-%m"))
+        lock = p.with_name(p.name + ".lock")
+        lock.write_text("", encoding="utf-8")
+        t0 = time.time()
+        r = run_hook(prompt_payload(self.V, "第二句"))
+        self.assertLess(time.time() - t0, 4.5)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
+        self.assertEqual(sess["prompt_head"], "第二句")
+        self.assertEqual(len(self.errors()), 1)
+        lock.unlink()
 
     def test_second_prompt_opens_new_turn(self):
         run_hook(prompt_payload(self.V, "第一句"))

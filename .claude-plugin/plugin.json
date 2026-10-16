@@ -1,6 +1,6 @@
 {
   "name": "wiki-with-willy",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "把客戶既有的資料夾建成 AI 維護的知識庫：問、答與出處、剛做了什麼、退回、要我決定什麼、資料去了哪。",
   "author": {
     "name": "wiki-with-willy"

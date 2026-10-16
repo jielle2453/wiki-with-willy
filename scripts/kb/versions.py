@@ -6,6 +6,7 @@
 退回標記是回合夾裡的 reverted.json，不改夾名；退回動作的回合在 turn.json 記 reverted_turn，退掉它時撤原回合的標記（第二輪 R2-4）。
 刪成品前三道關：這一句話已經改過的不刪（R2-2）、指紋跟清冊不同的不刪（R2-3）、檔已不在只改 status（R2-L1）。
 CLI 的鎖等 30 秒（hook 維持 3，第二輪 R2-L3）。
+revert、delete-outputs 成功後記一段工作日誌程式段（D-085），note 是「已退回 …」「已刪 N 份成品（回合 …）」那句；刪 0 份不記。
 """
 import argparse
 import json
@@ -14,8 +15,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from kb import guard
-from kb._lib import inventory, turn
+from kb import guard, journal_cli
+from kb._lib import credentials, inventory, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb._lib.io import read_json, write_json_atomic
@@ -133,11 +134,25 @@ def _rel_of(entry):
 
 
 def _acting_turn(vault, target_turn):
-    """退回動作本身的回合；若等於要退的回合，開一個新的（現況要有別的回合可備）。"""
+    """退回／刪成品動作本身的回合（工作日誌第二輪 R2-M2、M3，第三輪 R3-M1）：
+    - 目前回合 sid 空或已答完（done true，終端機在跑）：不論目標，一律 turn.start(None) 開新動作回合，只換 current.json；
+      做完再由 _seal 封住，之後的指令進新回合，下一次退回不會連先前的退回一起撤掉。
+    - 對話裡、還沒答完（sid 有、done false）：目前回合就是這句話，動作記在它裡面；只有它正好是要退的回合時，
+      turn.start(sid, inherit=目前回合) 開新回合接著這句，繼承問、note、approved，記 journal_turn，
+      換掉 turns/<sid>.json 與 current.json；Stop 收原回合那一行。連續退回每次再開一個，journal_turn 一路繼承。"""
     rt = turn.current(vault)
+    if not rt.get("session_id") or rt.get("done"):
+        return turn.start(vault, None, f"退回 {target_turn}")
     if rt["turn"] == target_turn:
-        rt = turn.start(vault, rt.get("session_id") or None, f"退回 {target_turn}")
+        rt = turn.start(vault, rt["session_id"], f"退回 {target_turn}", inherit=rt)
     return rt
+
+
+def _seal(vault, conversation):
+    """終端機跑的（不在對話裡）做完後再 start(None) 一次，把動作回合封起來（第二輪裁定 (ii)）：
+    之後的指令進新回合，下一次退回只退那些，不會連這次退回一起撤掉。對話裡的不封，同一句的寫入要記在同一個回合。"""
+    if not conversation:
+        turn.start(vault, None, "")
 
 
 def _touched_paths(vault, turn_id):
@@ -191,7 +206,7 @@ def _undo_revert_marks(vault, original_turn):
         inventory.set_status(vault, back, "active")
 
 
-def _revert(vault, code, delete_outputs, as_json):
+def _revert(vault, code, delete_outputs, as_json, conversation=False):
     all_turns = turns(vault)
     cands = [t for t in all_turns if not t["reverted"] and (t["entries"] or t["reverted_turn"])]
     if not cands:
@@ -252,8 +267,23 @@ def _revert(vault, code, delete_outputs, as_json):
     _mark_acting_turn(vault, rt["turn"], target["turn"])
     write_json_atomic(target["dir"] / "reverted.json",
                       {"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "by_turn": rt["turn"]})
+    _seal(vault, conversation)
 
     deleted_n = len(outputs) - len(set(kept_ids))
+    if outputs and delete_outputs:
+        tail = f"成品 {deleted_n} 份刪了" + (f"、{len(set(kept_ids))} 份留著" if kept_ids else "")
+    elif outputs:
+        tail = f"成品 {len(outputs)} 份留著"
+    else:
+        tail = "成品 0 份"
+    # R2-L3：升級前沒遮好的問會被搬進來，只把「問」那段先壓空白再遮再嵌進句子，數字留著（D-086「程式段不遮」的例外）
+    head = credentials.mask_secrets(" ".join(str(target["prompt_head"] or "").split()))
+    asked = f"（問：「{head}」）" if head else ""  # L6：守門自己開的回合問是空的
+    sentence = f"已退回 {target['turn']}{asked}：還原 {len(restored)}、移除 {len(removed)}、{tail}"
+    journal_cli.record_program_or_warn(
+        vault, sentence,
+        [{"path": rel, "action": "modify"} for rel in restored] + [{"path": rel, "action": "delete"} for rel in removed],
+        "versions revert", conversation)
     if as_json:
         print(json.dumps({
             "turn": target["turn"], "prompt_head": target["prompt_head"], "by_turn": rt["turn"],
@@ -264,13 +294,7 @@ def _revert(vault, code, delete_outputs, as_json):
         return 0
     if lost:
         print(f"無法還原 {len(lost)} 檔（備份已不在）：" + "、".join(lost))
-    if outputs and delete_outputs:
-        tail = f"成品 {deleted_n} 份刪了" + (f"、{len(set(kept_ids))} 份留著" if kept_ids else "")
-    elif outputs:
-        tail = f"成品 {len(outputs)} 份留著"
-    else:
-        tail = "成品 0 份"
-    print(f"已退回 {target['turn']}（問：「{target['prompt_head']}」）：還原 {len(restored)}、移除 {len(removed)}、{tail}")
+    print(sentence)
     for rel in out_rels:
         print(f"    {rel}")
     for msg in kept_msgs:
@@ -282,7 +306,7 @@ def _revert(vault, code, delete_outputs, as_json):
     return 0
 
 
-def _delete_outputs(vault, code, as_json):
+def _delete_outputs(vault, code, as_json, conversation=False):
     """第一輪 H1：「退回 → 客戶說刪 → 刪」的第二步。只刪已退回回合裡 status 還是 turn_reverted 的成品；
     三道關：這一句話已經改過的不刪（R2-2，連 superseded 的也先告知）、指紋不同的不刪（R2-3）、檔已不在只改 status（R2-L1）。
     """
@@ -328,12 +352,17 @@ def _delete_outputs(vault, code, as_json):
         gone_ids.append(o["id"])
     if gone_ids:
         inventory.set_status(vault, gone_ids, "deleted")
+    _seal(vault, conversation)
+    sentence = f"已刪 {len(deleted)} 份成品（回合 {target['turn']}）"  # 沒有「問」，不用遮
+    if deleted:  # 刪 0 份不寫段（疑義裁定 4）
+        journal_cli.record_program_or_warn(vault, sentence, [{"path": rel, "action": "delete"} for rel in deleted],
+                                           "versions delete-outputs", conversation)
     if as_json:
         print(json.dumps({"turn": target["turn"], "by_turn": rt["turn"], "deleted": deleted, "missing": missing,
                           "kept": kept_msgs}, ensure_ascii=False))
         return 0
     if deleted:
-        print(f"已刪 {len(deleted)} 份成品（回合 {target['turn']}）：")
+        print(f"{sentence}：")
         for rel in deleted:
             print(f"    {rel}")
     for rel in missing:
@@ -352,6 +381,9 @@ def run(args):
     as_json = getattr(args, "json", False)
     if args.versions_command == "list":
         return _list(vault, args.n, as_json)
+    # 對話裡叫的（有 sid、還沒答完）在動作前判斷一次（D-085 補）：退回自己這句時會開一個帶 sid 的新回合接著那句，
+    # 判斷要跟動作前一致；這個結果也決定做完要不要封住動作回合（_seal）
+    conversation = journal_cli.in_conversation(vault)
     if args.versions_command == "delete-outputs":
-        return _delete_outputs(vault, args.code, as_json)
-    return _revert(vault, args.code, args.delete_outputs, as_json)
+        return _delete_outputs(vault, args.code, as_json, conversation)
+    return _revert(vault, args.code, args.delete_outputs, as_json, conversation)

@@ -1,5 +1,5 @@
 {
-  "description": "wiki-with-willy 守門與事務層：客戶原檔只讀、排除的夾不讀、總資料夾各區照路徑表決定能不能寫、kb.py 不用按允許；每句話一個回合、寫綜合卡／AI 產出／檔案索引前先備份、AI 產出寫後登記",
+  "description": "wiki-with-willy 守門與事務層：客戶原檔只讀、排除的夾不讀、總資料夾各區照路徑表決定能不能寫、kb.py 不用按允許；每句話一個回合、寫綜合卡／AI 產出／檔案索引前先備份、AI 產出寫後登記；每句話記進工作日誌",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -31,6 +31,17 @@
           {
             "type": "command",
             "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/output_log.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.py\"",
             "timeout": 10
           }
         ]

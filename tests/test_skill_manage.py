@@ -1,6 +1,7 @@
 """skills/manage 的形狀（specs/2026-10-16-manage.md 第 5 節）：frontmatter 只有 name、description；
 描述 150 字內、不帶英文觸發詞；本文用 ${CLAUDE_PLUGIN_ROOT} 叫 kb.py、不寫絕對路徑；提到的 reference 都在且 ≤150 行；
-tests/evals/manage.json 20 句、該觸發與不該各 10、不重複、含 spec 給的句子。字數門檻在 test_budget，這裡只守形狀。
+tests/evals/manage.json 20 句、該觸發與不該各 10、不重複、含 spec 給的句子（含疑義裁定 2 的兩句）；
+憑證那句與 repo CLAUDE.md commands/ 列照疑義裁定 3、5。字數門檻在 test_budget，這裡只守形狀。
 """
 import json
 import re
@@ -24,7 +25,10 @@ SPEC_QUERIES = (
     "幫我把信義王的報價 v2 搬到王宅那夾",
     "D 槽報價單裡信義王那份寫多少錢",
     "以後不要把私人的事記進卡",
+    "把信義王報價 v2 的付款條件改成 30 天",
 )
+CREDENTIAL_LINE = "檔名像密碼或金鑰的預設不讀，這版還不能開放，之後會有"
+COMMANDS_ROW = "| `commands/` | 尚未。build 五步與 upgrade、backup、restore、relocate、migrate、account（D-028），沒有 manage 指令 |"
 
 
 def split(text):
@@ -49,6 +53,8 @@ class Frontmatter(unittest.TestCase):
         self.assertTrue(desc)
         self.assertLessEqual(len(desc), DESC_MAX)
         self.assertIsNone(re.search(r"[A-Za-z]{2,}", desc), desc)  # D 槽、E 槽這種單字母可以
+        self.assertIn("幫我搬", desc)  # 疑義裁定 2：搬單一檔案也進 manage，回做不到
+        self.assertIn("改名", desc)
 
 
 class Body(unittest.TestCase):
@@ -57,6 +63,13 @@ class Body(unittest.TestCase):
 
     def test_calls_kb_through_plugin_root(self):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/kb.py", self.body)
+
+    def test_credential_line_follows_ruling_3(self):
+        """驗收 17：憑證檔那句照疑義裁定 3；不再承諾一份一份放行。"""
+        self.assertIn(CREDENTIAL_LINE, self.body)
+        for p in (SKILL, *(SKILL_DIR / "references").glob("*.md")):
+            with self.subTest(file=p.name):
+                self.assertNotIn("一份一份", p.read_text(encoding="utf-8"))
 
     def test_no_absolute_paths(self):
         for text, name in ((self.body, "SKILL.md"),
@@ -92,9 +105,17 @@ class Evals(unittest.TestCase):
         for q in SPEC_QUERIES:
             with self.subTest(query=q):
                 self.assertIn(q, by_query)
-        self.assertFalse(by_query[SPEC_QUERIES[6]])
+        self.assertTrue(by_query[SPEC_QUERIES[6]])  # 驗收 15：搬單一檔案要觸發
+        self.assertFalse(by_query[SPEC_QUERIES[9]])  # 驗收 15：改內容是 produce
         self.assertFalse(by_query[SPEC_QUERIES[8]])
         self.assertTrue(by_query[SPEC_QUERIES[5]])
+
+
+class RepoClaudeMd(unittest.TestCase):
+    def test_commands_row_follows_ruling_5(self):
+        """驗收 17：commands/ 列不寫 manage 指令，免得跟 skill 撞名。"""
+        lines = (ROOT / "CLAUDE.md").read_text(encoding="utf-8").splitlines()
+        self.assertIn(COMMANDS_ROW, lines)
 
 
 if __name__ == "__main__":

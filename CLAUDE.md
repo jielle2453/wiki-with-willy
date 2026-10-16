@@ -47,7 +47,7 @@
 | `design/` | 流程、約定、架構、決策、spec。實作 session 只能在 `backlog.md` 新增一行 |
 | `rules/core.md` | 常駐核心規則 R-01～R-14（D-059），開場注入整份帶入；`test_budget` 量、`test_rules_core` 守條目 |
 | `skills/manage/` | 第一個 skill（D-089、D-090）：`SKILL.md` 只做分派，加資料夾、不讀某夾、拿掉來源、取消排除、列出，一律經 `kb folders`；`references/sources.md` 是子子命令的參數、輸出與拒絕原因怎麼說。其餘五個 skill 尚未 |
-| `commands/` | 尚未。build 與 manage 指令 |
+| `commands/` | 尚未。build 五步與 upgrade、backup、restore、relocate、migrate、account（D-028），沒有 manage 指令 |
 | `agents/` | 尚未 |
 | `templates/` | 尚未。卡與報告範本 |
 | `skeleton/` | 客戶端總資料夾骨架：`CLAUDE.md`（身分與五區、沒有開場段就不改檔的哨兵句，D-080、D-088，`test_budget` 量）、`.claude/settings.json`（空殼 deny 清單）、四區的 `.gitkeep`（只為 git 留空夾，`kb init` 不複製） |

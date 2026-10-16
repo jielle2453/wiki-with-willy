@@ -448,6 +448,32 @@ class Remove(Base):
         r = self.remove("客戶案件", "--vault", str(self.V), cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_alias_is_case_insensitive_like_add(self):
+        """驗收 16：別名比對跟 add 擋重複一樣不分大小寫；印的與 --json 用登記的原樣。"""
+        (self.raw / "Docs").mkdir()
+        (self.raw / "Docs" / "d.txt").write_text("d", encoding="utf-8")
+        assert self.add("../raw/Docs").returncode == 0
+        r = self.remove("docs", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["alias"], "Docs")
+        self.assertEqual(sorted(s["alias"] for s in self.sources()["sources"]), ["客戶案件", "行政"])
+
+
+class Help(unittest.TestCase):
+    """驗收 14：kb --help 與 kb folders --help 的 folders 描述句含 remove、include。"""
+
+    def test_folders_description_mentions_remove_and_include(self):
+        from kb.cli import COMMANDS
+        doc = COMMANDS["folders"][1]
+        for word in ("remove", "include"):
+            self.assertIn(word, doc)
+        env = {"COLUMNS": "400"}  # 不讓 argparse 折行，才能整句比
+        for args in (("--help",), ("folders", "--help")):
+            with self.subTest(args=args):
+                r = run_kb(*args, cwd=ROOT, env_extra=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(doc, r.stdout)
+
 
 class Include(Base):
     def setUp(self):

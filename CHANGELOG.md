@@ -4,6 +4,12 @@
 bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；事後補就會變成第二份會漂的清單。
 為什麼只寫 spec 或決策裡有的，查不到寫「待補」，不推測。
 
+## 0.7.0 — 2026-10-16
+- **改了什麼**：第一個 skill `manage`（`/wiki-with-willy:manage`）：客戶在對話裡一句話加資料夾、不讀某夾、拿掉來源、取消排除、看現在讀哪些；搬檔、改名、搬家、重建這版做不到就明說怎麼自己做。本文是「客戶說／AI 做法」表（沒路徑請客戶貼不猜、先 `--check` 報數字再加、不讀某夾先查登記再問兩種、拿掉只認明確確認、搬家先 check 新路徑再換），`references/sources.md` 放子命令與拒絕原因。新子命令 `kb folders remove <別名>`、`include <路徑>`（只改 sources.json、先備進回合、記程式段）；`include` 的拒絕句分三種。`tests/evals/manage.json` 20 句路由測試，兩套 plugin 都在的機器上該觸發 30/30、不該 0/30。客戶端 CLAUDE.md 加「回答客戶一律繁體中文」。624 測試。
+- **為什麼**：常駐層齊了客戶還是碰不到任何功能，manage 程式幾乎現成、能第一次驗證「skill 只做分派、描述 150 字能路由」（D-089～D-091）。確認時 AI 全程英文，core.md 的 R-10 送到了沒照做，CLAUDE.md 是專案指示比注入強（D-080 補）。測試四輪、確認一輪加補驗。
+- **commit**：bf34ed9、c245597、7d74891、759a353、f38382f（實作，分支 spec/manage，merge 6074bb6）
+- **spec**：design/specs/2026-10-16-manage.md
+
 ## 0.6.0 — 2026-10-16
 - **改了什麼**：開場注入與核心規則。新 `rules/core.md` 十四條（R-01～R-14：三種真相分開、出處優先序、每句帶出處、不改原檔、退回走 `kb versions`、不猜、全庫操作不代跑、綜合卡寫法、外部動作先確認且帳密不落檔、對人中文對程式英文、建議下一步、被擋不繞路且同一回答做完、工作日誌的 `kb turn note`／`redact`／`journal recent`、kb 程式用 Bash 一次一個指令）。新 SessionStart hook `hooks/session.py`（startup｜resume｜clear｜compact）把 core.md 全文與狀態行塞進 additionalContext，狀態行第一版只有 `kb.py` 完整呼叫前綴與摺疊提示；hook 找到知識庫後出錯會印一行「開場程式出錯」。`skeleton/CLAUDE.md` 加哨兵句：沒看到開場段就是程式沒跑起來，AI 可查 python、客戶同意才裝、期間不改檔。回合的問剝掉 `<pasted_content>` 標籤。592 測試。
 - **為什麼**：常駐層一直缺規則與程式位置，AI 要被點名才會跑 `kb.py`、沒拒絕代登入（B-031）；規則在對話裡才是機器保證，給路徑靠模型記得讀（I-036、D-087）；python 不在時偵測它的 hook 自己跑不起來，能活在外面的只有 CLAUDE.md（I-103、D-088）；D-059 補 R-13、R-14。測試兩輪，第一輪 review 抓到剝標籤黏字讓短關鍵詞遮不到、子代理會誤判哨兵句、hook 自己出錯被當成 python 壞掉。

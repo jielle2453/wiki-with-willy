@@ -137,12 +137,12 @@ build 指令 `disable-model-invocation`：模型不代叫，客戶或服務人�
 
 | 層 | 內容 | 何時進 context |
 |---|---|---|
-| 常駐 | 六個 skill 描述、`rules/core.md`、總資料夾 CLAUDE.md、開場注入（內容見 D-060） | 每題。有預算，測試守 |
+| 常駐 | 六個 skill 描述、`rules/core.md`（由開場注入帶進來，D-087）、總資料夾 CLAUDE.md、開場狀態行（項目見 D-060） | 每題。有預算，測試守 |
 | 觸發 | `SKILL.md` 本文，只做分派，有行數上限 | 該 skill 被叫到 |
 | 按需 | `references/` 與 `rules/` 其他檔，本文依來源型別與設定決定讀哪些 | 遇到才讀 |
 | 程式 | `kb.py` | 執行時只付輸出 |
 
-總資料夾的 CLAUDE.md 不引用 plugin 檔案，規則路徑由開場 hook 注入；對話摺疊後 SessionStart 以 matcher compact 重跑同一段注入（I-036）。SKILL.md 直接用 `${CLAUDE_PLUGIN_ROOT}`。不寫 plugin 路徑進任何狀態檔。
+總資料夾的 CLAUDE.md 不引用 plugin 檔案，`rules/core.md` 全文與狀態行由開場 hook 注入（D-087）；對話摺疊後 SessionStart 以 matcher compact 重跑同一段注入（I-036）。SKILL.md 直接用 `${CLAUDE_PLUGIN_ROOT}`。不寫 plugin 路徑進任何狀態檔。
 
 ## 六、四層怎麼紮實
 

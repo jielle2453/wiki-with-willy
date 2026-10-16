@@ -678,6 +678,7 @@
 - 為什麼：ingest 開頭必跑 `kb changes`，沒有清冊製卡沒得起頭；discover 與 relocate 跟 ingest 無關，清殘留現在沒有卡可清、relocate 的抽樣比指紋沒有真東西可測。
 - 放棄了：連 discover 一起做（題目多一截）；連 relocate 與清殘留（測不到真的東西）。
 - 重談條件：manage 第二版開工時接回三件；ingest 題接文字指紋。
+- **2026-10-16 修訂**：Office 文字指紋不等 ingest，本題用標準函式庫先做 OOXML 內容指紋，見 D-096。
 
 ## D-093 清冊 schema 2：位置是物件、read 與 status 分開、不記有沒有卡
 - 日期：2026-10-16
@@ -699,6 +700,13 @@
 - 為什麼：一件事一筆交易；登記後開場不會冒出一行客戶自己消不掉的「新增 N」（I-045 同類）；拿掉來源的條目立刻標 excluded，不用等人跑掃描。
 - 放棄了：登記歸登記、清冊等下次 scan（程式少，但兩份狀態檔各走各的，退回只回一份）。
 - 重談條件：確認階段 `folders add` 大夾算指紋等太久。
+
+## D-096 OOXML 內容指紋用標準函式庫先做，假變動不報
+- 日期：2026-10-16
+- 選了：docx、xlsx、pptx（含 docm、xlsm、pptm）除位元組 sha256 外多算一個內容指紋 `text_sha256`：`zipfile` 加 `xml.etree`，docx 以段落為單位接所有 `w:t`，xlsx 抓每格座標、值（認 `t="s"`、`inlineStr`、`str` 三種字串寫法，數值轉 float 後統一 `.10g`）與公式，pptx 以段落接 `a:t`。比對：位置已知、大小時間變、位元組變，但兩邊都有內容指紋且相同 → 假變動，現行那筆指紋的 `sha256` 原地換新、不追加、不報修改。搬動與重複仍只認位元組。zip 打不開、不是這幾種、加密 Office 檔退回位元組。這是 D-014 補「Office 指紋用抽出文字算」的第一版；ingest 題的 `kb convert` 出來後要不要改用它抽的文字，到時再看。
+- 為什麼：客戶「打開看一下再存」是日常，Excel、Word、LibreOffice 存檔都重寫 zip 裡的 metadata 與 XML 排版（I-015）；不處理，開場天天報「修改 N」，跟 I-045 一樣訓練客戶不看。標準函式庫就做得到，不用等選配的 markitdown。LibreOffice 存檔改得更兇（inline string、run 重切），所以抽內容要以段落接、字串三種寫法都認；確認環境只有 LibreOffice，真客戶兩種都可能有。
+- 放棄了：等 ingest 題的 convert（這題開場就會誤報）；只比 zip 成員的位元組（LibreOffice 重存 XML 整個重排，救不到）；內容指紋也用來認搬動（另存的副本會被當成搬動，位元組認法保守）。
+- 重談條件：ingest 的 convert 抽出的文字跟這裡的內容指紋常不一致，或 .doc／.xls／PDF 的假變動多到客戶抱怨。
 
 ## 未決
 

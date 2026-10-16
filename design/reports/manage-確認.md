@@ -120,3 +120,23 @@ plugin：`--plugin-dir C:\Users\Jie\Desktop\llm-wiki-j-manage`（worktree，HEAD
 確認方說明：全程沒 cd 進知識庫，佐證都用絕對路徑跑 `folders list --json --vault`、讀 `.system\journal\2026-10.jsonl`、看 `.system\` 有沒有 `ledger.tsv` 與 `hook-errors.log`，另外讀對話逐字紀錄。確認 session 自己沒有對 `<K>` 跑任何寫入指令（除了準備的 `init`）。
 
 收尾待辦：舊 `llm-wiki@llm-wiki` 本來就是 enabled，這次沒動，不用 enable 回來。`manage-check\` 留著。
+
+## 補驗（2026-10-16，修正 commit f38382f）
+
+前置：`<W>` HEAD f38382f（skeleton/CLAUDE.md 加「客戶講繁體中文，回答客戶一律繁體中文。」；SKILL.md「不讀某夾」先 `list --json`，沒登記就說本來就沒在讀、問要不要加、請貼路徑、不推路徑、不跑 exclude；共通段加同一句繁體中文）。舊 `llm-wiki@llm-wiki` 已 disabled（`claude plugin list` ✘ disabled）；superpowers 仍啟用（SessionStart 仍有 `run-hook.cmd`）。
+準備：既有 `知識庫\CLAUDE.md` 不會被 init 蓋，另建 `manage-check\知識庫2`：`kb init` → 建了 11 項，exit 0，`CLAUDE.md` 第 3 行有那句繁體中文；`folders add "…\來源\客戶案件" --vault "<知識庫2>"` → `已登記「客戶案件」（../來源/客戶案件，15 份）`。只登記這一個。
+對話：cwd `知識庫2`，同一個 `--plugin-dir`，session `56b721c5-6f1e-4dbf-a948-16801d863359`；工具呼叫看逐字紀錄 `~\.claude\projects\C--Users-Jie-Desktop-llm-wiki-test-manage-check----2\56b721c5-….jsonl`。
+
+### A：「你現在讀哪些資料夾」
+- `Skill(wiki-with-willy:manage)` → `folders list`（工具描述也是中文）。回答：「知識庫現在只讀 1 個資料夾：別名 客戶案件、位置 …/來源/客戶案件、不讀的子資料夾：沒有，整個資料夾都讀。（資料來源：kb folders list 的結果）要再加資料夾的話，從檔案總管的位址列把完整路徑複製貼給我就行。」
+- 判：**過**：繁體中文，內容對。R-10 落差收掉。
+
+### B：「不要讀公司行政裡的薪資」
+- 工具呼叫（逐字紀錄）：`folders list --json` → `Glob("**/公司行政*", path=…\來源\客戶案件)` 0 筆 → `find "…\來源\客戶案件" -type d -name "*公司行政*"` 無輸出。**沒有 `exclude`、沒有接路徑。**
+- 回答：先說「先查一下公司行政有沒有在目前登記的資料夾裡」；「「公司行政」那個資料夾本來就沒在讀。知識庫目前只讀「客戶案件」，裡面找不到叫「公司行政」的子資料夾。所以公司行政裡的薪資，AI 目前讀不到。」；「如果您其實想把「公司行政」加進來，只是裡面的薪資不要讀，請從檔案總管的位址列把「公司行政」的完整路徑複製貼給我。我會先檢查裡面有什麼，再一起處理薪資那夾不讀的設定。」沒先問①②。
+- jsonl（`知識庫2`）：兩段 turn 都是沒有改動、`note_by` program；`.system\` 沒有 `ledger.tsv`。
+- 判：**過**：先 list、說本來就沒在讀、問要不要加、請客戶貼路徑；不接路徑、不跑 exclude。
+- 觀察：多了兩個唯讀查找（Glob、find），只在已登記的來源「客戶案件」裡面找有沒有叫公司行政的子夾，用來判斷「在不在來源裡」；沒有往來源外找、沒有猜路徑，可接受。想更省的話，SKILL 可以寫「只看 `list --json` 的別名與路徑判斷」。
+
+### 補驗結論
+**兩句都過。**原本兩個落差（R-10 英文、第 5 步沒先查登記又猜路徑）在 f38382f 都收掉了。環境仍有 superpowers，但這次回答已是繁體中文。

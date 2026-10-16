@@ -14,6 +14,7 @@ HOOK = ROOT / "hooks" / "session.py"
 CORE = ROOT / "rules" / "core.md"
 KB_LINE = f'【wiki-with-willy】kb 指令：python "{ROOT.as_posix()}/scripts/kb.py" <子命令>'
 COMPACT_LINE = "對話剛摺疊，規則已重新帶入；做到一半的事以工作日誌為準。"
+ERROR_LINE = "【wiki-with-willy】開場程式出錯（{}），詳見 .system/hook-errors.log；這個對話不改任何檔。"
 
 
 def run(data, cwd=None):
@@ -73,6 +74,39 @@ class SessionHook(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
         lines = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines[-1].split("\t")[1], "session")
+
+    def test_error_after_vault_found_prints_error_line_and_logs(self):
+        """第一輪 D2：找到知識庫之後出錯，除了寫 log，還要印一行出錯的 additionalContext（失敗明講）。
+        複製 hooks/session.py、scripts/ 與 manifest 到沒有 rules/ 的暫存夾，讀 core.md 會 FileNotFoundError。"""
+        plugin = self.tmp / "plugin"
+        (plugin / "hooks").mkdir(parents=True)
+        shutil.copy2(HOOK, plugin / "hooks" / "session.py")
+        shutil.copytree(ROOT / "scripts", plugin / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(ROOT / ".claude-plugin", plugin / ".claude-plugin")
+        raw = json.dumps(payload(self.V), ensure_ascii=False)
+        r = subprocess.run([sys.executable, str(plugin / "hooks" / "session.py")], input=raw, capture_output=True,
+                           text=True, encoding="utf-8", cwd=str(self.V), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(plugin)))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r.stdout.encode("ascii")
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["hookEventName"], "SessionStart")
+        self.assertEqual(out["additionalContext"], ERROR_LINE.format("FileNotFoundError"))
+        lines = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].split("\t")[1], "session")
+
+    def test_broken_stdout_pipe_still_exit_0(self):
+        """第一輪低項：stdout 讀端先關掉（pipe 斷），write／flush 失敗也要 exit 0、stderr 乾淨（結束時的補 flush 不能再炸）。"""
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT))
+        p = subprocess.Popen([sys.executable, str(HOOK)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, cwd=str(self.V), env=env)
+        p.stdout.close()
+        p.stdin.write(json.dumps(payload(self.V)).encode("utf-8"))
+        p.stdin.close()
+        err = p.stderr.read()
+        p.stderr.close()
+        self.assertEqual(p.wait(timeout=10), 0, err)
+        self.assertEqual(err, b"")
 
     def test_stdout_is_pure_ascii(self):
         r = run(payload(self.V, "compact"))

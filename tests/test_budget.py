@@ -161,7 +161,7 @@ class ResidentTotal(unittest.TestCase):
             if p.exists():
                 parts.append(len(read(p)))
         if SESSION_HOOK.exists():
-            parts.append(len(opening_status("compact")))
+            parts.append(len(opening_status("compact")) + len("\n\n"))  # 狀態行與 core 之間的空行也進常駐
         if not parts:
             self.skipTest("常駐檔尚未建立")
         self.assertLessEqual(sum(parts), RESIDENT_TOTAL_MAX_CHARS)

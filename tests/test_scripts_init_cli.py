@@ -46,6 +46,7 @@ class Skeleton(unittest.TestCase):
         text = (SKELETON / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertIn("【wiki-with-willy】", text)
         self.assertIn("不改任何檔", text)
+        self.assertIn("（子代理沒有開場段，這段不適用）", text)  # 第一輪 D1
 
 
 class Init(unittest.TestCase):

@@ -2,7 +2,8 @@
 
 狀態行固定順序、回 None 的不印；第一行固定以「【wiki-with-willy】」開頭，知識庫 CLAUDE.md 的哨兵句認這個字串（D-088）。
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌。
-任何例外寫 .system/hook-errors.log（source session），不輸出，永遠 exit 0。
+任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
+（失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
 """
 import json
@@ -19,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
 COMPACT_LINE = "對話剛摺疊，規則已重新帶入；做到一半的事以工作日誌為準。"
+ERROR_LINE = "【wiki-with-willy】開場程式出錯（{}），詳見 .system/hook-errors.log；這個對話不改任何檔。"
 
 
 def line_kb(vault):
@@ -70,6 +72,20 @@ def read_core():
     return (paths.plugin_root() / "rules" / "core.md").read_text(encoding="utf-8")
 
 
+def emit(context):
+    """印一行 SessionStart JSON；write／flush 出錯（pipe 斷掉）吞掉。
+    沒送出的字還在緩衝，結束時 Python 會再 flush 一次、失敗就 exit 120，所以把 fd 1 指到 devnull。"""
+    out = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}
+    try:
+        sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")
+        sys.stdout.flush()
+    except BaseException:  # noqa: BLE001
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except BaseException:  # noqa: BLE001
+            pass
+
+
 def main():
     payload = {}
     try:
@@ -79,13 +95,18 @@ def main():
         from kb import guard
 
         vault = guard.find_vault(payload.get("cwd") or os.getcwd())
-        if vault is None:
-            return
-        context = "\n".join(status_lines(vault, payload.get("source"))) + "\n\n" + read_core()
-        out = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}
-        sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")
-    except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
+    except BaseException as e:  # noqa: BLE001  stdin 壞掉、找知識庫出錯：只記 log，不輸出
         _log(e, payload)
+        return
+    if vault is None:
+        return
+    try:
+        context = "\n".join(status_lines(vault, payload.get("source"))) + "\n\n" + read_core()
+    except BaseException as e:  # noqa: BLE001  找到知識庫之後出錯：記 log，再明講一行
+        _log(e, payload)
+        emit(ERROR_LINE.format(type(e).__name__))
+        return
+    emit(context)
 
 
 def _log(e, payload):

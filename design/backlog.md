@@ -47,6 +47,7 @@
 | B-035 | 2026-10-16 | deferred | manage 低項：巢狀排除時 `folders include` 外層後說「讀得到」但內層 hidden 仍擋，反方向（取消內層、外層仍擋）也一樣，句子要講；skill 文字守的「先問再做」沒有機器保證（同 B-025，守門對高風險 kb.py 子命令回 ask） | manage 測試 |
 | B-036 | 2026-10-16 | open | skill-creator 的 `scripts/run_eval.py` 讀 evals 沒指定 encoding（cp950 讀不了中文，要 `PYTHONUTF8=1`）、用 `select.select` 讀子程序管線，Windows 上每次 query 都 WinError 10038、全部算未觸發；路由測試要用把 select 換成「永遠就緒」的 shim 跑（原檔不動）；另外預設 10 個 worker 會把同描述的暫時指令檔同時放進同一個 `.claude/commands/`，模型挑到別人那份就算沒觸發（實測該觸發只剩 10%），要 `--num-workers 1`；之後自己寫一支 `tests/evals/run.py`，D-091 的做法到時改 | manage 測試 |
 | B-037 | 2026-10-16 | deferred | Obsidian 視圖（D-097：選配不必要）：`kb` 在 `系統/` 產 Bases 的 `.base` 視圖檔（專案總表、看板），吃綜合卡檔頭；日程渲染成視圖吃得到的形狀；守門補 `.obsidian/` 一條；建置時服務人員可裝可不裝。等綜合卡（ingest）與日程（note）有資料再開題 | 設計討論 |
+| B-038 | 2026-10-17 | open | 開場 scan 的 roots() 對斷線的網路磁碟做 isdir 可能卡 20 秒以上，標準函式庫沒有帶逾時的檢查；候選：按機器記上次找不到的來源、開場先跳過改由 kb changes 查，或子執行緒加逾時 | 清冊 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

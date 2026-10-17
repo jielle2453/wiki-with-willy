@@ -53,6 +53,8 @@
 | B-041 | 2026-10-17 | open | `hooks/hooks.json` SessionStart 的 description 沒提快速 scan 與寫 env.json；下次碰 hook 的題一起改並跑 validate | 清冊測試觀察 F |
 | B-042 | 2026-10-17 | open | 既有測試 `test_two_processes_register_concurrently_both_kept` 偶爾因 `io.FileLock` 的 PermissionError 競態失敗（main 就有，io.py 清冊題沒動） | 清冊測試觀察 H |
 | B-043 | 2026-10-17 | deferred | 低：v1→2 遷移從磁碟補 size／mtime 等於信任期間沒改過（C）；`_migrate` 每個位置 stat 不受時間預算、`env.clear_missing` 每個來源各讀一次 env.json（G） | 清冊測試觀察 C、G |
+| B-044 | 2026-10-17 | open | 低：`content_fp` 的時間檢查「每 1000 個元素查一次」每個 zip 成員重新數，小成員很多的檔（幾千張投影片）不會停下來查；改成跨成員累計 | 清冊測試第二輪 |
+| B-045 | 2026-10-17 | open | 低：hidden 排除只拿掉重複檔其中一個位置時第二行印「清冊：0 份已拿掉」，應該數位置或另印；`versions revert`／`--delete-outputs` 在清冊讀不到時最後那句與成品數是還原前狀態 | 清冊測試第二輪 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

@@ -183,5 +183,68 @@ class CompressSpec(unittest.TestCase):
                 self.assertFalse(paths.is_abs_spec(spec))
 
 
+class LongPath(unittest.TestCase):
+    r"""清冊題：Windows 加 \\?\ 前綴（UNC 是 \\?\UNC\），非 Windows 原樣（I-017）。"""
+
+    @unittest.skipUnless(os.name == "nt", "Windows 才加前綴")
+    def test_drive_path_gets_prefix(self):
+        self.assertEqual(paths.long_path("C:/x/raw/a.txt"), r"\\?\C:\x\raw\a.txt")
+
+    @unittest.skipUnless(os.name == "nt", "Windows 才加前綴")
+    def test_unc_gets_unc_prefix(self):
+        self.assertEqual(paths.long_path(r"\\server\share\a.txt"), r"\\?\UNC\server\share\a.txt")
+
+    @unittest.skipUnless(os.name == "nt", "Windows 才加前綴")
+    def test_already_prefixed_kept(self):
+        self.assertEqual(paths.long_path(r"\\?\C:\x"), r"\\?\C:\x")
+
+    @unittest.skipUnless(os.name == "nt", "Windows 才加前綴")
+    def test_over_260_chars_can_be_written_and_read(self):
+        tmp = Path(tempfile.mkdtemp(prefix="kblong-"))
+        try:
+            deep = tmp
+            for i in range(30):
+                deep = deep / f"資料夾{i:02d}_很長的名字"
+            os.makedirs(paths.long_path(deep))
+            target = deep / "a.txt"
+            self.assertGreater(len(str(target)), 260)
+            with open(paths.long_path(target), "w", encoding="utf-8") as f:
+                f.write("x")
+            with open(paths.long_path(target), encoding="utf-8") as f:
+                self.assertEqual(f.read(), "x")
+        finally:
+            shutil.rmtree(paths.long_path(tmp), ignore_errors=True)
+
+    @unittest.skipIf(os.name == "nt", "非 Windows 原樣")
+    def test_posix_unchanged(self):
+        self.assertEqual(paths.long_path("/x/raw/a.txt"), "/x/raw/a.txt")
+
+
+class SourcesUnresolvedShape(unittest.TestCase):
+    """審閱裁定 2：unresolved 每項是 {alias, spec, id, kind}，kind 是 source｜exclude。"""
+
+    def test_unresolved_items_are_dicts_with_kind(self):
+        from kb._lib import sources as sources_lib
+        os.environ.pop("KB_TEST_NOPE", None)
+        tmp = Path(tempfile.mkdtemp(prefix="kbsrc-"))
+        try:
+            (tmp / "raw").mkdir()
+            data = {"schema_version": 1, "sources": [
+                {"id": "src-0001", "alias": "外接", "spec": "${KB_TEST_NOPE}/x", "excludes": []},
+                {"id": "src-0002", "alias": "原檔", "spec": str(tmp / "raw"),
+                 "excludes": [{"spec": "${KB_TEST_NOPE}/y", "kind": "hidden"}]},
+                {"alias": "舊的", "spec": "${KB_TEST_NOPE}/z"},
+            ]}
+            s = sources_lib.Sources(str(tmp), data)
+            self.assertEqual(s.unresolved, [
+                {"alias": "外接", "spec": "${KB_TEST_NOPE}/x", "id": "src-0001", "kind": "source"},
+                {"alias": "原檔", "spec": "${KB_TEST_NOPE}/y", "id": "src-0002", "kind": "exclude"},
+                {"alias": "舊的", "spec": "${KB_TEST_NOPE}/z", "id": "", "kind": "source"},
+            ])
+            self.assertEqual([e["alias"] for e in s.entries], ["原檔"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

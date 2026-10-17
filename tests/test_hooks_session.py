@@ -1,5 +1,6 @@
 """hooks/session.py 黑箱：subprocess 餵 SessionStart payload（D-087、D-060）。第一行 kb 指令前綴、core.md 全文接在空行後、
-compact 才有摺疊那行、不在知識庫或壞 JSON 無輸出 exit 0、stdout 純 ASCII、2 秒內、hooks.json 註冊。"""
+compact 才有摺疊那行、不在知識庫或壞 JSON 無輸出 exit 0、stdout 純 ASCII、2 秒內、hooks.json 註冊。
+清冊題：變動行三種（無、有數字、incomplete）、找不到來源第一次印第二次不印、清冊壞掉其他行照印且 log 一行。"""
 import json
 import os
 import shutil
@@ -54,11 +55,13 @@ class SessionHook(unittest.TestCase):
         core = CORE.read_text(encoding="utf-8")
         ctx = self.context("startup")
         self.assertTrue(ctx.endswith("\n\n" + core), ctx[:200])
-        self.assertEqual(ctx, KB_LINE + "\n\n" + core)
+        status = ctx[:-len("\n\n" + core)].split("\n")  # 清冊審閱裁定 10：kb 行與 core 之間允許多狀態行
+        self.assertEqual(status[0], KB_LINE)
+        self.assertTrue(all(line for line in status), status)
 
     def test_compact_adds_second_line(self):
-        lines = self.context("compact").splitlines()
-        self.assertEqual(lines[:3], [KB_LINE, COMPACT_LINE, ""])
+        status = self.context("compact").split("\n\n", 1)[0].split("\n")
+        self.assertEqual((status[0], status[-1]), (KB_LINE, COMPACT_LINE))
 
     def test_other_sources_have_no_compact_line(self):
         for source in ("startup", "resume", "clear", None):
@@ -83,6 +86,7 @@ class SessionHook(unittest.TestCase):
         shutil.copy2(HOOK, plugin / "hooks" / "session.py")
         shutil.copytree(ROOT / "scripts", plugin / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(ROOT / ".claude-plugin", plugin / ".claude-plugin")
+        shutil.copytree(ROOT / "config", plugin / "config")  # 清冊題：變動行要讀設定，缺它會多一行 log
         raw = json.dumps(payload(self.V), ensure_ascii=False)
         r = subprocess.run([sys.executable, str(plugin / "hooks" / "session.py")], input=raw, capture_output=True,
                            text=True, encoding="utf-8", cwd=str(self.V), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(plugin)))
@@ -130,6 +134,104 @@ class SessionHook(unittest.TestCase):
         self.assertEqual(hooks[0]["timeout"], 10)
         self.assertTrue(cfg["description"].startswith("開場帶入核心規則與 kb 指令前綴；"))
         self.assertEqual(len(cfg["hooks"]), 5)
+
+
+KB = ROOT / "scripts" / "kb.py"
+CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動」我再比"
+
+
+class OpeningInventory(unittest.TestCase):
+    """清冊題第 7 點：line_changes、line_missing_sources 共用一次快速 scan；每行各自 try（I-046）。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        # fixture 的 r.docx 與 合約.docx 都是 0 位元組，同一份內容會併成一筆；給它自己的內容才測得到「不見」
+        (self.raw / "行政" / "請款" / "r.docx").write_bytes(b"PK fake request")
+        r = subprocess.run([sys.executable, str(KB), "inventory", "scan"], capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(self.V), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT)))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def status(self, source="startup"):
+        r = run(payload(self.V, source))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r.stdout.encode("ascii")
+        ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+        return ctx.split("\n\n", 1)[0].split("\n")
+
+    def change_lines(self, lines):
+        return [ln for ln in lines if ln.startswith("變動：")]
+
+    def test_no_change_no_line(self):
+        self.assertEqual(self.change_lines(self.status()), [])
+
+    def test_counts_line(self):
+        (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")
+        (self.raw / "客戶案件" / "a.txt").write_text("改過了，長度不一樣\n", encoding="utf-8")
+        (self.raw / "行政" / "請款" / "r.docx").unlink()
+        self.assertEqual(self.change_lines(self.status()), ["變動：新增 1、修改 1、不見 1"])
+
+    def test_moves_and_duplicates_are_not_counted(self):
+        shutil.copy2(self.raw / "客戶案件" / "a.txt", self.raw / "客戶案件" / "a 副本.txt")
+        (self.raw / "行政" / "請款" / "r.docx").rename(self.raw / "行政" / "r.docx")
+        self.assertEqual(self.change_lines(self.status()), [])
+
+    def test_never_scanned_vault_counts_everything_as_new(self):
+        """審閱裁定 10：沒有清冊等於全部新增。"""
+        (self.V / ".system" / "inventory.json").unlink()
+        lines = self.change_lines(self.status())
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], r"^變動：新增 [1-9]\d*、修改 0、不見 0$")
+
+    def test_incomplete_line(self):
+        (self.V / ".system" / "config.json").write_text(json.dumps({"changes_quick_seconds": 0}), encoding="utf-8")
+        self.assertEqual(self.change_lines(self.status()), [CHANGES_INCOMPLETE])
+
+    def test_missing_source_reported_once_then_cleared(self):
+        (self.raw / "客戶案件").rename(self.raw / "客戶案件_舊")
+        line = "這台電腦找不到來源「客戶案件」，其他照常；搬過的話跟我說。"
+        self.assertIn(line, self.status())
+        env_json = json.loads((self.V / ".system" / "env.json").read_text(encoding="utf-8"))
+        self.assertEqual([list(m["missing_sources_reported"]) for m in env_json["machines"].values()], [["src-3f9a"]])
+        lines = self.status()
+        self.assertNotIn(line, lines)
+        self.assertEqual(self.change_lines(lines), [], "根找不到的來源底下不算不見")
+        (self.raw / "客戶案件_舊").rename(self.raw / "客戶案件")
+        self.assertNotIn(line, self.status())
+        env_json = json.loads((self.V / ".system" / "env.json").read_text(encoding="utf-8"))
+        self.assertEqual([m["missing_sources_reported"] for m in env_json["machines"].values()], [{}])
+        (self.raw / "客戶案件").rename(self.raw / "客戶案件_舊")
+        self.assertIn(line, self.status(), "又失蹤再報一次")
+
+    def test_two_missing_sources_joined(self):
+        (self.raw / "客戶案件").rename(self.raw / "客戶案件_舊")
+        (self.raw / "行政").rename(self.raw / "行政_舊")
+        self.assertIn("這台電腦找不到來源「客戶案件」、「行政」，其他照常；搬過的話跟我說。", self.status())
+
+    def test_broken_inventory_other_lines_still_printed_and_one_log_line(self):
+        (self.V / ".system" / "inventory.json").write_text("{bad", encoding="utf-8")
+        lines = self.status("compact")
+        self.assertEqual(lines[0], KB_LINE)
+        self.assertEqual(lines[-1], COMPACT_LINE)
+        self.assertEqual(self.change_lines(lines), [])
+        self.assertFalse(any("找不到來源" in ln for ln in lines))
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0].split("\t")[1], "session")
+
+    def test_opening_writes_only_env_json(self):
+        (self.raw / "客戶案件").rename(self.raw / "客戶案件_舊")
+        (self.raw / "行政" / "請款" / "r.docx").unlink()
+
+        def stamps():
+            return {p.relative_to(self.V).as_posix(): p.stat().st_mtime_ns
+                    for p in (self.V / ".system").rglob("*") if p.is_file()}
+        before = stamps()
+        self.status()
+        after = stamps()
+        self.assertEqual({k for k in after if before.get(k) != after[k]}, {".system/env.json"})
 
 
 if __name__ == "__main__":

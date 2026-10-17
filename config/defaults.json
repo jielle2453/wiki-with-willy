@@ -10,5 +10,11 @@
   "prompt_head_max": 200,
   "_why_prompt_head_max": "回合檔的問、退回句、工作日誌的問共用一個長度（D-086）；80 字看不出退的是哪個夾（B-028）",
   "journal_result_max": 300,
-  "_why_journal_result_max": "工作日誌的結果最多幾字（D-061）：日誌要能翻不能爆，全文 Claude Code 自己有"
+  "_why_journal_result_max": "工作日誌的結果最多幾字（D-061）：日誌要能翻不能爆，全文 Claude Code 自己有",
+  "fingerprint_max_bytes": 209715200,
+  "_why_fingerprint_max_bytes": "單檔超過就不算指紋、只比大小時間（D-094）；200 MB 照舊 plugin 快速比對的量級",
+  "changes_quick_hash_budget_bytes": 209715200,
+  "_why_changes_quick_hash_budget_bytes": "快速比對（開場）一次最多讀多少位元組算指紋，超過的當修改或新增（I-081）",
+  "changes_quick_seconds": 5,
+  "_why_changes_quick_seconds": "快速比對走訪的時間上限，超過停下、開場改印還沒比完；SessionStart hook 逾時 10 秒，留一半給讀 core.md 與其他行"
 }

@@ -54,7 +54,10 @@ class OutputLog(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["origin"], "ai_output")
         self.assertEqual(entries[0]["created_turn"], self.t["turn"])
-        self.assertEqual(entries[0]["locations"][0], "file://AI 產出/x.md")
+        self.assertEqual(entries[0]["locations"][0]["uri"], "file://AI 產出/x.md")
+        self.assertEqual(entries[0]["locations"][0]["size"], self.out.stat().st_size)
+        self.assertRegex(entries[0]["id"], r"^f-[0-9a-f]{8}$")
+        self.assertEqual(entries[0]["read"], "ok")
 
     def test_same_content_again_does_not_add(self):
         write_via_tools(self.V, self.out, "草稿\n")
@@ -73,7 +76,7 @@ class OutputLog(unittest.TestCase):
         nb.write_text("{}", encoding="utf-8")
         r = run_hook(post_payload(self.V, "NotebookEdit", "AI 產出/n.ipynb", key="notebook_path"))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(inventory.load(self.V)["entries"][0]["locations"], ["file://AI 產出/n.ipynb"])
+        self.assertEqual([l["uri"] for l in inventory.load(self.V)["entries"][0]["locations"]], ["file://AI 產出/n.ipynb"])
 
     def test_preexisting_unregistered_file_edit_is_not_registered(self):
         """第一輪 M4（驗收 23）：客戶自己放進 AI 產出的檔，AI 編輯不登記。"""

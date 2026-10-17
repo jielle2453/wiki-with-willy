@@ -19,23 +19,23 @@ class Sources:
     def __init__(self, vault, data):
         self.vault = normalize(vault, None)
         self.entries = []
-        self.unresolved = []  # [(alias, spec)]
+        self.unresolved = []  # [{"alias", "spec", "id", "kind"}]，kind 是 source｜exclude（清冊審閱裁定 2）
         if not isinstance(data, dict) or not isinstance(data.get("sources"), list):
             raise ValueError(f"{SOURCES_REL} 格式不對：要有 sources 清單")
         for s in data["sources"]:
-            alias, spec = s.get("alias", "?"), s.get("spec", "")
+            alias, spec, src_id = s.get("alias", "?"), s.get("spec", ""), s.get("id", "")
             root = resolve_spec(spec, self.vault) if spec else None
             if root is None:
-                self.unresolved.append((alias, spec))
+                self.unresolved.append({"alias": alias, "spec": spec, "id": src_id, "kind": "source"})
                 continue
             excludes = []
             for ex in s.get("excludes", []) or []:
                 ex_root = resolve_spec(ex.get("spec", ""), root) if ex.get("spec") else None
                 if ex_root is None:
-                    self.unresolved.append((alias, ex.get("spec", "")))
+                    self.unresolved.append({"alias": alias, "spec": ex.get("spec", ""), "id": src_id, "kind": "exclude"})
                     continue
                 excludes.append({"root": ex_root, "kind": ex.get("kind", "hidden"), "reason": ex.get("reason", "")})
-            self.entries.append({"id": s.get("id", ""), "alias": alias, "root": root, "excludes": excludes})
+            self.entries.append({"id": src_id, "alias": alias, "root": root, "excludes": excludes})
 
     def lookup(self, path):
         """path 要先 normalize。回 ("excluded"|"registered"|None, source)；排除贏。"""

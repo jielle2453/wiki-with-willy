@@ -1,4 +1,4 @@
-"""_lib/inventory：清冊最小版（D-076）。新建、同內容不重登、改內容追加指紋、outputs_of_turn、set_status、並行登記（I-080）。
+"""_lib/inventory：成品登記（D-076，schema 2 格式見清冊題）。新建、同內容不重登、改內容追加指紋、outputs_of_turn、set_status、並行登記（I-080）。
 第一輪 M2／M4：只配 status active 的條目；沒有 active 條目時，這回合 manifest 記 create 才新建、
 曾登記過（turn_reverted／deleted）又再改也新建、從沒登記過的既有檔（modify）不登記。"""
 import json
@@ -35,18 +35,23 @@ class Register(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_load_missing_returns_empty_schema(self):
-        self.assertEqual(inventory.load(self.V), {"schema_version": 1, "entries": []})
+        self.assertEqual(inventory.load(self.V), {"schema_version": 2, "entries": []})
 
     def test_new_entry_shape(self):
         e = inventory.register_output(self.V, self.rel, self.t["turn"])
         data = json.loads((self.V / ".system" / "inventory.json").read_text(encoding="utf-8"))
-        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["schema_version"], 2)
         self.assertEqual(len(data["entries"]), 1)
         got = data["entries"][0]
         self.assertEqual(got, e)
-        self.assertRegex(got["id"], r"^out-[0-9a-f]{8}$")
+        self.assertRegex(got["id"], r"^f-[0-9a-f]{8}$")
         self.assertEqual(got["origin"], "ai_output")
-        self.assertEqual(got["locations"], ["file://AI 產出/x.md"])
+        st = (self.V / self.rel).stat()
+        self.assertEqual(got["locations"], [{"uri": "file://AI 產出/x.md", "size": st.st_size,
+                                             "mtime": inventory.mtime_str(st.st_mtime)}])
+        self.assertEqual((got["read"], got["missing_since"]), ("ok", None))
+        self.assertEqual(got["first_seen"], got["fingerprints"][0]["time"])
+        self.assertNotIn("created", got)
         self.assertEqual(got["created_turn"], self.t["turn"])
         self.assertEqual(got["status"], "active")
         self.assertEqual(len(got["fingerprints"]), 1)
@@ -73,6 +78,7 @@ class Register(unittest.TestCase):
         self.assertEqual(len(data["entries"][0]["fingerprints"]), 2)
         self.assertEqual(data["entries"][0]["fingerprints"][1]["turn"], t2["turn"])
         self.assertEqual(data["entries"][0]["created_turn"], self.t["turn"])
+        self.assertEqual(data["entries"][0]["locations"][0]["size"], (self.V / self.rel).stat().st_size)
 
     def test_outputs_of_turn_only_active_of_that_turn(self):
         t2 = turn.start(self.V, "other", "別的")
@@ -158,7 +164,7 @@ class Register(unittest.TestCase):
             _out, err = p.communicate(timeout=60)
             self.assertEqual(p.returncode, 0, err.decode("utf-8", "replace"))
         data = inventory.load(self.V)
-        self.assertEqual(sorted(e["locations"][0] for e in data["entries"]), ["file://AI 產出/x.md", "file://AI 產出/y.md"])
+        self.assertEqual(sorted(e["locations"][0]["uri"] for e in data["entries"]), ["file://AI 產出/x.md", "file://AI 產出/y.md"])
 
 
 if __name__ == "__main__":

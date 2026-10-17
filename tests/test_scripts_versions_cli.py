@@ -103,6 +103,21 @@ class List(Base):
         self.assertIn("修改 1、新增 0", r.stdout)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_outputs_count_only_ai_output(self):
+        """清冊審閱裁定 1：kb inventory scan 那回合入冊的客戶檔不是成品，list 不印「成品 N」。"""
+        r = run_kb("inventory", "scan", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = inventory.load(self.V)
+        scan_turn = data["entries"][0]["created_turn"]
+        self.assertGreater(sum(1 for e in data["entries"] if e["created_turn"] == scan_turn), 1)
+        r = run_kb("versions", "list", "--json", cwd=self.V)
+        row = [t for t in json.loads(r.stdout) if t["turn"] == scan_turn][0]
+        self.assertEqual(row["counts"]["outputs"], 0)
+        t, _rel, _entry = self.make_output()
+        r = run_kb("versions", "list", "--json", cwd=self.V)
+        row = [x for x in json.loads(r.stdout) if x["turn"] == t["turn"]][0]
+        self.assertEqual(row["counts"]["outputs"], 1)
+
 
 class Revert(Base):
     def test_restores_modified_file(self):
@@ -761,7 +776,7 @@ class VersionsJournal(Base):
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(z.is_file())
-        entry = [e for e in inventory.load(self.V)["entries"] if "file://AI 產出/z.md" in e.get("locations", [])][-1]
+        entry = [e for e in inventory.load(self.V)["entries"] if "file://AI 產出/z.md" in [l["uri"] for l in e.get("locations", [])]][-1]
         self.assertEqual(entry["status"], "active")
         self.assertEqual((self.card.read_bytes(), marker.read_bytes()), before)
         new = {p.name for p in vroot.iterdir()} - dirs

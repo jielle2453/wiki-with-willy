@@ -66,7 +66,8 @@ def turns(vault):
 
 def _counts(vault, t):
     n = {k: sum(1 for e in t["entries"] if e.get("action") == k) for k in ("modify", "create", "delete")}
-    n["outputs"] = sum(1 for e in inventory.load(vault)["entries"] if e.get("created_turn") == t["turn"])
+    n["outputs"] = sum(1 for e in inventory.load(vault)["entries"]
+                       if e.get("created_turn") == t["turn"] and e.get("origin") == "ai_output")  # 掃描入冊的客戶檔不是成品
     return n
 
 
@@ -125,7 +126,8 @@ def _remove(vault, rel, acting_turn):
 
 
 def _rels_of(entries_):
-    return [loc[len("file://"):] for o in entries_ for loc in o.get("locations", []) if loc.startswith("file://")]
+    return [loc["uri"][len("file://"):] for o in entries_ for loc in o.get("locations", [])
+            if str(loc.get("uri", "")).startswith("file://")]
 
 
 def _rel_of(entry):
@@ -173,8 +175,8 @@ def _reconcile(vault, rels):
     data = inventory.load(vault)
     to_active, to_deleted = [], []
     for rel in rels:
-        location = "file://" + rel
-        same = [e for e in data["entries"] if location in e.get("locations", [])]
+        key = inventory.uri_key("file://" + rel)
+        same = [e for e in data["entries"] if any(inventory.uri_key(loc.get("uri", "")) == key for loc in e.get("locations", []))]
         if not same:
             continue
         ((to_active if (Path(vault) / rel).is_file() else to_deleted)).append(same[-1]["id"])
@@ -221,7 +223,8 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
     sources = sources_lib.load(vault)
     # 成品只算「清冊 created_turn 是這回合 且 這回合 manifest 記 create」的（第一輪 M4）
     created = {e.get("path") for e in target["entries"] if e.get("action") == "create"}
-    outputs = [o for o in inventory.outputs_of_turn(vault, target["turn"]) if _rel_of(o) in created]
+    outputs = [o for o in inventory.outputs_of_turn(vault, target["turn"])
+               if o.get("origin") == "ai_output" and _rel_of(o) in created]
     out_rels = _rels_of(outputs)
 
     restored, removed, lost, touched_z3, kept_msgs, kept_ids = [], [], [], [], [], []

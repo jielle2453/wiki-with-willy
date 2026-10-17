@@ -13,6 +13,8 @@ COMMANDS = {
     "init": ("kb.init", "建總資料夾的五區骨架；--check 只看會建什麼"),
     "folders": ("kb.folders", "來源：add 登記一個資料夾，exclude 排除裡面的夾或檔，remove 拿掉一個來源，include 取消排除，list 列出登記表"),
     "journal": ("kb.journal_cli", "工作日誌：recent 印最近幾段，render 重寫月檔"),
+    "inventory": ("kb.inventory_cli", "清冊：scan 掃描來源與總資料夾，把變動套進清冊"),
+    "changes": ("kb.changes", "變動：跟清冊上次掃描比，列新增、修改、搬動、不見；只看不改"),
 }
 
 

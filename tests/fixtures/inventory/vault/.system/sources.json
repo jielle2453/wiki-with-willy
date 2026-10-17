@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "src-3f9a",
+      "alias": "客戶案件",
+      "spec": "../raw/客戶案件",
+      "excludes": []
+    },
+    {
+      "id": "src-5b10",
+      "alias": "報價與合約",
+      "spec": "../raw/報價與合約",
+      "excludes": []
+    },
+    {
+      "id": "src-7c21",
+      "alias": "公司行政",
+      "spec": "../raw/公司行政",
+      "excludes": []
+    }
+  ]
+}

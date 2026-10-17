@@ -145,6 +145,7 @@ class FileToolsSources(DecideBase):
             d = self.decide("Read", self.tmp / "elsewhere.txt")
             self.assertEqual(d.decision, "pass")
             self.assertEqual([r["reason_code"] for r in d.ledger_rows], ["unresolved"])
+            self.assertTrue(d.ledger_rows[0]["head"].startswith("外接 ${KB_TEST_NOPE}/x "), d.ledger_rows[0]["head"])
             self.expect("Read", self.raw / "客戶案件" / "a.txt", "allow", "Z9")
         finally:
             src.write_text(original, encoding="utf-8")

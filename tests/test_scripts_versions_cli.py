@@ -103,8 +103,60 @@ class List(Base):
         self.assertIn("修改 1、新增 0", r.stdout)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_unreadable_inventory_list_omits_outputs_and_says_why(self):
+        """審閱裁定 37：清冊形狀不對時 list 不吐 traceback、不印成品數，多印一行「清冊讀不到：<原因>」。"""
+        t = self.modify_card_in_turn()
+        (self.V / ".system" / "inventory.json").write_text('{"schema_version": 3, "entries": []}', encoding="utf-8")
+        r = run_kb("versions", "list", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertTrue(lines[0].startswith(t["turn"]), lines[0])
+        self.assertTrue(lines[0].endswith("修改 1、新增 0、刪除 0"), lines[0])
+        self.assertIn("清冊讀不到：清冊版本 3 比這版 plugin 新", lines)
+        data = json.loads(run_kb("versions", "list", "--json", cwd=self.V).stdout)
+        self.assertIsNone(data[0]["counts"]["outputs"])
+
+    def test_outputs_count_only_ai_output(self):
+        """清冊審閱裁定 1：kb inventory scan 那回合入冊的客戶檔不是成品，list 不印「成品 N」。"""
+        r = run_kb("inventory", "scan", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = inventory.load(self.V)
+        scan_turn = data["entries"][0]["created_turn"]
+        self.assertGreater(sum(1 for e in data["entries"] if e["created_turn"] == scan_turn), 1)
+        r = run_kb("versions", "list", "--json", cwd=self.V)
+        row = [t for t in json.loads(r.stdout) if t["turn"] == scan_turn][0]
+        self.assertEqual(row["counts"]["outputs"], 0)
+        t, _rel, _entry = self.make_output()
+        r = run_kb("versions", "list", "--json", cwd=self.V)
+        row = [x for x in json.loads(r.stdout) if x["turn"] == t["turn"]][0]
+        self.assertEqual(row["counts"]["outputs"], 1)
+
 
 class Revert(Base):
+    def test_unreadable_inventory_revert_still_restores_files(self):
+        """審閱裁定 37：清冊讀不到時 revert 照 manifest 還原檔案、跳過成品對帳、印「清冊讀不到：<原因>」。"""
+        self.modify_card_in_turn()
+        (self.V / ".system" / "inventory.json").write_text('{"schema_version": 3, "entries": []}', encoding="utf-8")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.card.read_bytes(), self.original)
+        self.assertIn("清冊讀不到：清冊版本 3 比這版 plugin 新", r.stdout.splitlines())
+
+    def test_unreadable_inventory_is_itself_restored_from_backup(self):
+        r = run_kb("inventory", "scan", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        good = (self.V / ".system" / "inventory.json").read_bytes()
+        t = turn.start(self.V, SID, "弄壞清冊")
+        turn.backup(self.V, ".system/inventory.json", t["turn"])
+        (self.V / ".system" / "inventory.json").write_text('{"schema_version": 3, "entries": []}', encoding="utf-8")
+        r = run_kb("versions", "revert", "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["restored"], [".system/inventory.json"])
+        self.assertEqual(data["inventory_error"], "清冊版本 3 比這版 plugin 新")
+        self.assertEqual((self.V / ".system" / "inventory.json").read_bytes(), good)
+
     def test_restores_modified_file(self):
         t = self.modify_card_in_turn()
         self.new_turn()
@@ -761,7 +813,7 @@ class VersionsJournal(Base):
         r = run_kb("versions", "revert", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(z.is_file())
-        entry = [e for e in inventory.load(self.V)["entries"] if "file://AI 產出/z.md" in e.get("locations", [])][-1]
+        entry = [e for e in inventory.load(self.V)["entries"] if "file://AI 產出/z.md" in [l["uri"] for l in e.get("locations", [])]][-1]
         self.assertEqual(entry["status"], "active")
         self.assertEqual((self.card.read_bytes(), marker.read_bytes()), before)
         new = {p.name for p in vroot.iterdir()} - dirs

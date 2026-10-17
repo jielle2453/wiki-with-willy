@@ -39,6 +39,15 @@ class Get(unittest.TestCase):
         for key in ("prompt_head_max", "journal_result_max"):
             self.assertTrue(data.get(f"_why_{key}"), key)
 
+    def test_inventory_keys_have_defaults_and_why(self):
+        """清冊：單檔指紋上限 200 MB、快速比對讀取預算 200 MB、快速比對 5 秒（D-094、I-081）。"""
+        data = json.loads((ROOT / "config" / "defaults.json").read_text(encoding="utf-8"))
+        self.assertEqual(config.get(self.vault, "fingerprint_max_bytes"), 209715200)
+        self.assertEqual(config.get(self.vault, "changes_quick_hash_budget_bytes"), 209715200)
+        self.assertEqual(config.get(self.vault, "changes_quick_seconds"), 5)
+        for key in ("fingerprint_max_bytes", "changes_quick_hash_budget_bytes", "changes_quick_seconds"):
+            self.assertTrue(data.get(f"_why_{key}"), key)
+
     def test_client_override_wins(self):
         (self.vault / ".system" / "config.json").write_text(
             json.dumps({"schema_version": 1, "big_change_synthesis_max": 3}), encoding="utf-8")

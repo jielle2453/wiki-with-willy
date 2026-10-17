@@ -65,8 +65,15 @@ def turns(vault):
 
 
 def _counts(vault, t):
+    """清冊讀不到（ValueError）時 outputs 是 None、不印成品數（清冊審閱裁定 37）。"""
     n = {k: sum(1 for e in t["entries"] if e.get("action") == k) for k in ("modify", "create", "delete")}
-    n["outputs"] = sum(1 for e in inventory.load(vault)["entries"] if e.get("created_turn") == t["turn"])
+    try:
+        entries = inventory.load(vault)["entries"]
+    except ValueError:
+        n["outputs"] = None
+        return n
+    n["outputs"] = sum(1 for e in entries
+                       if e.get("created_turn") == t["turn"] and e.get("origin") == "ai_output")  # 掃描入冊的客戶檔不是成品
     return n
 
 
@@ -94,12 +101,17 @@ def _list(vault, n, as_json):
     for t in shown:
         c = _counts(vault, t)
         flags = ("（已退回）" if t["reverted"] else "") + ("（這一次）" if t["turn"] == current else "")
+        outputs = "" if c["outputs"] is None else f"、成品 {c['outputs']}"
         print(f"{t['turn']}{flags}｜{_fmt_time(t['started'])}｜問：「{t['prompt_head']}」｜"
-              f"修改 {c['modify']}、新增 {c['create']}、刪除 {c['delete']}、成品 {c['outputs']}")
+              f"修改 {c['modify']}、新增 {c['create']}、刪除 {c['delete']}{outputs}")
         for e in t["entries"][:ENTRY_LINES_MAX]:
             print(f"    {e.get('action')}：{e.get('path')}")
         if len(t["entries"]) > ENTRY_LINES_MAX:
             print(f"    ……共 {len(t['entries'])} 檔")
+    try:
+        inventory.load(vault)
+    except ValueError as e:
+        print(f"清冊讀不到：{e}")
     return 0
 
 
@@ -125,7 +137,8 @@ def _remove(vault, rel, acting_turn):
 
 
 def _rels_of(entries_):
-    return [loc[len("file://"):] for o in entries_ for loc in o.get("locations", []) if loc.startswith("file://")]
+    return [loc["uri"][len("file://"):] for o in entries_ for loc in o.get("locations", [])
+            if str(loc.get("uri", "")).startswith("file://")]
 
 
 def _rel_of(entry):
@@ -173,8 +186,8 @@ def _reconcile(vault, rels):
     data = inventory.load(vault)
     to_active, to_deleted = [], []
     for rel in rels:
-        location = "file://" + rel
-        same = [e for e in data["entries"] if location in e.get("locations", [])]
+        key = inventory.uri_key("file://" + rel)
+        same = [e for e in data["entries"] if any(inventory.uri_key(loc.get("uri", "")) == key for loc in e.get("locations", []))]
         if not same:
             continue
         ((to_active if (Path(vault) / rel).is_file() else to_deleted)).append(same[-1]["id"])
@@ -221,7 +234,12 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
     sources = sources_lib.load(vault)
     # 成品只算「清冊 created_turn 是這回合 且 這回合 manifest 記 create」的（第一輪 M4）
     created = {e.get("path") for e in target["entries"] if e.get("action") == "create"}
-    outputs = [o for o in inventory.outputs_of_turn(vault, target["turn"]) if _rel_of(o) in created]
+    try:  # 清冊讀不到：照 manifest 還原檔案（含 inventory.json），跳過成品對帳（清冊審閱裁定 37）
+        outputs = [o for o in inventory.outputs_of_turn(vault, target["turn"])
+                   if o.get("origin") == "ai_output" and _rel_of(o) in created]
+        inv_error = None
+    except ValueError as e:
+        outputs, inv_error = [], str(e)
     out_rels = _rels_of(outputs)
 
     restored, removed, lost, touched_z3, kept_msgs, kept_ids = [], [], [], [], [], []
@@ -261,9 +279,13 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
                 inventory.set_status(vault, kept_ids, "turn_reverted")
         else:
             inventory.set_status(vault, [o["id"] for o in outputs], "turn_reverted")
-    _reconcile(vault, touched_z3)
+    if inv_error is None:
+        _reconcile(vault, touched_z3)
     if target["reverted_turn"]:
-        _undo_revert_marks(vault, target["reverted_turn"])
+        try:
+            _undo_revert_marks(vault, target["reverted_turn"])
+        except ValueError:
+            pass  # 標記已撤；清冊讀不到，成品 status 不對帳
     _mark_acting_turn(vault, rt["turn"], target["turn"])
     write_json_atomic(target["dir"] / "reverted.json",
                       {"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "by_turn": rt["turn"]})
@@ -289,7 +311,7 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
             "turn": target["turn"], "prompt_head": target["prompt_head"], "by_turn": rt["turn"],
             "restored": restored, "removed": removed, "lost": lost,
             "outputs": out_rels, "outputs_deleted": bool(delete_outputs), "kept": kept_msgs,
-            "undone_revert_of": target["reverted_turn"],
+            "undone_revert_of": target["reverted_turn"], "inventory_error": inv_error,
         }, ensure_ascii=False))
         return 0
     if lost:
@@ -303,6 +325,8 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
         print(f"這 {len(outputs)} 份成品先留著；要刪跟我說，我用 delete-outputs 刪。")
     if target["reverted_turn"]:
         print(f"這一次退的是「退回 {target['reverted_turn']}」本身，{target['reverted_turn']} 不再算已退回。")
+    if inv_error is not None:
+        print(f"清冊讀不到：{inv_error}")
     return 0
 
 

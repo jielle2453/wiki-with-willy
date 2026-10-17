@@ -1,7 +1,8 @@
 """SessionStart 開場注入入口（D-087、D-060）：對話一開始、resume、clear、摺疊後，把狀態行與 rules/core.md 全文帶進 additionalContext。
 
 狀態行固定順序、回 None 的不印；第一行固定以「【wiki-with-willy】」開頭，知識庫 CLAUDE.md 的哨兵句認這個字串（D-088）。
-輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌。
+輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
+唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -35,9 +36,60 @@ def line_version(vault):
     return None
 
 
+CHANGES_LINE = "變動：新增 {added}、修改 {modified}、不見 {missing}"
+CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動」我再比"
+MISSING_SOURCES_LINE = "這台電腦找不到來源{names}，其他照常；搬過的話跟我說。"
+MISSING_SOURCES_SHOWN = 3
+_SCAN = {}  # vault → (sources, report) 或 None（scan 出錯）；兩行共用一次快速 scan（審閱裁定 9）
+
+
+def _quick_scan(vault):
+    """快速比對一次；出錯只在第一次記一行 log，之後兩行都回 None。"""
+    key = str(vault)
+    if key not in _SCAN:
+        try:
+            from kb._lib import inventory
+            from kb._lib import sources as sources_lib
+
+            sources = sources_lib.load(vault)
+            _SCAN[key] = (sources, inventory.scan(vault, sources, quick=True))
+        except Exception as e:  # noqa: BLE001
+            _SCAN[key] = None
+            _log_vault(vault, e)
+    return _SCAN[key]
+
+
 def line_changes(vault):
-    """等清冊題。"""
-    return None
+    """清冊題：新增、修改、不見三個數都 0 且比完 → None；走訪時間到 → 還沒比完。搬動、重複、之前就不見的不印。"""
+    got = _quick_scan(vault)
+    if got is None:
+        return None
+    report = got[1]
+    if report["incomplete"]:
+        return CHANGES_INCOMPLETE
+    counts = {k: len(report[k]) for k in ("added", "modified", "missing")}
+    return CHANGES_LINE.format(**counts) if any(counts.values()) else None
+
+
+def line_missing_sources(vault):
+    """清冊題：這台電腦找不到的來源，每台電腦只報一次（env.json 記號）；又找得到就清掉記號，之後再失蹤再報。"""
+    got = _quick_scan(vault)
+    if got is None:
+        return None
+    from kb._lib import env
+
+    sources, report = got
+    lost = {(m["id"] or m["alias"]): m["alias"] for m in report["missing_sources"]}
+    env.clear_missing(vault, [s["id"] or s["alias"] for s in sources.entries if (s["id"] or s["alias"]) not in lost])
+    new = {k: alias for k, alias in lost.items() if not env.missing_reported(vault, k)}
+    if not new:
+        return None
+    env.mark_missing(vault, list(new))
+    aliases = list(new.values())
+    names = "、".join(f"「{alias}」" for alias in aliases[:MISSING_SOURCES_SHOWN])
+    if len(aliases) > MISSING_SOURCES_SHOWN:
+        names += f"等 {len(aliases)} 個"  # 最多列 3 個，整行守在開場預算裡（審閱裁定 32）
+    return MISSING_SOURCES_LINE.format(names=names)
 
 
 def line_agenda(vault):
@@ -61,9 +113,18 @@ def line_compact(vault, source):
 
 
 def status_lines(vault, source):
-    lines = [line_kb(vault), line_version(vault), line_changes(vault), line_agenda(vault),
-             line_backup(vault), line_health(vault), line_compact(vault, source)]
-    return [x for x in lines if x is not None]
+    """固定順序；每一行各自 try：出錯那行回 None、寫 hook-errors.log，其他行照印（I-046）。kb 行不包，它出錯走整段出錯。"""
+    out = [line_kb(vault)]
+    for fn in (line_version, line_changes, line_missing_sources, line_agenda, line_backup, line_health,
+               lambda v: line_compact(v, source)):
+        try:
+            line = fn(vault)
+        except Exception as e:  # noqa: BLE001
+            _log_vault(vault, e)
+            line = None
+        if line is not None:
+            out.append(line)
+    return out
 
 
 def read_core():
@@ -107,6 +168,15 @@ def main():
         emit(ERROR_LINE.format(type(e).__name__))
         return
     emit(context)
+
+
+def _log_vault(vault, e):
+    try:
+        from kb._lib import ledger
+
+        ledger.log_error(vault, f"{type(e).__name__}: {str(e)[:200]}", source="session")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _log(e, payload):

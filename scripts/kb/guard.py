@@ -441,7 +441,7 @@ def _verdict(zone, column, alias):
 
 
 def _unresolved_rows(tool, sources, head):
-    return [_row(tool, "pass", "", "unresolved", f"{alias} {spec} {head}") for alias, spec in sources.unresolved]
+    return [_row(tool, "pass", "", "unresolved", f"{u['alias']} {u['spec']} {head}") for u in sources.unresolved]
 
 
 def _file_tool(tool, target, cwd, vault, sources):

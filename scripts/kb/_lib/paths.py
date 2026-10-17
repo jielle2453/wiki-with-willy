@@ -159,6 +159,16 @@ def is_abs_spec(spec):
     return bool(re.match(r"^[a-zA-Z]:/", s)) or s.startswith("/")
 
 
+def long_path(p):
+    r"""Windows 加 \\?\ 前綴（UNC 是 \\?\UNC\），避開 260 字元限制（I-017）；非 Windows 原樣。照搬舊 kbcommon.long_path。"""
+    s = os.path.abspath(str(p))
+    if os.name != "nt" or s.startswith("\\\\?\\"):
+        return s
+    if s.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
 def resolve_spec(spec, base):
     """D-021 可攜 spec：~/x、${VAR}/x、相對 base 的 x 或 ../x、絕對 C:/x。展不開的環境變數回 None。"""
     spec = str(spec).strip()

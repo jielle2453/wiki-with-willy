@@ -4,6 +4,12 @@
 bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；事後補就會變成第二份會漂的清單。
 為什麼只寫 spec 或決策裡有的，查不到寫「待補」，不推測。
 
+## 0.8.0 — 2026-10-17
+- **改了什麼**：清冊。`.system/inventory.json` 從只記 AI 產出的最小版長成 schema 2（位置是物件帶大小時間、`read` 與 `status` 分開、同指紋多位置一筆、舊檔讀到時自動遷移）。新子命令 `kb inventory scan`（全量掃描登記的來源與總資料夾三區，把新增、修改、搬動、重複、不見套進清冊；寫前備進回合、終端機跑記程式段）與 `kb changes`（跟上次掃描比、只看不改、`--quick` 走開場同一條路）。開場狀態行多「變動：新增 N、修改 N、不見 N」（搬動與重複不印、全 0 不印）與「這台電腦找不到來源「X」」（按機器記進 `.system/env.json` 只報一次、找回就清）；快速模式只比大小時間、指紋受讀取與時間預算、算到一半也停得下來。docx／xlsx／pptx 多算內容指紋（標準函式庫 zipfile 加 xml.etree）：打開再存、LibreOffice 重存不報修改。登記與清冊同一筆交易：`folders add` 登記完就入冊、`exclude --kind hidden` 整筆拿掉不留檔名、`unused` 與 `remove` 標 excluded、`include` 恢復或當新增，`sources.json` 與 `inventory.json` 一起備進回合、退回一起回，清冊那段失敗會把 `sources.json` 寫回。走訪跳隱藏與系統屬性、暫存名、重解析點與連結區，開不了的夾記錯誤繼續走；憑證樣式檔與占位檔入冊但不算指紋；超過 `fingerprint_max_bytes` 只比大小時間。`versions list|revert` 在清冊讀不到時仍能退。新 config `fingerprint_max_bytes`、`changes_quick_hash_budget_bytes`、`changes_quick_seconds`。791 測試。
+- **為什麼**：ingest 開頭必跑 `kb changes`，沒有清冊製卡沒得起頭（D-092）；位置與狀態、在不在與讀不讀得到是不同的問題（D-093）；開場有逾時，只比大小時間便宜，指紋留給真的要判的，找不到的來源天天報會訓練客戶不看（D-094、I-045）；一件事一筆交易（D-095）；客戶「打開看一下再存」是日常，不處理開場天天報修改（D-096、I-015）。測試兩輪：第一輪 17 條驗收全過但實跑抓到開場算指紋停不下來（11.7 MB xlsx 改一格開場 14 秒超過 hook 逾時）與壞 OOXML 炸掉兩個高，第二輪修正後 5.3 秒、無退步；確認 12 步全過，Microsoft 365 重存那半未驗。
+- **commit**：4305e7d、df5a78b、82145e6（實作，分支 spec/清冊，merge 11a9bd7）
+- **spec**：design/specs/2026-10-16-清冊.md
+
 ## 0.7.0 — 2026-10-16
 - **改了什麼**：第一個 skill `manage`（`/wiki-with-willy:manage`）：客戶在對話裡一句話加資料夾、不讀某夾、拿掉來源、取消排除、看現在讀哪些；搬檔、改名、搬家、重建這版做不到就明說怎麼自己做。本文是「客戶說／AI 做法」表（沒路徑請客戶貼不猜、先 `--check` 報數字再加、不讀某夾先查登記再問兩種、拿掉只認明確確認、搬家先 check 新路徑再換），`references/sources.md` 放子命令與拒絕原因。新子命令 `kb folders remove <別名>`、`include <路徑>`（只改 sources.json、先備進回合、記程式段）；`include` 的拒絕句分三種。`tests/evals/manage.json` 20 句路由測試，兩套 plugin 都在的機器上該觸發 30/30、不該 0/30。客戶端 CLAUDE.md 加「回答客戶一律繁體中文」。624 測試。
 - **為什麼**：常駐層齊了客戶還是碰不到任何功能，manage 程式幾乎現成、能第一次驗證「skill 只做分派、描述 150 字能路由」（D-089～D-091）。確認時 AI 全程英文，core.md 的 R-10 送到了沒照做，CLAUDE.md 是專案指示比注入強（D-080 補）。測試四輪、確認一輪加補驗。

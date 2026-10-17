@@ -43,10 +43,12 @@ def missing_text(missing_sources):
     return "、".join(f"{m['alias']}（{m['spec']}）" for m in missing_sources)
 
 
-def found_source_ids(sources, report):
-    """這次找得到的來源（env 的鍵：id，沒有 id 用別名）。"""
+def found_source_ids(sources, report, only=None):
+    """這次找得到的來源（env 的鍵：id，沒有 id 用別名）。only 是 --source 的別名清單：沒掃到的來源不算找得到（審閱裁定 39）。"""
     lost = {m["id"] or m["alias"] for m in report["missing_sources"]}
-    return [s["id"] or s["alias"] for s in sources.entries if (s["id"] or s["alias"]) not in lost]
+    wanted = None if only is None else {a.casefold() for a in only}
+    return [s["id"] or s["alias"] for s in sources.entries
+            if (s["id"] or s["alias"]) not in lost and (wanted is None or s["alias"].casefold() in wanted)]
 
 
 def _lines(report):
@@ -81,7 +83,7 @@ def _scan(vault, args, as_json):
     conversation = journal_cli.in_conversation(vault)
     report = inventory.scan(vault, sources, only_roots=only)
     inventory.apply(vault, report, turn.current(vault)["turn"])
-    env.clear_missing(vault, found_source_ids(sources, report))
+    env.clear_missing(vault, found_source_ids(sources, report, only))
     note = (f"清冊掃描：新增 {len(report['added'])}、修改 {len(report['modified'])}、不見 {len(report['missing'])}"
             f"（總計 {report['total']} 份）")
     journal_cli.record_program_or_warn(vault, note, CHANGED, "inventory scan", conversation)

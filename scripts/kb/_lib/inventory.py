@@ -47,6 +47,7 @@ LIVE = ("active", "turn_reverted")  # 位置索引收這兩種；turn_reverted �
 DORMANT = ("missing", "excluded")  # 位置全沒了：保留最後的位置清單
 READ_PROBLEMS = ("placeholder", "credential", "too_large", "error")
 EXAMPLES_MAX = 3
+HASH_CHUNK = 1 << 20  # 算位元組指紋一次讀 1 MB，每塊之間可以喊停
 
 _clock = time.monotonic  # 測試換掉它觸發時間預算
 
@@ -138,10 +139,13 @@ def _write(vault, entries):
     write_json_atomic(_path(vault), {"schema_version": SCHEMA_VERSION, "entries": entries})
 
 
-def sha256_of(path):
+def sha256_of(path, should_stop=None):
+    """分塊讀；第一塊之後每讀一塊前問 should_stop，喊停回 None（開場的時間預算，審閱裁定 34）。"""
     h = hashlib.sha256()
     with open(long_path(path), "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
+        for i, chunk in enumerate(iter(lambda: f.read(HASH_CHUNK), b"")):
+            if i and should_stop is not None and should_stop():
+                return None
             h.update(chunk)
     return h.hexdigest()
 
@@ -319,13 +323,23 @@ def _raw_specs(vault):
     return {(s.get("id") or s.get("alias", "")): s.get("spec", "") for s in raw["sources"]}
 
 
+def _is_link(path):
+    """跟 walk 一樣的重解析點判斷（symlink、junction、屬性 0x400）。"""
+    try:
+        st = os.lstat(long_path(path))
+    except OSError:
+        return False
+    return stat_lib.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & REPARSE_POINT)
+
+
 def roots(vault, sources):
-    """回 (要掃的根, 這台電腦找不到的來源)。根：每個登記來源（排除與總資料夾不進去）、知識庫（型別夾）、收件匣、AI 產出。
-    spec 展不開（只算 kind source，審閱裁定 2）或來源根不是資料夾 → missing_sources [{alias, spec, id}]。"""
+    """回 (要掃的根, 這台電腦找不到的來源, 錯誤)。根：每個登記來源（排除與總資料夾不進去）、知識庫（型別夾）、收件匣、AI 產出。
+    spec 展不開（只算 kind source，審閱裁定 2）或來源根不是資料夾 → missing_sources [{alias, spec, id}]。
+    收件匣、AI 產出的根是連結就不掃（會走到總資料夾外、又不查憑證），錯誤記「<區> 是連結，不掃」（審閱裁定 38）。"""
     vault_s = str(vault)
     vault_n = normalize(vault_s, None)
     specs = _raw_specs(vault)
-    out, missing = [], []
+    out, missing, errors = [], [], []
     for u in sources.unresolved:
         if u.get("kind") == "source":
             missing.append({"alias": u["alias"], "spec": u["spec"], "id": u.get("id", "")})
@@ -343,9 +357,11 @@ def roots(vault, sources):
                 "credential": False})
     for alias, origin in ((INBOX, "intake"), (OUTPUT, "ai_output")):
         area = os.path.join(vault_s, alias)
-        if os.path.isdir(long_path(area)):
+        if _is_link(area):
+            errors.append({"path": f"file://{alias}", "error": f"{alias} 是連結，不掃"})
+        elif os.path.isdir(long_path(area)):
             out.append({"alias": alias, "path": area, "origin": origin, "kind": "area", "skip": [], "credential": False})
-    return out, missing
+    return out, missing, errors
 
 
 def _is_card(rel):
@@ -376,7 +392,12 @@ def _iter_root(root, stopper):
         except OSError:
             continue
         attrs = getattr(st, "st_file_attributes", 0)
-        if is_link or attrs & (HIDDEN_OR_SYSTEM | REPARSE_POINT) or not stat_lib.S_ISDIR(st.st_mode):
+        if attrs & HIDDEN_OR_SYSTEM:
+            continue
+        if is_link or attrs & REPARSE_POINT:  # 型別夾是連結：不掃，記一項（審閱裁定 38）
+            yield name, None, f"{KNOWLEDGE}/{name} 是連結，不掃"
+            continue
+        if not stat_lib.S_ISDIR(st.st_mode):
             continue
         for rel, fst, err in walk(os.path.join(base, name), (), stopper):
             full = f"{name}/{rel}" if rel else name
@@ -416,11 +437,12 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
     budget = {"left": config.get(vault, "changes_quick_hash_budget_bytes") if quick else None, "out": False}
     stopper = _Stopper(config.get(vault, "changes_quick_seconds") if quick else None)
     entries = copy.deepcopy(load(vault)["entries"])
-    all_roots, missing_sources = roots(vault, sources)
+    all_roots, missing_sources, root_errors = roots(vault, sources)
     if only_roots is not None:
         wanted = {a.casefold() for a in only_roots}
         all_roots = [r for r in all_roots if r["alias"].casefold() in wanted]
         missing_sources = [m for m in missing_sources if m["alias"].casefold() in wanted]
+        root_errors = [e for e in root_errors if split_uri(e["path"] + "/")[0].casefold() in wanted]
     report = {"added": [], "modified": [], "missing": [], "still_missing": [], "moved": [], "duplicates": [],
               "restored": [], "unchanged": 0, "total": 0, "by_source": {},
               "read_counts": {k: 0 for k in READ_PROBLEMS}, "read_examples": {}, "errors": [],
@@ -428,6 +450,9 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
 
     # 1. 走訪
     found, walked, protected = [], set(), []
+    for err in root_errors:  # 是連結的區：記錯誤，底下已知位置原樣不動
+        report["errors"].append(err)
+        protected.append(uri_key(err["path"]))
     for root in all_roots:
         if stopper.stopped:
             break
@@ -467,13 +492,14 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
                 return None
             budget["left"] -= size
         try:
-            return sha256_of(rec["path"])
+            digest = sha256_of(rec["path"], should_stop=stopper)
         except OSError as e:
             rec["read"], rec["error"] = "error", f"無法讀取：{e.strerror or e}"
             return None
+        return digest  # 算到一半時間到是 None：放棄這個檔，這次 incomplete
 
     def text_of(rec):
-        return None if out_of_time() else content_fp.text_fingerprint(rec["path"])
+        return None if out_of_time() else content_fp.text_fingerprint(rec["path"], should_stop=stopper)
 
     def fingerprint(digest, text):
         fp = {"sha256": digest}
@@ -549,6 +575,8 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
             continue
         moved_keys = {rec["key"] for rec, _d, _t in changes}
         e["locations"] = [loc for loc in e["locations"] if uri_key(loc.get("uri", "")) not in moved_keys]
+        if not e["locations"]:
+            e["status"] = "superseded"  # 位置全被拆走：原內容已不在任何地方（審閱裁定 39）
         for digest, recs in groups.items():
             split = {"id": _new_id(taken), "origin": e.get("origin", "client_file"),
                      "locations": [rec["loc"] for rec, _t in recs], "fingerprints": [fingerprint(digest, recs[0][1])],
@@ -640,7 +668,7 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
 
     # 4. 這次確實沒看到的位置：拿掉；條目沒有位置剩下 → missing（保留最後的位置清單）
     #    時間到了（走訪或算指紋時）就不判不見：搬動可能還沒認出來（審閱裁定 25、31）
-    report["incomplete"] = stopper.stopped
+    report["incomplete"] = stopper.stopped or budget["out"]  # 讀取預算用完也算沒比完（審閱裁定 39）
     was_missing = {id(e) for e in entries if e.get("status") == "missing"}
     for e in entries:
         if e.get("status") != "active" or report["incomplete"]:
@@ -703,47 +731,71 @@ def apply(vault, report, turn_id):
         _write(vault, entries)
 
 
+def _exclude_kind(src, key):
+    """key 落進這個來源的哪一條排除：回那條的 kind（hidden｜unused），沒落進回 None。"""
+    for ex in src["excludes"]:
+        if inside(key, ex["root"]):
+            return ex.get("kind") or "hidden"
+    return None
+
+
 def reconcile(vault, sources, turn_id):
-    """給 folders exclude／remove：active 與 missing 條目的每個位置查 sources.lookup，來源不在了或落進排除就拿掉；
-    位置全沒了 → excluded（保留最後的位置清單）。保留別名的位置不動（審閱裁定 11）；spec 展不開的來源不算拿掉。
-    有改才在同一把鎖裡備份、寫。回 {"excluded": 轉成 excluded 的條目數}。"""
+    """給 folders exclude／remove：active、missing、excluded 條目的每個位置對新登記表。
+    - 落進 hidden 排除（審閱裁定 40）：位置直接拿掉、不留檔名；條目沒位置剩下就整筆刪。
+    - 來源拿掉了、落進 unused 排除（裁定 21）：active／missing 條目位置全沒了 → excluded，保留最後的位置清單。
+    保留別名的位置不動（審閱裁定 11）；spec 展不開的來源不算拿掉。有改才在同一把鎖裡備份、寫。
+    回 {"excluded": 轉成 excluded 的條目數, "removed": 整筆刪掉的條目數}。"""
     from kb._lib import turn
     p = _path(vault)
     if not p.exists():
-        return {"excluded": 0}
+        return {"excluded": 0, "removed": 0}
     by_alias = {s["alias"].casefold(): s for s in sources.entries}
     unresolved = {u["alias"].casefold() for u in sources.unresolved if u.get("kind") == "source"}
-    excluded, changed = 0, False
+    excluded, removed, changed = 0, 0, False
     with FileLock(p):
         data = load(vault)
+        kept_entries = []
         for e in data["entries"]:
-            if e.get("status") not in ("active", "missing"):
+            status = e.get("status")
+            if status not in ("active", "missing", "excluded"):
+                kept_entries.append(e)
                 continue
-            keep = []
+            keep, dormant, hidden = [], [], 0  # dormant：來源拿掉或 unused 排除的位置
             for loc in e.get("locations") or []:
                 alias, rel = split_uri(loc.get("uri", ""))
                 a = alias.casefold()
+                src = by_alias.get(a)
                 if a in RESERVED_CF or a in unresolved:
                     keep.append(loc)
-                    continue
-                src = by_alias.get(a)
-                if src is None:
-                    continue  # 來源拿掉了
-                status, _ = sources.lookup(_fs_key(f"{src['root']}/{rel}"))
-                if status != "excluded":
-                    keep.append(loc)
-            if len(keep) == len(e.get("locations") or []):
+                elif src is None:
+                    dormant.append(loc)
+                else:
+                    kind = _exclude_kind(src, _fs_key(f"{src['root']}/{rel}"))
+                    if kind == "hidden":
+                        hidden += 1
+                    elif kind is None:
+                        keep.append(loc)
+                    else:
+                        dormant.append(loc)
+            if status == "excluded":  # 已經休眠：只拿掉 hidden 的位置
+                keep, dormant = keep + dormant, []
+            if not hidden and not dormant:
+                kept_entries.append(e)
                 continue
             changed = True
             if keep:
                 e["locations"] = keep
-            else:
-                e["status"], e["missing_since"] = "excluded", None
+            elif dormant:
+                e["locations"], e["status"], e["missing_since"] = dormant, "excluded", None
                 excluded += 1
+            else:
+                removed += 1
+                continue  # 整筆都在 hidden 排除裡：不留痕
+            kept_entries.append(e)
         if changed:
             turn.backup(vault, INVENTORY_POSIX, turn_id)
-            _write(vault, data["entries"])
-    return {"excluded": excluded}
+            _write(vault, kept_entries)
+    return {"excluded": excluded, "removed": removed}
 
 
 def path_of(vault, sources, uri):

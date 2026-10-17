@@ -12,6 +12,23 @@ from tests.test_lib_inventory_scan import FIX, make_inv_vault
 from kb._lib import env, journal, turn  # noqa: E402
 
 
+def write_corrupt_docx(path):
+    """正常的 docx 再把 word/document.xml 的壓縮資料翻掉 40 個位元組（模擬同步到一半的檔），讀它會丟 zlib.error。"""
+    import zipfile
+    body = "<w:p><w:r><w:t>" + "內容" * 2000 + "</w:t></w:r></w:p>"
+    xml = ('<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           f"<w:body>{body}</w:body></w:document>")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", xml)
+    with zipfile.ZipFile(path) as z:
+        info = z.getinfo("word/document.xml")
+    data = bytearray(path.read_bytes())
+    start = info.header_offset + 30 + len(info.filename.encode("utf-8")) + len(info.extra)
+    for i in range(start + 5, start + 45):
+        data[i] ^= 0xFF
+    path.write_bytes(bytes(data))
+
+
 def run_kb(*args, cwd):
     return subprocess.run([sys.executable, str(KB), *args], capture_output=True, text=True, encoding="utf-8",
                           cwd=str(cwd), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT)))
@@ -96,6 +113,15 @@ class Scan(Base):
         self.scan()
         self.assertFalse(env.missing_reported(self.V, "src-5b10"))
 
+    def test_source_option_clears_only_that_sources_mark(self):
+        """審閱裁定 39、測試報告發現六：--source A 只清 A 的 env 記號，其他仍找不到的來源記號留著。"""
+        (self.raw / "公司行政").rename(self.raw / "公司行政_舊")
+        env.mark_missing(self.V, ["src-7c21", "src-3f9a"])
+        r = self.scan("--source", "客戶案件")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(env.missing_reported(self.V, "src-7c21"))
+        self.assertFalse(env.missing_reported(self.V, "src-3f9a"))
+
     def test_v1_migration_and_schema_3_exit_3(self):
         shutil.copy2(FIX / "inventory_v1.json", self.V / ".system" / "inventory.json")
         r = self.scan()
@@ -119,6 +145,27 @@ class Scan(Base):
         r = self.scan("--vault", str(self.V), "--json", cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["total"], 14)
+
+    def test_corrupt_ooxml_does_not_traceback(self):
+        """審閱裁定 35、測試報告發現二：壓縮資料壞掉的 docx（zlib.error）退回位元組指紋；scan、changes、folders add 都不吐 traceback。"""
+        bad = self.raw / "客戶案件" / "壞掉.docx"
+        write_corrupt_docx(bad)
+        for args in (("changes", "--json"), ("inventory", "scan", "--json")):
+            with self.subTest(args=args):
+                r = run_kb(*args, cwd=self.V)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+        e = [x for x in self.inventory()["entries"] if x["locations"][0]["uri"] == "file://客戶案件/壞掉.docx"][0]
+        self.assertEqual(set(e["fingerprints"][0]), {"sha256", "time", "turn"})  # 沒有 text_sha256
+        other = self.tmp / "壞檔夾"
+        other.mkdir()
+        write_corrupt_docx(other / "x.docx")
+        env_home = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT), USERPROFILE=str(self.tmp / "home"), HOME=str(self.tmp / "home"))
+        r = subprocess.run([sys.executable, str(KB), "folders", "add", str(other)], capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(self.V), env=env_home)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.stdout.splitlines()[1], "清冊：入冊 1 份")
 
     def test_help_lists_inventory_and_changes(self):
         r = run_kb("--help", cwd=self.V)

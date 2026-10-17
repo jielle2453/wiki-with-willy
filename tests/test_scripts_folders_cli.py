@@ -311,7 +311,7 @@ class Exclude(Base):
         r = self.exclude("../raw/行政/薪資", "--kind", "hidden", "--reason", "薪資個資")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(r.stdout.splitlines(), ["已排除「行政/薪資」（不想讓 AI 看到）。之前讀過的已送過雲端；這版還沒有卡和備份要清。",
-                                                 "清冊：0 份標為不讀"])  # 清冊題第二行；行政三個 0 位元組檔是同一筆
+                                                 "清冊：0 份已拿掉"])  # hidden 不留痕（審閱裁定 40）  # 清冊題第二行；行政三個 0 位元組檔是同一筆
         ex = self.sources()["sources"][0]["excludes"]
         self.assertEqual(ex, [{"spec": "薪資", "kind": "hidden", "reason": "薪資個資", "added": date.today().isoformat()}])
         copies = [d / "files" / ".system" / "sources.json" for d in self.versions_dirs()]
@@ -826,16 +826,27 @@ class FoldersInventory(Base):
             rows = [json.loads(x) for x in (d / "manifest.jsonl").read_text(encoding="utf-8").splitlines() if x]
             self.assertEqual({x["path"] for x in rows}, {".system/sources.json", ".system/inventory.json"}, d.name)
 
-    def test_exclude_marks_excluded_and_second_line(self):
+    def test_exclude_unused_marks_excluded_and_second_line(self):
         assert self.add("../raw/行政").returncode == 0
-        r = self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden")
+        r = self.folders("exclude", "../raw/行政/薪資", "--kind", "unused")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(r.stdout.splitlines()[1], "清冊：2 份標為不讀")
         self.assertEqual(self.status_of("行政/薪資/s.xlsx"), "excluded")
         self.assertEqual(self.status_of("行政/薪資/網銀密碼.txt"), "excluded")
         self.assertEqual(self.status_of("行政/請款/r.docx"), "active")
         r = self.folders("exclude", "../raw/行政/舊檔", "--kind", "unused", "--json")
-        self.assertEqual(json.loads(r.stdout)["inventory"], {"excluded": 1})
+        self.assertEqual(json.loads(r.stdout)["inventory"], {"excluded": 1, "removed": 0})
+
+    def test_exclude_hidden_removes_entries_and_second_line(self):
+        """審閱裁定 40：hidden 不留痕，第二行「清冊：N 份已拿掉」，清冊裡找不到那些檔名。"""
+        assert self.add("../raw/行政").returncode == 0
+        r = self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[1], "清冊：2 份已拿掉")
+        self.assertNotIn("薪資", (self.V / ".system" / "inventory.json").read_text(encoding="utf-8"))
+        self.assertEqual(self.status_of("行政/請款/r.docx"), "active")
+        r = self.folders("exclude", "../raw/行政/舊檔", "--kind", "hidden", "--json")
+        self.assertEqual(json.loads(r.stdout)["inventory"], {"excluded": 0, "removed": 1})
 
     def test_remove_marks_whole_source_excluded(self):
         assert self.add("../raw/行政").returncode == 0
@@ -846,7 +857,7 @@ class FoldersInventory(Base):
 
     def test_include_brings_back_active(self):
         assert self.add("../raw/行政").returncode == 0
-        assert self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden").returncode == 0
+        assert self.folders("exclude", "../raw/行政/薪資", "--kind", "unused").returncode == 0
         (self.raw / "行政" / "薪資" / "新.txt").write_text("新\n", encoding="utf-8")
         r = self.folders("include", "../raw/行政/薪資")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -856,9 +867,18 @@ class FoldersInventory(Base):
 
     def test_include_json(self):
         assert self.add("../raw/行政").returncode == 0
-        assert self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden").returncode == 0
+        assert self.folders("exclude", "../raw/行政/薪資", "--kind", "unused").returncode == 0
         data = json.loads(self.folders("include", "../raw/行政/薪資", "--json").stdout)
         self.assertEqual(data["inventory"], {"added": 0, "restored": 2, "credential": 1})
+
+    def test_include_of_hidden_exclude_counts_as_new(self):
+        """審閱裁定 40：include 一個 hidden 排除時重掃當新增（沒有恢復）。"""
+        assert self.add("../raw/行政").returncode == 0
+        assert self.folders("exclude", "../raw/行政/薪資", "--kind", "hidden").returncode == 0
+        r = self.folders("include", "../raw/行政/薪資")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[1], "清冊：恢復 0 份、新增 2 份")
+        self.assertEqual(self.status_of("行政/薪資/s.xlsx"), "active")
 
     def test_exclude_nothing_registered_writes_no_inventory_and_journal_lists_sources_only(self):
         """folders add 之前沒掃過（舊知識庫）：沒有清冊，exclude 不建清冊，程式段只記 sources.json。"""
@@ -881,6 +901,76 @@ class FoldersInventory(Base):
                 self.assertEqual(r.returncode, 3)
                 self.assertTrue(r.stdout.startswith("清冊讀不到："), r.stdout)
                 self.assertEqual((self.V / ".system" / "sources.json").read_bytes(), before)
+
+    def test_inventory_step_failure_rolls_back_sources(self):
+        """審閱裁定 36：清冊階段失敗把 sources.json 寫回原內容，再印「沒有寫入」，exit 3。
+        做法：清冊在回合裡的備份位置先放一個唯讀檔，turn.backup 複製時 PermissionError。"""
+        import stat
+        from kb._lib import turn
+        assert self.add("../raw/行政").returncode == 0
+        t = turn.start(self.V, None, "")
+        blocker = self.V / ".system" / "versions" / t["turn"] / "files" / ".system" / "inventory.json"
+        blocker.parent.mkdir(parents=True)
+        blocker.write_text("x", encoding="utf-8")
+        os.chmod(blocker, stat.S_IREAD)
+        self.addCleanup(os.chmod, blocker, stat.S_IWRITE | stat.S_IREAD)
+        before_sources = (self.V / ".system" / "sources.json").read_bytes()
+        before_inventory = (self.V / ".system" / "inventory.json").read_bytes()
+        r = self.folders("exclude", "../raw/行政/薪資", "--kind", "unused")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("沒有寫入："), r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual((self.V / ".system" / "sources.json").read_bytes(), before_sources)
+        self.assertEqual((self.V / ".system" / "inventory.json").read_bytes(), before_inventory)
+
+    def test_rollback_failure_says_sources_changed_inventory_lagging(self):
+        """審閱裁定 36：寫回也失敗才印「來源已改、清冊沒跟上：<原因>，請跑 kb inventory scan」，exit 3。"""
+        import contextlib
+        import io as std_io
+        from kb import cli, folders
+        from kb._lib import inventory
+        assert self.add("../raw/行政").returncode == 0
+
+        def boom(*_a, **_k):
+            raise OSError("清冊寫不進去")
+
+        def no_restore(*_a, **_k):
+            raise OSError("也寫不回去")
+        saved = (inventory.reconcile, folders._restore_sources)
+        inventory.reconcile, folders._restore_sources = boom, no_restore
+        try:
+            out = std_io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["folders", "exclude", str(self.raw / "行政" / "薪資"), "--kind", "unused",
+                                 "--vault", str(self.V)])
+        finally:
+            inventory.reconcile, folders._restore_sources = saved
+        self.assertEqual(code, 3)
+        self.assertEqual(out.getvalue().splitlines()[0], "來源已改、清冊沒跟上：OSError: 清冊寫不進去，請跑 kb inventory scan")
+        self.assertEqual(self.sources()["sources"][0]["excludes"][0]["spec"], "薪資")
+
+    def test_rollback_works_for_add_and_include_too(self):
+        from kb import cli
+        from kb._lib import inventory
+        import contextlib
+        import io as std_io
+
+        def boom(*_a, **_k):
+            raise RuntimeError("掃描失敗")
+        from unittest import mock
+        before = (self.V / ".system" / "sources.json").read_bytes()
+        saved = inventory.scan
+        inventory.scan = boom
+        home = {"USERPROFILE": str(self.tmp / "home"), "HOME": str(self.tmp / "home")}  # 同 Base.folders：tmp 在 AppData 底下
+        try:
+            out = std_io.StringIO()
+            with contextlib.redirect_stdout(out), mock.patch.dict(os.environ, home):
+                code = cli.main(["folders", "add", str(self.raw / "行政"), "--vault", str(self.V)])
+        finally:
+            inventory.scan = saved
+        self.assertEqual(code, 3)
+        self.assertEqual(out.getvalue().splitlines()[0], "沒有寫入：RuntimeError: 掃描失敗")
+        self.assertEqual((self.V / ".system" / "sources.json").read_bytes(), before)
 
     def test_revert_add_restores_both(self):
         r = self.add("../raw/行政")

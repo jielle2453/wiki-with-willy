@@ -44,7 +44,9 @@ def lines(report, show=SHOW):
         body.append(f"- 這台電腦找不到來源：{inventory_cli.missing_text(report['missing_sources'])}")
     if not body and not report["incomplete"]:
         return [NOTHING]
-    return [HEADER] + ([INCOMPLETE] if report["incomplete"] else []) + body + [FOOTER]
+    # 只剩之前就不見、找不到的來源時套用也不會變，不叫人去跑 scan（審閱裁定 39）
+    applicable = any(report[k] for k in ("added", "modified", "moved", "missing")) or report["incomplete"]
+    return [HEADER] + ([INCOMPLETE] if report["incomplete"] else []) + body + ([FOOTER] if applicable else [])
 
 
 def run(args):

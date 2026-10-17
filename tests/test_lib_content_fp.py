@@ -190,5 +190,72 @@ class NotOoxml(Base):
         self.assertIsNone(self.fp("a.xlsx", [("docProps/core.xml", CORE.format("x"))]))
 
 
+def patch_central(path, offset, value):
+    """改中央目錄第一筆的某個 2 位元組欄位（+8 旗標、+10 壓縮方式）。"""
+    data = bytearray(Path(path).read_bytes())
+    at = data.index(b"PK\x01\x02")
+    data[at + offset:at + offset + 2] = value.to_bytes(2, "little")
+    Path(path).write_bytes(bytes(data))
+
+
+class AnyFailureIsNone(Base):
+    """審閱裁定 35：zlib.error、加密成員（RuntimeError）、不支援的壓縮方式（NotImplementedError）一律回 None。"""
+
+    def docx(self, name="a.docx"):
+        return write_zip(self.tmp / name, [("word/document.xml", docx_xml([["內容" * 200]] * 50))])
+
+    def test_corrupt_deflate_stream(self):
+        p = self.docx()
+        with zipfile.ZipFile(p) as z:
+            info = z.getinfo("word/document.xml")
+        data = bytearray(p.read_bytes())
+        start = info.header_offset + 30 + len(info.filename.encode("utf-8")) + len(info.extra)
+        for i in range(start + 5, start + 45):
+            data[i] ^= 0xFF
+        p.write_bytes(bytes(data))
+        self.assertIsNone(content_fp.text_fingerprint(p))
+
+    def test_encrypted_member(self):
+        p = self.docx()
+        patch_central(p, 8, 0x1)
+        self.assertIsNone(content_fp.text_fingerprint(p))
+
+    def test_unsupported_compression(self):
+        p = self.docx()
+        patch_central(p, 10, 1)
+        self.assertIsNone(content_fp.text_fingerprint(p))
+
+
+class Interruptible(Base):
+    """審閱裁定 34：iterparse，每隔一批元素問 should_stop，回真就放棄（None）；不問的時候結果不變。"""
+
+    def big_xlsx(self):
+        cells = [(f"A{i}", "", f"<v>{i}</v>") for i in range(1, 6000)]
+        return write_zip(self.tmp / "big.xlsx", [("xl/worksheets/sheet1.xml", sheet_xml(cells))])
+
+    def test_stop_gives_none_and_is_asked_more_than_once(self):
+        p = self.big_xlsx()
+        full = content_fp.text_fingerprint(p)
+        self.assertIsNotNone(full)
+        asked = []
+        self.assertEqual(content_fp.text_fingerprint(p, should_stop=lambda: asked.append(1) and False), full)
+        self.assertGreater(len(asked), 2)
+        calls = []
+
+        def stop_on_third():
+            calls.append(1)
+            return len(calls) >= 3
+        self.assertIsNone(content_fp.text_fingerprint(p, should_stop=stop_on_third))
+        self.assertEqual(len(calls), 3)
+
+    def test_docx_and_pptx_also_ask(self):
+        d = write_zip(self.tmp / "a.docx", [("word/document.xml", docx_xml([["x"]] * 5000))])
+        s = write_zip(self.tmp / "a.pptx", [("ppt/slides/slide1.xml", slide_xml([["x"]] * 5000))])
+        for p in (d, s):
+            with self.subTest(p=p.name):
+                self.assertIsNone(content_fp.text_fingerprint(p, should_stop=lambda: True))
+                self.assertIsNotNone(content_fp.text_fingerprint(p))
+
+
 if __name__ == "__main__":
     unittest.main()

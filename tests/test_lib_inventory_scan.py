@@ -273,6 +273,39 @@ class Scope(Base):
         self.assertEqual(report["total"], 14)
         self.assertFalse(any("連結" in u for u in report["added"]))
 
+    def junction(self, link, target):
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True)
+        if r.returncode != 0 or not link.exists():
+            self.skipTest("建不起 junction")
+
+    @unittest.skipUnless(os.name == "nt", "mklink /J 只在 Windows")
+    def test_area_root_that_is_a_junction_is_not_scanned(self):
+        """審閱裁定 38、測試報告發現五：收件匣／AI 產出的根是連結就不掃，errors 記「<區> 是連結，不掃」。"""
+        outside = self.tmp / "外面"
+        outside.mkdir()
+        (outside / "password.txt").write_text("x", encoding="utf-8")
+        for area in ("收件匣", "AI 產出"):
+            with self.subTest(area=area):
+                shutil.rmtree(self.V / area)
+                self.junction(self.V / area, outside)
+                r = self.scan()
+                self.assertFalse(any(u.startswith(f"file://{area}/") for u in r["added"]), r["added"])
+                self.assertIn({"path": f"file://{area}", "error": f"{area} 是連結，不掃"}, r["errors"])
+                os.rmdir(self.V / area)  # 只拆連結，目標的檔還在
+                (self.V / area).mkdir()
+        self.assertTrue((outside / "password.txt").is_file())
+
+    @unittest.skipUnless(os.name == "nt", "mklink /J 只在 Windows")
+    def test_type_folder_that_is_a_junction_is_not_scanned(self):
+        outside = self.tmp / "外面"
+        outside.mkdir()
+        (outside / "y.txt").write_text("y", encoding="utf-8")
+        self.junction(self.V / "外接型別", outside)
+        r = self.scan()
+        self.assertFalse(any("外接型別" in u for u in r["added"]))
+        self.assertIn({"path": "file://知識庫/外接型別", "error": "知識庫/外接型別 是連結，不掃"}, r["errors"])
+        self.assertEqual(r["total"], 14)
+
     def test_type_folder_root_file_is_client_file_and_reserved_folders_skipped(self):
         (self.V / "檔案索引" / "客戶案件").mkdir()
         (self.V / "檔案索引" / "客戶案件" / "索引.md").write_text("x", encoding="utf-8")
@@ -469,6 +502,19 @@ class Compare(Base):
         self.assertEqual(len(e["fingerprints"]), 2)
         self.assertEqual(len(self.entries()), 13)
 
+    def test_editing_both_copies_differently_supersedes_original(self):
+        """審閱裁定 39、測試報告發現七：拆條目把原條目位置拿光時原條目標 superseded，不留沒有位置的 active。"""
+        before = self.entry_at("file://客戶案件/信義王/報價_v2.pdf")
+        (self.raw / "客戶案件" / "信義王" / "報價_v2.pdf").write_bytes(b"AAA")
+        (self.raw / "報價與合約" / "信義王" / "報價_v2.pdf").write_bytes(b"BBBB")
+        r = self.full()
+        self.assertEqual(len(r["modified"]), 2)
+        old = [e for e in self.entries() if e["id"] == before["id"]][0]
+        self.assertEqual(old["status"], "superseded")
+        self.assertFalse([e for e in self.entries() if e["status"] == "active" and not e["locations"]])
+        self.assertNotEqual(self.entry_at("file://客戶案件/信義王/報價_v2.pdf")["id"],
+                            self.entry_at("file://報價與合約/信義王/報價_v2.pdf")["id"])
+
     def test_one_of_two_locations_gone_is_not_missing(self):
         (self.raw / "報價與合約" / "信義王" / "報價_v2.pdf").unlink()
         r = self.full()
@@ -576,9 +622,9 @@ class Quick(Base):
         self.hashed = []
         real = inventory.sha256_of
 
-        def spy(path):
+        def spy(path, **kw):
             self.hashed.append(Path(path).name)
-            return real(path)
+            return real(path, **kw)
         inventory.sha256_of = spy
         self.addCleanup(setattr, inventory, "sha256_of", real)
 
@@ -602,6 +648,7 @@ class Quick(Base):
         self.assertEqual(len(r["duplicates"]), 1)
 
     def test_hash_budget_used_up_counts_as_modified_and_added(self):
+        """審閱裁定 39：讀取預算用完也 incomplete、不判不見（搬動的新位置沒指紋，舊位置不能報不見）。"""
         self.config(changes_quick_hash_budget_bytes=1)
         p = self.raw / "報價與合約" / "合約範本.txt"
         p.write_text("改過，大小也變了的合約範本。\n", encoding="utf-8")
@@ -609,7 +656,8 @@ class Quick(Base):
         r = self.scan(quick=True)
         self.assertEqual(r["modified"], ["file://報價與合約/合約範本.txt"])
         self.assertEqual(r["added"], ["file://客戶案件/信義王/估價單.pdf"])
-        self.assertEqual(r["missing"], ["file://客戶案件/內湖李/估價單.pdf"])
+        self.assertEqual(r["missing"], [])
+        self.assertTrue(r["incomplete"])
         self.assertEqual(self.hashed, [])
 
     def test_full_mode_ignores_hash_budget(self):
@@ -624,6 +672,30 @@ class Quick(Base):
         self.assertEqual(r["missing"], [])
         self.assertFalse(self.scan()["incomplete"])
 
+    def test_time_runs_out_in_the_middle_of_one_file(self):
+        """審閱裁定 34：分塊讀、每塊查時間；算到一半時間到 → 放棄這個檔（不追加指紋）、incomplete。"""
+        real_chunk = inventory.HASH_CHUNK
+        inventory.HASH_CHUNK = 4
+        self.addCleanup(setattr, inventory, "HASH_CHUNK", real_chunk)
+        now = [0]
+        real_clock = inventory._clock
+        inventory._clock = lambda: now[0]
+        self.addCleanup(setattr, inventory, "_clock", real_clock)
+        spy = inventory.sha256_of
+
+        def slow(path, **kw):
+            now[0] = 100  # 開始讀之後時間才到（開始前那次檢查還沒到）
+            return spy(path, **kw)
+        inventory.sha256_of = slow
+        p = self.raw / "報價與合約" / "合約範本.txt"
+        p.write_text("改過的合約範本，長度也不同，比四個位元組長很多。\n", encoding="utf-8")
+        before = self.entry_at("file://報價與合約/合約範本.txt")
+        r = self.scan(quick=True)
+        self.assertTrue(r["incomplete"])
+        self.assertEqual(self.hashed, ["合約範本.txt"])
+        after = [e for e in r["entries"] if e["id"] == before["id"]][0]
+        self.assertEqual(after["fingerprints"], before["fingerprints"])
+
     def test_time_budget_also_stops_hashing(self):
         """審閱裁定 31：走訪內沒到、算指紋時到 → incomplete、後面的檔不再算指紋、不報不見（搬動認不出來）。"""
         now = [0]
@@ -632,9 +704,9 @@ class Quick(Base):
         self.addCleanup(setattr, inventory, "_clock", real_clock)
         spy = inventory.sha256_of
 
-        def slow(path):
+        def slow(path, **kw):
             now[0] = 100  # 第一個指紋算完時間就到了
-            return spy(path)
+            return spy(path, **kw)
         inventory.sha256_of = slow
         shutil.move(self.raw / "客戶案件" / "內湖李" / "估價單.pdf", self.raw / "客戶案件" / "信義王" / "估價單.pdf")
         shutil.move(self.raw / "公司行政" / "舊檔" / "Big5備忘.txt", self.raw / "公司行政" / "Big5備忘.txt")
@@ -657,13 +729,13 @@ class Quick(Base):
         self.addCleanup(setattr, inventory, "_clock", real_clock)
         spy = inventory.sha256_of
 
-        def slow(path):
+        def slow(path, **kw):
             now[0] = 100
-            return spy(path)
+            return spy(path, **kw)
         inventory.sha256_of = slow
         texts = []
         real_text = inventory.content_fp.text_fingerprint
-        inventory.content_fp.text_fingerprint = lambda path: texts.append(path) or real_text(path)
+        inventory.content_fp.text_fingerprint = lambda path, **kw: texts.append(path) or real_text(path, **kw)
         self.addCleanup(setattr, inventory.content_fp, "text_fingerprint", real_text)
         r = self.scan(quick=True)
         self.assertTrue(r["incomplete"])
@@ -691,11 +763,12 @@ class Reconcile(Base):
         fn(data)
         p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-    def test_excluded_folder_marks_entries_excluded(self):
-        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "hidden"}))
+    def test_unused_exclude_marks_entries_excluded(self):
+        """unused 照裁定 21：位置全沒了標 excluded、保留最後的位置清單。"""
+        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "unused"}))
         t2 = turn.start(self.V, None, "")
         got = inventory.reconcile(self.V, self.sources(), t2["turn"])
-        self.assertEqual(got, {"excluded": 2})
+        self.assertEqual(got, {"excluded": 2, "removed": 0})
         for uri in ("file://公司行政/薪資/薪轉帳號.csv", "file://公司行政/薪資/網銀密碼.txt"):
             self.assertEqual(self.entry_at(uri)["status"], "excluded")
         self.assertEqual(self.entry_at("file://公司行政/舊檔/Big5備忘.txt")["status"], "active")
@@ -704,7 +777,7 @@ class Reconcile(Base):
     def test_removed_source_drops_only_its_locations(self):
         self.edit_sources(lambda d: d["sources"].pop(1))
         got = inventory.reconcile(self.V, self.sources(), self.t["turn"])
-        self.assertEqual(got, {"excluded": 1})
+        self.assertEqual(got, {"excluded": 1, "removed": 0})
         self.assertEqual(self.entry_at("file://報價與合約/合約範本.txt")["status"], "excluded")
         e = self.entry_at("file://客戶案件/信義王/報價_v2.pdf")
         self.assertEqual(e["status"], "active")
@@ -720,17 +793,17 @@ class Reconcile(Base):
     def test_unresolved_source_is_not_treated_as_removed(self):
         os.environ.pop("KB_TEST_NOPE", None)
         self.edit_sources(lambda d: d["sources"][1].update(spec="${KB_TEST_NOPE}/x"))
-        self.assertEqual(inventory.reconcile(self.V, self.sources(), self.t["turn"]), {"excluded": 0})
+        self.assertEqual(inventory.reconcile(self.V, self.sources(), self.t["turn"]), {"excluded": 0, "removed": 0})
 
     def test_nothing_to_do_writes_nothing(self):
         before = (self.V / ".system" / "inventory.json").read_bytes()
         t2 = turn.start(self.V, None, "")
-        self.assertEqual(inventory.reconcile(self.V, self.sources(), t2["turn"]), {"excluded": 0})
+        self.assertEqual(inventory.reconcile(self.V, self.sources(), t2["turn"]), {"excluded": 0, "removed": 0})
         self.assertEqual((self.V / ".system" / "inventory.json").read_bytes(), before)
         self.assertEqual(turn.entries(self.V, t2["turn"]), [])
 
     def test_include_brings_excluded_back_active(self):
-        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "hidden"}))
+        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "unused"}))
         inventory.reconcile(self.V, self.sources(), self.t["turn"])
         ids = {self.entry_at(u)["id"] for u in ("file://公司行政/薪資/薪轉帳號.csv", "file://公司行政/薪資/網銀密碼.txt")}
         self.edit_sources(lambda d: d["sources"][2]["excludes"].clear())
@@ -745,7 +818,7 @@ class Reconcile(Base):
 
     def test_changed_credential_file_is_not_restored_by_location(self):
         """審閱裁定 21：位置鍵是 uri 加大小時間；沒指紋的檔換了內容就不是原來那筆。"""
-        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "hidden"}))
+        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "unused"}))
         inventory.reconcile(self.V, self.sources(), self.t["turn"])
         old = self.entry_at("file://公司行政/薪資/網銀密碼.txt")
         (self.raw / "公司行政" / "薪資" / "網銀密碼.txt").write_text("換過的內容，長度不同\n", encoding="utf-8")
@@ -756,8 +829,43 @@ class Reconcile(Base):
         inventory.apply(self.V, r, self.t["turn"])
         self.assertEqual([e["status"] for e in self.entries() if e["id"] == old["id"]], ["excluded"])
 
-    def test_excluded_folder_is_not_walked(self):
+    def test_hidden_exclude_leaves_no_trace(self):
+        """審閱裁定 40、測試報告觀察 E：hidden 排除的位置直接拿掉，條目沒位置剩下就整筆刪，清冊裡找不到那些檔名。"""
         self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "hidden"}))
+        t2 = turn.start(self.V, None, "")
+        got = inventory.reconcile(self.V, self.sources(), t2["turn"])
+        self.assertEqual(got, {"excluded": 0, "removed": 2})
+        text = (self.V / ".system" / "inventory.json").read_text(encoding="utf-8")
+        self.assertNotIn("薪資", text)
+        self.assertEqual(len(self.entries()), 11)
+        self.assertEqual(self.entry_at("file://公司行政/舊檔/Big5備忘.txt")["status"], "active")
+
+    def test_hidden_exclude_drops_only_that_location_of_a_duplicate(self):
+        self.edit_sources(lambda d: d["sources"][1]["excludes"].append({"spec": "信義王", "kind": "hidden"}))
+        got = inventory.reconcile(self.V, self.sources(), self.t["turn"])
+        self.assertEqual(got, {"excluded": 0, "removed": 0})
+        e = self.entry_at("file://客戶案件/信義王/報價_v2.pdf")
+        self.assertEqual((e["status"], [l["uri"] for l in e["locations"]]), ("active", ["file://客戶案件/信義王/報價_v2.pdf"]))
+        self.assertNotIn("報價與合約/信義王", (self.V / ".system" / "inventory.json").read_text(encoding="utf-8"))
+
+    def test_hidden_exclude_also_drops_missing_entries(self):
+        (self.raw / "公司行政" / "薪資" / "薪轉帳號.csv").unlink()
+        self.full()
+        self.assertEqual(self.entry_at("file://公司行政/薪資/薪轉帳號.csv")["status"], "missing")
+        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "hidden"}))
+        self.assertEqual(inventory.reconcile(self.V, self.sources(), self.t["turn"]), {"excluded": 0, "removed": 2})
+        self.assertNotIn("薪資", (self.V / ".system" / "inventory.json").read_text(encoding="utf-8"))
+
+    def test_include_of_hidden_exclude_rescans_as_new(self):
+        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "hidden"}))
+        inventory.reconcile(self.V, self.sources(), self.t["turn"])
+        self.edit_sources(lambda d: d["sources"][2]["excludes"].clear())
+        r = self.scan(only_roots=["公司行政"])
+        self.assertEqual(r["restored"], [])
+        self.assertEqual(sorted(r["added"]), ["file://公司行政/薪資/網銀密碼.txt", "file://公司行政/薪資/薪轉帳號.csv"])
+
+    def test_excluded_folder_is_not_walked(self):
+        self.edit_sources(lambda d: d["sources"][2]["excludes"].append({"spec": "薪資", "kind": "unused"}))
         inventory.reconcile(self.V, self.sources(), self.t["turn"])
         r = self.scan()
         self.assertEqual((r["added"], r["restored"], r["missing"]), ([], [], []))
@@ -783,6 +891,21 @@ class Apply(Base):
         registered = inventory.register_output(self.V, rel, self.t["turn"])
         inventory.apply(self.V, r, self.t["turn"])
         self.assertIn(registered["id"], {e["id"] for e in self.entries()})
+
+    def test_sha256_of_reads_in_chunks_and_can_stop(self):
+        """審閱裁定 34：第一塊之後每塊前問 should_stop；喊停回 None；不喊停跟一次讀完一樣。"""
+        import hashlib
+        p = self.tmp / "big.bin"
+        p.write_bytes(os.urandom(inventory.HASH_CHUNK * 3 + 10))
+        want = hashlib.sha256(p.read_bytes()).hexdigest()
+        asked = []
+        self.assertEqual(inventory.sha256_of(p, should_stop=lambda: asked.append(1) and False), want)
+        self.assertEqual(len(asked), 3)
+        self.assertEqual(inventory.sha256_of(p), want)
+        self.assertIsNone(inventory.sha256_of(p, should_stop=lambda: True))
+        small = self.tmp / "small.bin"
+        small.write_bytes(b"x")
+        self.assertEqual(inventory.sha256_of(small, should_stop=lambda: True), hashlib.sha256(b"x").hexdigest())
 
     def test_path_of(self):
         s = self.sources()

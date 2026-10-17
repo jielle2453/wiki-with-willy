@@ -153,11 +153,41 @@ def _journal(vault, note, command, inventory_changed=False):
 
 
 def _backup_then_write(vault, data):
-    """呼叫端持有 sources.json 的鎖：先備進目前回合（D-074），再原子寫回。回回合代號，清冊備進同一回合。"""
+    """呼叫端持有 sources.json 的鎖：先備進目前回合（D-074），再原子寫回。
+    回 (回合代號, 寫之前的原文)：清冊備進同一回合；清冊階段失敗時用原文寫回（審閱裁定 36）。"""
     turn_id = turn.current(vault)["turn"]
     turn.backup(vault, sources_lib.SOURCES_REL, turn_id)
+    original = kio.read_text(_sources_path(vault))
     write_json_atomic(_sources_path(vault), data)
-    return turn_id
+    return turn_id, original
+
+
+class _InventoryFailed(Exception):
+    """清冊階段失敗、sources.json 已寫回原文：照「沒有寫入」說。"""
+
+    def __init__(self, cause):
+        super().__init__(f"{type(cause).__name__}: {cause}")
+        self.cause = cause
+
+
+class _InventoryLagged(Exception):
+    """清冊階段失敗、sources.json 也寫不回去：登記表已改、清冊沒跟上。"""
+
+
+def _restore_sources(vault, original):
+    kio.write_text_atomic(_sources_path(vault), original)
+
+
+def _inventory_step(vault, original, step, *args):
+    """D-095 一筆交易：清冊這一步丟例外就把 sources.json 寫回原文（呼叫端還持有它的鎖），再往外丟。"""
+    try:
+        return step(*args)
+    except Exception as e:  # noqa: BLE001  清冊階段任何失敗都要收回登記表
+        try:
+            _restore_sources(vault, original)
+        except Exception:  # noqa: BLE001
+            raise _InventoryLagged(f"{type(e).__name__}: {e}") from e
+        raise _InventoryFailed(e) from e
 
 
 def _inventory_bytes(vault):
@@ -168,10 +198,11 @@ def _inventory_bytes(vault):
 
 
 def _reconcile(vault, raw, turn_id):
-    """exclude、remove 寫完 sources 後（呼叫端還持有 sources.json 的鎖）：清冊對新登記表。回 (標為不讀的份數, 有沒有改到清冊)。"""
+    """exclude、remove 寫完 sources 後（呼叫端還持有 sources.json 的鎖）：清冊對新登記表。
+    回 ({"excluded", "removed"}, 有沒有改到清冊)；hidden 排除的條目整筆拿掉（審閱裁定 40）。"""
     before = _inventory_bytes(vault)
-    n = inventory.reconcile(vault, sources_lib.Sources(vault, raw), turn_id)["excluded"]
-    return n, _inventory_bytes(vault) != before
+    result = inventory.reconcile(vault, sources_lib.Sources(vault, raw), turn_id)
+    return result, _inventory_bytes(vault) != before
 
 
 def _scan_source(vault, raw, alias, turn_id):
@@ -233,8 +264,8 @@ def _add(vault, args, as_json):
         else:
             entry_id = sources_lib.new_id(s.get("id") for s in raw["sources"])
             raw["sources"].append({"id": entry_id, "alias": alias, "spec": spec, "excludes": []})
-            turn_id = _backup_then_write(vault, raw)
-            report, inv_changed = _scan_source(vault, raw, alias, turn_id)
+            turn_id, original = _backup_then_write(vault, raw)
+            report, inv_changed = _inventory_step(vault, original, _scan_source, vault, raw, alias, turn_id)
 
     files = report["total"]  # 第一行的份數與清冊入冊同一個數（審閱裁定 7、26）
     creds = _credential_rels(report, alias)
@@ -301,18 +332,20 @@ def _exclude(vault, args, as_json):
         added = date.today().isoformat()
         row = {"spec": rel, "kind": args.kind, "reason": args.reason or "", "added": added}
         entry.setdefault("excludes", []).append(row)
-        turn_id = _backup_then_write(vault, raw)
-        excluded, inv_changed = _reconcile(vault, raw, turn_id)
+        turn_id, original = _backup_then_write(vault, raw)
+        result, inv_changed = _inventory_step(vault, original, _reconcile, vault, raw, turn_id)
     name = f"{best['alias']}/{rel}"
     tail = HIDDEN_TAIL if args.kind == "hidden" else ""
     first = f"已排除「{name}」（{KIND_TEXT[args.kind]}）。{tail}"
     _journal(vault, first, "folders exclude", inv_changed)
     if as_json:
-        print(json.dumps({"source_id": best["id"], "alias": best["alias"], **row, "inventory": {"excluded": excluded}},
-                         ensure_ascii=False))
+        print(json.dumps({"source_id": best["id"], "alias": best["alias"], **row, "inventory": result}, ensure_ascii=False))
         return 0
     print(first)
-    print(f"清冊：{excluded} 份標為不讀")
+    if args.kind == "hidden":
+        print(f"清冊：{result['removed']} 份已拿掉")
+    else:
+        print(f"清冊：{result['excluded']} 份標為不讀")
     return 0
 
 
@@ -327,17 +360,17 @@ def _remove(vault, args, as_json):
         if entry is None:
             return _reject(f"沒有叫「{wanted}」的來源")
         raw["sources"].remove(entry)
-        turn_id = _backup_then_write(vault, raw)
-        excluded, inv_changed = _reconcile(vault, raw, turn_id)
+        turn_id, original = _backup_then_write(vault, raw)
+        result, inv_changed = _inventory_step(vault, original, _reconcile, vault, raw, turn_id)
     alias = entry.get("alias", "")
     first = f"已拿掉來源「{alias}」；你的檔案沒動，從現在起不讀它；說「退回上一版」救得回。"
     _journal(vault, first, "folders remove", inv_changed)
     if as_json:
         print(json.dumps({"id": entry.get("id", ""), "alias": alias, "spec": entry.get("spec", ""),
-                          "inventory": {"excluded": excluded}}, ensure_ascii=False))
+                          "inventory": result}, ensure_ascii=False))
         return 0
     print(first)
-    print(f"清冊：{excluded} 份標為不讀")
+    print(f"清冊：{result['excluded']} 份標為不讀")
     return 0
 
 
@@ -364,8 +397,8 @@ def _include(vault, args, as_json):
             return _reject(f"{shown} 不在排除清單裡，本來就讀得到")
         s, ex = found
         s["excludes"].remove(ex)
-        turn_id = _backup_then_write(vault, raw)
-        report, inv_changed = _scan_source(vault, raw, s.get("alias", ""), turn_id)
+        turn_id, original = _backup_then_write(vault, raw)
+        report, inv_changed = _inventory_step(vault, original, _scan_source, vault, raw, s.get("alias", ""), turn_id)
     alias = s.get("alias", "")
     first = f"已取消排除「{alias}/{ex['spec']}」，從現在起讀得到。"
     _journal(vault, first, "folders include", inv_changed)
@@ -436,6 +469,15 @@ def run(args):
         if args.folders_command == "include":
             return _include(vault, args, as_json)
         return _list(vault, as_json)
+    except _InventoryLagged as e:  # 清冊階段失敗、登記表也寫不回去（審閱裁定 36）
+        print(f"來源已改、清冊沒跟上：{e}，請跑 kb inventory scan")
+        return 3
+    except _InventoryFailed as e:  # 清冊階段失敗、登記表已寫回原文
+        if isinstance(e.cause, TimeoutError):
+            print(f"等不到 {inventory.INVENTORY_POSIX} 的鎖（別的指令正在改它），沒有寫入；請稍後再試")
+        else:
+            print(f"沒有寫入：{e}")
+        return 3
     except ValueError as e:  # L7、N6：sources.json 壞掉或格式不對
         print(f"{sources_lib.SOURCES_REL} 讀不了，請先修好它：{type(e).__name__}: {e}")
         return 3

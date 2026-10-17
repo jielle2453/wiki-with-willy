@@ -138,6 +138,59 @@ class SessionHook(unittest.TestCase):
 
 KB = ROOT / "scripts" / "kb.py"
 CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動」我再比"
+SHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+
+
+def big_xlsx(path, rows, first=1):
+    """一張工作表、5 欄數字；first 改 A1 的值（「改一格」）。900k 列約 27 MB，不設時間上限抽字要 14 秒（測試報告發現一的量級）。"""
+    import zipfile
+    parts = [f'<?xml version="1.0"?><worksheet xmlns="{SHEET_NS}"><sheetData>']
+    for r in range(1, rows + 1):
+        a = first if r == 1 else r
+        parts.append(f'<row r="{r}"><c r="A{r}"><v>{a}</v></c><c r="B{r}"><v>{r * 2}</v></c><c r="C{r}"><v>{r * 3}</v></c>'
+                     f'<c r="D{r}"><v>{r * 4}</v></c><c r="E{r}"><v>{r * 5}</v></c></row>')
+    parts.append("</sheetData></worksheet>")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("xl/worksheets/sheet1.xml", "".join(parts))
+
+
+class OpeningBigOoxml(unittest.TestCase):
+    """審閱裁定 34、測試報告發現一：11 MB 級的 xlsx 改一格後，開場 hook 總時間在 10 秒（SessionStart 逾時）內。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_big_xlsx_one_cell_changed_opening_within_10_seconds(self):
+        from kb._lib import inventory
+        from kb._lib import sources as sources_lib
+
+        p = self.raw / "客戶案件" / "大表.xlsx"
+        big_xlsx(p, 900_000)
+        self.assertGreater(p.stat().st_size, 10_000_000)
+        real = inventory.content_fp.text_fingerprint
+        inventory.content_fp.text_fingerprint = lambda path, **kw: None  # 入冊這步不是要量的，跳過抽字省時間
+        try:
+            report = inventory.scan(self.V, sources_lib.load(self.V))
+        finally:
+            inventory.content_fp.text_fingerprint = real
+        from kb._lib import turn
+        inventory.apply(self.V, report, turn.start(self.V, None, "")["turn"])
+        big_xlsx(p, 900_000, first=999)
+        st = p.stat()
+        os.utime(p, (st.st_atime, st.st_mtime + 100))
+        start = time.monotonic()
+        r = run(payload(self.V))
+        elapsed = time.monotonic() - start
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(elapsed, 10.0, f"開場 hook 花了 {elapsed:.1f} 秒")
+        ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+        status = ctx.split("\n\n", 1)[0].split("\n")
+        self.assertEqual(status[0], KB_LINE)
+        self.assertTrue(set(status) & {CHANGES_INCOMPLETE, "變動：新增 0、修改 1、不見 0"}, status)
+        self.assertTrue(ctx.endswith(CORE.read_text(encoding="utf-8")))
 
 
 class OpeningInventory(unittest.TestCase):

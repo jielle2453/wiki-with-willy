@@ -76,10 +76,9 @@ class Changes(unittest.TestCase):
         (self.raw / "客戶案件" / "大安陳" / "會議紀錄_1.docx").unlink()
         self.applied()
         r = self.changes()
-        self.assertEqual(r.stdout.splitlines(), [
+        self.assertEqual(r.stdout.splitlines(), [  # 審閱裁定 39：套用了也不會變，不印「要套用請跑」
             "跟上次掃描比（還沒套用）：",
             "- 之前就不見、還沒處理 1 份：客戶案件/大安陳/會議紀錄_1.docx",
-            "要套用請跑 kb inventory scan。",
         ])
         data = json.loads(self.changes("--json").stdout)
         self.assertEqual((data["missing"], data["still_missing"]), ([], ["file://客戶案件/大安陳/會議紀錄_1.docx"]))

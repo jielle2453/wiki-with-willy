@@ -48,6 +48,11 @@
 | B-036 | 2026-10-16 | open | skill-creator 的 `scripts/run_eval.py` 讀 evals 沒指定 encoding（cp950 讀不了中文，要 `PYTHONUTF8=1`）、用 `select.select` 讀子程序管線，Windows 上每次 query 都 WinError 10038、全部算未觸發；路由測試要用把 select 換成「永遠就緒」的 shim 跑（原檔不動）；另外預設 10 個 worker 會把同描述的暫時指令檔同時放進同一個 `.claude/commands/`，模型挑到別人那份就算沒觸發（實測該觸發只剩 10%），要 `--num-workers 1`；之後自己寫一支 `tests/evals/run.py`，D-091 的做法到時改 | manage 測試 |
 | B-037 | 2026-10-16 | deferred | Obsidian 視圖（D-097：選配不必要）：`kb` 在 `系統/` 產 Bases 的 `.base` 視圖檔（專案總表、看板），吃綜合卡檔頭；日程渲染成視圖吃得到的形狀；守門補 `.obsidian/` 一條；建置時服務人員可裝可不裝。等綜合卡（ingest）與日程（note）有資料再開題 | 設計討論 |
 | B-038 | 2026-10-17 | open | 開場 scan 的 roots() 對斷線的網路磁碟做 isdir 可能卡 20 秒以上，標準函式庫沒有帶逾時的檢查；候選：按機器記上次找不到的來源、開場先跳過改由 kb changes 查，或子執行緒加逾時 | 清冊 |
+| B-039 | 2026-10-17 | open | `inventory.apply` 只把 scan 期間新增的 id 合併回去，對既有條目的並行改動（`register_output` 追加指紋、`set_status`）會被蓋掉；要並行寫才會遇到 | 清冊測試觀察 B |
+| B-040 | 2026-10-17 | open | Win32 邊角：名字結尾帶 `.` 或空白時 `long_path` 經 `abspath` 會被去掉，走訪列的名字與實際開的檔可能不同；`path_of` 不擋 `..` 與絕對路徑段（目前沒有呼叫端） | 清冊測試觀察 E |
+| B-041 | 2026-10-17 | open | `hooks/hooks.json` SessionStart 的 description 沒提快速 scan 與寫 env.json；下次碰 hook 的題一起改並跑 validate | 清冊測試觀察 F |
+| B-042 | 2026-10-17 | open | 既有測試 `test_two_processes_register_concurrently_both_kept` 偶爾因 `io.FileLock` 的 PermissionError 競態失敗（main 就有，io.py 清冊題沒動） | 清冊測試觀察 H |
+| B-043 | 2026-10-17 | deferred | 低：v1→2 遷移從磁碟補 size／mtime 等於信任期間沒改過（C）；`_migrate` 每個位置 stat 不受時間預算、`env.clear_missing` 每個來源各讀一次 env.json（G） | 清冊測試觀察 C、G |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

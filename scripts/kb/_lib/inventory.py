@@ -446,7 +446,6 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
                           "loc": {"uri": uri, "size": st.st_size, "mtime": mtime_str(st.st_mtime)}})
         if not stopper.stopped:
             walked.add(alias.casefold())
-    report["incomplete"] = stopper.stopped
 
     def checked(key):
         """這個位置這次有確實看過它在不在：根走完了、不在開不了的夾底下。"""
@@ -454,8 +453,14 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
             return False
         return not any(key == p or key.startswith(p + "/") for p in protected)
 
+    def out_of_time():
+        """快速模式：每算一個指紋前查剩餘時間（審閱裁定 31）；到了就不再算，這次 incomplete。"""
+        return stopper()
+
     def digest_of(rec):
         size = rec["st"].st_size
+        if out_of_time():
+            return None
         if budget["left"] is not None:
             if budget["out"] or size > budget["left"]:
                 budget["out"] = True  # 讀取總量到頂後不再算（I-081）
@@ -466,6 +471,9 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         except OSError as e:
             rec["read"], rec["error"] = "error", f"無法讀取：{e.strerror or e}"
             return None
+
+    def text_of(rec):
+        return None if out_of_time() else content_fp.text_fingerprint(rec["path"])
 
     def fingerprint(digest, text):
         fp = {"sha256": digest}
@@ -505,7 +513,7 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
             if not fps and not quick:  # 之前是占位檔或太大、這次讀得到：補一筆指紋，不算變動
                 digest = digest_of(rec)
                 if digest:
-                    fps.append(fingerprint(digest, content_fp.text_fingerprint(rec["path"])))
+                    fps.append(fingerprint(digest, text_of(rec)))
             report["unchanged"] += 1
             continue
         digest = digest_of(rec)
@@ -520,7 +528,7 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         if last and last.get("sha256") == digest:
             report["unchanged"] += 1  # 假變動：只更新位置大小時間
             continue
-        text = content_fp.text_fingerprint(rec["path"])
+        text = text_of(rec)
         if last and text and last.get("text_sha256") == text:
             last["sha256"] = digest  # OOXML 另存內容沒變（D-096）：現行那筆原地換新，不追加、不報
             report["unchanged"] += 1
@@ -583,7 +591,7 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         if rec["read"] == "ok" and (not quick or rec["st"].st_size in sizes):
             digest = digest_of(rec)
             if digest:
-                text = content_fp.text_fingerprint(rec["path"])
+                text = text_of(rec)
         target = None
         if digest:
             cands = by_fp.get(digest, [])
@@ -631,9 +639,11 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         report["added"].append(rec["uri"])
 
     # 4. 這次確實沒看到的位置：拿掉；條目沒有位置剩下 → missing（保留最後的位置清單）
+    #    時間到了（走訪或算指紋時）就不判不見：搬動可能還沒認出來（審閱裁定 25、31）
+    report["incomplete"] = stopper.stopped
     was_missing = {id(e) for e in entries if e.get("status") == "missing"}
     for e in entries:
-        if e.get("status") != "active":
+        if e.get("status") != "active" or report["incomplete"]:
             continue
         lost = [loc for loc in e["locations"] if uri_key(loc.get("uri", "")) in unseen]
         if not lost:

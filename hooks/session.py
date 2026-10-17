@@ -39,6 +39,7 @@ def line_version(vault):
 CHANGES_LINE = "變動：新增 {added}、修改 {modified}、不見 {missing}"
 CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動」我再比"
 MISSING_SOURCES_LINE = "這台電腦找不到來源{names}，其他照常；搬過的話跟我說。"
+MISSING_SOURCES_SHOWN = 3
 _SCAN = {}  # vault → (sources, report) 或 None（scan 出錯）；兩行共用一次快速 scan（審閱裁定 9）
 
 
@@ -84,7 +85,11 @@ def line_missing_sources(vault):
     if not new:
         return None
     env.mark_missing(vault, list(new))
-    return MISSING_SOURCES_LINE.format(names="、".join(f"「{alias}」" for alias in new.values()))
+    aliases = list(new.values())
+    names = "、".join(f"「{alias}」" for alias in aliases[:MISSING_SOURCES_SHOWN])
+    if len(aliases) > MISSING_SOURCES_SHOWN:
+        names += f"等 {len(aliases)} 個"  # 最多列 3 個，整行守在開場預算裡（審閱裁定 32）
+    return MISSING_SOURCES_LINE.format(names=names)
 
 
 def line_agenda(vault):

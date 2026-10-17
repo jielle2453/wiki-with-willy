@@ -624,6 +624,51 @@ class Quick(Base):
         self.assertEqual(r["missing"], [])
         self.assertFalse(self.scan()["incomplete"])
 
+    def test_time_budget_also_stops_hashing(self):
+        """審閱裁定 31：走訪內沒到、算指紋時到 → incomplete、後面的檔不再算指紋、不報不見（搬動認不出來）。"""
+        now = [0]
+        real_clock = inventory._clock
+        inventory._clock = lambda: now[0]
+        self.addCleanup(setattr, inventory, "_clock", real_clock)
+        spy = inventory.sha256_of
+
+        def slow(path):
+            now[0] = 100  # 第一個指紋算完時間就到了
+            return spy(path)
+        inventory.sha256_of = slow
+        shutil.move(self.raw / "客戶案件" / "內湖李" / "估價單.pdf", self.raw / "客戶案件" / "信義王" / "估價單.pdf")
+        shutil.move(self.raw / "公司行政" / "舊檔" / "Big5備忘.txt", self.raw / "公司行政" / "Big5備忘.txt")
+        r = self.scan(quick=True)
+        self.assertTrue(r["incomplete"])
+        self.assertEqual(len(self.hashed), 1)
+        self.assertEqual(len(r["moved"]), 1)
+        self.assertEqual(r["missing"], [])
+        self.assertEqual(r["total"], 14, "走訪本身走完了")
+
+    def test_time_budget_also_stops_ooxml_text(self):
+        p = self.raw / "客戶案件" / "大安陳" / "進度.xlsx"
+        xlsx(p, ("信義王", "1.1"))
+        self.full()
+        xlsx(p, ("信義王", "1.1"), inline=True, stamp="2026-10-17")
+        self.bump_mtime(p)
+        now = [0]
+        real_clock = inventory._clock
+        inventory._clock = lambda: now[0]
+        self.addCleanup(setattr, inventory, "_clock", real_clock)
+        spy = inventory.sha256_of
+
+        def slow(path):
+            now[0] = 100
+            return spy(path)
+        inventory.sha256_of = slow
+        texts = []
+        real_text = inventory.content_fp.text_fingerprint
+        inventory.content_fp.text_fingerprint = lambda path: texts.append(path) or real_text(path)
+        self.addCleanup(setattr, inventory.content_fp, "text_fingerprint", real_text)
+        r = self.scan(quick=True)
+        self.assertTrue(r["incomplete"])
+        self.assertEqual(texts, [])
+
     def test_time_budget_with_patched_clock(self):
         ticks = iter(range(0, 10_000, 3))
         real = inventory._clock

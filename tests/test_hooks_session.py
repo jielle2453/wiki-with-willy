@@ -210,6 +210,23 @@ class OpeningInventory(unittest.TestCase):
         (self.raw / "行政").rename(self.raw / "行政_舊")
         self.assertIn("這台電腦找不到來源「客戶案件」、「行政」，其他照常；搬過的話跟我說。", self.status())
 
+    def test_many_missing_sources_list_three_and_count(self):
+        """審閱裁定 32：最多列 3 個別名，再多寫「等 N 個」；整段仍在 400 字內、全部都記成報過。"""
+        p = self.V / ".system" / "sources.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        for i in range(5):
+            data["sources"].append({"id": f"src-a{i:03d}", "alias": f"很長很長的外接硬碟資料夾第{i}號", "spec": f"../沒有/{i}",
+                                    "excludes": []})
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        lines = self.status("compact")
+        line = [ln for ln in lines if "找不到來源" in ln]
+        self.assertEqual(line, ["這台電腦找不到來源「很長很長的外接硬碟資料夾第0號」、「很長很長的外接硬碟資料夾第1號」、"
+                                "「很長很長的外接硬碟資料夾第2號」等 5 個，其他照常；搬過的話跟我說。"])
+        self.assertLessEqual(len("\n".join(lines)), 400)
+        self.assertLessEqual(len(lines), 8)
+        env_json = json.loads((self.V / ".system" / "env.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(next(iter(env_json["machines"].values()))["missing_sources_reported"]), 5)
+
     def test_broken_inventory_other_lines_still_printed_and_one_log_line(self):
         (self.V / ".system" / "inventory.json").write_text("{bad", encoding="utf-8")
         lines = self.status("compact")

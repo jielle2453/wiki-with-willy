@@ -46,7 +46,7 @@
 | B-034 | 2026-10-16 | open | `kb journal recent` 一段一行只印「做了」，不印「改了」哪些檔，AI 回答「最近改了什麼」時無法確認檔有沒有登記，又把「程式｜」標記誤讀成登記與否；answer 題定 recent 的輸出要不要帶改了與 note_by | 開場注入與核心規則確認 |
 | B-035 | 2026-10-16 | deferred | manage 低項：巢狀排除時 `folders include` 外層後說「讀得到」但內層 hidden 仍擋，反方向（取消內層、外層仍擋）也一樣，句子要講；skill 文字守的「先問再做」沒有機器保證（同 B-025，守門對高風險 kb.py 子命令回 ask） | manage 測試 |
 | B-036 | 2026-10-16 | open | skill-creator 的 `scripts/run_eval.py` 讀 evals 沒指定 encoding（cp950 讀不了中文，要 `PYTHONUTF8=1`）、用 `select.select` 讀子程序管線，Windows 上每次 query 都 WinError 10038、全部算未觸發；路由測試要用把 select 換成「永遠就緒」的 shim 跑（原檔不動）；另外預設 10 個 worker 會把同描述的暫時指令檔同時放進同一個 `.claude/commands/`，模型挑到別人那份就算沒觸發（實測該觸發只剩 10%），要 `--num-workers 1`；之後自己寫一支 `tests/evals/run.py`，D-091 的做法到時改 | manage 測試 |
-| B-037 | 2026-10-16 | deferred | Obsidian 視圖（D-097：選配不必要）：`kb` 在 `系統/` 產 Bases 的 `.base` 視圖檔（專案總表、看板），吃綜合卡檔頭；日程渲染成視圖吃得到的形狀；守門補 `.obsidian/` 一條；建置時服務人員可裝可不裝。等綜合卡（ingest）與日程（note）有資料再開題 | 設計討論 |
+| B-037 | 2026-10-16 | deferred（形狀已定 D-105、D-106，等日程題有資料） | Obsidian 視圖（D-097：選配不必要）：`kb` 在 `系統/` 產 Bases 的 `.base` 視圖檔（專案總表、看板），吃綜合卡檔頭；日程渲染成視圖吃得到的形狀；守門補 `.obsidian/` 一條；建置時服務人員可裝可不裝。等綜合卡（ingest）與日程（note）有資料再開題 | 設計討論 |
 | B-038 | 2026-10-17 | open | 開場 scan 的 roots() 對斷線的網路磁碟做 isdir 可能卡 20 秒以上，標準函式庫沒有帶逾時的檢查；候選：按機器記上次找不到的來源、開場先跳過改由 kb changes 查，或子執行緒加逾時 | 清冊 |
 | B-039 | 2026-10-17 | open | `inventory.apply` 只把 scan 期間新增的 id 合併回去，對既有條目的並行改動（`register_output` 追加指紋、`set_status`）會被蓋掉；要並行寫才會遇到 | 清冊測試觀察 B |
 | B-040 | 2026-10-17 | open | Win32 邊角：名字結尾帶 `.` 或空白時 `long_path` 經 `abspath` 會被去掉，走訪列的名字與實際開的檔可能不同；`path_of` 不擋 `..` 與絕對路徑段（目前沒有呼叫端） | 清冊測試觀察 E |
@@ -59,6 +59,7 @@
 | B-047 | 2026-10-17 | open | 工作日誌遮值碰到檔名「網銀密碼.txt」會從「密碼」起把 note 後段整段遮掉（B-031 遮太多同類）；檔名裡的關鍵詞要不要豁免，守門題與日誌題一起看 | 清冊確認 ③ |
 | B-048 | 2026-10-17 | open | AI 的 `kb turn note` 把上一回合的事也寫進來；建議下一步時提到還不存在的綜合卡（ingest 題定卡之前 core.md 要不要加一句） | 清冊確認 ④ |
 | B-049 | 2026-10-17 | open | 守門擋了對含憑證檔的來源夾只看第一層的 `ls`（D-079 資料夾走訪 fail closed 的副作用）；要不要讓「列目錄不讀內容」放行 | 清冊確認 ⑤ |
+| B-050 | 2026-10-17 | open | spike：Obsidian 三頁的假設（D-105、D-106），在 `llm-wiki-test` 總資料夾放假卡、`.base`、Mermaid gantt、`.obsidian/app.json`、CSS 片段，桌面 Obsidian 開一次驗：Bases 現在有哪些視圖、`.base` 能不能嵌進 md、巢狀清單摺疊與連結、Mermaid gantt 點 bar 開不開卡、`file:///` 中文與空白路徑與網路磁碟怎麼寫、「偵測所有副檔名」點 docx 是不是直接用 Word 開、CSS 片段藏得掉 `檔案索引/` 而 Bases 與搜尋照常、`.obsidian/` 由骨架出貨後 Obsidian 改寫會不會衝突。等你說跑才跑 | 設計討論 2026-10-17 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

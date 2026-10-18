@@ -56,7 +56,7 @@
 | B-044 | 2026-10-17 | open | 低：`content_fp` 的時間檢查「每 1000 個元素查一次」每個 zip 成員重新數，小成員很多的檔（幾千張投影片）不會停下來查；改成跨成員累計 | 清冊測試第二輪 |
 | B-045 | 2026-10-17 | open | 低：hidden 排除只拿掉重複檔其中一個位置時第二行印「清冊：0 份已拿掉」，應該數位置或另印；`versions revert`／`--delete-outputs` 在清冊讀不到時最後那句與成品數是還原前狀態 | 清冊測試第二輪 |
 | B-046 | 2026-10-17 | open | 低：`folders add` 第一行「N 份」看不出含不含憑證那幾份（AI 自己說看不懂）；`inventory scan` 的「同一份內容在多處 N 份」不列是哪份 | 清冊確認 ①② |
-| B-047 | 2026-10-17 | open | 工作日誌遮值碰到檔名「網銀密碼.txt」會從「密碼」起把 note 後段整段遮掉（B-031 遮太多同類）；檔名裡的關鍵詞要不要豁免，守門題與日誌題一起看 | 清冊確認 ③ |
+| B-047 | 2026-10-17 | open | 工作日誌遮值碰到檔名「網銀密碼.txt」會從「密碼」起把 note 後段整段遮掉（B-031 遮太多同類）；ingest 確認 G3：「讀不到：有密碼」那句也被遮成 ███；檔名裡的關鍵詞要不要豁免，守門題與日誌題一起看 | 清冊確認 ③ |
 | B-048 | 2026-10-17 | open | AI 的 `kb turn note` 把上一回合的事也寫進來；建議下一步時提到還不存在的綜合卡（ingest 題定卡之前 core.md 要不要加一句） | 清冊確認 ④ |
 | B-049 | 2026-10-17 | open | 守門擋了對含憑證檔的來源夾只看第一層的 `ls`（D-079 資料夾走訪 fail closed 的副作用）；要不要讓「列目錄不讀內容」放行 | 清冊確認 ⑤ |
 | B-050 | 2026-10-17 | open | spike：Obsidian 三頁的假設（D-105、D-106），在 `llm-wiki-test` 總資料夾放假卡、`.base`、Mermaid gantt、`.obsidian/app.json`、CSS 片段，桌面 Obsidian 開一次驗：Bases 現在有哪些視圖、`.base` 能不能嵌進 md、巢狀清單摺疊與連結、Mermaid gantt 點 bar 開不開卡、`file:///` 中文與空白路徑與網路磁碟怎麼寫、「偵測所有副檔名」點 docx 是不是直接用 Word 開、CSS 片段藏得掉 `檔案索引/` 而 Bases 與搜尋照常、`.obsidian/` 由骨架出貨後 Obsidian 改寫會不會衝突。等你說跑才跑 | 設計討論 2026-10-17 |
@@ -65,6 +65,7 @@
 | B-053 | 2026-10-18 | deferred | ingest 製卡測試低項：convert 路徑沒經 `paths._text_forms`（Git Bash `/c/…`、`file:///C:/…`）；用路徑指到 missing 條目但檔已放回（未 scan）回「找不到原檔」；終端機沒回合時 sync／drop／pending 先開空回合；folders exclude／remove 後 open 的 missing_file 永遠 open、拆出新條目時舊 unreadable 不 auto_done、占位檔下載回來大小時間不變不算 modified（C8）；`output_log.py` `ensure_ascii` 與 session.py 不一致；`line_ingest_hint` 出錯 log 兩次 | ingest 製卡測試第一輪 |
 | B-054 | 2026-10-19 | open | manage 路由 eval 從 10-16 的 30/30 掉到 26/30、25/30（描述與句子沒動，ingest 不在場），第一輪 0/30 是環境異常；接受發行（ingest 裁定 35）。下次動 manage 描述、或 skill 數量變時，跑三輪取中位數，仍低於 90% 才調描述；順便查 run_eval 整輪 0 觸發的環境原因 | ingest 製卡測試第二輪 |
 | B-055 | 2026-10-19 | deferred | 低：`.system/temp` 是 junction 時，成功的 `kb convert` 仍把暫存檔寫進 junction 目標夾（裁定 16 的 realpath 兩邊都解到目標）；要先能寫 `.system/` 才做得到。lint 題加一項「`.system/` 底下不准有重解析點」 | ingest 製卡測試第二輪 |
+| B-056 | 2026-10-19 | deferred | 低：`versions revert` 退掉 `cards drop` 那回合後，同一張卡同時出現在 todo 的 orphans 與 missing（G4）；AI 看到開場「變動：修改 1」會自己猜成「合約有變動」（G7，R-06）；加資料夾後收尾句與 spec 字句不同（G6，以 manage SKILL 為準） | ingest 製卡確認 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

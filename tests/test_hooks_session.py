@@ -304,5 +304,41 @@ class OpeningInventory(unittest.TestCase):
         self.assertEqual({k for k in after if before.get(k) != after[k]}, {".system/env.json"})
 
 
+INGEST_HINT = "有變動：先回答客戶這句，再照 ingest skill 整理；超過 {n} 份先問。"
+
+
+class OpeningIngestHint(unittest.TestCase):
+    """ingest 製卡第 7 點、驗收 15：變動行印出來時緊接著一行指示；沒變動不印；n 讀 ingest_auto_max；整段守 8 行 400 字。"""
+
+    setUp = OpeningInventory.setUp
+    tearDown = OpeningInventory.tearDown
+    status = OpeningInventory.status
+
+    def hint_lines(self, lines):
+        return [ln for ln in lines if ln.startswith("有變動：")]
+
+    def test_no_change_no_hint(self):
+        self.assertEqual(self.hint_lines(self.status()), [])
+
+    def test_hint_right_after_change_line(self):
+        (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")
+        lines = self.status()
+        i = lines.index("變動：新增 1、修改 0、不見 0")
+        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=5))
+        self.assertEqual(len(self.hint_lines(lines)), 1)
+        self.assertLessEqual(len(lines), 8)
+        self.assertLessEqual(len("\n".join(lines)), 400)
+
+    def test_hint_after_incomplete_line(self):
+        (self.V / ".system" / "config.json").write_text(json.dumps({"changes_quick_seconds": 0}), encoding="utf-8")
+        lines = self.status()
+        self.assertEqual(lines[lines.index(CHANGES_INCOMPLETE) + 1], INGEST_HINT.format(n=5))
+
+    def test_hint_reads_ingest_auto_max(self):
+        (self.V / ".system" / "config.json").write_text(json.dumps({"ingest_auto_max": 3}), encoding="utf-8")
+        (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")
+        self.assertEqual(self.hint_lines(self.status()), [INGEST_HINT.format(n=3)])
+
+
 if __name__ == "__main__":
     unittest.main()

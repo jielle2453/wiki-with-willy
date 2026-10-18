@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "items": [
+    {"id": "p-1a2b3c4d", "kind": "missing_file", "file_ids": ["f-9e8d7c6b"], "entity_ids": [],
+     "text": "「會議紀錄_1.docx」（客戶案件/大安陳）不見了", "reason": null,
+     "created": "2026-10-17T09:00:00", "created_turn": "20261017-090000-1234",
+     "status": "open", "resolved": null, "how": null},
+    {"id": "p-5e6f7a8b", "kind": "unreadable", "file_ids": ["f-1122aabb"], "entity_ids": [],
+     "text": "「合約_加密.pdf」（報價與合約/內湖李）讀不到", "reason": "有密碼",
+     "created": "2026-10-17T09:05:00", "created_turn": "20261017-090500-1234",
+     "status": "open", "resolved": null, "how": null},
+    {"id": "p-0f0f0f0f", "kind": "unreadable", "file_ids": ["f-33334444"], "entity_ids": [],
+     "text": "「舊合約.doc」（公司行政/舊檔）讀不到", "reason": "舊格式（.doc）",
+     "created": "2026-10-16T08:00:00", "created_turn": "20261016-080000-1234",
+     "status": "done", "resolved": "2026-10-17T10:00:00", "how": "檔案換了，重新讀"}
+  ]
+}

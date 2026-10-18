@@ -60,6 +60,7 @@
 | B-048 | 2026-10-17 | open | AI 的 `kb turn note` 把上一回合的事也寫進來；建議下一步時提到還不存在的綜合卡（ingest 題定卡之前 core.md 要不要加一句） | 清冊確認 ④ |
 | B-049 | 2026-10-17 | open | 守門擋了對含憑證檔的來源夾只看第一層的 `ls`（D-079 資料夾走訪 fail closed 的副作用）；要不要讓「列目錄不讀內容」放行 | 清冊確認 ⑤ |
 | B-050 | 2026-10-17 | open | spike：Obsidian 三頁的假設（D-105、D-106），在 `llm-wiki-test` 總資料夾放假卡、`.base`、Mermaid gantt、`.obsidian/app.json`、CSS 片段，桌面 Obsidian 開一次驗：Bases 現在有哪些視圖、`.base` 能不能嵌進 md、巢狀清單摺疊與連結、Mermaid gantt 點 bar 開不開卡、`file:///` 中文與空白路徑與網路磁碟怎麼寫、「偵測所有副檔名」點 docx 是不是直接用 Word 開、CSS 片段藏得掉 `檔案索引/` 而 Bases 與搜尋照常、`.obsidian/` 由骨架出貨後 Obsidian 改寫會不會衝突。等你說跑才跑 | 設計討論 2026-10-17 |
+| B-051 | 2026-10-18 | open | 卡寫錯名被 PostToolUse 打回時錯名檔已在 `檔案索引/`（Z5 指令寫擋、AI 刪不掉），重寫正名後同編號兩張都進 `broken`、條目再也不進 new／stale；stale 換標題同樣。要不要讓 `kb cards sync` 把檔名改成 `expected_name`、同編號多張時留檔頭過的那張，或給一個 `kb cards rename`；這版只在 carding.md 叮嚀寫前先對 | ingest 製卡實作 skill-reviewer |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

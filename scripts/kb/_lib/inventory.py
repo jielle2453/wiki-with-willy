@@ -713,7 +713,9 @@ def has_changes(vault, report):
 def apply(vault, report, turn_id):
     """持清冊的鎖：先備進回合（D-074，備份失敗丟 OSError 不寫），再寫 report 的 entries；
     這次新追加的指紋與新條目（turn／created_turn 是 None）填上 turn_id，舊的不動（審閱裁定 6）。
-    scan 之後才登記的成品（id 不在 report 裡）照樣留著。"""
+    scan 之後才登記的成品（id 不在 report 裡）照樣留著。
+    寫完、出了清冊的鎖之後接待處理（ingest 製卡第 5 點）：照清冊狀態開／關 missing_file，這次 modified 的條目關掉 unreadable；
+    這段任何例外只記 hook-errors.log、不往上丟（folders add 的交易不受影響）。回這次有沒有改到待處理。"""
     from kb._lib import turn
     p = _path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -729,6 +731,22 @@ def apply(vault, report, turn_id):
                 if fp.get("turn") is None:
                     fp["turn"] = turn_id
         _write(vault, entries)
+    return _sync_pending(vault, entries, report.get("modified") or [], turn_id)
+
+
+def _sync_pending(vault, entries, modified, turn_id):
+    from kb._lib import ledger, pending
+    touched = False
+    try:
+        touched = pending.sync_missing(vault, entries, turn_id)
+        keys = {uri_key(u) for u in modified}
+        ids = [e["id"] for e in entries if e.get("status") == "active"
+               and any(uri_key(loc.get("uri", "")) in keys for loc in e.get("locations") or [])]
+        for fid in ids:
+            touched = pending.auto_done(vault, fid, "unreadable", "檔案換了，重新讀", turn_id) or touched
+    except Exception as e:  # noqa: BLE001  待處理沒更新不能讓清冊的交易失敗；下次 scan 會補
+        ledger.log_error(vault, f"待處理沒更新：{type(e).__name__}: {e}", source="inventory")
+    return touched
 
 
 def _exclude_kind(src, key):
@@ -796,6 +814,41 @@ def reconcile(vault, sources, turn_id):
             turn.backup(vault, INVENTORY_POSIX, turn_id)
             _write(vault, kept_entries)
     return {"excluded": excluded, "removed": removed}
+
+
+def uri_of(vault, sources, path):
+    """磁碟路徑 → 清冊 uri（file://<別名>/<相對路徑>）。總資料夾裡的先認三區（收件匣、AI 產出、知識庫），
+    再找包住它的來源（最長的根）；都不是回 None。相對路徑可能是 normalize 過的小寫：比對一律用 uri_key。"""
+    target = normalize(str(path), None)
+    vault_n = normalize(str(vault), None)
+    if inside(target, vault_n):
+        rel = target[len(vault_n):].lstrip("/")
+        first, _, rest = rel.partition("/")
+        for alias in (INBOX, OUTPUT):
+            if first == alias.casefold() or first == alias:
+                return make_uri(alias, rest) if rest else None
+        if first in VAULT_RESERVED_DIRS or first.startswith(".") or not rest:
+            return None
+        return make_uri(KNOWLEDGE, rel)
+    best = None
+    for src in sources.entries:
+        if inside(target, src["root"]) and target != src["root"] and (best is None or len(src["root"]) > len(best["root"])):
+            best = src
+    if best is None:
+        return None
+    return make_uri(best["alias"], target[len(best["root"]):].lstrip("/"))
+
+
+def entry_for(vault, uri, entries=None):
+    """uri 反查清冊條目（kb convert 用）：位置鍵相同的，active 優先，其次 missing／excluded，再其次任何一筆；沒有回 None。"""
+    key = uri_key(uri)
+    entries = load(vault)["entries"] if entries is None else entries
+    hits = [e for e in entries if any(uri_key(loc.get("uri", "")) == key for loc in e.get("locations") or [])]
+    for statuses in (("active",), DORMANT):
+        for e in hits:
+            if e.get("status") in statuses:
+                return e
+    return hits[-1] if hits else None
 
 
 def path_of(vault, sources, uri):

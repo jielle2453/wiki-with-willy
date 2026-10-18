@@ -61,6 +61,7 @@
 - 發生過什麼：Read 讀 PDF 要靠 poppler（pdftoppm），poppler 沒有數位簽章，被 Windows 智慧型應用程式控制擋下。0.13.0 改用 pdfplumber 附的 pypdfium2 轉圖，並禁止製卡時用 Read 直接讀原檔 PDF。
 - 合併版會不會踩：會，只要 `carding.md` 或 card-maker 讓製卡者用 Read 讀 PDF 就會踩。製卡讀 PDF 一律走 `kb convert`。
 - 客戶會不會遇到：會，Win11 預設開這個功能。所有 PDF 都讀不到。
+- **2026-10-19 補**：合併版 ingest 製卡確認踩到同一件：Claude Code 的 Read 讀 PDF 要本機 poppler 的 `pdftoppm`，開發機沒有就報錯，客戶機器更裝不了；D-099 修訂成 PDF 走 pip 的 `pypdfium2`（抽文字層、掃描頁轉 PNG，圖片 Read 不用 poppler）。
 
 ### I-009 外部 Office 技能在客戶的 Windows 上用不了
 - 來源：plugin 0.13.1 `rules/office.md:18`、`:20-21`、`:35`、`scripts/office_tools.py:9`。

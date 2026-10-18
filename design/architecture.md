@@ -230,7 +230,8 @@ llm-wiki-j/
 │  ├─ CLAUDE.md
 │  ├─ .claude/settings.json           只有 deny 憑證樣式、ask 高風險子命令；不放 additionalDirectories、不放 plugin 路徑（D-073）
 │  ├─ AI 產出/  收件匣/  檔案索引/    空夾；型別夾由 build-setup 依設定檔建
-│  └─ 系統/{待處理,日程,總目錄,客戶設定檔,裁示,建置報告}.md + 工作日誌/ 健檢報告/
+│  ├─ 總目錄.md                        我的檔案：可摺清單連到檔案卡（D-105）
+│  └─ 系統/{待處理,日程,客戶設定檔,裁示,建置報告}.md + 工作日誌/ 健檢報告/
 ├─ tests/
 │  ├─ test_lib_*.py  test_hooks_*.py  test_scripts_*.py  test_lint_checks.py
 │  ├─ test_skeleton_check.py  test_budget.py  test_coverage.py  test_version_sync.py  test_guard_cli.py
@@ -249,9 +250,10 @@ llm-wiki-j/
 │     └─ <其他檔>                     客戶說放這才有；放進來就是原檔，AI 只讀
 ├─ AI 產出/<型別>/<日期> <實體> <標題>.*   草稿 md 與定稿都先落這；沒實體的放主題子夾
 ├─ 收件匣/                            對話收到的、客戶自己丟的；問要放哪，沒說留著
-├─ 檔案索引/<來源別名>/<鏡射相對路徑>/<標題-id>.md   檔案卡，一檔一張，位置程式排；來源別名含知識庫、AI 產出、收件匣
+├─ 檔案索引/<來源別名>/<鏡射相對路徑>/<標題-id>.md   檔案卡，一檔一張，位置程式排；來源別名含知識庫、AI 產出、收件匣；檔頭一行 file:/// 開原檔
+├─ 總目錄.md                          我的檔案：程式渲染的巢狀可摺清單，每項連到檔案卡（D-105）
 ├─ 系統/                              程式渲染，客戶可開
-│  ├─ 待處理.md  日程.md  總目錄.md  工作日誌/YYYY-MM.md
+│  ├─ 待處理.md  日程.md  工作日誌/YYYY-MM.md
 │  └─ 客戶設定檔.md  裁示.md  建置報告.md  健檢報告/
 └─ 隱藏屬性：CLAUDE.md  .claude/settings.json  .system/
    .system/                           程式獨占，每個 json 帶 schema_version
@@ -274,6 +276,8 @@ llm-wiki-j/
 | `收件匣/` | 擋；只有 `kb intake` 能寫 |
 | `檔案索引/` | 回合備份；指令寫擋 |
 | `系統/` | 程式渲染；手改由 lint 比對（D-015） |
+| 總資料夾 `總目錄.md` | 擋；只有 `kb cards index` 等程式渲染（D-105） |
+| `.obsidian/` | 擋；只有 `kb init` 與 `kb upgrade` 寫，骨架對帳只補缺不覆蓋（D-105） |
 | `.system/` | 擋；只有 kb 腳本 |
 | `.claude/settings.json` | 擋；只有 `kb folders` |
 | 總資料夾 CLAUDE.md | 擋；只有 `kb upgrade` |

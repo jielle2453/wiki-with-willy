@@ -731,6 +731,7 @@
 - 為什麼：核心只用標準函式庫（conventions 四）；客戶電腦 pip install 那串事故（I-006～I-008）整個跳過；Read 本來就讀得了 PDF 與圖片，再轉一次是重做。
 - 放棄了：照舊 plugin 用 markitdown 加 pdfplumber 轉暫存檔（品質好、但多四個選配套件與 onnxruntime）；全部交給 Read（Office 檔 Read 讀不了，xlsx 公式與多工作表會漏）。
 - 重談條件：確認階段 Read 讀 PDF 常超 context 或漏頁，再談 pdfplumber 選配降級路。
+- **2026-10-19 修訂**：確認階段踩到 Claude Code 的 Read 讀 PDF 要靠本機的 poppler `pdftoppm`，這台沒有就報錯，客戶機器更裝不了（I-008）。PDF 改走**唯一的選配套件 `pypdfium2`**（pip 裝、有簽章的 wheel，舊 plugin 0.13.0 就用它）：`kb convert` 逐頁抽文字層，一頁少於 `pdf_page_min_chars` 個字當掃描頁、轉成 PNG 放 `.system/temp/` 給製卡者 Read 看圖（圖片 Read 不用 poppler），轉圖最多 `pdf_read_pages_max` 頁；沒裝就「讀不到：還沒裝 PDF 元件（pip install pypdfium2）」進待處理，裝好後自動回到待製卡。圖片檔仍直接 Read。conventions 四的選配清單改成只有 `pypdfium2`（markitdown、pdfplumber 拿掉）；README 環境需求加一行。文字層 PDF 的成本跟 docx 一樣，只有掃描頁按頁付圖片的錢。
 
 ## D-100 製卡者這版只有主對話；開場少量自動做、多量先問
 - 日期：2026-10-17

@@ -26,7 +26,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 
 ## 順序
 
-1. 開場自動觸發時，先回答客戶這句話，回答完再整理。客戶不是來等整理的。
+1. 開場自動時：先把客戶這句的答案完整寫出來（該有的數字、出處都寫），這段寫完才開始整理；整理的過程不取代答案，最終回答裡答案在前、整理告知在後。客戶不是來等整理的。
 2. 跑 `changes`；最後一行印了「要套用請跑 kb inventory scan。」才跑 `inventory scan` 把變動記進清冊。從 manage 加完資料夾交棒過來（加資料夾時已入冊）、或客戶明說「整理」但沒變動時，直接跑第 3 步。
 3. 跑 `cards todo --json`，看 `new`、`stale`、`moved`、`duplicates`、`missing`、`unreadable`、`broken`。
 4. `moved` 或 `duplicates` 有項目就先跑 `cards sync`（卡跟著原檔搬、檔名不變；同編號多張留正本），跑完再跑一次 `cards todo --json`，照新的清單做下面幾步（搬了又改過的檔，搬完才會列進 `stale`）。

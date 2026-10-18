@@ -304,7 +304,7 @@ class OpeningInventory(unittest.TestCase):
         self.assertEqual({k for k in after if before.get(k) != after[k]}, {".system/env.json"})
 
 
-INGEST_HINT = "有變動：先回答客戶這句，接著不用問、直接照 ingest skill 整理；只有超過 {n} 份才問。"  # 裁定 38
+INGEST_HINT = "有變動：先把客戶這句的答案完整說出來（不能只說「我先查」），同一則回答接著不用問、直接照 ingest skill 整理，末尾一句告知；只有超過 {n} 份才問。"  # 裁定 38、42
 
 
 class OpeningIngestHint(unittest.TestCase):

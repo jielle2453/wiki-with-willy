@@ -65,6 +65,7 @@
 | B-054 | 2026-10-19 | open | manage 路由 eval 從 10-16 的 30/30 掉到 26/30、25/30（描述與句子沒動，ingest 不在場），第一輪 0/30 是環境異常；接受發行（ingest 裁定 35）。下次動 manage 描述、或 skill 數量變時，跑三輪取中位數，仍低於 90% 才調描述；順便查 run_eval 整輪 0 觸發的環境原因 | ingest 製卡測試第二輪 |
 | B-055 | 2026-10-19 | deferred | 低：`.system/temp` 是 junction 時，成功的 `kb convert` 仍把暫存檔寫進 junction 目標夾（裁定 16 的 realpath 兩邊都解到目標）；要先能寫 `.system/` 才做得到。lint 題加一項「`.system/` 底下不准有重解析點」 | ingest 製卡測試第二輪 |
 | B-056 | 2026-10-19 | deferred | 低：`versions revert` 退掉 `cards drop` 那回合後，同一張卡同時出現在 todo 的 orphans 與 missing（G4）；AI 看到開場「變動：修改 1」會自己猜成「合約有變動」（G7，R-06）；加資料夾後收尾句與 spec 字句不同（G6，以 manage SKILL 為準） | ingest 製卡確認 |
+| B-057 | 2026-10-19 | deferred | 低：`extract.render_pages` 沒有點陣圖尺寸上限，超大頁面（海報、圖紙）轉圖可能吃數 GB 記憶體；加頁面像素上限、超過降 scale 或標「部分」。另：`tests/fixtures/inventory` 的 `報價_v2.pdf` 是假 PDF，convert 會回「檔案壞了」，不能當可讀 PDF 用 | ingest 製卡測試第三輪 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

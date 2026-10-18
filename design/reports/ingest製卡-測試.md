@@ -115,3 +115,57 @@
 
 - 舊 `llm-wiki@llm-wiki`：開始時是 disabled，照指示停下 eval、通知設計 session；設計 session 回報已 enable 後（`claude plugin list` 確認 ✔ enabled）才跑 eval。我沒改 plugin 設定。
 - 驗收腳本、eval shim、各 agent 的驗證腳本都在 scratchpad；tmp 知識庫在 `%TEMP%\kbinv-*`，不在 repo。worktree 除本報告外沒有改動。
+
+## 第二輪（2026-10-18，對 f67b538：d43c860 程式、f67b538 文件）
+
+範圍照裁定 33：只驗「測試後修正裁定」15～32，加無退步。裁定 34 在我這份 worktree 的 spec 裡不存在（spec 只到 33），所以沒驗。
+
+### 結論
+
+- 全部測試 `python -m unittest discover tests`：**exit 0**（918 個，skipped 1）。
+- 修正項 18 條（15～32）：**17 條過，1 條有一個我自己加的附帶觀察（17）**，沒有不過的。
+- 無退步：驗收 4／9／10／11／13 重跑全過。
+- **路由 eval：ingest 過線；manage 沒過線（該觸發 83～87%，門檻 90%），需要設計 session 判斷。** 詳見最後一節。
+
+### 修正項
+
+做法同第一輪：自己寫的 `accept2.py`（scratchpad，不在 repo），每條從 fixture 複本建新知識庫、用 CLI 子程序跑；S1～S3 用第一輪的重現步驟。
+
+| 裁定 | 結果 | 實跑證據 |
+|---|---|---|
+| 15 S1 | 過 | `kb convert <排除夾裡的檔／網銀密碼.txt> --vault <假總資料夾>` → exit ≠ 0、假總資料夾裡沒有 `.system/temp`；不加 `--vault` 照擋（exit 3「你說過不讀」）；cwd 在總資料夾外 → exit 3「這裡不是知識庫；到知識庫裡執行」 |
+| 16 S2 | 過 | 把清冊裡一筆 id 改成 `../../vault/系統/待處理`，用路徑 convert → 暫存檔在 `.system/temp/` 底下、檔名是 12 碼指紋；真的 `系統/待處理.md` 位元組沒變 |
+| 17 S3 | 過（附觀察） | `.system/temp` 做成 junction 指到 `victim\`，`temp_keep_hours: 0`、檔 mtime 兩小時前：convert 後 `victim\客戶檔.txt` **還在**，`hook-errors.log` 多「是連結，不清暫存」；拒絕（exit 3，網銀密碼）的呼叫不清舊暫存、成功的呼叫才清。**觀察（低，不影響裁定 17 的要求）**：temp 是 junction 時，成功的 convert 會把暫存檔寫進 junction 的目標夾（`victim\f-xxxx.md`）；裁定 16 的「父夾 realpath 等於 `.system/temp` 的 realpath」在這種情況下兩邊都解到目標夾，所以擋不住。能做成 junction 要先能寫 `.system/`（Z7 守門擋），第一輪的假總資料夾路線又已被 15 封掉，所以風險低；要補的話是寫之前也檢查 temp 不是重解析點。 |
+| 18 C1 | 過 | `msvcrt.locking` 鎖住 docx：exit 3、第一行 `讀不到：檔案被別的程式開著或沒有權限，關掉 Word／Excel 再試`、無第二行、`pending.json` 沒新條目、stderr 沒 traceback；`--json` 被鎖與找不到原檔都印 JSON（帶 `unreadable`）；壞 zip 的 docx → `讀不到：檔案壞了…` |
+| 19 C2 | 過 | 整個 raw 搬到 `raw2`、`sources.json` 跟著改、scan → `moved` 一項（`to` 同夾）、`broken` 空；`cards sync` 後 `開原檔` = 新路徑、manifest 一筆 modify、再 todo 全空；出處改錯的卡仍進 `broken`（「出處該是」） |
+| 20 C3＋B-051 | 過 | 同編號三張（正本、`A錯名-…`、放錯夾同名）：`todo --json` 的 `duplicates` 一組 `{id, keep: 正本, drop: 2 張}`，人讀第一行含「同編號多張 1 組（跑 kb cards sync）」；`sync` 後只剩正本、兩張被刪的 manifest 都是先 `delete` 備份；再 todo 全空。兩張都不過時留修改時間最新的一張 |
+| 21 S4 | 過 | `編號: [a]`、`標題: [x, y]`、`原檔` 寫成字串、`敏感資料種類` 寫成字串 → 各 block 且 reason 含「格式不對」；讀不了的位元組檔 → block；合法卡仍無輸出 |
+| 22 S5 | 過 | 巢狀 `[` 丟 `ValueError`、一層清單照常；標題塞 5000 個 `[` 加 5000 個 `]`：`cards todo`、`cards index` 都 exit 0、沒有 traceback |
+| 23 S6 | 過 | 總目錄：標題 `a\` → `[a\](…)`；標題 `[x]<a href=1>點</a>` → `[\[x\]＜a href=1＞點＜/a＞](…)`；夾名 `夾[1]` → `夾\[1\]` |
+| 24 S7 | 過 | 清冊 `read=too_large` → exit 3 `讀不到：檔案太大`；`fingerprint_max_bytes` 設 100，500 字元的 txt → `檔案太大`；3 MB 解壓後的單一 docx 成員（壓縮檔只有 3 KB）超過上限 → `檔案太大` |
+| 25 C4 | 過 | `card_source_big_chars` 1000、20 列每列 300 字的 xlsx：`--json` 的 `big` 為 true、人讀印 `大檔：…`、暫存檔尾保留「（只抽到工作表「總表」第 N 列）」；`carding.md` 有讀取標「部分」與沒讀到的說明 |
+| 26 C5 | 過 | 程式 `with FileLock(Path(vault) / INDEX_POSIX)` 包住；六個 `cards index` 平行跑，全 exit 0、總目錄完整（共 4 張卡） |
+| 27 C6 | 過 | 文字方塊（含 `mc:AlternateContent` 的 Choice／Fallback）的 `Inner` 只出現一次；`w:br` 換成換行（`A\nB`，不再黏成 `AB`）；無 mc 的巢狀段落也不重複 |
+| 28 C7 | 過 | 加密 PDF 在 `todo` 的 `kind` 是 `pdf`（只看副檔名）；PDF 被 `msvcrt.locking` 鎖住 `todo` 照常列、不報錯；`convert` 才查 `/Encrypt` → `讀不到：有密碼` |
+| 29 C9 | 過 | 清冊 `read=error` 的條目：`skipped.error` 為 1、不在 `new`，人讀第二行含「讀不到 1」 |
+| 30 C10 | 過 | xlsx 第一列就截斷：暫存檔有「（只抽到…）」、沒有「第 0 列」；`cards drop` 在清冊鎖被別人佔著時：卡還在、`inventory.json` 位元組沒變、輸出含「等不到鎖」、exit ≠ 0；放開鎖後 drop 正常 |
+| 31 設計缺口 | 過 | `missing`：resolve「先留著」後 `todo.missing` 不列，再 scan 兩次仍一條（done）；dismiss 的 `how` 是「客戶說不用管」，之後 scan 不重開、todo 不列；找回來再次不見 → 開新的一條 open。`unreadable`：dismiss 後 todo 不再把它列進 `new`；檔換了 → dismissed 也 `auto_done`「檔案換了，重新讀」、todo 列回 `new`。SKILL.md 已刪「`pending_id` 是 null 就先跑 scan」 |
+| 32 SKILL 四處＋小點 | 過 | SKILL.md：被打回「檔名該是／卡該放在」寫新路徑、舊檔交 sync；查無變動先跑 `cards todo --json`；分辨節有「來源根 vs 來源裡面」；manage SKILL.md 有對稱一句；「轉述第一行」改照 commands.md；carding.md 沒有「檔頭之後空一行」；commands.md 補了「狀態檔讀不到」「等不到鎖」「沒有寫入」；SKILL 本文 ≤120 行、兩份 reference ≤150 行；兩個 skill 的 description 與 `9d084f2` 相比沒動 |
+
+### 無退步
+
+驗收 4（含裁定 8 的四種拒絕、`..` 繞路、編號寫法、排除夾）、9、11、13 重跑全過。驗收 10：六種檔頭錯都 block、合法卡無輸出且總目錄更新；「AI 產出 照舊登記」我的腳本只跑 PostToolUse、沒先跑 PreToolUse 備份所以顯示不過，改用 `write_via_tools`（PreToolUse → 寫 → PostToolUse）重測：無輸出、清冊有 `file://AI 產出/新草稿.md`，過。
+
+### 路由 eval（B-036 做法、f67b538、llm-wiki@llm-wiki ✔ enabled、`query failed` 0）
+
+| 次 | skill | 該觸發 | 不該觸發 | 句子 |
+|---|---|---|---|---|
+| 第一輪 | ingest（e87c248） | 27/30 = 90% | 0/30 = 0% | 19/20 |
+| 第一輪 | manage | 0/30 = **0%（異常）** | 0/30 | 10/20 |
+| 重跑 1 | manage | 26/30 = 86.7% | 0/30 = 0% | 19/20 |
+| 重跑 1 | ingest | 29/30 = 96.7% | 0/30 = 0% | 20/20 |
+| 重跑 2 | manage | 25/30 = 83.3% | 0/30 = 0% | 18/20 |
+
+- **ingest：過。** 重跑 96.7% / 0%，只有「資料夾裡的東西都整理好了嗎？還有沒做的嗎」2/3。
+- **manage：沒到 90%。** 兩次重跑 86.7%、83.3%，不該觸發都是 0%；漏的是「我改名叫行政總務」（1～2/3）、「搬到王宅那夾」（0～1/3）、「不要讀…薪資」（2/3）。第一輪的 0/30 整輪沒觸發，應該是當時的呼叫環境問題（只花 3 分鐘，ingest 同一時段正常），不是描述的結果，我不把它當資料。
+- 這不能歸給這個分支：manage 的 `description` 與 `9d084f2`、`manage.json` 都沒動；eval 只載入被測 skill 的暫時指令檔，ingest 不在場，所以不是互搶；manage 的 10-16 基準是 30/30。差在環境（模型、已裝的其他 plugin 那邊的 skill 描述）或單純變異，我沒辦法在不動使用者設定下分離。「搬到…」「改名」這類句子本來就在 manage 與 ingest 的邊界（裁定 32 剛把來源裡的搬動劃給 ingest），若要保留 manage.json 這兩句為該觸發，要設計 session 判斷是否調 eval 句或描述；測試 session 不改。

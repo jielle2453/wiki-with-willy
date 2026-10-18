@@ -66,6 +66,8 @@
 | B-055 | 2026-10-19 | deferred | 低：`.system/temp` 是 junction 時，成功的 `kb convert` 仍把暫存檔寫進 junction 目標夾（裁定 16 的 realpath 兩邊都解到目標）；要先能寫 `.system/` 才做得到。lint 題加一項「`.system/` 底下不准有重解析點」 | ingest 製卡測試第二輪 |
 | B-056 | 2026-10-19 | deferred | 低：`versions revert` 退掉 `cards drop` 那回合後，同一張卡同時出現在 todo 的 orphans 與 missing（G4）；AI 看到開場「變動：修改 1」會自己猜成「合約有變動」（G7，R-06）；加資料夾後收尾句與 spec 字句不同（G6，以 manage SKILL 為準） | ingest 製卡確認 |
 | B-057 | 2026-10-19 | deferred | 低：`extract.render_pages` 沒有點陣圖尺寸上限，超大頁面（海報、圖紙）轉圖可能吃數 GB 記憶體；加頁面像素上限、超過降 scale 或標「部分」。另：`tests/fixtures/inventory` 的 `報價_v2.pdf` 是假 PDF，convert 會回「檔案壞了」，不能當可讀 PDF 用 | ingest 製卡測試第三輪 |
+| B-058 | 2026-10-19 | open | 開場有變動時「先答客戶這句再整理」靠開場指示行做不到（三種寫法都被模型跳過答案直接整理，確認第 4 步三次）；「不問直接整理」有效。候選：Stop hook 在清冊有待製卡且這回合沒整理時 `decision: block` 一次，模型答完被擋才整理（程式保證、不靠指示）；或 answer 題定回答格式後再看。answer 題接 | ingest 製卡確認 G9 |
+| B-059 | 2026-10-19 | open | `cards todo` 的 orphans 不分「條目 excluded（客戶說不讀）」與「編號不在清冊」，AI 把排除夾的孤兒卡說成「原檔不見了要確認是不是刪了」誤導客戶；todo 的 orphans 帶原因、SKILL 寫「排除夾的卡不跟客戶提」；manage 第二版清殘留時一起收。另：AI 對客戶用「您」（R-10 語氣，低） | ingest 製卡確認 G11 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

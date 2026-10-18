@@ -61,6 +61,8 @@
 | B-049 | 2026-10-17 | open | 守門擋了對含憑證檔的來源夾只看第一層的 `ls`（D-079 資料夾走訪 fail closed 的副作用）；要不要讓「列目錄不讀內容」放行 | 清冊確認 ⑤ |
 | B-050 | 2026-10-17 | open | spike：Obsidian 三頁的假設（D-105、D-106），在 `llm-wiki-test` 總資料夾放假卡、`.base`、Mermaid gantt、`.obsidian/app.json`、CSS 片段，桌面 Obsidian 開一次驗：Bases 現在有哪些視圖、`.base` 能不能嵌進 md、巢狀清單摺疊與連結、Mermaid gantt 點 bar 開不開卡、`file:///` 中文與空白路徑與網路磁碟怎麼寫、「偵測所有副檔名」點 docx 是不是直接用 Word 開、CSS 片段藏得掉 `檔案索引/` 而 Bases 與搜尋照常、`.obsidian/` 由骨架出貨後 Obsidian 改寫會不會衝突。等你說跑才跑 | 設計討論 2026-10-17 |
 | B-051 | 2026-10-18 | open | 卡寫錯名被 PostToolUse 打回時錯名檔已在 `檔案索引/`（Z5 指令寫擋、AI 刪不掉），重寫正名後同編號兩張都進 `broken`、條目再也不進 new／stale；stale 換標題同樣。要不要讓 `kb cards sync` 把檔名改成 `expected_name`、同編號多張時留檔頭過的那張，或給一個 `kb cards rename`；這版只在 carding.md 叮嚀寫前先對 | ingest 製卡實作 skill-reviewer |
+| B-052 | 2026-10-18 | open | 總目錄：PostToolUse 每寫一張合法卡就整份重渲染，卡幾千張時留意 10 秒逾時（改成只在 ingest 收尾或 `kb cards index` 渲染、或增量）；`inventory scan` 程式段的 pending 兩檔第一次建檔也記 modify（低） | ingest 製卡實作回報 |
+| B-053 | 2026-10-18 | deferred | ingest 製卡測試低項：convert 路徑沒經 `paths._text_forms`（Git Bash `/c/…`、`file:///C:/…`）；用路徑指到 missing 條目但檔已放回（未 scan）回「找不到原檔」；終端機沒回合時 sync／drop／pending 先開空回合；folders exclude／remove 後 open 的 missing_file 永遠 open、拆出新條目時舊 unreadable 不 auto_done、占位檔下載回來大小時間不變不算 modified（C8）；`output_log.py` `ensure_ascii` 與 session.py 不一致；`line_ingest_hint` 出錯 log 兩次 | ingest 製卡測試第一輪 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

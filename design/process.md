@@ -45,7 +45,7 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 
 1. **討論與決策**（設計）。每個抉擇當場寫進 `decisions.md`。你說「可以」才算定；只在對話裡講過的不算。
 2. **寫 spec**（設計）。一題的大小以實作 session 一次對話做得完為準。**驗收準則沒寫完，spec 不算完。** 你看過說可以，狀態改 `approved` 才交出去。
-3. **實作**（新 session，在 repo）。只給 spec。只改「可以動」列的檔。有疑義停下來回報，不自己決定。做完跑全部測試，commit 不 push。回報改了哪些檔、commit hash、測試結果、疑義。
+3. **實作**（新 session，在 repo）。只給 spec。只改「可以動」列的檔。有疑義停下來回報，不自己決定。做完 commit，**commit 之後**再跑全部測試看 exit code（`test_repo_hygiene` 只查已追蹤的檔，commit 前的綠不算，I-112），紅了修完再 commit。不 push。回報改了哪些檔、commit hash、測試結果、疑義。
 4. **測試**（新 session，在 repo）。只給 spec。逐條驗，每條寫過或不過附證據。不改程式。報告存 `reports/<題目>-測試.md`。
 5. **確認**（新 session，在測試 vault；也可以你親自做）。先還原來源。照「確認情境」操作，記實際輸出與落差。不改程式。報告存 `reports/<題目>-確認.md`。
 6. **發行**（設計）。測試與確認都過，**你說「發行」才做**：併回 main、bump、同 commit 寫 CHANGELOG（這時才填該段的 commit 欄，寫實作 commit 的 hash；實作時寫「發行時填」）、**bump 後重跑測試且以 exit code 為準**（v0.2.0 發行時 bump 讓寫死版號的測試紅了，指令鏈用 grep 看結果沒擋住，tag 已推出去才補修，I-105）、tag、push。

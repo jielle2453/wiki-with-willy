@@ -208,3 +208,12 @@
 - **PNG 寫入路徑**：`convert._convert_pdf` 先呼叫 `_temp_target`（裁定 16 的 `_temp_name` 驗編號、否則 12 碼指紋；寫前比對父夾 realpath）再 `render_pages(…, d, temp.stem, …)`，PNG 路徑是 `d / f"{stem}_p{n}.png"`，stem 是驗過的，頁碼是整數，`.tmp` 加 `os.replace` 原子寫。路徑檢查沒有被繞過。junction 的既有限制（B-055）對 PNG 同樣成立，沒有更糟。
 - **假模組**：只放在被測子程序的 `PYTHONPATH`；`kb.py` 的 `sys.path[0]` 是 `scripts/`，不是 cwd，所以知識庫夾或來源夾放一個叫 `pypdfium2` 的東西不會被 import（我沒有另外造這個案例，看程式與 Python 行為）。`_pdfium()` 只認 `ImportError`。
 - **大頁面**：4000×4000 pt 的單頁 PDF，scale 2 轉 8000×8000 px，0.6 秒完成、PNG 202 KB（白頁壓縮得很小）；再大的頁面（pdfium 上限 14400 pt）或滿是內容的大頁，點陣圖在記憶體裡可到數 GB，`render_pages` 沒有尺寸上限，也沒接 `MemoryError` 之外的保護。這次沒測，列為低風險觀察，建議跟 S7 一樣以 `pdf_render_scale` 或像素上限處理。
+
+## 第四輪（2026-10-19，對 6b30ee9：裁定 38、39）
+
+**過。**
+
+- `hooks/session.py` 的 `INGEST_HINT` 一字不差是「有變動：先回答客戶這句，接著不用問、直接照 ingest skill 整理；只有超過 {n} 份才問。」；開場實跑（fixture 複本加一個新檔）印出 `【wiki-with-willy】kb 指令：…`、`變動：新增 1、修改 0、不見 0`、`有變動：先回答客戶這句，接著不用問、直接照 ingest skill 整理；只有超過 5 份才問。`，第三行與預期字串逐字相等，n = 5；這段 3 行 160 字，守 8 行 400 字。
+- `skills/ingest/SKILL.md` 第 5 步有「≤ 上限就不問客戶要不要、不說「要不要接著整理」，直接做完在回答末尾一句告知」與「一份抓 10 秒」；舊的「一份抓 1 分鐘」已不在。
+- `test_hooks_session`、`test_budget`、`test_skill_ingest` 綠；全部測試 `python -m unittest discover tests` exit 0。
+- 範圍：`git show --stat 6b30ee9` 只動 `hooks/session.py`、`skills/ingest/SKILL.md`、`tests/test_hooks_session.py` 三個檔（`git diff 07eab14 6b30ee9` 另外出現 `design/backlog.md` 與 spec，是合併 main 帶進來的設計文件，不是這個 commit 的改動）。

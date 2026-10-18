@@ -21,7 +21,7 @@ class ParseFront(unittest.TestCase):
         self.assertEqual(a["原檔"], ["file://客戶案件/信義王/報價_v2.pdf", "file://報價與合約/信義王/報價_v2.pdf"])
         self.assertEqual(a["敏感資料種類"], [])
         self.assertEqual(a["範本版本"], "1")
-        self.assertTrue(a["開原檔"].startswith("file:///C:/"))
+        self.assertTrue(a["開原檔"].startswith("file:///D:/"))
         b = cards.parse_front((FIX / "大安陳進度表-5d0e2a77.md").read_text(encoding="utf-8"))
         self.assertEqual(b["出處"], "AI 產出")
         self.assertEqual(b["原檔"], ["file://AI 產出/大安陳進度表.xlsx"])

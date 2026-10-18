@@ -13,7 +13,7 @@
 製卡日期: 2026-10-17
 範本版本: 1
 敏感資料種類: []
-開原檔: file:///C:/Users/Jie/Desktop/llm-wiki-test/%E6%9D%A5%E6%BA%90/%E5%AE%A2%E6%88%B6%E6%A1%88%E4%BB%B6/…/%E5%A0%B1%E5%83%B9_v3.pdf
+開原檔: file:///D:/%E6%9D%A5%E6%BA%90/%E5%AE%A2%E6%88%B6%E6%A1%88%E4%BB%B6/%E4%BF%A1%E7%BE%A9%E7%8E%8B/%E5%A0%B1%E5%83%B9_v3.pdf
 ---
 # <標題>
 

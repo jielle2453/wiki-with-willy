@@ -62,6 +62,8 @@
 | B-050 | 2026-10-17 | open | spike：Obsidian 三頁的假設（D-105、D-106），在 `llm-wiki-test` 總資料夾放假卡、`.base`、Mermaid gantt、`.obsidian/app.json`、CSS 片段，桌面 Obsidian 開一次驗：Bases 現在有哪些視圖、`.base` 能不能嵌進 md、巢狀清單摺疊與連結、Mermaid gantt 點 bar 開不開卡、`file:///` 中文與空白路徑與網路磁碟怎麼寫、「偵測所有副檔名」點 docx 是不是直接用 Word 開、CSS 片段藏得掉 `檔案索引/` 而 Bases 與搜尋照常、`.obsidian/` 由骨架出貨後 Obsidian 改寫會不會衝突。等你說跑才跑 | 設計討論 2026-10-17 |
 | B-052 | 2026-10-18 | open | 總目錄：PostToolUse 每寫一張合法卡就整份重渲染，卡幾千張時留意 10 秒逾時（改成只在 ingest 收尾或 `kb cards index` 渲染、或增量）；`inventory scan` 程式段的 pending 兩檔第一次建檔也記 modify（低） | ingest 製卡實作回報 |
 | B-053 | 2026-10-18 | deferred | ingest 製卡測試低項：convert 路徑沒經 `paths._text_forms`（Git Bash `/c/…`、`file:///C:/…`）；用路徑指到 missing 條目但檔已放回（未 scan）回「找不到原檔」；終端機沒回合時 sync／drop／pending 先開空回合；folders exclude／remove 後 open 的 missing_file 永遠 open、拆出新條目時舊 unreadable 不 auto_done、占位檔下載回來大小時間不變不算 modified（C8）；`output_log.py` `ensure_ascii` 與 session.py 不一致；`line_ingest_hint` 出錯 log 兩次 | ingest 製卡測試第一輪 |
+| B-054 | 2026-10-19 | open | manage 路由 eval 從 10-16 的 30/30 掉到 26/30、25/30（描述與句子沒動，ingest 不在場），第一輪 0/30 是環境異常；接受發行（ingest 裁定 35）。下次動 manage 描述、或 skill 數量變時，跑三輪取中位數，仍低於 90% 才調描述；順便查 run_eval 整輪 0 觸發的環境原因 | ingest 製卡測試第二輪 |
+| B-055 | 2026-10-19 | deferred | 低：`.system/temp` 是 junction 時，成功的 `kb convert` 仍把暫存檔寫進 junction 目標夾（裁定 16 的 realpath 兩邊都解到目標）；要先能寫 `.system/` 才做得到。lint 題加一項「`.system/` 底下不准有重解析點」 | ingest 製卡測試第二輪 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

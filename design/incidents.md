@@ -343,6 +343,12 @@
 - 合併版會不會踩：ingest 製卡題裁定 8 處理：任何會把原檔內容帶給 AI 的 kb 子命令（現在是 `convert`，之後 `search`、`office`、build 的抽樣）在開檔前用守門同一組函式（`guard.classify`、`credentials.match_segment`、清冊 `status`）自己判一次，排除、憑證、不在登記來源、不是原檔區都拒，不寫待處理。原則：**守門放行 kb.py 等於信任 kb.py 自己守**，所以每個讀原檔的子命令都是守門的一部分，spec 要寫它的拒絕表。測試：排除夾、不在清冊的憑證檔名、總資料夾外、`.system/` 四種路徑 convert 都 exit 3 且不留暫存檔。
 - 客戶會不會遇到：防住了就不會；漏掉的話是「不想讓 AI 看到」這個承諾破功，跟 I-025、I-032 同一類。
 
+### I-112 commit 前跑的測試是綠的，commit 後才紅：hygiene 只查已追蹤的檔
+- 來源：本 repo ingest 製卡實作，2026-10-18。實測。
+- 發生過什麼：實作 session 兩次都看了 exit code 是 0，但都在 commit 之前跑；`test_repo_hygiene` 用 `git ls-files` 決定查哪些檔，新建的 `templates/card.md` 與 fixture 卡還沒被追蹤就沒被查，裡面的 `C:/Users` 範例路徑（spec 範例寫錯）漏過。設計 session 在 commit 後重跑才紅兩條。
+- 合併版會不會踩：流程改：實作 session 的「全綠」要在 `git add` 之後或 commit 之後跑（process 三的步驟 3 補一句）；spec 的範例值不能帶開發機路徑。跟 I-105（發行指令鏈不看 exit code）同一類：驗證的狀態要跟交出去的狀態是同一個。
+- 客戶會不會遇到：不會，是 repo 自己的流程。
+
 ## 四、狀態檔與對帳
 
 ### I-044 絕對路徑寫進狀態檔與卡片，換電腦就全部失效

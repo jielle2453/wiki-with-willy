@@ -169,3 +169,42 @@
 - **ingest：過。** 重跑 96.7% / 0%，只有「資料夾裡的東西都整理好了嗎？還有沒做的嗎」2/3。
 - **manage：沒到 90%。** 兩次重跑 86.7%、83.3%，不該觸發都是 0%；漏的是「我改名叫行政總務」（1～2/3）、「搬到王宅那夾」（0～1/3）、「不要讀…薪資」（2/3）。第一輪的 0/30 整輪沒觸發，應該是當時的呼叫環境問題（只花 3 分鐘，ingest 同一時段正常），不是描述的結果，我不把它當資料。
 - 這不能歸給這個分支：manage 的 `description` 與 `9d084f2`、`manage.json` 都沒動；eval 只載入被測 skill 的暫時指令檔，ingest 不在場，所以不是互搶；manage 的 10-16 基準是 30/30。差在環境（模型、已裝的其他 plugin 那邊的 skill 描述）或單純變異，我沒辦法在不動使用者設定下分離。「搬到…」「改名」這類句子本來就在 manage 與 ingest 的邊界（裁定 32 剛把來源裡的搬動劃給 ingest），若要保留 manage.json 這兩句為該觸發，要設計 session 判斷是否調 eval 句或描述；測試 session 不改。
+
+## 第三輪（2026-10-19，對 07eab14：PDF 改走選配 pypdfium2，裁定 36、37）
+
+### 結論
+
+- 全部測試 `python -m unittest discover tests`：**exit 0**（這台有 pypdfium2，PDF 測試真的跑）。
+- 裁定 36 的每個子項：**全過**，各有一個實跑證據。
+- 無退步：驗收 4 重跑，裁定 8 的四種拒絕與三種寫法全過；有 5 項舊檢查不過，原因都是裁定 36 本身改了行為（見下），不是退步。
+- security：PNG 仍受裁定 16 的父夾檢查；假模組只活在該子程序的 `PYTHONPATH`，不影響別的。沒有新問題；一個既有的 junction 限制（B-055）同樣適用 PNG。
+
+### 裁定 36 子項
+
+做法：fixture `tests/fixtures/pdf/` 兩份（`文字兩頁.pdf`、`只有圖.pdf`）加我自己組的 25 頁空白 PDF、4000×4000 pt 大頁 PDF、`/Encrypt` 假 PDF，複製進 `tests/fixtures/inventory` 複本的 raw 後 scan，用 `kb.py` 子程序跑。「沒裝」用 scratchpad 的假套件夾（`pypdfium2/__init__.py` 內容 `raise ImportError`）放進子程序的 `PYTHONPATH`。
+
+| 子項 | 結果 | 實跑證據 |
+|---|---|---|
+| 文字層抽字、頁碼註解 | 過 | `文字兩頁.pdf` 的暫存檔：`<!-- 第 1 頁 -->`、兩行英文內文（`Quote v2 total 1280000 NTD`、`Delivery 2026-11-30`）、`<!-- 第 2 頁 -->`；第二行印 `格式：pdf；2 頁；掃描頁 1（已轉圖）`；暫存檔 UTF-8 |
+| 掃描頁轉 PNG | 過 | 第 2 頁轉成 `f-<編號>_p2.png`（stem 是驗過的編號，照裁定 16）；檔案是有效 PNG（簽名、IHDR 1224×1584、8 位元 RGB = 612×792 pt × scale 2）；我用 Read 看那張圖：白底、左上角「p2」，內容對。`只有圖.pdf` 暫存檔只有 `<!-- 第 1 頁 -->`（整份掃描頁仍寫暫存），圖一行 `圖：…_p1.png（第 1 頁）`；`--json` 帶 `scanned_pages: [2]`、`images: […]`、`pages: 2`、`kind: pdf`；掃描頁 0 的檔第二行沒有「掃描頁 0」 |
+| 上限 `pdf_read_pages_max` | 過 | 25 頁全空白：預設只轉 20 張（`_p1`～`_p20`）並印 `掃描頁超過 20 頁：只轉前 20 頁，卡的讀取標「部分」`；`.system/config.json` 設 `pdf_read_pages_max: 3`、`pdf_render_scale: 1` 後：只轉 3 張、`掃描頁超過 3 頁…`、`--json` 的 `images` 3 筆、`scanned_pages` 仍列全部 25 頁、PNG 尺寸 200×200（scale 1，頁面 200 pt）→ 兩個 config 鍵都有效；`pdf_page_min_chars` 隨預設值 10 生效（兩頁 PDF 的文字頁 76 字、空白頁判為掃描頁） |
+| 加密 PDF「有密碼」 | 過 | `/Encrypt` 假 PDF：exit 3、`讀不到：有密碼`、第二行 `已記進待處理（p-…）`、`--json` 的 `unreadable: 有密碼`。（pypdfium2 自己丟的「password」分支我造不出真加密 PDF，沒走到；實際上前置的 `/Encrypt` 掃描會先攔） |
+| 沒裝 → exit 3、待處理、新問法 | 過 | 假模組下 convert 文字兩頁與只有圖：exit 3、第一行 `讀不到：還沒裝 PDF 元件（pip install pypdfium2）`、第二行 `已記進待處理（p-…）`、`.system/temp/` 沒新檔；`pending.json` 兩條 `unreadable`，reason 同句；`系統/待處理.md`「讀不到（1）」那條末句是新問法「請服務人員在這台電腦跑 pip install pypdfium2。」；假模組下 `cards todo`：`unreadable` 兩份 PDF、不在 `new`，第一行「讀不到 2」 |
+| 裝回後 todo 自動 done、印那一行、回到 new | 過 | 一份 dismissed、一份 open 的狀況下，改用真環境跑 `cards todo`：最前面印 `PDF 元件裝好了，2 份 PDF 回到待製卡`；兩條待處理都變 done、`how` 是「PDF 元件裝好了」；該兩檔回到 `new`（`待製卡 14 份`）；`系統/待處理.md` 變「目前沒有等你決定的事」；那個回合的 manifest 先備了 `.system/pending.json` 與 `系統/待處理.md`；再跑一次 todo 不再印那一行 |
+| config 兩鍵與 `_why_` | 過 | `defaults.json` 有 `pdf_page_min_chars` 10、`pdf_render_scale` 2，各帶 `_why_`；`_why_pdf_read_pages_max` 改為「PDF 掃描頁轉圖最多幾頁…」；上面兩項實測都由 config 覆寫生效 |
+| README／carding／commands／SKILL 第 6 步 | 過 | README：PDF 要 `pip install pypdfium2`（選配，沒裝會列在待處理）、有文字的頁由程式抽字、掃描頁轉圖；carding.md：PDF 讀暫存檔、頁碼照 `<!-- 第 N 頁 -->`、圖行用 Read 看 PNG、「讀不到：還沒裝 PDF 元件」的回答說法、掃描頁超過上限讀取標「部分」；commands.md：PDF 輸出格式、`--json` 的 `scanned_pages`／`images`、還沒裝那列的轉述、todo 的「PDF 元件裝好了」那行；SKILL.md 第 6 步改成「暫存檔用 Read 分段讀（PDF 也是暫存檔，掃描頁另外印「圖：…」，用 Read 看那些 PNG）；圖片檔用 Read 看原檔」，跟程式輸出一致；`test_skill_ingest`、`test_budget` 綠（含在全部測試裡）；`CLAUDE.md` 地圖 `extract.py`、`convert.py`、`defaults.json` 三列都補了 PDF |
+| fixture 無開發機路徑、無 CRLF | 過 | `tests/fixtures/pdf/` 兩份各 1074、896 位元組（< 20 KB），沒有 `\r\n`，沒有 `Users`、`Desktop`、`C:`、使用者名稱字串 |
+
+### 無退步：驗收 4 重跑
+
+- 過：三種目標寫法（編號、uri、路徑）第一行 `暫存檔：…`、UTF-8、LF、無內容；x.doc exit 3 與第二行；裁定 8 全部（排除夾、編號、`..`、不在清冊像金鑰、總資料夾外、`.system/inventory.json`、四種都沒新暫存與待處理）。網銀密碼.txt 本身仍是 exit 3、第一行 `讀不到：檔名像密碼或金鑰，預設不讀`。
+- 5 項舊檢查不過，**原因是裁定 36 改了行為，不是退步**：
+  - 「PDF 印 `PDF：…用 Read 讀原檔：<路徑>`」：該行已被裁定 36 取代。
+  - 「`pending.json` 沒有新條目／只有一條 unreadable／md 讀不到（1）／再跑不多一條」四項：`tests/fixtures/inventory` 的 `報價_v2.pdf` 是假 PDF（`%PDF-1.4\n\0\1fake quote v2…`，打不開），舊版只數頁數不開檔，現在 pypdfium2 會真的開，得到 `讀不到：檔案壞了：PDF 打不開` 並寫一條待處理，把我腳本裡的條數算亂。pending 裡那一條確實是 `報價_v2.pdf`。這是合理的新行為（真壞 PDF 就該進待處理）。
+  - 影響到確認階段的只有：fixture 裡的 PDF 不再能當「可讀 PDF」用。
+
+### security
+
+- **PNG 寫入路徑**：`convert._convert_pdf` 先呼叫 `_temp_target`（裁定 16 的 `_temp_name` 驗編號、否則 12 碼指紋；寫前比對父夾 realpath）再 `render_pages(…, d, temp.stem, …)`，PNG 路徑是 `d / f"{stem}_p{n}.png"`，stem 是驗過的，頁碼是整數，`.tmp` 加 `os.replace` 原子寫。路徑檢查沒有被繞過。junction 的既有限制（B-055）對 PNG 同樣成立，沒有更糟。
+- **假模組**：只放在被測子程序的 `PYTHONPATH`；`kb.py` 的 `sys.path[0]` 是 `scripts/`，不是 cwd，所以知識庫夾或來源夾放一個叫 `pypdfium2` 的東西不會被 import（我沒有另外造這個案例，看程式與 Python 行為）。`_pdfium()` 只認 `ImportError`。
+- **大頁面**：4000×4000 pt 的單頁 PDF，scale 2 轉 8000×8000 px，0.6 秒完成、PNG 202 KB（白頁壓縮得很小）；再大的頁面（pdfium 上限 14400 pt）或滿是內容的大頁，點陣圖在記憶體裡可到數 GB，`render_pages` 沒有尺寸上限，也沒接 `MemoryError` 之外的保護。這次沒測，列為低風險觀察，建議跟 S7 一樣以 `pdf_render_scale` 或像素上限處理。

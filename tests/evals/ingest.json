@@ -1,0 +1,22 @@
+[
+  {"query": "我昨天把報價_v3.pdf 丟進信義王那個資料夾了，你幫我整理一下", "should_trigger": true},
+  {"query": "有新東西嗎？我早上在客戶案件裡放了幾個檔", "should_trigger": true},
+  {"query": "我改了大安陳的進度表，第三期改成 11 月底", "should_trigger": true},
+  {"query": "內湖李的估價單我搬到信義王那夾了", "should_trigger": true},
+  {"query": "會議紀錄_1 那份我刪了，不要了", "should_trigger": true},
+  {"query": "剛剛那個資料夾加好了，好，現在整理成卡吧", "should_trigger": true},
+  {"query": "這禮拜放了一堆報價單跟合約進去，幫我全部整理", "should_trigger": true},
+  {"query": "大安陳的合約我重新存了一版，你看一下有沒有跟上", "should_trigger": true},
+  {"query": "資料夾裡的東西都整理好了嗎？還有沒做的嗎", "should_trigger": true},
+  {"query": "我把舊的型錄換成新的了，同一個檔名", "should_trigger": true},
+  {"query": "把 D:\\報價 也加進來，裡面是去年到現在的報價單", "should_trigger": false},
+  {"query": "上次那份報價在哪？信義王的第二版", "should_trigger": false},
+  {"query": "以後報價一律附日期，記一下", "should_trigger": false},
+  {"query": "把信義王的報價整理後做成 Word 給我，我要寄給業主", "should_trigger": false},
+  {"query": "不要讀公司行政裡面的薪資資料夾", "should_trigger": false},
+  {"query": "大安陳的進度表現在到哪一期了", "should_trigger": false},
+  {"query": "這是合約內容，存起來：甲方王大明，乙方林小姐設計工作室，總價一百二十八萬", "should_trigger": false},
+  {"query": "幫我把信義王報價 v2 的付款條件改成 30 天", "should_trigger": false},
+  {"query": "退回上一版，剛剛那個不要", "should_trigger": false},
+  {"query": "最近改了什麼？我想看這週做了哪些事", "should_trigger": false}
+]

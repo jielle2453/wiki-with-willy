@@ -1,4 +1,5 @@
-"""hooks/output_log.py 黑箱：PostToolUse 寫入 Z3 後登記成品；Z1 不登記；檔不存在不登記；壞 JSON exit 0。"""
+"""hooks/output_log.py 黑箱：PostToolUse 寫入 Z3 後登記成品；Z1 不登記；檔不存在不登記；壞 JSON exit 0。
+檔案索引（Z5）的卡驗檔頭（D-104，ingest 製卡第 6 點、驗收 10）：不過印 decision block、exit 0；過了不印、重渲染總目錄。"""
 import json
 import os
 import shutil
@@ -7,8 +8,10 @@ import sys
 import unittest
 from pathlib import Path
 
+from tests import _cards
 from tests._guard_fixture import ROOT, make_vault
-from kb._lib import inventory, turn  # noqa: E402
+from kb._lib import cards, inventory, turn  # noqa: E402
+from kb._lib import sources as sources_lib  # noqa: E402
 
 HOOK = ROOT / "hooks" / "output_log.py"
 GUARD = ROOT / "hooks" / "guard.py"
@@ -144,6 +147,84 @@ class OutputLog(unittest.TestCase):
         r = run_hook("not json")
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout, "")
+
+
+class CardCheck(unittest.TestCase):
+    """Z5：照 header 寫卡，各種錯各一次。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+        self.t = turn.start(self.V, SID, "整理")
+        fid = _cards.entry_of(self.V, _cards.MEETING)["id"]
+        self.item = next(i for i in cards.todo(self.V, sources_lib.load(self.V))["new"] if i["id"] == fid)
+        self.path = _cards.card_path(self.V, self.item, "大安陳會議一")
+        self.text = _cards.card_text(self.item, "大安陳會議一")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write(self, text, path=None):
+        path = path or self.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return write_via_tools(self.V, path, text)
+
+    def blocked(self, r, want):
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (line,) = r.stdout.splitlines()
+        out = json.loads(line)
+        self.assertEqual(out["decision"], "block")
+        self.assertTrue(out["reason"].startswith("檔頭有錯："), out["reason"])
+        self.assertTrue(out["reason"].endswith("。改好再寫一次。"), out["reason"])
+        self.assertIn(want, out["reason"])
+
+    def test_good_card_silent_and_index_rendered(self):
+        r = self.write(self.text)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        index = (self.V / "總目錄.md").read_text(encoding="utf-8")
+        self.assertIn("[大安陳會議一](檔案索引/客戶案件/大安陳/大安陳會議一-", index)
+        self.assertIn("總目錄.md", {e["path"] for e in turn.entries(self.V, self.t["turn"])})
+
+    def test_errors(self):
+        front = cards.parse_front(self.text)
+        fp = front["指紋"]
+        bad_fp = self.text.replace(fp, ("0" if fp[0] != "0" else "1") + fp[1:]).replace(front["內容指紋"], "0" * 64)
+        cases = [
+            (bad_fp, None, "指紋不是現行的"),
+            (self.text, self.path.with_name("大安陳會議一-00000000.md"), "檔名該是"),
+            (self.text, self.V / "檔案索引" / "客戶案件" / "信義王" / self.path.name, "卡該放在"),
+            (self.text.replace(front["開原檔"], front["開原檔"][:-1] + "y"), None, "開原檔那行"),
+            (self.text.replace("標題: 大安陳會議一", "標題: （填）"), None, "標題"),
+            (self.text.replace("---\n", "", 1), None, "檔頭解析不了"),
+        ]
+        for text, path, want in cases:
+            with self.subTest(want=want):
+                self.blocked(self.write(text, path), want)
+
+    def test_list_value_blocked_not_silently_accepted(self):
+        """測試後修正裁定 21（S4）：編號寫成清單時以前丟 TypeError 被吞掉、不擋；現在要 block。"""
+        cid = self.item["id"]
+        r = self.write(self.text.replace(f"編號: {cid}", f"編號: [{cid}]"))
+        self.blocked(r, "檔頭「編號」的格式不對")
+        self.assertFalse((self.V / ".system" / "hook-errors.log").exists())
+
+    def test_edit_tool_checked_too(self):
+        self.write(self.text)
+        self.path.write_text(self.text.replace("出處: 客戶原檔", "出處: 對話收件"), encoding="utf-8")
+        r = run_hook(post_payload(self.V, "Edit", self.path))
+        self.blocked(r, "出處該是 客戶原檔")
+
+    def test_non_md_in_index_ignored(self):
+        p = self.V / "檔案索引" / "x.txt"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        r = self.write("x", p)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_output_zone_still_registers(self):
+        out = self.V / "AI 產出" / "草稿.md"
+        r = write_via_tools(self.V, out, "草稿\n")
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        uris = [l["uri"] for e in inventory.load(self.V)["entries"] for l in e["locations"]]
+        self.assertIn("file://AI 產出/草稿.md", uris)
 
 
 if __name__ == "__main__":

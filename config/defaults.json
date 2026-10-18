@@ -16,5 +16,19 @@
   "changes_quick_hash_budget_bytes": 209715200,
   "_why_changes_quick_hash_budget_bytes": "快速比對（開場）一次最多讀多少位元組算指紋，超過的當修改或新增（I-081）",
   "changes_quick_seconds": 5,
-  "_why_changes_quick_seconds": "快速比對走訪的時間上限，超過停下、開場改印還沒比完；SessionStart hook 逾時 10 秒，留一半給讀 core.md 與其他行"
+  "_why_changes_quick_seconds": "快速比對走訪的時間上限，超過停下、開場改印還沒比完；SessionStart hook 逾時 10 秒，留一半給讀 core.md 與其他行",
+  "ingest_auto_max": 5,
+  "_why_ingest_auto_max": "開場有變動時 AI 自己整理成卡的份數上限，超過先問客戶（D-100）；開場指示行與 kb cards todo 的 --limit 預設都讀它",
+  "pdf_read_pages_max": 20,
+  "_why_pdf_read_pages_max": "PDF 掃描頁轉圖最多幾頁，超過只轉前面、卡的讀取標「部分」（I-029、裁定 36）",
+  "pdf_page_min_chars": 10,
+  "_why_pdf_page_min_chars": "PDF 一頁的文字層去空白後少於這麼多字就當掃描頁、轉圖給製卡者看（裁定 36）",
+  "pdf_render_scale": 2,
+  "_why_pdf_render_scale": "掃描頁轉 PNG 的放大倍數，2 約 144 dpi：字看得清、檔不會太大（裁定 36）",
+  "card_source_big_chars": 60000,
+  "_why_card_source_big_chars": "kb convert 抽出的文字超過就提示大檔、照 carding.md 摘要加定位；xlsx 抽到這裡就停（照舊 plugin BIG_CHARS）",
+  "card_title_max_chars": 40,
+  "_why_card_title_max_chars": "卡標題與檔名的標題段最多幾字（D-029、B-040），檔名加短編號後仍在 Windows 路徑長度內",
+  "temp_keep_hours": 24,
+  "_why_temp_keep_hours": "kb convert 寫在 .system/temp/ 的暫存檔保留幾小時，每次 convert 先清掉更舊的；再長的體積由 lint 題管（D-018）"
 }

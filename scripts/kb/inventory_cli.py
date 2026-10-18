@@ -18,6 +18,12 @@ from kb._lib import sources as sources_lib
 CLI_LOCK_TIMEOUT = 30
 NOT_IN_VAULT = "這裡不是知識庫；到知識庫裡執行，或加 --vault"
 CHANGED = [{"path": inventory.INVENTORY_POSIX, "action": "modify"}]
+PENDING_CHANGED = [{"path": ".system/pending.json", "action": "modify"}, {"path": "系統/待處理.md", "action": "modify"}]
+
+
+def changed_of(touched_pending):
+    """程式段的 changed：清冊一定有；這次有建或關待處理條目才加 pending.json 與 待處理.md（ingest 製卡第 5 點）。"""
+    return CHANGED + (PENDING_CHANGED if touched_pending else [])
 
 
 def add_arguments(sub):
@@ -82,11 +88,11 @@ def _scan(vault, args, as_json):
         only = [wanted]
     conversation = journal_cli.in_conversation(vault)
     report = inventory.scan(vault, sources, only_roots=only)
-    inventory.apply(vault, report, turn.current(vault)["turn"])
+    touched = inventory.apply(vault, report, turn.current(vault)["turn"])
     env.clear_missing(vault, found_source_ids(sources, report, only))
     note = (f"清冊掃描：新增 {len(report['added'])}、修改 {len(report['modified'])}、不見 {len(report['missing'])}"
             f"（總計 {report['total']} 份）")
-    journal_cli.record_program_or_warn(vault, note, CHANGED, "inventory scan", conversation)
+    journal_cli.record_program_or_warn(vault, note, changed_of(touched), "inventory scan", conversation)
     if as_json:
         print(json.dumps(inventory.public(report), ensure_ascii=False))
         return 0

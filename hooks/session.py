@@ -40,6 +40,7 @@ CHANGES_LINE = "變動：新增 {added}、修改 {modified}、不見 {missing}"
 CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動」我再比"
 MISSING_SOURCES_LINE = "這台電腦找不到來源{names}，其他照常；搬過的話跟我說。"
 MISSING_SOURCES_SHOWN = 3
+INGEST_HINT = "有變動：先把客戶這句的答案完整說出來（不能只說「我先查」），同一則回答接著不用問、直接照 ingest skill 整理，末尾一句告知；只有超過 {n} 份才問。"  # 裁定 38、42
 _SCAN = {}  # vault → (sources, report) 或 None（scan 出錯）；兩行共用一次快速 scan（審閱裁定 9）
 
 
@@ -69,6 +70,15 @@ def line_changes(vault):
         return CHANGES_INCOMPLETE
     counts = {k: len(report[k]) for k in ("added", "modified", "missing")}
     return CHANGES_LINE.format(**counts) if any(counts.values()) else None
+
+
+def line_ingest_hint(vault):
+    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先答再照 ingest skill 整理；n 讀 ingest_auto_max。"""
+    if line_changes(vault) is None:
+        return None
+    from kb._lib import config
+
+    return INGEST_HINT.format(n=config.get(vault, "ingest_auto_max"))
 
 
 def line_missing_sources(vault):
@@ -115,7 +125,7 @@ def line_compact(vault, source):
 def status_lines(vault, source):
     """固定順序；每一行各自 try：出錯那行回 None、寫 hook-errors.log，其他行照印（I-046）。kb 行不包，它出錯走整段出錯。"""
     out = [line_kb(vault)]
-    for fn in (line_version, line_changes, line_missing_sources, line_agenda, line_backup, line_health,
+    for fn in (line_version, line_changes, line_ingest_hint, line_missing_sources, line_agenda, line_backup, line_health,
                lambda v: line_compact(v, source)):
         try:
             line = fn(vault)

@@ -15,6 +15,9 @@ COMMANDS = {
     "journal": ("kb.journal_cli", "工作日誌：recent 印最近幾段，render 重寫月檔"),
     "inventory": ("kb.inventory_cli", "清冊：scan 掃描來源與總資料夾，把變動套進清冊"),
     "changes": ("kb.changes", "變動：跟清冊上次掃描比，列新增、修改、搬動、不見；只看不改"),
+    "convert": ("kb.convert", "抽字：把一份原檔轉成純文字暫存檔給製卡者讀；PDF、圖片指給 Read"),
+    "cards": ("kb.cards", "檔案卡：todo 列該做的卡，sync 跟著原檔搬卡，drop 拿掉原檔已刪的卡，index 重寫總目錄"),
+    "pending": ("kb.pending_cli", "待處理：list 列等你決定的事，resolve 記下怎麼處理，dismiss 記成不用管"),
 }
 
 

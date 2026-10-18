@@ -98,7 +98,7 @@ llm-wiki-j/
 |---|---|
 | 目標環境 | 客戶用 Claude Code 桌面版，Windows；plugin 由本機 marketplace 載入（做法在 B-008）。開發、實作、測試用 CLI 或 VS Code；確認 session 一律用桌面版 |
 | Python | 3.10 以上 |
-| 相依 | 核心只用標準函式庫。`markitdown`、`pdfplumber` 選配，缺了降級並明講 |
+| 相依 | 核心只用標準函式庫。唯一選配是 `pypdfium2`（PDF 抽文字與掃描頁轉圖，D-099 修訂），缺了降級並明講；不用 markitdown、pdfplumber、poppler |
 | 編碼 | 我們自己的檔（JSON、md、設定、腳本輸出）一律 UTF-8，讀寫帶 `encoding=`；腳本開頭 `sys.stdout.reconfigure(encoding="utf-8")`。客戶原檔由 `kb convert` 偵測：整份試 UTF-8，再試 cp950，都不行標「讀不到：編碼」明講，不靜默取代字元（I-003）。另存的純文字一律 UTF-8，CSV 帶 BOM 給 Excel |
 | 平台 | Windows 優先；`pathlib`；長路徑與 Git Bash 路徑都要認 |
 | 腳本入口 | 唯一入口 `scripts/kb.py <子命令>`，呼叫寫 `python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令>`。統一 `--json`、`--help`。不用 `python -m`。模型用 Bash 工具呼叫、一次一個指令、路徑加引號、不 cd |

@@ -30,7 +30,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 2. 跑 `changes`；最後一行印了「要套用請跑 kb inventory scan。」才跑 `inventory scan` 把變動記進清冊。從 manage 加完資料夾交棒過來（加資料夾時已入冊）、或客戶明說「整理」但沒變動時，直接跑第 3 步。
 3. 跑 `cards todo --json`，看 `new`、`stale`、`moved`、`duplicates`、`missing`、`unreadable`、`broken`。
 4. `moved` 或 `duplicates` 有項目就先跑 `cards sync`（卡跟著原檔搬、檔名不變；同編號多張留正本），跑完再跑一次 `cards todo --json`，照新的清單做下面幾步（搬了又改過的檔，搬完才會列進 `stale`）。
-5. 待製卡份數直接看 `--json` 的 `new` 加 `stale` 幾項，≤ 上限就直接做（上限是開場那行寫的「超過 N 份」，沒有那行用 5）；超過先問「有 N 份要整理，現在做嗎？大約 N 分鐘」（一份抓 1 分鐘）。客戶說好就全部做、每 5 份講一句進度；說之後再說，這個對話不再問。
+5. 待製卡份數直接看 `--json` 的 `new` 加 `stale` 幾項，≤ 上限就不問客戶要不要、不說「要不要接著整理」，直接做完在回答末尾一句告知（上限是開場那行寫的「超過 N 份」，沒有那行用 5）；超過先問「有 N 份要整理，現在做嗎？大約 N 分鐘」（一份抓 10 秒，不到 1 分鐘說「一兩分鐘」）。客戶說好就全部做、每 5 份講一句進度；說之後再說，這個對話不再問。
 6. 每一份照 `references/carding.md` 做：
    - `convert <編號>`；
    - 讀它指的東西：暫存檔用 Read 分段讀（PDF 也是暫存檔，掃描頁另外印「圖：…」，用 Read 看那些 PNG）；圖片檔用 Read 看原檔；

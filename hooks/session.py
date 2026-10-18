@@ -40,7 +40,7 @@ CHANGES_LINE = "變動：新增 {added}、修改 {modified}、不見 {missing}"
 CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動」我再比"
 MISSING_SOURCES_LINE = "這台電腦找不到來源{names}，其他照常；搬過的話跟我說。"
 MISSING_SOURCES_SHOWN = 3
-INGEST_HINT = "有變動：先回答客戶這句，再照 ingest skill 整理；超過 {n} 份先問。"
+INGEST_HINT = "有變動：先回答客戶這句，接著不用問、直接照 ingest skill 整理；只有超過 {n} 份才問。"  # 裁定 38
 _SCAN = {}  # vault → (sources, report) 或 None（scan 出錯）；兩行共用一次快速 scan（審閱裁定 9）
 
 

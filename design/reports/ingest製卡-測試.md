@@ -217,3 +217,13 @@
 - `skills/ingest/SKILL.md` 第 5 步有「≤ 上限就不問客戶要不要、不說「要不要接著整理」，直接做完在回答末尾一句告知」與「一份抓 10 秒」；舊的「一份抓 1 分鐘」已不在。
 - `test_hooks_session`、`test_budget`、`test_skill_ingest` 綠；全部測試 `python -m unittest discover tests` exit 0。
 - 範圍：`git show --stat 6b30ee9` 只動 `hooks/session.py`、`skills/ingest/SKILL.md`、`tests/test_hooks_session.py` 三個檔（`git diff 07eab14 6b30ee9` 另外出現 `design/backlog.md` 與 spec，是合併 main 帶進來的設計文件，不是這個 commit 的改動）。
+
+## 第五輪（2026-10-19，對 b75536a：裁定 42）
+
+**過。**
+
+- `hooks/session.py` 的 `INGEST_HINT` 是「有變動：先把客戶這句的答案完整說出來（不能只說「我先查」），同一則回答接著不用問、直接照 ingest skill 整理，末尾一句告知；只有超過 {n} 份才問。」；開場實跑（fixture 複本加兩個新檔）印出 `變動：新增 2、修改 0、不見 0` 與下一行 `有變動：先把客戶這句的答案完整說出來（不能只說「我先查」），同一則回答接著不用問、直接照 ingest skill 整理，末尾一句告知；只有超過 5 份才問。`，與預期字串逐字相等，n = 5。
+- 量預算：這一段（kb 指令行、變動行、指示行）3 行 190 字，`test_budget` 的上限 8 行 400 字（`OPENING_MAX_LINES`、`OPENING_MAX_CHARS`）內，測試綠；上一輪是 160 字，這行變長 30 字。
+- `skills/ingest/SKILL.md` 第 1 步有「答案在前、整理告知在後」。
+- `test_hooks_session`、`test_budget`、`test_skill_ingest` 綠；全部測試 `python -m unittest discover tests` exit 0。
+- 範圍：`git show --stat b75536a` 只動 `hooks/session.py`、`skills/ingest/SKILL.md`、`tests/test_hooks_session.py` 三個檔。

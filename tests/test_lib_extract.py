@@ -182,5 +182,57 @@ class SharedWithContentFp(Base):
             self.assertIs(getattr(content_fp, name), getattr(extract, name), name)
 
 
+MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+
+
+class AfterTest(Base):
+    """測試後修正裁定 24、27、28、30。"""
+
+    def test_27_textbox_once_and_fallback_skipped_and_br(self):
+        tb = '<w:txbxContent><w:p><w:r><w:t>Inner</w:t></w:r></w:p></w:txbxContent>'
+        body = (f'<w:p><w:r><w:t>Outer</w:t></w:r><w:r><mc:AlternateContent><mc:Choice Requires="wps">{tb}'
+                f'</mc:Choice><mc:Fallback>{tb}</mc:Fallback></mc:AlternateContent></w:r></w:p>'
+                '<w:p><w:r><w:t>A</w:t><w:br/><w:t>B</w:t></w:r></w:p>'
+                '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>C</w:t><w:br/><w:t>D</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
+        xml = (f'<?xml version="1.0"?><w:document xmlns:w="{_ooxml.W}" xmlns:mc="{MC}"><w:body>{body}'
+               '</w:body></w:document>')
+        p = _ooxml._zip(self.tmp / "tb.docx", [("word/document.xml", xml)])
+        lines = extract.docx_text(p).splitlines()
+        self.assertEqual(lines, ["Outer Inner", "A", "B", "C D"])
+
+    def test_30_first_row_truncation_no_row_zero(self):
+        p = _ooxml.xlsx(self.tmp / "big.xlsx", [("大表", [[("inline", "很長" * 100)], [("inline", "x")]])])
+        text = extract.xlsx_text(p, max_chars=50)
+        self.assertNotIn("第 0 列", text)
+        self.assertEqual(text.splitlines()[-1], "（只抽到工作表「大表」第 1 列之前）")
+
+    def test_24_size_limits(self):
+        t = self.tmp / "a.txt"
+        t.write_text("一二三四五六七八九十", encoding="utf-8")
+        with self.assertRaises(extract.Unreadable) as cm:
+            extract.plain_text(t, max_bytes=5)
+        self.assertEqual(str(cm.exception), "檔案太大")
+        self.assertEqual(extract.plain_text(t, max_bytes=1000)[0], "一二三四五六七八九十")
+        d = _ooxml.docx(self.tmp / "a.docx", DOCX_BLOCKS)
+        x = _ooxml.xlsx(self.tmp / "a.xlsx", XLSX_SHEETS)
+        s = _ooxml.pptx(self.tmp / "a.pptx", PPTX_SLIDES)
+        for fn, path in ((extract.docx_text, d), (extract.xlsx_text, x), (extract.pptx_text, s)):
+            with self.subTest(fn=fn.__name__), self.assertRaises(extract.Unreadable) as cm:
+                fn(path, max_bytes=10)
+            self.assertEqual(str(cm.exception), "檔案太大")
+            fn(path, max_bytes=10 ** 6)
+
+    def test_28_kind_by_name_does_not_open(self):
+        self.assertEqual(extract.kind_by_name("x.DOCX"), "docx")
+        self.assertEqual(extract.kind_by_name("x.xlsm"), "xlsx")
+        self.assertEqual(extract.kind_by_name("x.pptx"), "pptx")
+        self.assertEqual(extract.kind_by_name("x.doc"), "legacy_office")
+        self.assertEqual(extract.kind_by_name("x.pdf"), "pdf")
+        self.assertEqual(extract.kind_by_name("x.csv"), "text")
+        self.assertEqual(extract.kind_by_name("x.jpeg"), "image")
+        self.assertEqual(extract.kind_by_name("x.zip"), "unsupported")
+        self.assertEqual(extract.kind_by_name(self.tmp / "不存在.pdf"), "pdf")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -743,7 +743,8 @@ def _sync_pending(vault, entries, modified, turn_id):
         ids = [e["id"] for e in entries if e.get("status") == "active"
                and any(uri_key(loc.get("uri", "")) in keys for loc in e.get("locations") or [])]
         for fid in ids:
-            touched = pending.auto_done(vault, fid, "unreadable", "檔案換了，重新讀", turn_id) or touched
+            touched = pending.auto_done(vault, fid, "unreadable", "檔案換了，重新讀", turn_id,
+                                        statuses=("open", "dismissed")) or touched  # 跳過過的也重讀（裁定 31）
     except Exception as e:  # noqa: BLE001  待處理沒更新不能讓清冊的交易失敗；下次 scan 會補
         ledger.log_error(vault, f"待處理沒更新：{type(e).__name__}: {e}", source="inventory")
     return touched

@@ -243,5 +243,83 @@ class Index(Base):
                       (self.V / "總目錄.md").read_text(encoding="utf-8"))
 
 
+class AfterTest(Base):
+    """測試後修正裁定 19、20、29、30（報告 C2、C3、C9、C10）。"""
+
+    def test_19_source_relocated_sync_rewrites_link(self):
+        item = self.item()
+        card = _cards.write_card(self.V, item, "大安陳會議一")
+        shutil.copytree(self.raw, self.tmp / "raw2")
+        p = self.V / ".system" / "sources.json"
+        p.write_text(p.read_text(encoding="utf-8").replace("../raw/客戶案件", "../raw2/客戶案件"), encoding="utf-8")
+        self.scan()
+        (moved,) = self.todo()["moved"]
+        self.assertEqual(moved["to"], "檔案索引/客戶案件/大安陳")
+        r = self.kb("cards", "sync")
+        self.assertEqual(r.stdout.strip(), "搬了 0 張卡、更新 1 張卡的原檔位置")
+        front = cards.parse_front(card.read_text(encoding="utf-8"))
+        self.assertEqual(front["開原檔"], cards.open_link(self.tmp / "raw2" / _cards.MEETING))
+        self.assertEqual(self.todo()["moved"], [])
+
+    def test_20_sync_drops_duplicate(self):
+        item = self.item()
+        good = _cards.write_card(self.V, item, "大安陳會議一")
+        wrong = self.V / "檔案索引" / "客戶案件" / "信義王" / good.name
+        wrong.parent.mkdir(parents=True)
+        wrong.write_text(good.read_text(encoding="utf-8"), encoding="utf-8")
+        first = self.kb("cards", "todo").stdout.splitlines()[0]
+        self.assertIn("同編號多張 1 組（跑 kb cards sync）", first)
+        t = turn.start(self.V, None, "")["turn"]
+        r = self.kb("cards", "sync")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("刪掉同編號的重複卡 1 張", r.stdout)
+        self.assertFalse(wrong.exists())
+        self.assertTrue(good.is_file())
+        self.assertEqual(self.manifest(t)[wrong.relative_to(self.V).as_posix()], "delete")
+        self.assertEqual(self.todo()["duplicates"], [])
+
+    def test_20_sync_target_same_id_converges(self):
+        """C3：卡放錯夾後在對的夾重寫，sync 不再每次跳過。"""
+        item = self.item()
+        good = _cards.write_card(self.V, item, "大安陳會議一")
+        old = self.V / "檔案索引" / "客戶案件" / "信義王" / good.name
+        old.parent.mkdir(parents=True)
+        old.write_text(good.read_text(encoding="utf-8"), encoding="utf-8")
+        self.kb("cards", "sync")
+        data = self.todo()
+        self.assertEqual((data["moved"], data["duplicates"]), ([], []))
+
+    def test_29_read_error_second_line(self):
+        e = _cards.entry_of(self.V, _cards.MEETING)
+        data = inventory.load(self.V)
+        for x in data["entries"]:
+            if x["id"] == e["id"]:
+                x["read"] = "error"
+        inventory._write(self.V, data["entries"])
+        lines = self.kb("cards", "todo").stdout.splitlines()
+        self.assertEqual(lines[1], "不製卡：檔名像密碼或金鑰 1、讀不到 1")
+
+    def test_30_drop_lock_timeout_writes_nothing(self):
+        from kb import cards as cards_cli
+        from kb._lib import io as kio
+        item = self.item()
+        card = _cards.write_card(self.V, item, "大安陳會議一")
+        (self.raw / _cards.MEETING).unlink()
+        self.scan()
+        inv_before = (self.V / ".system" / "inventory.json").read_bytes()
+        lock = self.V / ".system" / "inventory.json.lock"
+        lock.write_text("", encoding="utf-8")
+        old = kio.LOCK_TIMEOUT
+        kio.LOCK_TIMEOUT = 0.3
+        try:
+            with self.assertRaises(TimeoutError):
+                cards_cli._drop(self.V, item["id"], False, True)
+        finally:
+            kio.LOCK_TIMEOUT = old
+            lock.unlink()
+        self.assertTrue(card.is_file())
+        self.assertEqual((self.V / ".system" / "inventory.json").read_bytes(), inv_before)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,7 +19,8 @@ from kb._lib import sources as sources_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault, name_of
 
 CLI_LOCK_TIMEOUT = 30
-SKIPPED_TEXT = (("credential", "檔名像密碼或金鑰"), ("placeholder", "只在雲端"), ("too_large", "太大"))
+SKIPPED_TEXT = (("credential", "檔名像密碼或金鑰"), ("placeholder", "只在雲端"), ("too_large", "太大"),
+                ("error", "讀不到"))
 
 
 def _limit(text):
@@ -49,13 +50,16 @@ def add_arguments(sub):
 
 def _todo_lines(vault, data, limit):
     new, stale = len(data["new"]), len(data["stale"])
-    moved, unreadable, missing, broken = (len(data[k]) for k in ("moved", "unreadable", "missing", "broken"))
+    moved, unreadable, missing, broken, dups = (len(data[k]) for k in ("moved", "unreadable", "missing", "broken",
+                                                                      "duplicates"))
     lines = []
-    if new or stale or moved or unreadable or missing or broken:
+    if new or stale or moved or unreadable or missing or broken or dups:
         first = (f"待製卡 {new + stale} 份（新 {new}、重做 {stale}）；搬動 {moved}；"
                  f"讀不到 {unreadable}、原檔不見 {missing}（見 系統/待處理.md）")
         if broken:
             first += f"；檔頭有問題 {broken} 張"
+        if dups:
+            first += f"；同編號多張 {dups} 組（跑 kb cards sync）"
         lines.append(first)
     else:
         lines.append("卡都是最新的")
@@ -97,12 +101,30 @@ def _prune(vault, rel):
             break
 
 
+def _remove_card(vault, rel, turn_id, changed):
+    turn.backup(vault, rel, turn_id, action="delete")
+    os.remove(Path(vault) / rel)
+    _prune(vault, rel)
+    changed.append({"path": rel, "action": "delete"})
+
+
+def _card_id(vault, rel):
+    try:
+        return cards.parse_front((Path(vault) / rel).read_text(encoding="utf-8")).get("編號")
+    except (ValueError, OSError, UnicodeDecodeError):
+        return None
+
+
 def _sync(vault, as_json, conversation):
     sources = sources_lib.load(vault)
     data = cards.todo(vault, sources)
     by_id = {e["id"]: e for e in inventory.load(vault)["entries"]}
     turn_id = turn.current(vault)["turn"]
-    moved, updated, skipped, changed = [], [], [], []
+    moved, updated, skipped, changed, dropped = [], [], [], [], []
+    for dup in data["duplicates"]:  # 同編號多張：留正本，其餘備進回合後刪（測試後修正裁定 20）
+        for rel in dup["drop"]:
+            _remove_card(vault, rel, turn_id, changed)
+            dropped.append(rel)
     for item in data["moved"]:
         entry = by_id[item["id"]]
         old = item["from"]
@@ -118,7 +140,11 @@ def _sync(vault, as_json, conversation):
             changed.append({"path": old, "action": "modify"})
             continue
         if (Path(vault) / new).exists():
-            skipped.append(f"「{new}」已經有同名的卡，沒搬：{old}")
+            if _card_id(vault, new) == item["id"]:  # 目的地是同編號的卡：收斂成那張（裁定 20）
+                _remove_card(vault, old, turn_id, changed)
+                dropped.append(old)
+            else:
+                skipped.append(f"「{new}」已經有同名的卡，沒搬：{old}")
             continue
         turn.backup(vault, old, turn_id, action="delete")
         turn.backup(vault, new, turn_id)
@@ -128,14 +154,17 @@ def _sync(vault, as_json, conversation):
         _prune(vault, old)
         moved.append({"from": old, "to": new})
         changed += [{"path": old, "action": "delete"}, {"path": new, "action": "create"}]
-    if moved or updated:
+    if moved or updated or dropped:
         cards.render_index(vault, turn_id)
         changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
-        journal_cli.record_program_or_warn(vault, f"搬了 {len(moved)} 張卡", changed, "cards sync", conversation)
+        note = f"搬了 {len(moved)} 張卡" + (f"、刪掉重複卡 {len(dropped)} 張" if dropped else "")
+        journal_cli.record_program_or_warn(vault, note, changed, "cards sync", conversation)
     if as_json:
-        print(json.dumps({"moved": moved, "updated": updated, "skipped": skipped}, ensure_ascii=False))
+        print(json.dumps({"moved": moved, "updated": updated, "dropped": dropped, "skipped": skipped},
+                         ensure_ascii=False))
         return 0
-    print(f"搬了 {len(moved)} 張卡、更新 {len(updated)} 張卡的原檔位置")
+    print(f"搬了 {len(moved)} 張卡、更新 {len(updated)} 張卡的原檔位置"
+          + (f"；刪掉同編號的重複卡 {len(dropped)} 張" if dropped else ""))
     for line in skipped:
         print(line)
     return 0
@@ -158,18 +187,23 @@ def _drop(vault, fid, as_json, conversation):
         print(f"只能拿掉原檔不見的卡（{fid} 現在是 {status}）")
         return 3
     turn_id = turn.current(vault)["turn"]
-    found, _broken = cards.scan_cards(vault)
-    card = found.get(fid)
-    turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)
+    groups, _broken = cards._scan_groups(vault)
+    group = groups.get(fid) or []
+    card = group[0] if group else None
     changed = []
     title = None
-    if card:
-        title = card["front"].get("標題") or card["path"].rpartition("/")[2][:-3]
-        turn.backup(vault, card["path"], turn_id, action="delete")
-        os.remove(Path(vault) / card["path"])
-        _prune(vault, card["path"])
-        changed.append({"path": card["path"], "action": "delete"})
-    inventory.set_status(vault, [fid], "deleted")
+    # 先拿清冊的鎖再刪卡（測試後修正裁定 30）：等不到鎖就什麼都還沒動
+    with kio.FileLock(Path(vault) / inventory.INVENTORY_POSIX):
+        turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)
+        if card:
+            title = card["front"].get("標題") or card["path"].rpartition("/")[2][:-3]
+        for c in group:  # 同編號多張一起拿掉
+            _remove_card(vault, c["path"], turn_id, changed)
+        data = inventory.load(vault)
+        for e in data["entries"]:
+            if e.get("id") == fid:
+                e["status"] = "deleted"
+        inventory._write(vault, data["entries"])
     changed.append({"path": inventory.INVENTORY_POSIX, "action": "modify"})
     how = f"客戶 {date.today().isoformat()} 說刪了"
     try:

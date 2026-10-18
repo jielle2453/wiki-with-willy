@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 
 from kb._lib import config
-from kb._lib.io import write_text_atomic
+from kb._lib.io import FileLock, write_text_atomic
 
 CARDS_DIR = "檔案索引"
 INDEX_POSIX = "總目錄.md"
@@ -20,13 +20,15 @@ KEYS = ("編號", "出處", "原檔", "指紋", "內容指紋", "標題", "卡�
         "敏感資料種類", "開原檔")
 OPTIONAL = ("內容指紋",)
 LIST_KEYS = ("原檔", "敏感資料種類")
+# 檔頭值的型別（測試後修正裁定 21）：這些要是字串，LIST_KEYS 要是清單
+STR_KEYS = ("編號", "指紋", "內容指紋", "出處", "標題", "卡型", "文件日期", "讀取", "開原檔")
 ORIGIN_TEXT = {"client_file": "客戶原檔", "intake": "對話收件", "ai_output": "AI 產出"}
 FILL = "（填）"
 DATE_FILL = "（填，YYYY-MM-DD 或 未載）"
 READ_FILL = "（填，完整 或 部分）"
 READ_VALUES = ("完整", "部分")
 TEMPLATE_VERSION = "1"
-SKIPPED_READS = ("credential", "placeholder", "too_large")
+SKIPPED_READS = ("credential", "placeholder", "too_large", "error")  # error 也列份數（裁定 29）
 INDEX_HEAD = ("# 總目錄\n"
               "這是什麼：你的檔案都在這裡，點進去是那份檔的卡，卡裡有開原檔的連結。\n"
               "怎麼用：可以摺疊；找不到的就問我。\n"
@@ -36,18 +38,30 @@ _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # 總目錄連結目標要編碼的字（實作疑義裁定 3）；% 先編，中文照原樣
 _LINK_ESC = (("%", "%25"), (" ", "%20"), ("(", "%28"), (")", "%29"), ("[", "%5B"), ("]", "%5D"), ("#", "%23"))
+# 總目錄連結文字與夾名（裁定 23）：反斜線與方括號跳脫，角括號換全形
+_TEXT_ESC = (("\\", "\\\\"), ("[", "\\["), ("]", "\\]"), ("<", "＜"), (">", "＞"))
 
 
 # ---------- 檔頭 ----------
 
-def _value(raw):
+def _scalar(raw):
     raw = raw.strip()
-    if raw.startswith("[") and raw.endswith("]"):
-        inner = raw[1:-1].strip()
-        return [_value(x) for x in inner.split(",")] if inner else []
     if len(raw) >= 2 and raw[0] == raw[-1] == '"':
         return raw[1:-1]
     return raw
+
+
+def _value(raw):
+    """鍵: 後面的值。清單只認一層 [a, b]，不遞迴；裡面再有方括號丟 ValueError（裁定 22）。"""
+    raw = raw.strip()
+    if raw.startswith("["):
+        if not raw.endswith("]"):
+            raise ValueError("清單少了結尾的 ]")
+        inner = raw[1:-1].strip()
+        if "[" in inner or "]" in inner:
+            raise ValueError("清單裡不能再有清單")
+        return [_scalar(x) for x in inner.split(",")] if inner else []
+    return _scalar(raw)
 
 
 def parse_front(text):
@@ -65,7 +79,7 @@ def parse_front(text):
         if line.startswith("  - ") or line.startswith("- "):
             if current is None or not isinstance(front.get(current), list):
                 raise ValueError(f"第 {no} 行的清單項沒有接在鍵後面")
-            front[current].append(_value(line.split("- ", 1)[1]))
+            front[current].append(_scalar(line.split("- ", 1)[1]))
             continue
         key, sep, raw = line.partition(":")
         key = key.strip()
@@ -180,9 +194,9 @@ def _read(vault, rel):
     return (Path(vault) / rel).read_text(encoding="utf-8")
 
 
-def scan_cards(vault):
-    """回 (cards, broken)：cards {編號: {"path", "front"}}；解析不了、沒有編號、編號重複的進 broken [{"path", "reason"}]。"""
-    found, broken = {}, []
+def _scan_groups(vault):
+    """回 (groups, broken)：groups {編號: [{"path", "front"}, …]}（照路徑排）；解析不了、沒有編號的進 broken。"""
+    groups, broken = {}, []
     for rel in _walk_cards(vault):
         try:
             front = parse_front(_read(vault, rel))
@@ -191,11 +205,19 @@ def scan_cards(vault):
             continue
         cid = front.get("編號")
         if not isinstance(cid, str) or not cid:
-            broken.append({"path": rel, "reason": "檔頭少了「編號」"})
-        elif cid in found:
-            broken.append({"path": rel, "reason": f"編號 {cid} 已經有卡：{found[cid]['path']}"})
+            broken.append({"path": rel, "reason": "檔頭「編號」的格式不對" if "編號" in front else "檔頭少了「編號」"})
         else:
-            found[cid] = {"path": rel, "front": front}
+            groups.setdefault(cid, []).append({"path": rel, "front": front})
+    return groups, broken
+
+
+def scan_cards(vault):
+    """回 (cards, broken)：cards {編號: {"path", "front"}}（同編號多張取第一張，其餘進 broken）。"""
+    groups, broken = _scan_groups(vault)
+    found = {}
+    for cid, group in groups.items():
+        found[cid] = group[0]
+        broken.extend({"path": c["path"], "reason": f"編號 {cid} 已經有卡：{group[0]['path']}"} for c in group[1:])
     return found, broken
 
 
@@ -207,11 +229,15 @@ def problems(vault, rel, front, entries_by_id, sources=None):
     """檔頭解析得了之後的全部問題 [(代號, 原因)]，照 validate 的順序。代號給 todo 分桶。"""
     from kb._lib import sources as sources_lib
     for key in KEYS:
-        if key in OPTIONAL:
-            continue
-        value = front.get(key)
-        if key not in front or (key == "原檔" and not (isinstance(value, list) and value)):
+        if key not in OPTIONAL and key not in front:
             return [("missing_key", f"檔頭少了「{key}」")]
+    for key in KEYS:  # 型別先驗（裁定 21）：不對的值不拿去查清冊、比字串
+        if key not in front:
+            continue
+        if (key in LIST_KEYS and not isinstance(front[key], list)) or (key in STR_KEYS and not isinstance(front[key], str)):
+            return [("format", f"檔頭「{key}」的格式不對")]
+    if not front["原檔"]:
+        return [("missing_key", "檔頭少了「原檔」")]
     cid = front["編號"]
     entry = entries_by_id.get(cid)
     if entry is None:
@@ -240,7 +266,7 @@ def problems(vault, rel, front, entries_by_id, sources=None):
         out.append(("filename", f"檔名該是 {expected_name(front['標題'], cid, max_chars)}"))
     if not _filled(front["卡型"]):
         out.append(("kind", "卡型還沒填"))
-    if not (front["文件日期"] == "未載" or (isinstance(front["文件日期"], str) and _DATE.match(front["文件日期"]))):
+    if not (front["文件日期"] == "未載" or _DATE.match(front["文件日期"])):
         out.append(("date", "文件日期要寫 YYYY-MM-DD 或 未載"))
     if front["讀取"] not in READ_VALUES:
         out.append(("read", "讀取要寫 完整 或 部分"))
@@ -249,13 +275,21 @@ def problems(vault, rel, front, entries_by_id, sources=None):
     return out
 
 
+def safe_problems(vault, rel, front, entries_by_id, sources=None):
+    """problems 整段包住：任何例外都當成解析不了（裁定 21，不靜默放行）。"""
+    try:
+        return problems(vault, rel, front, entries_by_id, sources)
+    except Exception as e:  # noqa: BLE001
+        return [("crash", f"檔頭解析不了：{type(e).__name__}")]
+
+
 def validate(vault, rel, entries_by_id, sources=None):
     """回 (ok, reason)；只報第一個錯。標題檢查在檔名之前（標題還是（填）時先講標題）。"""
     try:
         front = parse_front(_read(vault, rel))
     except (ValueError, UnicodeDecodeError) as e:
         return False, f"檔頭解析不了：{e}"
-    found = problems(vault, rel, front, entries_by_id, sources)
+    found = safe_problems(vault, rel, front, entries_by_id, sources)
     return (False, found[0][1]) if found else (True, "")
 
 
@@ -272,8 +306,16 @@ def _created_date(entry):
     return first[:10] if _DATE.match(first[:10]) else None
 
 
+def _mtime(vault, rel):
+    try:
+        return (Path(vault) / rel).stat().st_mtime
+    except OSError:
+        return 0
+
+
 def todo(vault, sources):
-    """讀清冊 active 條目、卡與待處理，分 new、stale、moved、broken、orphans、unreadable、missing、skipped（D-104）。不寫檔。"""
+    """讀清冊 active 條目、卡與待處理，分 new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped（D-104）。
+    不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
     from kb._lib import extract, inventory, pending
     entries = inventory.load(vault)["entries"]
     by_id = {e.get("id"): e for e in entries}
@@ -281,23 +323,25 @@ def todo(vault, sources):
         items = pending.load(vault)["items"]
     except ValueError:
         items = []
+
+    def first_file(i):
+        return (i.get("file_ids") or [None])[0]
     opened = [i for i in items if i.get("status") == "open"]
-    unreadable_open = {(i.get("file_ids") or [None])[0]: i for i in opened if i.get("kind") == "unreadable"}
-    missing_open = {(i.get("file_ids") or [None])[0]: i for i in opened if i.get("kind") == "missing_file"}
-    found, broken = scan_cards(vault)
-    out = {"new": [], "stale": [], "moved": [], "orphans": [], "unreadable": [], "missing": [],
+    unreadable_open = {first_file(i): i for i in opened if i.get("kind") == "unreadable"}
+    # 客戶說先跳過的（dismissed）也不列回 new，檔案換了才重讀（裁定 31）
+    unreadable_skip = set(unreadable_open) | {first_file(i) for i in items
+                                              if i.get("kind") == "unreadable" and i.get("status") == "dismissed"}
+    missing_open = {first_file(i): i for i in opened if i.get("kind") == "missing_file"}
+    groups, broken = _scan_groups(vault)
+    out = {"new": [], "stale": [], "moved": [], "duplicates": [], "orphans": [], "unreadable": [], "missing": [],
            "skipped": {k: 0 for k in SKIPPED_READS}, "broken": list(broken)}
     today = date.today().isoformat()
 
     def work_item(entry, card):
         path = inventory.path_of(vault, sources, entry["locations"][0]["uri"])
-        try:
-            kind = extract.probe(path) if path is not None else None
-        except OSError:
-            kind = None
         return {"id": entry["id"], "uri": entry["locations"][0]["uri"], "path": str(path) if path else None,
-                "origin": entry.get("origin"), "kind": kind, "dir": card_dir(entry),
-                "filename_pattern": f"<標題>-{short_id(entry['id'])}.md",
+                "origin": entry.get("origin"), "kind": extract.kind_by_name(entry["locations"][0]["uri"]),
+                "dir": card_dir(entry), "filename_pattern": f"<標題>-{short_id(entry['id'])}.md",
                 "existing_card": card["path"] if card else None,
                 "created": _created_date(entry),
                 "header": header_for(vault, sources, entry, today)}
@@ -307,29 +351,43 @@ def todo(vault, sources):
         return {"path": card["path"], "reason": reason, "id": entry["id"],
                 "header": header_for(vault, sources, entry, today)}
 
-    for cid, card in found.items():
+    carded = set()
+    for cid, group in groups.items():
         entry = by_id.get(cid)
         if entry is None or entry.get("status") != "active":
-            out["orphans"].append(card["path"])
+            out["orphans"].extend(c["path"] for c in group)
             continue
-        codes = problems(vault, card["path"], card["front"], by_id, sources)
+        carded.add(cid)
+        codes_of = {c["path"]: safe_problems(vault, c["path"], c["front"], by_id, sources) for c in group}
+        if len(group) > 1:  # 同編號多張（裁定 20）：全過的那張是正本；沒有就留最新的，其餘交 sync 刪
+            good = [c for c in group if not codes_of[c["path"]]]
+            keep = good[0] if good else max(group, key=lambda c: _mtime(vault, c["path"]))
+            out["duplicates"].append({"id": cid, "keep": keep["path"],
+                                      "drop": [c["path"] for c in group if c is not keep]})
+        else:
+            keep = group[0]
+        codes = codes_of[keep["path"]]
         names = dict(codes)
-        if "missing_key" in names:
-            out["broken"].append(broken_item(entry, card, names["missing_key"]))
-        elif "dir" in names or card["front"].get("原檔") != _uris(entry):
-            out["moved"].append({"id": cid, "from": card["path"], "to": card_dir(entry)})
+        others = [c for c in codes if c[0] != "link"]
+        if names.keys() & {"missing_key", "format", "crash"}:
+            out["broken"].append(broken_item(entry, keep, codes[0][1]))
+        elif "dir" in names or keep["front"].get("原檔") != _uris(entry):
+            out["moved"].append({"id": cid, "from": keep["path"], "to": card_dir(entry)})
         elif "fingerprint" in names:
-            out["stale"].append(work_item(entry, card))
-        elif codes:
-            out["broken"].append(broken_item(entry, card, codes[0][1]))
+            out["stale"].append(work_item(entry, keep))
+        elif others:  # broken 只收開原檔以外的錯（裁定 19）
+            out["broken"].append(broken_item(entry, keep, others[0][1]))
+        elif "link" in names:  # 只有開原檔對不上（來源搬家、連結形式改了）：sync 重寫（裁定 19）
+            out["moved"].append({"id": cid, "from": keep["path"], "to": card_dir(entry)})
     for entry in entries:
         status, eid = entry.get("status"), entry.get("id")
         if status == "missing" and entry.get("locations"):
             item = missing_open.get(eid)
-            uri = entry["locations"][0]["uri"]
-            question = pending.line_of(item) if item else f"{pending.file_label(uri)}不見了。{pending.MISSING_ASK}"
-            out["missing"].append({"id": eid, "uri": uri, "missing_since": entry.get("missing_since"),
-                                   "pending_id": item["id"] if item else None, "question": question})
+            if item is None:
+                continue  # 只列還沒答的；答過「先留著」「不用管」的不再問（裁定 31）
+            out["missing"].append({"id": eid, "uri": entry["locations"][0]["uri"],
+                                   "missing_since": entry.get("missing_since"), "pending_id": item["id"],
+                                   "question": pending.line_of(item)})
             continue
         if status != "active" or not entry.get("locations"):
             continue
@@ -341,7 +399,7 @@ def todo(vault, sources):
             out["unreadable"].append({"id": eid, "uri": entry["locations"][0]["uri"], "reason": item.get("reason"),
                                       "pending_id": item["id"]})
             continue
-        if entry.get("read") == "ok" and eid not in found:
+        if entry.get("read") == "ok" and eid not in carded and eid not in unreadable_skip:
             out["new"].append(work_item(entry, None))
     return out
 
@@ -385,12 +443,20 @@ def _link_target(rel):
 
 
 def _link_text(text):
-    return str(text).replace("[", "\\[").replace("]", "\\]")
+    text = str(text)
+    for a, b in _TEXT_ESC:
+        text = text.replace(a, b)
+    return text
 
 
 def render_index(vault, turn_id=None):
     """寫總資料夾根的 總目錄.md：巢狀清單（第一層來源別名、往下鏡射夾、葉子是卡），同層夾在前卡在後、各自按名稱排；
-    解析不了的卡用檔名當標題。有 turn_id 就先備進回合（實作疑義裁定 4）。回卡數。"""
+    解析不了的卡用檔名當標題。有 turn_id 就先備進回合（實作疑義裁定 4）。整段在 總目錄.md 的鎖裡（裁定 26）。回卡數。"""
+    with FileLock(Path(vault) / INDEX_POSIX):
+        return _render_index(vault, turn_id)
+
+
+def _render_index(vault, turn_id):
     tree = {}
     count = 0
     for rel in _walk_cards(vault):
@@ -412,7 +478,7 @@ def render_index(vault, turn_id=None):
         for key in sorted(node, key=lambda k: (k[0] != "d", k[1])):
             pad = "  " * depth
             if key[0] == "d":
-                lines.append(f"{pad}- {key[1]}")
+                lines.append(f"{pad}- {_link_text(key[1])}")
                 emit(node[key], depth + 1)
             else:
                 title, rel = node[key]

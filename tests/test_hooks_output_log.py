@@ -200,6 +200,13 @@ class CardCheck(unittest.TestCase):
             with self.subTest(want=want):
                 self.blocked(self.write(text, path), want)
 
+    def test_list_value_blocked_not_silently_accepted(self):
+        """測試後修正裁定 21（S4）：編號寫成清單時以前丟 TypeError 被吞掉、不擋；現在要 block。"""
+        cid = self.item["id"]
+        r = self.write(self.text.replace(f"編號: {cid}", f"編號: [{cid}]"))
+        self.blocked(r, "檔頭「編號」的格式不對")
+        self.assertFalse((self.V / ".system" / "hook-errors.log").exists())
+
     def test_edit_tool_checked_too(self):
         self.write(self.text)
         self.path.write_text(self.text.replace("出處: 客戶原檔", "出處: 對話收件"), encoding="utf-8")

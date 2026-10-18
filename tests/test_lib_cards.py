@@ -245,7 +245,7 @@ class Todo(Vault):
         todo = self.todo()
         active_ok = [e for e in inventory.load(self.V)["entries"] if e["status"] == "active" and e["read"] == "ok"]
         self.assertEqual(len(todo["new"]), len(active_ok))
-        self.assertEqual(todo["skipped"], {"credential": 1, "placeholder": 0, "too_large": 0})
+        self.assertEqual(todo["skipped"], {"credential": 1, "placeholder": 0, "too_large": 0, "error": 0})
         for k in ("stale", "moved", "orphans", "unreadable", "missing", "broken"):
             self.assertEqual(todo[k], [], k)
 
@@ -307,6 +307,127 @@ class Todo(Vault):
         self.assertRegex(m["pending_id"], r"^p-")
         self.assertTrue(m["question"].startswith("「會議紀錄_1.docx」（客戶案件/大安陳）不見了。是你刪的嗎？"))
         self.assertTrue(m["missing_since"])
+
+
+class AfterTest(Vault):
+    """測試後修正裁定 19～23、26、28、29、31。"""
+
+    def card(self, title="大安陳會議一"):
+        return _cards.write_card(self.V, self.item(), title)
+
+    def test_19_link_only_mismatch_is_moved_same_dir(self):
+        p = self.card()
+        text = p.read_text(encoding="utf-8")
+        front = cards.parse_front(text)
+        p.write_text(text.replace(front["開原檔"], front["開原檔"][:-1] + "y"), encoding="utf-8")
+        todo = self.todo()
+        (moved,) = todo["moved"]
+        self.assertEqual(moved["to"], "檔案索引/客戶案件/大安陳")
+        self.assertEqual(todo["broken"], [])
+
+    def test_20_duplicates_keep_valid_one(self):
+        item = self.item()
+        good = _cards.write_card(self.V, item, "大安陳會議一")
+        wrong = self.V / "檔案索引" / "客戶案件" / "信義王" / good.name
+        wrong.parent.mkdir(parents=True)
+        wrong.write_text(good.read_text(encoding="utf-8"), encoding="utf-8")
+        todo = self.todo()
+        self.assertEqual(todo["duplicates"], [{"id": item["id"], "keep": good.relative_to(self.V).as_posix(),
+                                               "drop": [wrong.relative_to(self.V).as_posix()]}])
+        self.assertEqual((todo["moved"], todo["broken"], todo["stale"]), ([], [], []))
+
+    def test_20_duplicates_none_valid_keep_newest(self):
+        item = self.item()
+        a = _cards.write_card(self.V, item, "大安陳會議一")
+        b = a.with_name("別名-" + a.name)
+        b.write_text(a.read_text(encoding="utf-8"), encoding="utf-8")
+        a.write_text(a.read_text(encoding="utf-8").replace("出處: 客戶原檔", "出處: 錯"), encoding="utf-8")
+        os.utime(a, (a.stat().st_atime, a.stat().st_mtime - 100))
+        (dup,) = self.todo()["duplicates"]
+        self.assertEqual(dup["keep"], b.relative_to(self.V).as_posix())
+        self.assertEqual(dup["drop"], [a.relative_to(self.V).as_posix()])
+
+    def test_21_value_types_checked(self):
+        p = self.card()
+        text = p.read_text(encoding="utf-8")
+        rel = p.relative_to(self.V).as_posix()
+        for old, new, key in (("出處: 客戶原檔", "出處: [客戶原檔]", "出處"),
+                              ("讀取: 完整", "讀取: [完整]", "讀取"),
+                              ("敏感資料種類: []", "敏感資料種類: 無", "敏感資料種類")):
+            p.write_text(text.replace(old, new), encoding="utf-8")
+            with self.subTest(key=key):
+                self.assertEqual(cards.validate(self.V, rel, self.by_id()), (False, f"檔頭「{key}」的格式不對"))
+        front = cards.parse_front(text)
+        p.write_text(text.replace(f"編號: {front['編號']}", f"編號: [{front['編號']}]"), encoding="utf-8")
+        self.assertEqual(cards.validate(self.V, rel, self.by_id()), (False, "檔頭「編號」的格式不對"))
+
+    def test_21_any_exception_blocks(self):
+        p = self.card()
+        real = cards.entry_link
+        cards.entry_link = lambda *a, **k: 1 / 0
+        try:
+            ok, reason = cards.validate(self.V, p.relative_to(self.V).as_posix(), self.by_id())
+        finally:
+            cards.entry_link = real
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("檔頭解析不了"), reason)
+
+    def test_22_no_nested_list_no_recursion(self):
+        for value in ("[[a]]", "[a, [b]]", "[" * 5000 + "]" * 5000):
+            with self.subTest(value=value[:10]), self.assertRaises(ValueError):
+                cards.parse_front(f"---\n編號: {value}\n---\n")
+
+    def test_23_link_text_and_folder_escaped(self):
+        item = self.item()
+        p = _cards.write_card(self.V, item, "報價v3")
+        p.write_text(p.read_text(encoding="utf-8").replace("標題: 報價v3", "標題: 報價<v3>"), encoding="utf-8")
+        folder = self.V / "檔案索引" / "怪[夾]"
+        folder.mkdir(parents=True)
+        (folder / "x-00000000.md").write_text("---\n標題: a\\b\n---\n", encoding="utf-8")
+        cards.render_index(self.V)
+        text = (self.V / "總目錄.md").read_text(encoding="utf-8")
+        self.assertIn("[報價＜v3＞](", text)
+        self.assertIn("- 怪\\[夾\\]", text)
+        self.assertIn("[a\\\\b](", text)
+
+    def test_26_render_index_takes_lock(self):
+        from kb._lib import io as kio
+        lock = self.V / "總目錄.md.lock"
+        lock.write_text("", encoding="utf-8")
+        old = kio.LOCK_TIMEOUT
+        kio.LOCK_TIMEOUT = 0.3
+        try:
+            with self.assertRaises(TimeoutError):
+                cards.render_index(self.V)
+        finally:
+            kio.LOCK_TIMEOUT = old
+            lock.unlink()
+        self.assertFalse((self.V / "總目錄.md").exists())
+
+    def test_28_kind_from_extension_only(self):
+        _ooxml.encrypted_pdf(self.raw / "報價與合約" / "合約_加密.pdf")
+        _cards.scan_apply(self.V)
+        item = self.item("報價與合約/合約_加密.pdf")
+        self.assertEqual(item["kind"], "pdf")
+
+    def test_29_read_error_skipped(self):
+        e = _cards.entry_of(self.V, _cards.MEETING)
+        data = inventory.load(self.V)
+        for x in data["entries"]:
+            if x["id"] == e["id"]:
+                x["read"] = "error"
+        inventory._write(self.V, data["entries"])
+        todo = self.todo()
+        self.assertEqual(todo["skipped"]["error"], 1)
+        self.assertNotIn(e["id"], [i["id"] for i in todo["new"]])
+
+    def test_31_answered_missing_not_listed(self):
+        from kb._lib import pending
+        (self.raw / _cards.MEETING).unlink()
+        _cards.scan_apply(self.V)
+        pid = self.todo()["missing"][0]["pending_id"]
+        pending.resolve(self.V, pid, "先留著", turn.start(self.V, None, "")["turn"])
+        self.assertEqual(self.todo()["missing"], [])
 
 
 if __name__ == "__main__":

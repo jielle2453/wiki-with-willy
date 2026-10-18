@@ -112,7 +112,7 @@ class AddResolve(Base):
         by = {i["id"]: i for i in self.items()}
         self.assertEqual((by[a]["status"], by[a]["how"]), ("done", "先留著"))
         self.assertTrue(by[a]["resolved"])
-        self.assertEqual(by[b]["status"], "dismissed")
+        self.assertEqual((by[b]["status"], by[b]["how"]), ("dismissed", "客戶說不用管"))  # 測試後修正裁定 31
         self.assertIn("目前沒有等你決定的事。", self.md())
 
     def test_resolve_unknown_raises(self):
@@ -165,6 +165,56 @@ class SyncMissing(Base):
         self.assertFalse(pending.sync_missing(self.V, [entry("f-1", "file://a/b.txt")], self.t))
         self.assertFalse((self.V / ".system" / "pending.json").exists())
         self.assertEqual(self.manifest(), {})
+
+
+class Answered(Base):
+    """測試後修正裁定 31：客戶答過的（done、dismissed，created ≥ missing_since）不重開；dismissed 的 unreadable 也能自動 done。"""
+
+    def gone(self, since):
+        e = entry("f-aaaa0001", "file://客戶案件/會議紀錄_1.docx", "missing")
+        e["missing_since"] = since
+        return e
+
+    def test_resolved_or_dismissed_not_reopened(self):
+        pending._now = lambda: "2026-10-18T10:00:00"
+        try:
+            e = self.gone("2026-10-18T09:00:00")
+            pending.sync_missing(self.V, [e], self.t)
+            pid = self.items()[0]["id"]
+            pending.resolve(self.V, pid, "先留著", self.t)
+            self.assertFalse(pending.sync_missing(self.V, [e], self.t))
+            self.assertEqual(len(self.items()), 1)
+        finally:
+            pending._now = pending._now_default
+
+    def test_dismissed_not_reopened(self):
+        pending._now = lambda: "2026-10-18T10:00:00"
+        try:
+            e = self.gone("2026-10-18T09:00:00")
+            pending.sync_missing(self.V, [e], self.t)
+            pending.dismiss(self.V, self.items()[0]["id"], self.t)
+            self.assertFalse(pending.sync_missing(self.V, [e], self.t))
+            self.assertEqual(len(self.items()), 1)
+        finally:
+            pending._now = pending._now_default
+
+    def test_missing_again_later_reopens(self):
+        pending._now = lambda: "2026-10-18T10:00:00"
+        try:
+            pending.sync_missing(self.V, [self.gone("2026-10-18T09:00:00")], self.t)
+            pending.resolve(self.V, self.items()[0]["id"], "找回來了", self.t)
+            pending._now = lambda: "2026-10-19T10:00:00"
+            self.assertTrue(pending.sync_missing(self.V, [self.gone("2026-10-19T09:00:00")], self.t))
+            self.assertEqual([i["status"] for i in self.items()], ["done", "open"])
+        finally:
+            pending._now = pending._now_default
+
+    def test_auto_done_includes_dismissed(self):
+        pid = pending.add(self.V, "unreadable", ["f-1"], "「a」（b）讀不到", "有密碼", self.t)
+        pending.dismiss(self.V, pid, self.t)
+        self.assertTrue(pending.auto_done(self.V, "f-1", "unreadable", "檔案換了，重新讀", self.t,
+                                          statuses=("open", "dismissed")))
+        self.assertEqual((self.items()[0]["status"], self.items()[0]["how"]), ("done", "檔案換了，重新讀"))
 
 
 if __name__ == "__main__":

@@ -60,7 +60,8 @@ class Body(unittest.TestCase):
     def test_order_of_steps(self):
         """順序：kb changes → inventory scan → cards todo → sync → convert → turn note。"""
         marks = ["changes", "inventory scan", "cards todo --json", "cards sync", "convert", "turn note"]
-        pos = [self.body.index(m) for m in marks]
+        steps = self.body[self.body.index("## 順序"):self.body.index("## 回答末尾")]
+        pos = [steps.index(m) for m in marks]
         self.assertEqual(pos, sorted(pos), marks)
 
     def test_mentions_refusals_and_hands_off(self):

@@ -130,5 +130,36 @@ class PendingCli(Base):
                 self.assertEqual(r.stdout.splitlines()[0], "沒有這條待處理：p-00000000")
 
 
+class Answered(Base):
+    """測試後修正裁定 31（報告「設計缺口」的重現）：先留著、先跳過之後不再問、不再列回 new；檔案換了才重讀。"""
+
+    def todo(self):
+        return json.loads(self.kb("cards", "todo", "--json").stdout)
+
+    def test_kept_missing_not_reopened_nor_listed(self):
+        (self.raw / GONE).unlink()
+        self.kb("inventory", "scan")
+        pid = self.items()[0]["id"]
+        self.kb("pending", "resolve", pid, "--how", "先留著")
+        self.kb("inventory", "scan")
+        self.assertEqual([i["status"] for i in self.items()], ["done"])
+        self.assertEqual(self.todo()["missing"], [])
+
+    def test_skipped_unreadable_stays_out_until_changed(self):
+        x = self.raw / "客戶案件" / "x.doc"
+        _ooxml.cfb(x)
+        self.kb("inventory", "scan")
+        self.kb("convert", str(x))
+        pid = self.items()[0]["id"]
+        fid = self.items()[0]["file_ids"][0]
+        self.kb("pending", "dismiss", pid)
+        self.assertNotIn(fid, [n["id"] for n in self.todo()["new"]])
+        x.write_bytes(_ooxml.CFB_MAGIC + b"\x02" * 700)
+        self.kb("inventory", "scan")
+        (item,) = self.items()
+        self.assertEqual((item["status"], item["how"]), ("done", "檔案換了，重新讀"))
+        self.assertIn(fid, [n["id"] for n in self.todo()["new"]])
+
+
 if __name__ == "__main__":
     unittest.main()

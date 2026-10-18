@@ -8,6 +8,7 @@ _shared_strings、_cell_value、_number（搬過來，content_fp import 這裡�
   空列跳過；公式格沒快取值印 =<公式>（無快取值）（I-012）；超過 max_chars 停、最後一行標只抽到哪。
 - pptx：每張投影片一段 ## 投影片 N（presentation 順序），備忘稿只取 body 佔位框，以（備忘稿）開頭接在後面。
 """
+import os
 import posixpath
 import re
 import zipfile
@@ -23,6 +24,8 @@ A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 PR = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+TOO_LARGE = "檔案太大"
 CHECK_EVERY = 1000
 CFB_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 PDF_SCAN_BYTES = 2 * 1024 * 1024
@@ -135,12 +138,16 @@ def _shared_strings(z, should_stop):
 
 # ---------- 給 kb convert ----------
 
-def _open(path, main, work):
-    """開 zip、確認主成員在，交給 work(z)；所有抽不出來的情況轉成 Unreadable。"""
+def _open(path, main, work, max_bytes=None):
+    """開 zip、確認主成員在，交給 work(z)；所有抽不出來的情況轉成 Unreadable。
+    max_bytes：任一個 XML 成員（.xml、.rels）解壓後超過就丟 Unreadable("檔案太大")（測試後修正裁定 24）。"""
     try:
         with zipfile.ZipFile(long_path(path)) as z:
             if main is not None and main not in z.namelist():
                 raise Unreadable(f"檔案壞了：缺少 {main}")
+            if max_bytes is not None and any(i.file_size > max_bytes for i in z.infolist()
+                                             if i.filename.lower().endswith((".xml", ".rels"))):
+                raise Unreadable(TOO_LARGE)
             return work(z)
     except Unreadable:
         raise
@@ -152,35 +159,59 @@ def _open(path, main, work):
         raise Unreadable(f"檔案壞了：讀到一半出錯（{type(e).__name__}）") from None
 
 
+def _check_size(z, name, max_bytes):
+    """成員解壓後超過 max_bytes 就丟 Unreadable("檔案太大")（測試後修正裁定 24，zip bomb 不讀）。"""
+    if max_bytes is not None and z.getinfo(name).file_size > max_bytes:
+        raise Unreadable(TOO_LARGE)
+
+
+def _member(z, name, max_bytes):
+    _check_size(z, name, max_bytes)
+    return _events(z, name)
+
+
 def _style_of(p):
     node = p.find(f"{W}pPr/{W}pStyle")
     return (node.get(W + "val") or "") if node is not None else ""
 
 
-def docx_text(path):
+def docx_text(path, max_bytes=None):
+    """文字方塊（w:txbxContent）只抽一次：mc:Fallback 裡那份跳過，巢狀段落接在外層段落後面；w:br 換行
+    （表格格子裡換成空白）。"""
     def work(z):
         lines = []
-        paras = []  # 段落文字堆疊（巢狀段落的字算進外層）
+        paras = []  # 段落文字堆疊：字只進最內層，內層段落結束再接到外層後面
         cells = []  # 表格堆疊：每層 [目前這列的格, 目前這格的段落]
-        for event, elem in _events(z, "word/document.xml"):
+        fallback = 0  # 在 mc:Fallback 裡的深度
+        for event, elem in _member(z, "word/document.xml", max_bytes):
             tag = elem.tag
+            if tag == MC + "Fallback":
+                fallback += 1 if event == "start" else -1
+                if event == "end":
+                    elem.clear()
+                continue
+            if fallback:
+                continue
             if tag == W + "p":
                 if event == "start":
                     paras.append([])
                     continue
                 text = "".join(paras.pop()).strip()
                 if paras:
-                    paras[-1].append(text)
+                    if text:
+                        paras[-1].append(" " + text)
                 elif cells:
                     if text:
-                        cells[-1][1].append(text)
+                        cells[-1][1].append(" ".join(text.split("\n")))
                 elif text:
                     style = _style_of(elem).casefold()
+                    text = "\n".join(seg.strip() for seg in text.split("\n") if seg.strip())
                     lines.append(("# " + text) if style.startswith(HEADING_PREFIXES) else text)
                 elem.clear()
-            elif tag == W + "t" and event == "end":
-                for buf in paras:
-                    buf.append(elem.text or "")
+            elif tag == W + "t" and event == "end" and paras:
+                paras[-1].append(elem.text or "")
+            elif tag == W + "br" and event == "end" and paras:
+                paras[-1].append("\n")
             elif tag == W + "tab" and event == "end" and paras:
                 paras[-1].append(" ")
             elif tag == W + "tbl":
@@ -201,7 +232,7 @@ def docx_text(path):
                     lines.append(row)
                 elem.clear()
         return "\n".join(lines)
-    return _open(path, "word/document.xml", work)
+    return _open(path, "word/document.xml", work, max_bytes)
 
 
 def _rels(z, name):
@@ -239,7 +270,7 @@ def _row_number(elem, last):
     return int(r) if r and r.isdigit() else last + 1
 
 
-def xlsx_text(path, max_chars=None):
+def xlsx_text(path, max_chars=None, max_bytes=None):
     def work(z):
         sheets = _sheets(z)
         if not sheets:
@@ -267,7 +298,8 @@ def xlsx_text(path, max_chars=None):
                     if any(c.strip() for c in cells):
                         line = f"第 {row_no} 列：" + " | ".join(cells)
                         if max_chars is not None and size + len(line) > max_chars:
-                            out.append(f"（只抽到工作表「{name}」第 {last} 列）")
+                            where = f"第 {last} 列" if last else f"第 {row_no} 列之前"  # 第一列就停不印第 0 列（裁定 30）
+                            out.append(f"（只抽到工作表「{name}」{where}）")
                             return "\n".join(out)
                         out.append(line)
                         size += len(line) + 1
@@ -275,7 +307,7 @@ def xlsx_text(path, max_chars=None):
                     cells = []
                     elem.clear()
         return "\n".join(out)
-    return _open(path, None, work)
+    return _open(path, None, work, max_bytes)
 
 
 def _slides(z):
@@ -317,7 +349,7 @@ def _notes_text(z, member):
     return lines
 
 
-def pptx_text(path):
+def pptx_text(path, max_bytes=None):
     def work(z):
         slides = _slides(z)
         if not slides:
@@ -332,12 +364,15 @@ def pptx_text(path):
             if notes:
                 out.extend("（備忘稿）" + ln for ln in _notes_text(z, notes))
         return "\n".join(out)
-    return _open(path, None, work)
+    return _open(path, None, work, max_bytes)
 
 
-def plain_text(path):
-    """整份讀位元組，依序試 utf-8-sig、utf-8、cp950、big5hkscs；utf-16 只在有 BOM 時試。回 (text, encoding)。"""
+def plain_text(path, max_bytes=None):
+    """整份讀位元組，依序試 utf-8-sig、utf-8、cp950、big5hkscs；utf-16 只在有 BOM 時試。回 (text, encoding)。
+    max_bytes：檔超過就丟 Unreadable("檔案太大")，不整份讀進記憶體（測試後修正裁定 24）。"""
     with open(long_path(path), "rb") as f:
+        if max_bytes is not None and os.fstat(f.fileno()).st_size > max_bytes:
+            raise Unreadable(TOO_LARGE)
         data = f.read()
     if data.startswith(UTF16_BOMS):
         try:
@@ -358,6 +393,27 @@ def plain_text(path):
 def _head(path, n):
     with open(long_path(path), "rb") as f:
         return f.read(n)
+
+
+def kind_by_name(path):
+    """只看副檔名、不開檔（測試後修正裁定 28，cards todo 用）：docx｜xlsx｜pptx｜legacy_office｜pdf｜text｜image｜unsupported。
+    加密與 CFB 只在 kb convert 的 probe 查。"""
+    ext = Path(str(path)).suffix.lower()
+    if ext in WORD_EXTS:
+        return "docx"
+    if ext in EXCEL_EXTS:
+        return "xlsx"
+    if ext in SLIDE_EXTS:
+        return "pptx"
+    if ext in LEGACY_EXTS:
+        return "legacy_office"
+    if ext == ".pdf":
+        return "pdf"
+    if ext in TEXT_EXTS:
+        return "text"
+    if ext in IMAGE_EXTS:
+        return "image"
+    return "unsupported"
 
 
 def probe(path):

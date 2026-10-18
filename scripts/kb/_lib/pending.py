@@ -29,6 +29,7 @@ UNREADABLE_ASKS = (("有密碼", "另存一份沒密碼的，或跟我說先跳�
                    ("只在雲端", "在檔案上按右鍵選保留在這台電腦上。"))
 UNREADABLE_OTHER = "跟我說先跳過，或換一份檔。"
 FOUND_AGAIN = "找回來了"
+DISMISSED_HOW = "客戶說不用管"
 
 
 def _now_default():
@@ -138,26 +139,36 @@ def resolve(vault, pid, how, turn_id):
 
 
 def dismiss(vault, pid, turn_id):
-    return _close_by_id(vault, pid, "dismissed", None, turn_id)
+    return _close_by_id(vault, pid, "dismissed", DISMISSED_HOW, turn_id)
 
 
-def auto_done(vault, file_id, kind, how, turn_id):
-    """這份檔有 open 的 kind 條目就 done；回有沒有關到。"""
+def auto_done(vault, file_id, kind, how, turn_id, statuses=("open",)):
+    """這份檔有 statuses 狀態的 kind 條目就 done；回有沒有關到。
+    檔案換了時 open 與 dismissed 都關（測試後修正裁定 31），呼叫端傳 statuses=("open", "dismissed")。"""
     if not _path(vault).exists():
         return False
 
     def change(items):
-        item = _find_open(items, file_id, kind)
-        if item is None:
-            return False
-        _close(item, "done", how)
-        return True
+        hits = [i for i in items if i.get("status") in statuses and i.get("kind") == kind
+                and (i.get("file_ids") or [None])[0] == file_id]
+        for item in hits:
+            _close(item, "done", how)
+        return bool(hits)
     return _edit(vault, turn_id, change)
 
 
+def answered(items, entry):
+    """這次不見之後客戶答過了嗎：有任何 missing_file 條目（open、done、dismissed 都算）是這份檔、
+    且建立時間不早於 missing_since（測試後修正裁定 31）。"""
+    since = str(entry.get("missing_since") or "")
+    return any(i.get("kind") == "missing_file" and (i.get("file_ids") or [None])[0] == entry.get("id")
+               and str(i.get("created") or "") >= since for i in items)
+
+
 def sync_missing(vault, entries, turn_id):
-    """照清冊狀態（實作「釐清」那條）：status missing 且沒有 open missing_file 的開一條；
-    有 open missing_file 但條目已回 active 的自動 done「找回來了」。回有沒有改到。"""
+    """照清冊狀態（實作「釐清」那條）：status missing 且這次不見後還沒有任何 missing_file 條目的開一條
+    （客戶答過「先留著」「不用管」的不重開，裁定 31）；有 open missing_file 但條目已回 active 的自動 done「找回來了」。
+    回有沒有改到。"""
     missing = [e for e in entries if e.get("status") == "missing" and e.get("locations")]
     active = {e.get("id") for e in entries if e.get("status") == "active"}
     if not missing and not _path(vault).exists():
@@ -166,7 +177,7 @@ def sync_missing(vault, entries, turn_id):
     def change(items):
         changed = False
         for e in missing:
-            if _find_open(items, e["id"], "missing_file") is None:
+            if not answered(items, e):
                 text = f"{file_label(e['locations'][0].get('uri', ''))}不見了"
                 items.append(_new_item(items, "missing_file", [e["id"]], text, None, turn_id))
                 changed = True

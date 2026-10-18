@@ -228,5 +228,131 @@ class TempCleanup(Base):
         self.assertEqual(self.temps(), [f"{e['id']}.md"])
 
 
+LOCKED = "讀不到：檔案被別的程式開著或沒有權限，關掉 Word／Excel 再試"
+
+
+class AfterTest(Base):
+    """測試後修正裁定 15～18、24、25（design/reports/ingest製卡-測試.md 的 S1～S3、C1、C4、S7）。"""
+
+    def set_entry(self, rel, **fields):
+        from kb._lib import inventory
+        e = _cards.entry_of(self.V, rel)
+        data = inventory.load(self.V)
+        for x in data["entries"]:
+            if x["id"] == e["id"]:
+                x.update(fields)
+        inventory._write(self.V, data["entries"])
+        return e
+
+    def config(self, **kw):
+        (self.V / ".system" / "config.json").write_text(json.dumps(kw), encoding="utf-8")
+
+    def test_15_no_vault_option(self):
+        """S1：不收 --vault，總資料夾只從 cwd 找。"""
+        fake = self.tmp  # 報告的重現：在來源的上層放一份空的 sources.json 當假總資料夾
+        (fake / ".system").mkdir(parents=True)
+        (fake / ".system" / "sources.json").write_text('{"schema_version": 1, "sources": []}', encoding="utf-8")
+        r = self.kb("convert", str(self.raw / "公司行政" / "薪資" / "網銀密碼.txt"), "--vault", str(fake))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.temps(), [])
+        self.assertFalse((fake / ".system" / "temp").exists())
+
+    def test_15_outside_vault_cwd(self):
+        r = self.kb("convert", str(self.raw / _cards.MEETING), cwd=self.tmp)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout.splitlines()[0], "這裡不是知識庫；到知識庫裡執行")
+        r = self.kb("convert", str(self.raw / _cards.MEETING), "--json", cwd=self.tmp)
+        self.assertEqual(r.returncode, 3)
+        self.assertTrue(json.loads(r.stdout)["unreadable"])
+
+    def test_16_entry_id_never_becomes_path(self):
+        """S2：清冊 id 不合 f-／out- 格式就用指紋當檔名，不會寫到 temp 以外。"""
+        md = (self.V / "系統" / "待處理.md").read_bytes()
+        self.set_entry(_cards.MEETING, id="../../系統/待處理")
+        r = self.kb("convert", str(self.raw / _cards.MEETING))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        temp = Path(r.stdout.splitlines()[0][len("暫存檔："):])
+        self.assertRegex(temp.name, r"^[0-9a-f]{12}\.md$")
+        self.assertEqual(temp.parent, self.temp.resolve())
+        self.assertEqual((self.V / "系統" / "待處理.md").read_bytes(), md)
+
+    @unittest.skipUnless(os.name == "nt", "junction 只在 Windows")
+    def test_17_junction_temp_not_cleaned(self):
+        """S3：.system/temp 是 junction 就不清，記一行 log。"""
+        import subprocess
+        target = self.tmp / "別處"
+        target.mkdir()
+        (target / "留著.txt").write_text("x", encoding="utf-8")
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(self.temp), str(target)], check=True, capture_output=True)
+        self.config(temp_keep_hours=0)
+        self.kb("convert", "file://報價與合約/信義王/報價_v2.pdf")
+        self.assertTrue((target / "留著.txt").is_file())
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8")
+        self.assertIn("temp", log)
+
+    def test_17_refused_call_does_not_clean(self):
+        e = _cards.entry_of(self.V, _cards.MEETING)
+        self.kb("convert", e["id"])
+        self.config(temp_keep_hours=0)
+        r = self.kb("convert", str(self.raw / "公司行政" / "薪資" / "網銀密碼.txt"))
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(self.temps(), [f"{e['id']}.md"])
+
+    def test_17_only_plain_files_cleaned(self):
+        self.temp.mkdir(parents=True)
+        (self.temp / "子夾").mkdir()
+        (self.temp / "子夾" / "a.md").write_text("x", encoding="utf-8")
+        self.config(temp_keep_hours=0)
+        self.kb("convert", "file://報價與合約/信義王/報價_v2.pdf")
+        self.assertTrue((self.temp / "子夾" / "a.md").is_file())
+
+    @unittest.skipUnless(os.name == "nt", "msvcrt 只在 Windows")
+    def test_18_locked_file(self):
+        """C1：原檔被 Word／Excel 鎖住 → exit 3 一句，不寫待處理；--json 也印 JSON。"""
+        import msvcrt
+        p = self.raw / _cards.MEETING
+        with open(p, "r+b") as f:
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, p.stat().st_size)
+            try:
+                r = self.kb("convert", str(p))
+                rj = self.kb("convert", str(p), "--json")
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, p.stat().st_size)
+        self.assertEqual((r.returncode, r.stdout.splitlines()), (3, [LOCKED]), r.stderr)
+        self.assertEqual(rj.returncode, 3)
+        self.assertEqual(json.loads(rj.stdout)["unreadable"], LOCKED[len("讀不到："):])
+        self.assertEqual(self.items(), [])
+
+    def test_18_json_on_broken_state(self):
+        (self.V / ".system" / "inventory.json").write_text("{", encoding="utf-8")
+        r = self.kb("convert", str(self.raw / _cards.MEETING), "--json")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("狀態檔壞了", json.loads(r.stdout)["unreadable"])
+
+    def test_24_too_large(self):
+        """S7：清冊標 too_large 的擋；抽字超過 fingerprint_max_bytes 的丟檔案太大。"""
+        self.set_entry(_cards.MEETING, read="too_large")
+        r = self.kb("convert", str(self.raw / _cards.MEETING))
+        self.assertEqual((r.returncode, r.stdout.splitlines()[0]), (3, "讀不到：檔案太大"))
+        self.set_entry(_cards.MEETING, read="ok")
+        self.config(fingerprint_max_bytes=20)
+        r = self.kb("convert", str(self.raw / _cards.MEETING))
+        self.assertEqual((r.returncode, r.stdout.splitlines()[0]), (3, "讀不到：檔案太大"))
+        r = self.kb("convert", "file://報價與合約/合約範本.txt")
+        self.assertEqual((r.returncode, r.stdout.splitlines()[0]), (3, "讀不到：檔案太大"))
+        self.assertEqual(self.temps(), [])
+
+    def test_25_xlsx_truncated_is_big(self):
+        x = _ooxml.xlsx(self.raw / "客戶案件" / "大表.xlsx", [("總表", [[("inline", f"第{i}列" + "很長" * 25)] for i in range(1, 60)])])
+        self.scan()
+        self.config(card_source_big_chars=100)
+        r = self.kb("convert", str(x))
+        self.assertIn("大檔：照 carding.md 摘要加定位", r.stdout.splitlines())
+        temp = Path(r.stdout.splitlines()[0][len("暫存檔："):])
+        self.assertTrue(temp.read_text(encoding="utf-8").rstrip().splitlines()[-1].startswith("（只抽到工作表「總表」"))
+        self.assertTrue(json.loads(self.kb("convert", str(x), "--json").stdout)["big"])
+
+
 if __name__ == "__main__":
     unittest.main()

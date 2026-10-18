@@ -234,5 +234,101 @@ class AfterTest(Base):
         self.assertEqual(extract.kind_by_name(self.tmp / "不存在.pdf"), "pdf")
 
 
+PDF_FIX = Path(__file__).resolve().parent / "fixtures" / "pdf"
+TEXT_PDF = PDF_FIX / "文字兩頁.pdf"
+IMAGE_PDF = PDF_FIX / "只有圖.pdf"
+
+
+def has_pdfium():
+    try:
+        import pypdfium2  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def png_size(path):
+    """讀 PNG 的 IHDR 寬高，順便把 IDAT 解壓驗長度（RGB、每列一個濾波位元組）。"""
+    import struct
+    import zlib
+    data = Path(path).read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    pos, idat, size = 8, b"", None
+    while pos < len(data):
+        n = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + n]
+        crc = struct.unpack(">I", data[pos + 8 + n:pos + 12 + n])[0]
+        assert crc == zlib.crc32(kind + body) & 0xFFFFFFFF, kind
+        if kind == b"IHDR":
+            size = struct.unpack(">II", body[:8])
+            assert body[8:13] == bytes([8, 2, 0, 0, 0])  # 8 位元、RGB、無交錯
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + n
+    w, h = size
+    assert len(zlib.decompress(idat)) == h * (1 + w * 3)
+    return w, h
+
+
+class Pdf(Base):
+    """測試後修正裁定 36：PDF 走選配 pypdfium2。"""
+
+    def test_missing_package(self):
+        import sys
+        from unittest import mock
+        with mock.patch.dict(sys.modules, {"pypdfium2": None}):
+            with self.assertRaises(extract.Unreadable) as cm:
+                extract.pdf_pages_text(TEXT_PDF, 10)
+        self.assertEqual(str(cm.exception), "還沒裝 PDF 元件（pip install pypdfium2）")
+
+    @unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+    def test_text_pages_and_scanned(self):
+        text, pages, scanned = extract.pdf_pages_text(TEXT_PDF, 10)
+        self.assertEqual((pages, scanned), (2, [2]))
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "<!-- 第 1 頁 -->")
+        self.assertIn("Quote v2 total 1280000 NTD", lines)
+        self.assertIn("<!-- 第 2 頁 -->", lines)
+        self.assertNotIn("\r", text)
+        self.assertNotIn("p2", text)  # 掃描頁只留頁碼註解
+
+    @unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+    def test_image_only_pdf_is_all_scanned(self):
+        text, pages, scanned = extract.pdf_pages_text(IMAGE_PDF, 10)
+        self.assertEqual((pages, scanned), (1, [1]))
+        self.assertEqual(text.strip(), "<!-- 第 1 頁 -->")
+
+    @unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+    def test_render_pages_png(self):
+        out = extract.render_pages(IMAGE_PDF, [1], self.tmp, "f-0a1b2c3d", 1, 20)
+        self.assertEqual([n for n, _p in out], [1])
+        path = out[0][1]
+        self.assertEqual(Path(path).name, "f-0a1b2c3d_p1.png")
+        self.assertEqual(png_size(path), (612, 792))
+        out = extract.render_pages(IMAGE_PDF, [1], self.tmp, "x", 2, 20)
+        self.assertEqual(png_size(out[0][1]), (1224, 1584))
+
+    @unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+    def test_render_limit(self):
+        self.assertEqual(extract.render_pages(TEXT_PDF, [1, 2], self.tmp, "x", 1, 1)[0][0], 1)
+        self.assertEqual(len(extract.render_pages(TEXT_PDF, [1, 2], self.tmp, "x", 1, 1)), 1)
+        self.assertEqual(extract.render_pages(TEXT_PDF, [1, 2], self.tmp, "x", 1, 0), [])
+
+    @unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+    def test_broken_pdf(self):
+        p = self.tmp / "壞.pdf"
+        p.write_bytes(b"%PDF-1.4\n fake quote v2\n%%EOF\n")
+        with self.assertRaises(extract.Unreadable) as cm:
+            extract.pdf_pages_text(p, 10)
+        self.assertTrue(str(cm.exception).startswith("檔案壞了"), str(cm.exception))
+
+    def test_fixtures_small_and_clean(self):
+        for p in (TEXT_PDF, IMAGE_PDF):
+            data = p.read_bytes()
+            self.assertLess(len(data), 20 * 1024)
+            self.assertNotIn(b"Users", data)
+            self.assertNotIn(b"\r\n", data)  # .gitattributes 是 text=auto eol=lf：被當文字時 CRLF 會被改掉、xref 位移就錯
+
+
 if __name__ == "__main__":
     unittest.main()

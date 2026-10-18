@@ -1,24 +1,33 @@
 """kb convert 黑箱（D-099，ingest 製卡第 2 點；驗收 4、5，實作疑義裁定 2、8）：真的跑 CLI。
-三種目標寫法、暫存檔 UTF-8 LF、終端機不印內容（D-022）、PDF／圖片指給 Read、讀不到的原因句與 exit 3、寫待處理與不重複、
+三種目標寫法、暫存檔 UTF-8 LF、終端機不印內容（D-022）、PDF 走 pypdfium2（裁定 36）、圖片指給 Read、讀不到的原因句與 exit 3、
+寫待處理與不重複、
 找不到原檔不寫待處理、排除夾／不在清冊的憑證名／總資料夾外／.system 狀態檔一律拒且不寫暫存、暫存清理、--json 欄位。"""
 import json
 import os
 import shutil
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 from tests import _cards, _ooxml
+from tests._guard_fixture import KB, ROOT
+from tests.test_lib_extract import IMAGE_PDF, TEXT_PDF, has_pdfium
 from tests.test_scripts_inventory_cli import run_kb
 from kb._lib import pending  # noqa: E402
 
 MEETING_TEXT = ("大安陳第一次會議", "討論廚房動線", "廚具 | L 型")
-JSON_KEYS = {"id", "uri", "path", "kind", "temp", "chars", "parts", "encoding", "pages", "big", "unreadable", "pending_id"}
+JSON_KEYS = {"id", "uri", "path", "kind", "temp", "chars", "parts", "encoding", "pages", "big", "unreadable", "pending_id",
+             "scanned_pages", "images"}
+IMG = "客戶案件/平面圖.png"  # 不在清冊、轉換不寫暫存的目標：清理測試用它當「判斷都過的一次 convert」
+PDF_MISSING = "讀不到：還沒裝 PDF 元件（pip install pypdfium2）"
 
 
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp, self.V, self.raw = _cards.make_card_vault()
         self.temp = self.V / ".system" / "temp"
+        (self.raw / IMG).write_bytes(b"\x89PNG\r\n")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -58,19 +67,77 @@ class Convert(Base):
         self.check_meeting(self.kb("convert", str(self.raw / _cards.MEETING)), e["id"])
         self.check_meeting(self.kb("convert", os.path.join("..", "raw", *_cards.MEETING.split("/"))), e["id"])
 
-    def test_pdf_points_to_read(self):
-        r = self.kb("convert", "file://報價與合約/信義王/報價_v2.pdf")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        path = os.path.realpath(self.raw / "報價與合約" / "信義王" / "報價_v2.pdf")
-        self.assertEqual(r.stdout.splitlines(), [f"PDF：頁數不明；用 Read 讀原檔：{path}"])
-        self.assertEqual(self.temps(), [])
-
-    def test_pdf_pages_and_over_limit(self):
-        p = _ooxml.pdf(self.raw / "客戶案件" / "型錄.pdf", pages=25)
+    def pdf(self, src=TEXT_PDF, name="報價.pdf"):
+        p = self.raw / "客戶案件" / name
+        shutil.copy2(src, p)
         self.scan()
+        return p
+
+    @unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+    def test_pdf_text_and_scanned_page_image(self):
+        """裁定 36：文字層進暫存檔，掃描頁轉 PNG，終端機不印內容。"""
+        p = self.pdf()
+        r = self.kb("convert", str(p))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        temp = Path(lines[0][len("暫存檔："):])
+        self.assertEqual(lines[1], "格式：pdf；2 頁；掃描頁 1（已轉圖）")
+        self.assertRegex(lines[2], r"^圖：.+_p2\.png（第 2 頁）$")
+        png = Path(lines[2][len("圖："):lines[2].rindex("（")])
+        self.assertTrue(png.is_file())
+        self.assertEqual(png.parent, self.temp.resolve())
+        self.assertEqual(png.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+        text = temp.read_text(encoding="utf-8")
+        self.assertIn("<!-- 第 1 頁 -->", text)
+        self.assertIn("Quote v2 total 1280000 NTD", text)
+        self.assertNotIn("Quote", r.stdout + r.stderr)
+
+    @unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+    def test_pdf_all_scanned_still_writes_temp(self):
+        p = self.pdf(IMAGE_PDF, "平面配置圖.pdf")
         lines = self.kb("convert", str(p)).stdout.splitlines()
-        self.assertEqual(lines[0], f"PDF：25 頁；用 Read 讀原檔：{os.path.realpath(p)}")
-        self.assertEqual(lines[1], "超過 20 頁：先讀前 20 頁，卡的讀取標「部分」")
+        self.assertEqual(lines[1], "格式：pdf；1 頁；掃描頁 1（已轉圖）")
+        temp = Path(lines[0][len("暫存檔："):])
+        self.assertEqual(temp.read_text(encoding="utf-8").strip(), "<!-- 第 1 頁 -->")
+
+    @unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+    def test_pdf_scanned_over_limit(self):
+        p = self.pdf(IMAGE_PDF, "平面配置圖.pdf")
+        (self.V / ".system" / "config.json").write_text('{"pdf_read_pages_max": 0}', encoding="utf-8")
+        lines = self.kb("convert", str(p)).stdout.splitlines()
+        self.assertIn("掃描頁超過 0 頁：只轉前 0 頁，卡的讀取標「部分」", lines)
+        self.assertFalse(any(ln.startswith("圖：") for ln in lines))
+
+    def run_without_pdfium(self, *args):
+        """在 PYTHONPATH 前面放一個 import 就失敗的 pypdfium2，模擬客戶機器沒裝。"""
+        fake = self.tmp / "nopdf" / "pypdfium2"
+        fake.mkdir(parents=True, exist_ok=True)
+        (fake / "__init__.py").write_text('raise ImportError("模擬沒裝")\n', encoding="utf-8")
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT), PYTHONPATH=str(self.tmp / "nopdf"))
+        return subprocess.run([sys.executable, str(KB), *args], capture_output=True, text=True, encoding="utf-8",
+                              cwd=str(self.V), env=env)
+
+    def test_pdf_without_package_goes_pending_then_comes_back(self):
+        p = self.pdf()
+        r = self.run_without_pdfium("convert", str(p))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], PDF_MISSING)
+        (item,) = self.items()
+        self.assertEqual(r.stdout.splitlines()[1], f"已記進待處理（{item['id']}）")
+        self.assertEqual(item["reason"], PDF_MISSING[len("讀不到："):])
+        md = (self.V / "系統" / "待處理.md").read_text(encoding="utf-8")
+        self.assertIn("請服務人員在這台電腦跑 pip install pypdfium2。", md)
+        r = self.run_without_pdfium("cards", "todo", "--json")
+        self.assertNotIn(item["file_ids"][0], [n["id"] for n in json.loads(r.stdout)["new"]])
+        self.assertEqual(self.items()[0]["status"], "open")
+        if not has_pdfium():
+            return
+        r = self.kb("cards", "todo")
+        self.assertEqual(r.stdout.splitlines()[0], "PDF 元件裝好了，1 份 PDF 回到待製卡")
+        (item,) = self.items()
+        self.assertEqual((item["status"], item["how"]), ("done", "PDF 元件裝好了"))
+        new = json.loads(self.kb("cards", "todo", "--json").stdout)["new"]
+        self.assertIn(item["file_ids"][0], [n["id"] for n in new])
 
     def test_image_points_to_read(self):
         p = self.raw / "客戶案件" / "平面圖.PNG"
@@ -110,8 +177,13 @@ class Convert(Base):
         self.assertEqual((data["id"], data["uri"], data["kind"]), (e["id"], "file://" + _cards.MEETING, "docx"))
         self.assertTrue(Path(data["temp"]).is_file())
         self.assertIsNone(data["unreadable"])
-        pdf = json.loads(self.kb("convert", "file://報價與合約/信義王/報價_v2.pdf", "--json").stdout)
-        self.assertEqual((pdf["kind"], pdf["temp"], pdf["pages"]), ("pdf", None, None))
+        self.assertEqual((data["scanned_pages"], data["images"]), (None, None))
+        if has_pdfium():
+            pdf = json.loads(self.kb("convert", str(self.pdf()), "--json").stdout)
+            self.assertEqual((pdf["kind"], pdf["pages"], pdf["scanned_pages"]), ("pdf", 2, [2]))
+            self.assertTrue(Path(pdf["temp"]).is_file())
+            self.assertEqual(len(pdf["images"]), 1)
+            self.assertTrue(Path(pdf["images"][0]).is_file())
 
     def test_unregistered_vault_file_uses_fingerprint_name(self):
         """對不到清冊也照轉（總資料夾三區裡的新檔還沒 scan），暫存檔名用指紋前 12 碼，不寫待處理。"""
@@ -218,13 +290,13 @@ class TempCleanup(Base):
         self.kb("convert", e["id"])
         self.assertEqual(self.temps(), [f"{e['id']}.md"])
         (self.V / ".system" / "config.json").write_text('{"temp_keep_hours": 0}', encoding="utf-8")
-        self.kb("convert", "file://報價與合約/信義王/報價_v2.pdf")
+        self.kb("convert", str(self.raw / IMG))
         self.assertEqual(self.temps(), [])
 
     def test_fresh_temp_kept(self):
         e = _cards.entry_of(self.V, _cards.MEETING)
         self.kb("convert", e["id"])
-        self.kb("convert", "file://報價與合約/信義王/報價_v2.pdf")
+        self.kb("convert", str(self.raw / IMG))
         self.assertEqual(self.temps(), [f"{e['id']}.md"])
 
 
@@ -285,7 +357,7 @@ class AfterTest(Base):
         (target / "留著.txt").write_text("x", encoding="utf-8")
         subprocess.run(["cmd", "/c", "mklink", "/J", str(self.temp), str(target)], check=True, capture_output=True)
         self.config(temp_keep_hours=0)
-        self.kb("convert", "file://報價與合約/信義王/報價_v2.pdf")
+        self.kb("convert", str(self.raw / IMG))
         self.assertTrue((target / "留著.txt").is_file())
         log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8")
         self.assertIn("temp", log)
@@ -303,7 +375,7 @@ class AfterTest(Base):
         (self.temp / "子夾").mkdir()
         (self.temp / "子夾" / "a.md").write_text("x", encoding="utf-8")
         self.config(temp_keep_hours=0)
-        self.kb("convert", "file://報價與合約/信義王/報價_v2.pdf")
+        self.kb("convert", str(self.raw / IMG))
         self.assertTrue((self.temp / "子夾" / "a.md").is_file())
 
     @unittest.skipUnless(os.name == "nt", "msvcrt 只在 Windows")

@@ -7,10 +7,13 @@ _shared_strings、_cell_value、_number（搬過來，content_fp import 這裡�
 - xlsx：每個工作表一段 ## 工作表「名」（workbook 順序，名稱經 rels 對檔），每列一行「第 N 列：」開頭（實作疑義裁定 1）、格用 | 接、
   空列跳過；公式格沒快取值印 =<公式>（無快取值）（I-012）；超過 max_chars 停、最後一行標只抽到哪。
 - pptx：每張投影片一段 ## 投影片 N（presentation 順序），備忘稿只取 body 佔位框，以（備忘稿）開頭接在後面。
+- pdf（測試後修正裁定 36，D-099 修訂）：選配套件 pypdfium2 逐頁抽文字層，每頁前面 <!-- 第 N 頁 -->；去空白後少於 min_chars 的頁
+  算掃描頁，render_pages 轉成 PNG（PNG 用標準函式庫 zlib 自己寫，不裝 Pillow）。沒裝丟 Unreadable("還沒裝 PDF 元件（…）")。
 """
 import os
 import posixpath
 import re
+import struct
 import zipfile
 import zlib
 import xml.etree.ElementTree as ET
@@ -26,6 +29,10 @@ R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 PR = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 TOO_LARGE = "檔案太大"
+PDF_MISSING = "還沒裝 PDF 元件（pip install pypdfium2）"
+PDF_ENCRYPTED = "有密碼"
+PDF_BROKEN = "檔案壞了：PDF 打不開"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 CHECK_EVERY = 1000
 CFB_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 PDF_SCAN_BYTES = 2 * 1024 * 1024
@@ -432,6 +439,115 @@ def probe(path):
     if ext in IMAGE_EXTS:
         return "image"
     return "unsupported"
+
+
+def _pdfium():
+    """選配套件；沒裝（或 sys.modules 裡是 None）丟 Unreadable(PDF_MISSING)。"""
+    try:
+        import pypdfium2
+    except ImportError:
+        raise Unreadable(PDF_MISSING) from None
+    return pypdfium2
+
+
+def _open_pdf(pdfium, path):
+    try:
+        return pdfium.PdfDocument(long_path(path))
+    except pdfium.PdfiumError as e:
+        if "password" in str(e).lower():
+            raise Unreadable(PDF_ENCRYPTED) from None
+        raise Unreadable(PDF_BROKEN) from None
+
+
+def pdf_pages_text(path, min_chars, should_stop=None):
+    """回 (text, 頁數, 掃描頁清單)。每頁前面一行 <!-- 第 N 頁 -->；去空白後少於 min_chars 字的頁算掃描頁，只留頁碼註解。
+    should_stop 每頁問一次，回真就停在那頁之前。"""
+    pdfium = _pdfium()
+    doc = _open_pdf(pdfium, path)
+    try:
+        parts, scanned = [], []
+        total = len(doc)
+        for i in range(total):
+            if should_stop is not None and should_stop():
+                break
+            page = doc[i]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    text = textpage.get_text_range()
+                finally:
+                    textpage.close()
+            finally:
+                page.close()
+            text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+            parts.append(f"<!-- 第 {i + 1} 頁 -->")
+            if len("".join(text.split())) < min_chars:
+                scanned.append(i + 1)
+            else:
+                parts.append(text)
+        return "\n".join(parts), total, scanned
+    except pdfium.PdfiumError:
+        raise Unreadable(PDF_BROKEN) from None
+    finally:
+        doc.close()
+
+
+# 位元組在 bitmap buffer 裡的順序 → 取 R、G、B 的位置（pypdfium2 的 mode）
+_CHANNELS = {"RGB": (0, 1, 2), "BGR": (2, 1, 0), "RGBA": (0, 1, 2), "RGBX": (0, 1, 2), "BGRA": (2, 1, 0),
+             "BGRX": (2, 1, 0), "L": (0, 0, 0)}
+
+
+def _png(width, height, rows):
+    """rows 是每列 RGB 位元組；寫成 8 位元 RGB、濾波 0、zlib 壓縮的 PNG。"""
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + row for row in rows)
+    return PNG_SIGNATURE + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
+
+
+def _rgb_rows(bitmap):
+    order = _CHANNELS.get(bitmap.mode)
+    if order is None:
+        raise Unreadable(f"檔案壞了：PDF 頁面格式不認得（{bitmap.mode}）")
+    n, width, stride = bitmap.n_channels, bitmap.width, bitmap.stride
+    buf = bytes(bitmap.buffer)
+    for y in range(bitmap.height):
+        row = buf[y * stride:y * stride + width * n]
+        out = bytearray(width * 3)
+        out[0::3], out[1::3], out[2::3] = row[order[0]::n], row[order[1]::n], row[order[2]::n]
+        yield bytes(out)
+
+
+def render_pages(path, pages, out_dir, stem, scale, limit):
+    """掃描頁轉 PNG：<out_dir>/<stem>_p<N>.png，最多 limit 頁。回 [(頁碼, 絕對路徑)]。stem 由呼叫端驗過（裁定 16）。"""
+    pages = list(pages)[:max(limit, 0)]
+    if not pages:
+        return []
+    pdfium = _pdfium()
+    doc = _open_pdf(pdfium, path)
+    out = []
+    try:
+        for n in pages:
+            page = doc[n - 1]
+            try:
+                bitmap = page.render(scale=scale)
+                try:
+                    data = _png(bitmap.width, bitmap.height, _rgb_rows(bitmap))
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+            target = Path(out_dir) / f"{stem}_p{n}.png"
+            tmp = target.with_name(target.name + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, target)
+            out.append((n, str(target.resolve())))
+    except pdfium.PdfiumError:
+        raise Unreadable(PDF_BROKEN) from None
+    finally:
+        doc.close()
+    return out
 
 
 def pdf_pages(path):

@@ -53,6 +53,8 @@ def _todo_lines(vault, data, limit):
     moved, unreadable, missing, broken, dups = (len(data[k]) for k in ("moved", "unreadable", "missing", "broken",
                                                                       "duplicates"))
     lines = []
+    if data.get("pdf_restored"):
+        lines.append(f"PDF 元件裝好了，{data['pdf_restored']} 份 PDF 回到待製卡")
     if new or stale or moved or unreadable or missing or broken or dups:
         first = (f"待製卡 {new + stale} 份（新 {new}、重做 {stale}）；搬動 {moved}；"
                  f"讀不到 {unreadable}、原檔不見 {missing}（見 系統/待處理.md）")

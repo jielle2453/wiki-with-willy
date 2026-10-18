@@ -14,7 +14,7 @@
 | `.claude/settings.json` | repo 內的權限：只放行測試與 `kb.py` |
 | `README.md` `CHANGELOG.md` `LICENSE` | 給使用者的說明、一版一段的變更、MIT |
 | `.gitattributes` `.gitignore` | 行尾一律 LF；不進 repo 的東西 |
-| `config/defaults.json` | 門檻與預設數字，每個鍵旁一個 `_why_<鍵>`；`schema_version`、`big_change_synthesis_max`、`source_spec_max_up`、`credential_scan_max_entries`、`prompt_head_max`（問的長度）、`journal_result_max`（日誌結果字數）、`fingerprint_max_bytes`（單檔算指紋上限）、`changes_quick_hash_budget_bytes`、`changes_quick_seconds`（開場快速比對的讀取與時間預算）、`ingest_auto_max`（開場自動製卡上限）、`pdf_read_pages_max`、`card_source_big_chars`、`card_title_max_chars`、`temp_keep_hours`（製卡） |
+| `config/defaults.json` | 門檻與預設數字，每個鍵旁一個 `_why_<鍵>`；`schema_version`、`big_change_synthesis_max`、`source_spec_max_up`、`credential_scan_max_entries`、`prompt_head_max`（問的長度）、`journal_result_max`（日誌結果字數）、`fingerprint_max_bytes`（單檔算指紋上限）、`changes_quick_hash_budget_bytes`、`changes_quick_seconds`（開場快速比對的讀取與時間預算）、`ingest_auto_max`（開場自動製卡上限）、`pdf_read_pages_max`、`pdf_page_min_chars`、`pdf_render_scale`、`card_source_big_chars`、`card_title_max_chars`、`temp_keep_hours`（製卡） |
 | `scripts/kb.py` | 唯一 CLI 入口（D-013）。不動 `sys.path` |
 | `scripts/kb/cli.py` | argparse 主程式；子命令註冊表 `COMMANDS` |
 | `scripts/kb/version.py` | 子命令 `version` |
@@ -22,7 +22,7 @@
 | `scripts/kb/guard_cli.py` | 子命令 `guard decide`：模擬一次判斷，查「為什麼擋」，不留痕、不備份 |
 | `scripts/kb/versions.py` | 子命令 `versions list`／`revert`／`delete-outputs`：列回合、退回最近一次、刪已退回回合留著的成品（D-074、D-011）；成品只算清冊 `origin` 是 `ai_output` 的；清冊讀不到時 list 不印成品數、revert 照 manifest 還原、跳過成品對帳 |
 | `scripts/kb/inventory_cli.py` | 子命令 `inventory scan`：全掃來源與總資料夾，把變動套進清冊（寫前備進回合、終端機記程式段，有動到待處理時 changed 多兩檔）；`--source` 只掃一個來源 |
-| `scripts/kb/convert.py` | 子命令 `convert <目標>`：不收 `--vault`、總資料夾只從 cwd 找；編號、uri 或路徑 → 抽字寫 `.system/temp/`（寫前清超過 `temp_keep_hours` 的一般檔，temp 是連結不清；檔名只用驗過的編號），PDF、圖片指給 Read；抽字前照守門同一套判斷（排除、憑證名、Z11、Z1／Z6／Z7／Z8 拒）；讀不到 exit 3，條目在清冊就記 unreadable 待處理；終端機不印內容 |
+| `scripts/kb/convert.py` | 子命令 `convert <目標>`：不收 `--vault`、總資料夾只從 cwd 找；編號、uri 或路徑 → 抽字寫 `.system/temp/`（寫前清超過 `temp_keep_hours` 的一般檔，temp 是連結不清；檔名只用驗過的編號），PDF 經 pypdfium2 抽文字層、掃描頁轉 PNG，圖片指給 Read；抽字前照守門同一套判斷（排除、憑證名、Z11、Z1／Z6／Z7／Z8 拒）；讀不到 exit 3，條目在清冊就記 unreadable 待處理；終端機不印內容 |
 | `scripts/kb/cards.py` | 子命令 `cards todo`／`sync`／`drop`／`index`：列該做的卡（不寫檔）、卡跟著原檔搬與收斂同編號多張、原檔已刪拿掉卡、重寫 `總目錄.md`；改檔前備進回合、終端機記程式段 |
 | `scripts/kb/pending_cli.py` | 子命令 `pending list`／`resolve`／`dismiss`：看與處理待處理 |
 | `scripts/kb/changes.py` | 子命令 `changes`：跟清冊上次掃描比，列新增、修改、搬動、不見、之前就不見；只讀不寫、不開回合；`--quick` 走開場那條路 |
@@ -37,7 +37,7 @@
 | `scripts/kb/_lib/journal.py` | 工作日誌（D-082～D-086）：真相 `.system/journal/YYYY-MM.jsonl`，`begin_turn`（中斷補記加開口，同月一把鎖）、`complete_turn`（同一行 upsert）、`finish_fields`（做了：AI 優先、地板句；改了取 `journal_turn` 與目前回合兩份 manifest 的聯集）、`update_turn`、`record_program`（代號一律現在時間）、`floor_note`、`cut_result`（全文一行有遮到就不抽段；否則抽結論段、壓一行、截）、`recent`、`render`（整月寫 `系統/工作日誌/YYYY-MM.md`，最新在上）；鎖住讀改寫，渲染失敗只記 log，壞行跳過留著 |
 | `scripts/kb/_lib/inventory.py` | 清冊（schema 2，D-093～D-096）：`apply` 寫完接待處理（`sync_missing`、modified 關 unreadable，失敗只記 log）並回有沒有改到；`uri_of`（路徑→uri）、`entry_for`（uri→條目）；`.system/inventory.json` 一筆一份內容（位置清單、指紋、read、status）；`load` 遷移 1→2、形狀不對丟 `ValueError`；`scan`（純函式：走訪、比出新增、修改、搬動、重複、不見；`quick` 給開場）、`apply`（鎖裡備份再寫）、`reconcile`（unused 排除、拿掉來源標 excluded；hidden 排除直接拿掉、不留檔名）、`path_of`；快速模式每算一塊指紋前查時間；`register_output`、`outputs_of_turn`、`set_status` |
 | `scripts/kb/_lib/content_fp.py` | OOXML 內容指紋（D-096）：docx、xlsx、pptx 抽文字算 sha256，認 Office 另存的假變動；`iterparse` 邊讀邊丟、可喊停，抽不出來一律回 None；共用抽字住 `extract`；標準函式庫 |
-| `scripts/kb/_lib/extract.py` | 抽字（D-099）：`docx_text`、`xlsx_text`（每行「第 N 列：」）、`pptx_text`、`plain_text`（不猜編碼、解不了丟 `Unreadable`）、`probe`（格式、舊格式、加密）、`kind_by_name`（只看副檔名）、`pdf_pages`；抽字有 `max_bytes` 上限；`content_fp` 共用的 `_events`、`_paragraphs`、`_shared_strings`、`_cell_value`、`_number` |
+| `scripts/kb/_lib/extract.py` | 抽字（D-099）：`docx_text`、`xlsx_text`（每行「第 N 列：」）、`pptx_text`、`plain_text`（不猜編碼、解不了丟 `Unreadable`）、`probe`（格式、舊格式、加密）、`kind_by_name`（只看副檔名）、`pdf_pages`、`pdf_pages_text` 與 `render_pages`（選配 pypdfium2，PNG 用 zlib 自己寫，裁定 36）；抽字有 `max_bytes` 上限；`content_fp` 共用的 `_events`、`_paragraphs`、`_shared_strings`、`_cell_value`、`_number` |
 | `scripts/kb/_lib/cards.py` | 檔案卡（D-101、D-104、D-105）：`parse_front`、`KEYS`、`ORIGIN_TEXT`、`card_dir`、`open_link`、`safe_title`、`filename_ok`、`header_for`、`scan_cards`、`validate`（型別先驗、任何例外都擋，只報第一個錯）、`todo`（分桶含 duplicates、不寫檔、kind 只看副檔名）、`rewrite_locations`、`render_index`（總目錄，有 turn_id 先備份） |
 | `scripts/kb/_lib/pending.py` | 待處理（D-102）：`.system/pending.json` schema 1 與渲染 `系統/待處理.md`；`add`（去重）、`resolve`、`dismiss`、`auto_done`、`sync_missing`；寫前兩檔都備進回合 |
 | `scripts/kb/_lib/env.py` | `.system/env.json` 按機器記「找不到的來源已報過」：`missing_reported`、`mark_missing`、`clear_missing`；壞檔當空的重建 |

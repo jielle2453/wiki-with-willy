@@ -306,6 +306,29 @@ def _created_date(entry):
     return first[:10] if _DATE.match(first[:10]) else None
 
 
+PDF_MISSING_HEAD = "還沒裝 PDF 元件"
+PDF_BACK = "PDF 元件裝好了"
+
+
+def _restore_pdf(vault):
+    """裁定 36：pypdfium2 裝好了，就把 reason 是「還沒裝 PDF 元件」的 open／dismissed 待處理 done（備進回合），回關掉幾份。
+    todo 只有這一處會寫檔；沒有這種條目就什麼都不碰。"""
+    from kb._lib import extract, pending, turn
+    try:
+        extract._pdfium()
+        items = pending.load(vault)["items"]
+    except (extract.Unreadable, ValueError):
+        return 0
+    fids = {(i.get("file_ids") or [None])[0] for i in items
+            if i.get("kind") == "unreadable" and i.get("status") in ("open", "dismissed")
+            and str(i.get("reason") or "").startswith(PDF_MISSING_HEAD)}
+    if not fids:
+        return 0
+    turn_id = turn.current(vault)["turn"]
+    return sum(1 for fid in fids
+               if pending.auto_done(vault, fid, "unreadable", PDF_BACK, turn_id, statuses=("open", "dismissed")))
+
+
 def _mtime(vault, rel):
     try:
         return (Path(vault) / rel).stat().st_mtime
@@ -317,6 +340,7 @@ def todo(vault, sources):
     """讀清冊 active 條目、卡與待處理，分 new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped（D-104）。
     不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
     from kb._lib import extract, inventory, pending
+    restored = _restore_pdf(vault)
     entries = inventory.load(vault)["entries"]
     by_id = {e.get("id"): e for e in entries}
     try:
@@ -334,7 +358,7 @@ def todo(vault, sources):
     missing_open = {first_file(i): i for i in opened if i.get("kind") == "missing_file"}
     groups, broken = _scan_groups(vault)
     out = {"new": [], "stale": [], "moved": [], "duplicates": [], "orphans": [], "unreadable": [], "missing": [],
-           "skipped": {k: 0 for k in SKIPPED_READS}, "broken": list(broken)}
+           "skipped": {k: 0 for k in SKIPPED_READS}, "broken": list(broken), "pdf_restored": restored}
     today = date.today().isoformat()
 
     def work_item(entry, card):

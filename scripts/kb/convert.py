@@ -1,4 +1,5 @@
-"""kb convert <目標>（D-099，ingest 製卡第 2 點）：把一份原檔抽成純文字暫存檔給製卡者 Read；PDF、圖片只指路給 Read。
+"""kb convert <目標>（D-099，ingest 製卡第 2 點）：把一份原檔抽成純文字暫存檔給製卡者 Read；圖片只指路給 Read。
+PDF 走選配 pypdfium2（裁定 36）：文字層寫暫存檔，掃描頁轉 PNG 到 .system/temp/；沒裝 exit 3 進待處理。
 
 目標三種寫法：清冊編號（f-…、out-…）、uri（file://別名/相對路徑）、磁碟路徑（絕對或相對 cwd）；路徑經 inventory.uri_of
 反查清冊條目，對不到也照轉但不寫待處理。總資料夾只從 cwd 往上找，不收 --vault（測試後修正裁定 15：會把原檔內容帶給 AI 的
@@ -42,7 +43,7 @@ LOCKED = "檔案被別的程式開著或沒有權限，關掉 Word／Excel 再�
 BROKEN = "檔案壞了"
 BAD_TEMP = "暫存位置不對"
 JSON_KEYS = ("id", "uri", "path", "kind", "temp", "chars", "parts", "encoding", "pages", "big", "unreadable",
-             "pending_id")
+             "pending_id", "scanned_pages", "images")
 # 讀不到的第一行（「讀不到：」後面）與待處理記的 reason
 KIND_REASONS = {
     "legacy_office": ("舊格式（{ext}），請另存成新格式", "舊格式（{ext}）"),
@@ -172,7 +173,7 @@ def convert(vault, sources, entry, path):
     """回 (result dict, 印給人的行)。讀不到丟 Refused。"""
     real = os.path.realpath(str(path))
     result = {"kind": None, "temp": None, "chars": None, "parts": None, "encoding": None, "pages": None,
-              "big": False, "path": real}
+              "big": False, "path": real, "scanned_pages": None, "images": None}
     kind = extract.probe(path)
     result["kind"] = kind
     ext = Path(str(path)).suffix.lower() or "沒有副檔名"
@@ -180,14 +181,7 @@ def convert(vault, sources, entry, path):
         first, reason = KIND_REASONS[kind]
         raise Refused(first.format(ext=ext), reason.format(ext=ext))
     if kind == "pdf":
-        pages = extract.pdf_pages(path)
-        result["pages"] = pages
-        lines = [f"PDF：{f'{pages} 頁' if pages else '頁數不明'}；用 Read 讀原檔：{real}"]
-        limit = config.get(vault, "pdf_read_pages_max")
-        if pages and pages > limit:
-            lines.append(f"超過 {limit} 頁：先讀前 {limit} 頁，卡的讀取標「部分」")
-        clean_temp(vault)
-        return result, lines
+        return _convert_pdf(vault, entry, path, result)
     if kind == "image":
         clean_temp(vault)
         return result, [f"圖片：用 Read 看：{real}"]
@@ -195,12 +189,7 @@ def convert(vault, sources, entry, path):
         text, parts, encoding = _extract(vault, kind, path)
     except extract.Unreadable as e:
         raise Refused(str(e), str(e)) from None
-    d = Path(vault) / TEMP_POSIX
-    temp = d / _temp_name(entry, path)
-    clean_temp(vault)
-    d.mkdir(parents=True, exist_ok=True)
-    if os.path.realpath(str(temp.parent)) != os.path.realpath(str(d)):
-        raise Refused(BAD_TEMP, None)
+    _d, temp = _temp_target(vault, entry, path)
     kio.write_text_atomic(temp, text + ("\n" if text and not text.endswith("\n") else ""))
     chars = len(text)
     truncated = kind == "xlsx" and bool(text) and text.splitlines()[-1].startswith("（只抽到工作表「")
@@ -214,6 +203,44 @@ def convert(vault, sources, entry, path):
         lines.append("大檔：照 carding.md 摘要加定位")
     if chars == 0:
         lines.append("轉換結果是空的")
+    return result, lines
+
+
+def _temp_target(vault, entry, path):
+    """回 (temp 夾, 暫存檔路徑)；判斷都過了才清舊暫存（裁定 17），父夾不是 temp 就拒（裁定 16）。"""
+    d = Path(vault) / TEMP_POSIX
+    temp = d / _temp_name(entry, path)
+    clean_temp(vault)
+    d.mkdir(parents=True, exist_ok=True)
+    if os.path.realpath(str(temp.parent)) != os.path.realpath(str(d)):
+        raise Refused(BAD_TEMP, None)
+    return d, temp
+
+
+def _convert_pdf(vault, entry, path, result):
+    """裁定 36：pypdfium2 抽文字層寫暫存檔（每頁頁碼註解），掃描頁轉 PNG（最多 pdf_read_pages_max 頁）。"""
+    try:
+        text, pages, scanned = extract.pdf_pages_text(path, config.get(vault, "pdf_page_min_chars"))
+    except extract.Unreadable as e:
+        raise Refused(str(e), str(e)) from None
+    d, temp = _temp_target(vault, entry, path)
+    limit = config.get(vault, "pdf_read_pages_max")
+    try:
+        images = extract.render_pages(path, scanned, d, temp.stem, config.get(vault, "pdf_render_scale"), limit)
+    except extract.Unreadable as e:
+        raise Refused(str(e), str(e)) from None
+    kio.write_text_atomic(temp, text + ("\n" if text and not text.endswith("\n") else ""))
+    chars = len(text)
+    big = chars > config.get(vault, "card_source_big_chars")
+    result.update(temp=str(temp.resolve()), chars=chars, pages=pages, big=big, scanned_pages=scanned,
+                  images=[p for _n, p in images])
+    detail = f"格式：pdf；{pages} 頁" + (f"；掃描頁 {len(scanned)}（已轉圖）" if scanned else "")
+    lines = [f"暫存檔：{temp.resolve()}", detail]
+    lines += [f"圖：{p}（第 {n} 頁）" for n, p in images]
+    if len(scanned) > limit:
+        lines.append(f"掃描頁超過 {limit} 頁：只轉前 {limit} 頁，卡的讀取標「部分」")
+    if big:
+        lines.append("大檔：照 carding.md 摘要加定位")
     return result, lines
 
 

@@ -308,12 +308,17 @@ def _parse_exclusions(rows):
     return out
 
 
-def _parse_synthesis(rows, types):
-    """第四節：型別要在第一節（比對不分全半形大小寫，存第一節的寫法）；同型別的段落併一筆，來源日期取第一列。"""
+def _parse_synthesis(rows, types, known_types=()):
+    """第四節：型別要在第一節（比對不分全半形大小寫，存第一節的寫法）；同型別的段落併一筆，來源日期取第一列。
+    known_types 是舊 JSON 第一節的型別：這次從第一節拿掉的，它在第四節的列不算錯、整批丟掉（實作回報裁定 1）；
+    從來不在第一節的（多半打錯字）才報錯。"""
     names = {_key(t["name"]): t["name"] for t in types}
+    dropped = {_key(n) for n in known_types} - set(names)
     out, by_type, seen = [], {}, {}
     for m, cells in enumerate(rows, 1):
         (tname, section, required, hint), extra = _columns(4, m, cells)
+        if _key(tname) in dropped:
+            continue
         if _key(tname) not in names:
             _err(4, m, f"的型別「{tname}」不在第 1 節")
         if not section:
@@ -365,10 +370,11 @@ def _parse_about(rows, types, max_chars):
     return out
 
 
-def parse_md(text, max_type_chars=TYPE_NAME_MAX, legacy=False):
+def parse_md(text, max_type_chars=TYPE_NAME_MAX, legacy=False, known_types=()):
     """md → {"types", "card_types", "exclusions", "synthesis_sections", "about"}（跟 JSON 同形，source／date 沒填是 None）；
     讀不懂丟 ProfileError。各節都在但沒有任何列算成功；少任何一節就是錯（I-097：命中 0 節不回空）。型別名長度上限是 max_type_chars。
-    legacy（JSON 還是 schema 1，舊 md 只有三節）：缺第四、五節不算錯，那兩節回 None，呼叫端取 JSON 遷移補的值。"""
+    legacy（JSON 還是 schema 1，舊 md 只有三節）：缺第四、五節不算錯，那兩節回 None，呼叫端取 JSON 遷移補的值。
+    known_types：舊 JSON 第一節的型別名，第一節拿掉的型別在第四節的列丟掉不報錯（status 傳）。"""
     lines = str(text).lstrip("﻿").splitlines()
     found = _sections(lines)
     for i, num in enumerate(NUMERALS, 1):
@@ -378,7 +384,7 @@ def parse_md(text, max_type_chars=TYPE_NAME_MAX, legacy=False):
     return {"types": types,
             "card_types": _parse_card_types(_table_rows(2, found[2])),
             "exclusions": _parse_exclusions(_table_rows(3, found[3])),
-            "synthesis_sections": _parse_synthesis(_table_rows(4, found[4]), types) if 4 in found else None,
+            "synthesis_sections": _parse_synthesis(_table_rows(4, found[4]), types, known_types) if 4 in found else None,
             "about": _parse_about(_table_rows(5, found[5]), types, max_type_chars) if 5 in found else None}
 
 
@@ -662,7 +668,8 @@ def status(vault):
         try:
             from kb._lib import config
             legacy = stored_schema(vault) == 1
-            new = parse_md(md.read_text(encoding="utf-8"), config.get(vault, "card_title_max_chars"), legacy=legacy)
+            new = parse_md(md.read_text(encoding="utf-8"), config.get(vault, "card_title_max_chars"), legacy=legacy,
+                           known_types=[t["name"] for t in data["types"]])
             for key in NEW_LISTS:  # 舊 md 沒有第四、五節：取 JSON 遷移補的值
                 if new[key] is None:
                     new[key] = copy.deepcopy(data[key])

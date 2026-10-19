@@ -429,6 +429,15 @@ class SchemaTwo(unittest.TestCase):
             with self.subTest(want=want):
                 self.assertEqual(message(text), want)
 
+    def test_removed_type_rows_dropped_only_when_known(self):
+        """實作回報裁定 1：舊 JSON 第一節有、這次拿掉的型別，第四節的列丟掉；從來不在第一節的照樣報錯。"""
+        text = with_rows(self.base(), "四", ["| 工地 | 時程 |  | x |", "| 案子 | 金額 |  | y |"])
+        self.assertEqual(message(text), "第 4 節第 1 列的型別「工地」不在第 1 節")
+        got = profile.parse_md(text, known_types=["案子", "工地"])
+        self.assertEqual([(s["type"], [x["name"] for x in s["sections"]]) for s in got["synthesis_sections"]],
+                         [("案子", ["金額"])])
+        self.assertEqual(message(text, known_types=["案子"]), "第 4 節第 1 列的型別「工地」不在第 1 節")
+
     def test_missing_new_sections_error_unless_legacy(self):
         text = self.base()
         old = text[:text.index("\n## 四、")] + "\n"

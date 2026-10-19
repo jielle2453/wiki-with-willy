@@ -89,7 +89,7 @@ class Check(Base):
         self.assertEqual(self.kb("check").stdout.splitlines(), ["客戶設定檔有改，但沒有內容上的差異"])
 
     def test_detail_lines_for_each_section(self):
-        self.drop_line("| 案子 |")
+        self.drop_line("| 案子 | 事 |")  # 只刪第一節那列：第四節案子的列跟著丟掉（實作回報裁定 1）
         self.add_types(ROW)
         text = self.md_text().replace("| 報價 | 日期與數字 |  |", "| 報價 | 日期與數字 | ✓ |")
         text = text.replace("| 地址 | 只記種類 | 推測 | 2026-10-19 |\n", "| 地址 | 只記種類 | 推測 | 2026-10-19 |\n| 請款 | 不整理 |\n")
@@ -160,14 +160,14 @@ class Apply(Base):
     def test_remove_empty_row_and_refuse_nonempty(self):
         self.add_types(ROW, "| 工班 | 對象 | 施工班底 |")
         self.apply()
-        self.drop_line("| 工班 |")
+        self.drop_line("| 工班 | 對象 |")
         self.assertIn("- 型別 少了 工班（空夾會一起拿掉）", self.kb("check").stdout.splitlines())
         self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 -1（拿掉了空夾 工班）、每類段落 -2"])
         self.assertFalse((self.V / "工班").exists(), "空夾一起拿掉（確認後修正裁定 21）")
         self.assertEqual(self.programs()[-1]["note"], "套用客戶設定檔：型別 -1（拿掉了空夾 工班）、每類段落 -2")
         self.assertEqual([t["name"] for t in self.data()["types"]], ["案子", "工地"])
         (self.V / "工地" / "a.txt").write_text("x", encoding="utf-8")
-        self.drop_line("| 工地 |")
+        self.drop_line("| 工地 | 事 |")
         before_json, before_md = self.data(), self.md_text()
         self.assertEqual(self.apply(3), ["型別「工地」底下還有 1 項，先搬走再拿掉這列"])
         self.assertEqual((self.data(), self.md_text()), (before_json, before_md))
@@ -175,13 +175,16 @@ class Apply(Base):
     def test_rename_is_one_less_one_more(self):
         self.add_types("| 客戶 | 對象 | 業主 |")
         self.apply()
-        text = self.md_text().replace("| 客戶 |", "| 業主 |")  # 第四節的列跟著改，不然讀不懂（型別不在第 1 節）
+        text = self.md_text().replace("| 客戶 | 對象 |", "| 業主 | 對象 |")  # 只改第一節：舊名的第四節列丟掉、新名補預設
         self.md.write_text(text, encoding="utf-8", newline="\n")
         lines = self.kb("check").stdout.splitlines()
         self.assertIn("- 型別 多了 業主（對象）", lines)
         self.assertIn("- 型別 少了 客戶（空夾會一起拿掉）", lines)
-        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 +1 -1（拿掉了空夾 客戶）、每類段落 +2 -2；建了資料夾 業主"])
+        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 +1 -1（拿掉了空夾 客戶）、每類段落 -2；建了資料夾 業主"])
         self.assertTrue(not (self.V / "客戶").exists() and (self.V / "業主").is_dir())
+        rows = [(x["type"], y["name"], x["source"]) for x in self.data()["synthesis_sections"] for y in x["sections"]]
+        self.assertIn(("業主", "聯絡與往來", "inferred"), rows)
+        self.assertNotIn("客戶", {r[0] for r in rows})
 
     def test_rmdir_failure_keeps_folder_and_says_so(self):
         import contextlib
@@ -190,7 +193,7 @@ class Apply(Base):
         from kb import profile_cli
         self.add_types("| 客戶 | 對象 | 業主 |")
         self.apply()
-        self.drop_line("| 客戶 |")
+        self.drop_line("| 客戶 | 對象 |")
         out = io.StringIO()
         with mock.patch.object(profile_cli.os, "rmdir", side_effect=PermissionError(32, "被佔用")), \
                 contextlib.redirect_stdout(out):
@@ -315,7 +318,19 @@ class SchemaTwoApply(Base):
         self.assertNotIn("案子", {s["type"] for s in self.data()["synthesis_sections"]})
         self.assertEqual(self.data()["schema_version"], 2)
 
+    def test_drop_type_row_only_applies_and_drops_its_sections(self):
+        """實作回報裁定 1：只刪第一節的列，apply 成功，第四節那個型別的列一起拿掉。"""
+        self.add_types("| 廠商 | 對象 | 供應商 |")
+        self.apply()
+        self.assertIn("| 廠商 | 聯絡與往來 |", self.md_text())
+        self.drop_line("| 廠商 | 對象 |")
+        self.assertEqual(self.kb("check").stdout.splitlines()[0], "客戶設定檔有改：型別 +0 -1 ~0、每類段落 +0 -2 ~0")
+        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 -1（拿掉了空夾 廠商）、每類段落 -2"])
+        self.assertNotIn("廠商", {x["type"] for x in self.data()["synthesis_sections"]})
+        self.assertNotIn("| 廠商 |", self.md_text())
+
     def test_section_four_error_sentence(self):
+        """第四節的型別從來不在第一節（打錯字）照樣報錯。"""
         self.md.write_text(self.md_text().replace("| 案子 | 時程 |", "| 工地 | 時程 |"), encoding="utf-8", newline="\n")
         self.assertEqual(self.apply(3), ["客戶設定檔讀不懂：第 4 節第 1 列的型別「工地」不在第 1 節"])
 

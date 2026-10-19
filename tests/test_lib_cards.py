@@ -451,6 +451,12 @@ class TemplateTwo(unittest.TestCase):
     def reason(self, rel):
         return cards.validate(self.V, rel, self.by_id())
 
+    def test_fixture_v1_card_has_no_v2_keys(self):
+        front = cards.parse_front((self.E.FIX / "範本第一版-0f0f0f0f.md").read_text(encoding="utf-8"))
+        self.assertEqual(front["範本版本"], cards.OLD_TEMPLATE_VERSION)
+        self.assertFalse(set(cards.V2_KEYS) & set(front))
+        self.assertEqual([k for k in cards.KEYS if k not in front], ["內容指紋", "實體", "待補型別"])
+
     def test_prefill_from_entity_folder(self):
         front = cards.parse_front(self.E.new_item(self.V, self.E.CONTRACT)["header"])
         self.assertEqual(front["實體"], ["信義王"])

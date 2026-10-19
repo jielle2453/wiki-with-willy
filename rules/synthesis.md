@@ -5,7 +5,7 @@
 
 - S-01 只寫 `kb cards todo --json` 列出來的：`synthesis_new`（待建）、`synthesis_stale`（待更新）、`synthesis_broken`（有問題）。沒列的不自己起一張。
 - S-02 `synthesis_new` 裡 `confirmed` 是 false 的先不寫：在回答末尾問它的 `question`，客戶確認了（`kb entity confirm`）才寫。
-- S-03 客戶自己（todo 的 `profile.about`、`entities` 裡 `self` 不是 false 的）不寫綜合卡。
+- S-03 客戶自己（todo 的 `profile.about`、`entities` 裡 `self` 是 company 或 person 的）不寫綜合卡。
 - S-04 一次改的綜合卡被擋「大改動」就停下來，跟客戶說這次要改幾張、為什麼，他說好才 `kb turn approve`。
 
 ## 二、放哪、檔頭
@@ -29,7 +29,7 @@
 ## <設定檔第四節的段落，照 todo 那一項的 sections>
 ```
 
-- S-08 段落照 `sections` 的順序，一段一個 `## <name>`。`required` 是 true 的段沒內容寫一行 `未知`；其他沒內容整段不寫（推算沒有就不寫）。那段寫什麼以 `hint` 為準。
+- S-08 段落照 `sections` 的順序（已含現況、紀事、推算，後面接設定檔第四節的段），一段一個 `## <name>`。`required` 是 true 的段沒內容寫一行 `未知`；其他沒內容整段不寫（推算沒有就不寫）。那段寫什麼以 `hint` 為準。
 - S-09 正文 200～1000 字。
 
 ### 現況

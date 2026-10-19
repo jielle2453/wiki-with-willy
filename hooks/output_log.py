@@ -122,7 +122,8 @@ def _check_synthesis(vault, rel, turn_id, payload):
         eid = cards.parse_front((vault / rel).read_text(encoding="utf-8"))["編號"]
         entities.set_card(vault, eid, True, turn_id)
         entry, _hit = entities.find(entities.load(vault), eid)
-        synthesis.render_cache(vault, [entry["name"]], turn_id)
+        if entry is not None:
+            synthesis.render_cache(vault, [entry["name"]], turn_id)
     except BaseException as e:  # noqa: BLE001  快取與 card 旗標沒更新不影響卡
         _log(e, payload)
 

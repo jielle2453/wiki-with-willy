@@ -65,9 +65,9 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - `broken`：`{"path","reason"}`，檔頭有問題的卡；編號對得到清冊的多帶 `id`、`header`，照 `reason` 與 `header` 整張重寫（`reason` 是「檔名該是…」就寫到新檔名，其他寫回 `path`）；沒有 `header` 的這版不修，不用跟客戶說。
 - `skipped`：`{"credential","placeholder","too_large","error","skipped"}` 份數；`skipped` 是跑過 `cards skip` 的（依設定不整理）。
 - `profile`：客戶設定檔的 `card_types`（`[{"name","sections":[{"name","required","hint"}]}]`，卡型與段落照它）與 `exclusions`（`[{"kind","action"}]`，`action` 是 `kind_only` 或 `no_card`）。`profile_missing` 是 true 時設定檔讀不到、這塊是預設值，人讀最後多一行 `客戶設定檔讀不到，卡型用預設`；照常做卡，不用跟客戶說。另有 `types`（`[{"name","category"}]`）、`synthesis_sections`（`[{"type","sections"}]`，設定檔第四節）、`about`（`[{"name","kind","aliases"}]`，客戶自己）。
-- `entities`：`[{"name","type","aliases","self"}]`，登記的實體；檔案卡 `實體` 欄照 `name` 寫。
+- `entities`：`[{"name","type","aliases","self"}]`，登記的實體（`self` 是 false、company 或 person）；檔案卡 `實體` 欄照 `name` 寫。
 - `unlinked`：`{"id","path","reason","types","prefill"}`，要補掛實體的卡（carding.md 第七節）。`missing_types`：`{型別名: 張數}`，`待補型別` 裡型別表沒有的。
-- `synthesis_new`：`{"entity_id","name","type","category","confirmed","path","cards":[{"id","path","title"}],"sections","header","question"}`，`question` 只有沒確認的有。`synthesis_stale`：`{"entity_id","name","path","header","added","changed","removed"}`。`synthesis_broken`：`{"path","reason"}`。`entity_drift`：`{"entity_id","name","type","kind","found","question"}`，`kind` 是 folder_renamed｜card_renamed｜both_renamed｜moved_type｜missing。寫法看 `rules/synthesis.md`。
+- `synthesis_new`：`{"entity_id","name","type","category","confirmed","path","cards":[{"id","path","title"}],"sections","header","question"}`，`path` 相對總資料夾，`sections` 是 `[{"name","required","hint"}]`、已含現況、紀事、推算，`question` 只有沒確認的有。`synthesis_stale`：`{"entity_id","name","path","header","added","changed","removed"}`。`synthesis_broken`：`{"path","reason"}`。`entity_drift`：`{"entity_id","name","type","kind","found","question"}`（`found` 是找到的卡，相對總資料夾，`missing` 是 null），`kind` 是 folder_renamed｜card_renamed｜both_renamed｜moved_type｜missing。寫法看 `rules/synthesis.md`。
 
 ## cards sync [--json]
 
@@ -131,7 +131,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 | `entity merge 王宅 --into 信義王` | `已合併：王宅 併進 信義王（王宅記成別名）` | 客戶說是同一個 |
 | `entity remove 大安陳` | `已移除：大安陳（知識不刪，檔案卡上的掛載留著）` | 客戶說不要了 |
 | `entity rebuild 大安陳` | `好，「大安陳」會照檔案卡重寫一張` | 綜合卡被刪、回收筒也沒有，客戶要重寫 |
-| `entity clean 案子/王宅/王宅.md` | `已清掉放錯的綜合卡：…` | 綜合卡寫到正確路徑之後，清掉寫錯的那張 |
+| `entity clean 案子/王宅/王宅.md`（相對總資料夾） | `已清掉放錯的綜合卡：…` | 綜合卡寫到正確路徑之後，清掉寫錯的那張 |
 | `entity list`／`entity render` | 每行 `- 信義王（案子，確認）掛 12 張，有綜合卡`／`重寫了 N 張綜合卡的檔頭` | 查看；平常不用 render |
 
 拒絕（exit 3），照講或照做：

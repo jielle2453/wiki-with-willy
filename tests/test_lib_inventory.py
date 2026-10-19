@@ -219,5 +219,41 @@ class SkipKind(unittest.TestCase):
         self.assertEqual(turn.entries(self.V, t2), [])
 
 
+class SynthesisCardNotInventoried(unittest.TestCase):
+    """實體與綜合卡第 8 點：型別夾第三層的 .md，檔名等於夾名、或檔頭有 編號: e-… 的都不入冊；一般 md 照舊入冊。"""
+
+    def setUp(self):
+        from tests import _cards
+        from tests.test_lib_inventory_scan import make_inv_vault
+        self.tmp, self.V, self.raw = make_inv_vault()
+        self.scan_apply = _cards.scan_apply
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def uris(self):
+        return {loc["uri"] for e in inventory.load(self.V)["entries"] if e["status"] == "active" for loc in e["locations"]}
+
+    def test_e_header_md_skipped_and_plain_md_kept(self):
+        d = self.V / "案子" / "王宅"
+        d.mkdir()
+        (d / "信義王.md").write_text("---\n編號: e-5c1d0a7e\n型別: 案子\n---\n# 信義王\n", encoding="utf-8")
+        (d / "筆記.md").write_text("---\n編號: f-12345678\n---\n# 一般筆記\n", encoding="utf-8")
+        (d / "備忘.md").write_text("# 沒有檔頭\n", encoding="utf-8")
+        self.scan_apply(self.V)
+        uris = self.uris()
+        self.assertNotIn("file://知識庫/案子/王宅/信義王.md", uris)
+        self.assertIn("file://知識庫/案子/王宅/筆記.md", uris)
+        self.assertIn("file://知識庫/案子/王宅/備忘.md", uris)
+        self.assertNotIn("file://知識庫/案子/信義王/信義王.md", uris)
+
+    def test_deeper_e_header_md_still_inventoried(self):
+        d = self.V / "案子" / "王宅" / "子夾"
+        d.mkdir(parents=True)
+        (d / "x.md").write_text("---\n編號: e-5c1d0a7e\n---\n", encoding="utf-8")
+        self.scan_apply(self.V)
+        self.assertIn("file://知識庫/案子/王宅/子夾/x.md", self.uris())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -95,9 +95,10 @@ class Check(Base):
         text = text.replace("| 地址 | 只記種類 | 推測 | 2026-10-19 |\n", "| 地址 | 只記種類 | 推測 | 2026-10-19 |\n| 請款 | 不整理 |\n")
         self.md.write_text(text, encoding="utf-8", newline="\n")
         lines = self.kb("check").stdout.splitlines()
-        self.assertEqual(lines, ["客戶設定檔有改：型別 +1 -1 ~0、卡型 +0 -0 ~1、不整理與敏感 +1 -0 ~0",
+        self.assertEqual(lines, ["客戶設定檔有改：型別 +1 -1 ~0、卡型 +0 -0 ~1、不整理與敏感 +1 -0 ~0、每類段落 +0 -2 ~0",
                                  "- 型別 多了 工地（事）", "- 型別 少了 案子（夾裡還有 2 項，套用會被擋）",
                                  "- 卡型 報價 的段落 日期與數字 改了", "- 不整理與敏感 多了 請款（不整理）",
+                                 "- 每類段落 案子 的 時程 少了", "- 每類段落 案子 的 金額 少了",
                                  "第一層夾不在型別表：案子（請在設定檔第一節補一列）"])
 
     def test_json(self):
@@ -161,9 +162,9 @@ class Apply(Base):
         self.apply()
         self.drop_line("| 工班 |")
         self.assertIn("- 型別 少了 工班（空夾會一起拿掉）", self.kb("check").stdout.splitlines())
-        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 -1（拿掉了空夾 工班）"])
+        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 -1（拿掉了空夾 工班）、每類段落 -2"])
         self.assertFalse((self.V / "工班").exists(), "空夾一起拿掉（確認後修正裁定 21）")
-        self.assertEqual(self.programs()[-1]["note"], "套用客戶設定檔：型別 -1（拿掉了空夾 工班）")
+        self.assertEqual(self.programs()[-1]["note"], "套用客戶設定檔：型別 -1（拿掉了空夾 工班）、每類段落 -2")
         self.assertEqual([t["name"] for t in self.data()["types"]], ["案子", "工地"])
         (self.V / "工地" / "a.txt").write_text("x", encoding="utf-8")
         self.drop_line("| 工地 |")
@@ -174,12 +175,12 @@ class Apply(Base):
     def test_rename_is_one_less_one_more(self):
         self.add_types("| 客戶 | 對象 | 業主 |")
         self.apply()
-        text = self.md_text().replace("| 客戶 | 對象 |", "| 業主 | 對象 |")
+        text = self.md_text().replace("| 客戶 |", "| 業主 |")  # 第四節的列跟著改，不然讀不懂（型別不在第 1 節）
         self.md.write_text(text, encoding="utf-8", newline="\n")
         lines = self.kb("check").stdout.splitlines()
         self.assertIn("- 型別 多了 業主（對象）", lines)
         self.assertIn("- 型別 少了 客戶（空夾會一起拿掉）", lines)
-        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 +1 -1（拿掉了空夾 客戶）；建了資料夾 業主"])
+        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 +1 -1（拿掉了空夾 客戶）、每類段落 +2 -2；建了資料夾 業主"])
         self.assertTrue(not (self.V / "客戶").exists() and (self.V / "業主").is_dir())
 
     def test_rmdir_failure_keeps_folder_and_says_so(self):
@@ -194,7 +195,7 @@ class Apply(Base):
         with mock.patch.object(profile_cli.os, "rmdir", side_effect=PermissionError(32, "被佔用")), \
                 contextlib.redirect_stdout(out):
             self.assertEqual(profile_cli._apply(self.V, False, True), 0)
-        self.assertEqual(out.getvalue().splitlines()[0], "已套用客戶設定檔：型別 -1（客戶 夾是空的，會留著）")
+        self.assertEqual(out.getvalue().splitlines()[0], "已套用客戶設定檔：型別 -1（客戶 夾是空的，會留著）、每類段落 -2")
         self.assertTrue((self.V / "客戶").is_dir())
         self.assertEqual([t["name"] for t in self.data()["types"]], ["案子"])
 

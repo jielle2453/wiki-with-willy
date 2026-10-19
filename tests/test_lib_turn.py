@@ -527,5 +527,34 @@ class PromptHeadOrder(unittest.TestCase):
         self.assertEqual(turn.start(self.V, SID, "幫我登入，密碼如下：\n\nabc123")["prompt_head"], "幫我登入，密碼███")
 
 
+class ProgramBackup(unittest.TestCase):
+    """實體與綜合卡第 9 點：backup 帶 by="program" 寫進 manifest；modified_synthesis_count 不數它（D-075 只攔 AI 自己改的）。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        self.t = turn.start(self.V, SID, "整理")["turn"]
+        self.cards = []
+        for i in range(3):
+            d = self.V / "案子" / f"案{i}"
+            d.mkdir()
+            (d / f"案{i}.md").write_text(f"# 案{i}\n", encoding="utf-8")
+            self.cards.append(f"案子/案{i}/案{i}.md")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_by_program_written_and_not_counted(self):
+        turn.backup(self.V, self.cards[0], self.t, by="program")
+        turn.backup(self.V, self.cards[1], self.t)
+        rows = {e["path"]: e for e in turn.entries(self.V, self.t)}
+        self.assertEqual(rows[self.cards[0]]["by"], "program")
+        self.assertNotIn("by", rows[self.cards[1]])
+        self.assertEqual(turn.modified_synthesis_count(self.V, self.t), 1)
+
+    def test_only_program_accepted(self):
+        with self.assertRaises(ValueError):
+            turn.backup(self.V, self.cards[2], self.t, by="ai")
+
+
 if __name__ == "__main__":
     unittest.main()

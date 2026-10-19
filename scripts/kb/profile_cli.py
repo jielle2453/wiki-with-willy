@@ -54,6 +54,13 @@ def _detail_lines(st):
     lines += [f"- 不整理與敏感 多了 {k}（{acts.get(new_ex[k]['action'], '')}）" for k in d["exclusions"]["added"]]
     lines += [f"- 不整理與敏感 少了 {k}（{acts.get(old_ex[k].get('action'), '')}）" for k in d["exclusions"]["removed"]]
     lines += [f"- 不整理與敏感 {k} 改成 {acts.get(new_ex[k]['action'], '')}" for k in d["exclusions"]["changed"]]
+    for word, key in (("多了", "added"), ("少了", "removed"), ("改了", "changed")):
+        lines += [f"- 每類段落 {t} 的 {s} {word}" for t, s in d["synthesis_sections"][key]]
+    kinds = {v: k for k, v in profile.KINDS.items()}
+    new_about = {a["name"]: a for a in new["about"]}
+    lines += [f"- 關於你 多了 {n}（{kinds.get(new_about[n]['kind'], '')}）" for n in d["about"]["added"]]
+    lines += [f"- 關於你 少了 {n}" for n in d["about"]["removed"]]
+    lines += [f"- 關於你 {n} 改了" for n in d["about"]["changed"]]
     return lines
 
 

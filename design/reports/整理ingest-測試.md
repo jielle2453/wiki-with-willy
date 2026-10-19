@@ -212,3 +212,91 @@ repo `CLAUDE.md` 在 diff 內（`git diff --stat main...HEAD` 9 個檔含 CLAUDE
 - **新舊對照五個情境新版都沒有退步**：該先問的先問（e）、「好」不刪（d）、編號接著編（b）、回 2 改回原名（c）、製卡與綜合卡更新一樣（a）。新版 tokens 較少。唯一的小退步是 (a) 少了「讀不到的檔用 Word 另存」那句建議（minor）。
 - 發行前建議處理：①`--how` 的引號與客戶原話跳脫（code-review 1 ＝ reviewer 3，中）；②補測「現在做」之後 `then` 的實跑，並把「plan 空」與「`then` 做完」的停止條件寫清楚（code-review 4，中）；③reviewer 第 1 條（`read` 的 `${CLAUDE_PLUGIN_ROOT}`）與第 6 條（讀不到的「怎麼辦」）各一句，確認時順手看。其餘是 minor，可記 backlog。
 - 這份測試**沒有**的：真實 plugin 環境（hook、開場注入）、(c) 的「不重跑 todo、靠上一則對編號」、「現在做」之後 `then` 實跑、確認情境三步，都留給確認 session。
+
+---
+
+# 第二輪
+
+日期：2026-10-20
+給誰看：設計 session（llm-wiki-j-ea）。
+驗證對象：a77c667（測試後修正裁定 5～12；main c90a9ec 的 spec）。範圍：只驗裁定 5～9（各一個實跑證據）＋無退步（全部測試、驗收 1、3、7 重跑、情境 (a) 新版重跑一次）；code-review 只看 988960b..a77c667。不改程式、不 commit。第一輪內容不動。
+
+## 結果
+
+| 項 | 內容 | 結果 |
+|---|---|---|
+| 5 | 自由文字空格帶 `rule` | 過 |
+| 6 | 「現在做」的 `then` 等於未裁剪的 plan；本文把兩件事分開寫 | 過 |
+| 7 | `tell` 的讀不到帶怎麼辦，表只在 `plan.py` 一份 | 過 |
+| 8 | `rules/synthesis.md` 的 `read` 給實際路徑 | 過 |
+| 9 | `test_scripts_cards_cli.py` 名不符實的斷言 | 過 |
+| 無退步 | 1218 測試 exit 0；驗收 1、3、7 重跑；(a) 新版重跑 | 過 |
+
+五項加無退步全過。這一輪新出現的問題沒有中以上的（見最後一節，殘留一條是第一輪就有的）。
+
+## 逐項證據
+
+### 5 fill 帶 rule
+真 CLI，vault c（四題十二個結果）：
+```
+fill [(6, ['新名字']), (8, [{'name': '客戶的話', 'rule': '一句白話，不含 " $ ` \ 這四種字元'}]), (11, ['同一個']), (12, ['新名字'])]
+n8 do: kb pending resolve p-3b75e7bd --how "{客戶的話}"   strict: false
+```
+rule 擋四種字元（多了反斜線，裁定 12 追認）；其他空格仍是名稱字串（兩種形狀混用，裁定 12 先接受）。本文第 5 步第 47 行：「`fill` 裡帶 `rule` 的空格（自由文字）照 `rule` 寫成一句白話，其他有空白或特殊字元加雙引號」。`do` 字串沒變，12 個結果逐條實跑仍全部 exit 0（`rundo.py`）。
+
+### 6 then 與收尾
+- 真 CLI（`ingest_auto_max=1`，兩份新檔加 moved 36 加王宅綜合卡待更新；同一個知識庫再把上限設 1000 取未裁剪的 plan）：
+```
+batch ask first: batch | plan with max=1: ['sync']
+plan with max=1000: [('sync', 36), ('cards', 2), ('synthesis_stale', 1)]
+then == unclipped plan: True      then steps: [sync 36, cards 2, synthesis_stale 1]
+```
+- 本文：第 3 步「`plan` 空了，或剩下的全是停下來不再重試的，就收尾，進到 4」；第 5 步「照 `then` 的步驟一步一步做，每步先重跑 todo 拿這步的清單；份數仍多而 plan 只剩搬卡、或同一題又出現，都不用管也不用再問；`then` 的步驟都做完再回第 2 步」——兩件事分開寫。
+- 子代理實跑「現在做」那條路（新增情境 f：兩份新檔、上限 1、已 scan；上一則問「現在做嗎」，客戶回「現在做」）：製了 2 張卡（`信義王廚房估價第五版`、`大安陳施工進度10月`）、`plan` 冒出 `synthesis_stale` 後改了 `王宅.md`、再跑 todo `plan` 已空、`turn note` 成功；最後只問大成磁磚那一題，重編成 1～3，`batch` 那題沒有再被問。
+- 這次實跑的限制：新 context 手上沒有上一輪的 todo JSON，所以子代理是重跑 todo 後直接照新的 plan 做，沒有用到 `then` 本身；驗到的是「重跑 todo 接著做到 plan 空就收尾，batch 不再問」這條，沒有驗到「拿 `then` 當清單」。`then` 的內容正確性由上面的 CLI 比對與 `test_scripts_cards_cli.py` 新測試守。
+
+### 7 tell 帶怎麼辦
+真 CLI（`ingest-check` 複本，讀不到 7 份）：
+```
+舊合約.doc 讀不到：舊格式（.doc）；用 Word／Excel 另存成新格式就讀得到
+舊文件1.doc 讀不到：不支援的格式（.doc）；這種格式還讀不了，跟我說先跳過，或換一份檔
+…前 5 份各一句
+另有 2 份讀不到；記在 系統/待處理.md
+```
+前綴對得上 `convert.py` 實際記的原因（`KIND_REASONS`、`PLACEHOLDER`＝「只在雲端、還沒下載到電腦」、`BROKEN`＝「檔案壞了」、`extract.TOO_LARGE`＝「檔案太大」）。表在 `plan.py` 的 `UNREADABLE_ADVICE` 一份；`commands.md` 只留不記待處理的列（143 行）、`carding.md:76` 改成「由 `tell` 給」。
+(a) 新版重跑（見下）：回答的讀不到那句有帶怎麼辦——「用 Word 另存成新格式（.docx）就讀得到」。
+
+### 8 read 給實際路徑
+真 CLI：`synthesis_stale` 步 `read = C:\Users\Jie\Desktop\llm-wiki-j-整理ingest\rules\synthesis.md`，`os.path.isfile` 為真；`references/carding.md 一～六節` 照舊相對。對該知識庫 `.system` 做 `grep -rl 整理ingest`：沒有任何狀態檔含這個路徑（D-019 守住，只是輸出）。
+
+### 9 測試改名
+`git diff 988960b..a77c667 -- tests/test_scripts_cards_cli.py`：原本 `plan == [] iff batch` 那條斷言移掉，docstring 改成「都是清單」；新增 `test_plan_lists_cards_step_when_under_the_limit`（上限 100：沒有 asks、plan 只有 `cards`，items 等於 `new` 份數）與 `test_over_the_limit_asks_batch_first_and_clips_plan`（上限 1：`asks[0]` 是 batch、plan 空、`then` 是 `["cards"]`）。與上面 CLI 結果一致（fixture 沒有 moved，所以這邊 plan 才會是空的）。
+
+## 無退步
+- `python -m unittest discover tests`：`Ran 1218 tests in 212.566s`，`OK (skipped=1)`，`EXIT=0`。
+- 驗收 1：v0.11.0 與 a77c667 在四個知識庫上跑 `todo --json`／`todo`，去掉三鍵後 JSON 相同、鍵順序相同、人讀輸出逐字相同（四次都 True）。
+- 驗收 3：vault c 的 `asks` 順序（drift_missing → drift_folder_renamed → missing → name）、n=1～12 連號、`strict` 只有 n=1（`kb entity remove 大安陳`）與 n=7（`kb cards drop f-ed547a95`）、`fill` 如上、12 個結果的 `do` 實跑全部 exit 0。
+- 驗收 7：本文 2910 字（≤3000；裁定 12 寫 2909，我的算法差一字）、frontmatter 與 faca9f5 逐字相同、禁詞 `grep` 為空、答法對照 `grep` 為空、`carding.md` 92 行／`commands.md` 143 行。
+- (a) 新版重跑（`iteration-2/a-新檔兩份加原檔不見/new_skill`，起點同第一輪，只有新檔 `報價_v5.txt` 的內容改成第五版）：`changes` → `inventory scan` → todo → 製 2 張卡 → 更新王宅綜合卡 → todo → `turn note`；問兩題，編號 1～3、4～6，`strict` 那題沒執行；讀不到那句有帶怎麼辦。與第一輪 (a) 新版相比，上輪唯一的小退步補回來了。（檔案變動：2 張新卡、`王宅.md`、清冊、待處理、日誌。）
+- 子代理環境同第一輪：沒有 PostToolUse 驗卡 hook，我用事後 todo 的 `plan` 空、無 `broken` 補查。(a) 與 f 兩個子代理都因 PowerShell 的 cwd 重置而用 `Set-Location`，跟「不 cd」的本文衝突，是測試環境因素。
+- 順帶：子代理第一次跑 (a) 的 `inventory scan` 在別的目錄跑失敗（「這裡不是知識庫」），重跑成功；程式拒絕句有清楚講。
+
+## code-review（high，988960b..a77c667）
+9 條，這一輪新出現的沒有中以上。我的分級：
+
+| 位置 | 內容 | 分級 |
+|---|---|---|
+| SKILL.md:47 | 只有 `客戶的話` 這格帶 rule；`新名字`、`同一個` 仍只說「加雙引號」。實測 `kb entity rename 大成磁磚 --to 'Ben$Co'` 程式接受（`entities._char_problem` 不擋 `$`、反引號），照本文加雙引號貼進 bash 會被展開成 `Ben` | 低到中，**第一輪就有的殘留**（第一輪只指出 `--how` 一格），不是這輪新引入；客戶取名含這幾個字元機率很低 |
+| plan.py:75 | `rules/synthesis.md` 的 `read` 變成機器專屬的絕對路徑，`then` 也帶 | 低；裁定 8 的設計取捨，D-019 實測沒進狀態檔 |
+| plan.py:170 | `fill` 兩種形狀混用 | 低；裁定 12 已先接受，日程題改物件 |
+| SKILL.md:44 | 收尾由機械的「plan 空」變成要判斷「剩下的全是停下來不再重試的」，要靠 AI 自己記得哪幾份不重試 | 低；裁定 12 已寫明；f 實跑到 plan 空就收，沒有測到「卡一直被打回」 |
+| plan.py:26 | `UNREADABLE_ADVICE` 的雲端句與 `CLOUD_SENTENCE` 重複，兩者同時出現時客戶聽兩次 | 低 |
+| plan.py:201 | 「另有 N 份讀不到」沒帶原因與怎麼辦 | 低 |
+| plan.py:24 | 舊格式建議寫「用 Word／Excel 另存」，`.ppt` 也套這句 | 低 |
+| plan.py:17 | rule 擋四種字元，但以 `-` 開頭的話放進 `--how "…"` 仍會被 argparse 當選項 | 低 |
+| tests/test_scripts_cards_cli.py:62 | 新測試靠共用 fixture 沒有 moved／drift，fixture 一變就會因別的原因壞 | 低 |
+
+## 結論
+- **裁定 5～9 五項全過**，各有一個實跑證據；無退步全過（1218 測試 exit 0，驗收 1、3、7 重跑，(a) 新版重跑讀不到那句有帶怎麼辦）。
+- 這一輪新出現的問題：沒有中以上。殘留一條（低到中、第一輪就有）：`新名字`、`同一個` 兩格沒有跟 `客戶的話` 一樣的字元規則，建議日程題把 `fill` 改成物件時順手一起處理。
+- 這一輪沒測到的：`then` 本身當清單被 AI 使用（子代理沒有上一輪 JSON）、卡一直被打回時的收尾、真實 plugin 環境（hook、開場注入）與確認情境三步，留給確認 session。

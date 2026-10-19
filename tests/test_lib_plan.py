@@ -351,6 +351,15 @@ class Tell(Base):
             "有 4 份看起來跟 廠商 有關，但設定檔裡沒有『廠商』這一類，要加的話在客戶設定檔第一節加一列，下次開對話我會問你要不要套用",
             "有 1 份看起來跟 工班 有關，但設定檔裡沒有『工班』這一類，要加的話在客戶設定檔第一節加一列，下次開對話我會問你要不要套用"])
 
+    def test_no_markdown_markers(self):
+        """裁定 13：tell 的句子不帶 Markdown 記號（星號）。"""
+        got = self.tell(unreadable=[{"id": "f-1", "uri": "file://a/甲.doc", "reason": "舊格式（.doc）"}],
+                        skipped={"credential": 1, "placeholder": 1, "too_large": 0, "error": 0, "skipped": 3},
+                        missing_types={"員工": 2}, pdf_restored=1)
+        self.assertTrue(got)
+        for line in got:
+            self.assertNotIn("*", line)
+
     def test_pdf_restored(self):
         self.assertEqual(self.tell(pdf_restored=2), ["PDF 元件裝好了，2 份 PDF 回到待製卡"])
 

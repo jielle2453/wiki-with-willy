@@ -3,7 +3,7 @@
 狀態行固定順序、回 None 的不印；第一行固定以「【wiki-with-willy】」開頭，知識庫 CLAUDE.md 的哨兵句認這個字串（D-088）。
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
 唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
-客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）。
+客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -61,16 +61,39 @@ def _quick_scan(vault):
     return _SCAN[key]
 
 
+DRIFT_PART = "、實體夾有變 {n}"
+DRIFT_LINE = "變動：實體夾有變 {n}"
+_DRIFT = {}  # vault → 實體夾有變的筆數或 None（出錯）；line_changes 被叫兩次，log 只記一行
+
+
+def _drift_count(vault):
+    """實體與綜合卡第 7 點：entities.drift 只讀，跟快速 scan 各自 try；實體清單壞了回 None、記一行 log。"""
+    key = str(vault)
+    if key not in _DRIFT:
+        try:
+            from kb._lib import entities
+
+            _DRIFT[key] = len(entities.drift(vault))
+        except Exception as e:  # noqa: BLE001
+            _DRIFT[key] = None
+            _log_vault(vault, e)
+    return _DRIFT[key]
+
+
 def line_changes(vault):
-    """清冊題：新增、修改、不見三個數都 0 且比完 → None；走訪時間到 → 還沒比完。搬動、重複、之前就不見的不印。"""
+    """清冊題：新增、修改、不見三個數都 0 且比完 → None；走訪時間到 → 還沒比完。搬動、重複、之前就不見的不印。
+    實體夾有變 N（D-057，客戶改了實體夾名、卡名、刪夾）接在後面；清冊沒變動但 N > 0 自己成一行。"""
     got = _quick_scan(vault)
+    drift = _drift_count(vault) or 0
     if got is None:
-        return None
+        return DRIFT_LINE.format(n=drift) if drift else None
     report = got[1]
     if report["incomplete"]:
         return CHANGES_INCOMPLETE
     counts = {k: len(report[k]) for k in ("added", "modified", "missing")}
-    return CHANGES_LINE.format(**counts) if any(counts.values()) else None
+    if any(counts.values()):
+        return CHANGES_LINE.format(**counts) + (DRIFT_PART.format(n=drift) if drift else "")
+    return DRIFT_LINE.format(n=drift) if drift else None
 
 
 def line_ingest_hint(vault):

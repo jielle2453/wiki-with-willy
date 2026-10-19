@@ -227,5 +227,122 @@ class CardCheck(unittest.TestCase):
         self.assertIn("file://AI 產出/草稿.md", uris)
 
 
+class SynthesisCheck(unittest.TestCase):
+    """實體與綜合卡第 6 點、驗收 2、5、7：Z1 綜合卡驗檔頭，不過 block、過了 card true 與重渲染快取；
+    Z5 檔案卡過了重渲染新舊 實體 的綜合卡快取；檔案卡的實體名稱錯了照樣 block。"""
+
+    def setUp(self):
+        from tests import _entities
+        self.E = _entities
+        self.tmp, self.V, self.raw = _entities.make_entity_vault(with_entities=True)
+        self.t = turn.start(self.V, SID, "整理")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def update(self, eid, **kw):
+        from kb._lib import entities
+        rows = entities.load(self.V)["entities"]
+        for e in rows:
+            if e["id"] == eid:
+                e.update(kw)
+        self.E.put_entities(self.V, rows)
+
+    def new_item(self):
+        from kb._lib import entities, synthesis
+        data = entities.load(self.V)
+        out = synthesis.buckets(self.V, data, entities.mounts(self.V, data), entities._profile(self.V))["synthesis_new"]
+        return next(i for i in out if i["entity_id"] == self.E.WANG)
+
+    def write(self, rel, text):
+        p = self.V / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return write_via_tools(self.V, p, text)
+
+    def blocked(self, r, want):
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (line,) = r.stdout.splitlines()
+        self.assertEqual(json.loads(line), {"decision": "block", "reason": f"綜合卡有錯：{want}。改好再寫一次。"})
+
+    def test_new_card_passes_sets_card_and_rewrites_cache(self):
+        from kb._lib import entities
+        self.update(self.E.WANG, source="confirmed")
+        self.E.write_card(self.V, self.E.QUOTE, "王宅報價", ["王宅"])
+        self.E.write_card(self.V, self.E.ESTIMATE, "王宅估價", ["王宅", "信義王"])
+        item = self.new_item()
+        lines = item["header"].splitlines()
+        start = lines.index("檔案卡:")
+        empty = "\n".join(lines[:start] + ["檔案卡:", "相關實體: []", "---"]) + "\n"
+        r = self.write(item["path"], self.E.synthesis_text(empty, "王宅"))
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertTrue(next(e for e in entities.load(self.V)["entities"] if e["id"] == self.E.WANG)["card"])
+        front = cards.parse_front((self.V / item["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(len(front["檔案卡"]), 2)
+        self.assertEqual(front["相關實體"], ["信義王"])
+
+    def test_block_sentences(self):
+        self.E.write_card(self.V, self.E.QUOTE, "王宅報價", ["王宅"])
+        self.E.write_card(self.V, self.E.ESTIMATE, "王宅估價", ["王宅"])
+        item = self.new_item()
+        good = self.E.synthesis_text(item["header"], "王宅")
+        rel = item["path"]
+        self.blocked(self.write(rel, good), "還沒跟客戶確認名稱，先問再寫")
+        self.update(self.E.WANG, source="confirmed")
+        cases = [
+            (rel, good.replace("名稱: 王宅", "名稱: 王"), "「名稱」照 kb cards todo 給的檔頭抄"),
+            (rel, good.replace("範本版本: 1", "範本版本: 3"), "範本版本該是 1"),
+            (rel, good.replace("更新日: ", "更新日: x"), "更新日要寫 YYYY-MM-DD"),
+            (rel, good.replace("## 現況", "## 近況"), "正文要有 # 王宅 與 ## 現況"),
+            (rel, good.replace(self.E.WANG, "e-99999999"), "編號 e-99999999 不在實體清單"),
+            (rel, good.replace(self.E.WANG, self.E.SELF), "這是你自己（關於你），不寫綜合卡"),
+            (rel, good.replace("---\n", "", 1), "檔頭解析不了：第一行不是 ---"),
+            ("案子/大安陳/大安陳.md", good, "綜合卡該放在 案子/王宅/王宅.md"),
+        ]
+        for path, text, want in cases:
+            with self.subTest(want=want):
+                self.blocked(self.write(path, text), want)
+        self.E.write_card(self.V, self.E.DRAFT, "王宅會議", ["王宅"])
+        self.blocked(self.write(rel, good), "整理到不是現行的，重跑 kb cards todo 拿新檔頭")
+        self.update(self.E.WANG, status="removed")
+        self.blocked(self.write(rel, good), "這個實體已移除")
+
+    def test_file_card_rerenders_old_and_new_entities(self):
+        xinyi = self.V / "案子" / "信義王" / "信義王.md"
+        item = self.E.new_item(self.V, self.E.QUOTE)
+        path = _cards.card_path(self.V, item, "信義王報價")
+        text = self.E.with_entities(_cards.card_text(item, "信義王報價"), ["信義王"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        r = write_via_tools(self.V, path, text)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertEqual(len(cards.parse_front(xinyi.read_text(encoding="utf-8"))["檔案卡"]), 1)
+        rows = {e["path"]: e for e in turn.entries(self.V, self.t["turn"])}
+        self.assertEqual(rows["案子/信義王/信義王.md"]["by"], "program")
+        self.assertEqual(turn.modified_synthesis_count(self.V, self.t["turn"]), 0)
+        turn.start(self.V, SID, "改掛")
+        r = write_via_tools(self.V, path, self.E.with_entities(text, ["大安陳"]))
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertEqual(cards.parse_front(xinyi.read_text(encoding="utf-8"))["檔案卡"], [], "舊的實體從回合備份讀")
+        daan = cards.parse_front((self.V / "案子" / "大安陳" / "大安陳.md").read_text(encoding="utf-8"))
+        self.assertEqual(len(daan["檔案卡"]), 1)
+
+    def test_file_card_entity_errors_blocked(self):
+        item = self.E.new_item(self.V, self.E.QUOTE)
+        path = _cards.card_path(self.V, item, "信義王報價")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        base = _cards.card_text(item, "信義王報價")
+        cases = [
+            ((["信義王宅"], ()), "實體「信義王宅」該寫登記的名稱「信義王」"),
+            ((["順發"], ()), "實體「順發」還沒登記，先跑 kb entity add"),
+            ((["信義王"], ["案子"]), "型別「案子」已在型別表，先 kb entity add 再掛"),
+        ]
+        for (names, pending), want in cases:
+            with self.subTest(want=want):
+                r = write_via_tools(self.V, path, self.E.with_entities(base, names, pending))
+                (line,) = r.stdout.splitlines()
+                self.assertEqual(json.loads(line)["reason"], f"檔頭有錯：{want}。改好再寫一次。")
+        r = write_via_tools(self.V, path, self.E.with_entities(base, ["信義王"]))
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+
 if __name__ == "__main__":
     unittest.main()

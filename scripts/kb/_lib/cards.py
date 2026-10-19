@@ -16,10 +16,11 @@ from kb._lib.io import FileLock, write_text_atomic
 
 CARDS_DIR = "檔案索引"
 INDEX_POSIX = "總目錄.md"
-KEYS = ("編號", "出處", "原檔", "指紋", "內容指紋", "標題", "卡型", "文件日期", "讀取", "製卡日期", "範本版本",
-        "敏感資料種類", "開原檔")
+KEYS = ("編號", "出處", "原檔", "指紋", "內容指紋", "標題", "卡型", "實體", "待補型別", "文件日期", "讀取", "製卡日期",
+        "範本版本", "敏感資料種類", "開原檔")
 OPTIONAL = ("內容指紋",)
-LIST_KEYS = ("原檔", "敏感資料種類")
+V2_KEYS = ("實體", "待補型別")  # 範本第二版加的兩欄（實體與綜合卡第 4 點）；第一版的卡沒有，不算少鍵
+LIST_KEYS = ("原檔", "敏感資料種類", "實體", "待補型別")
 # 檔頭值的型別（測試後修正裁定 21）：這些要是字串，LIST_KEYS 要是清單
 STR_KEYS = ("編號", "指紋", "內容指紋", "出處", "標題", "卡型", "文件日期", "讀取", "開原檔")
 ORIGIN_TEXT = {"client_file": "客戶原檔", "intake": "對話收件", "ai_output": "AI 產出"}
@@ -27,7 +28,8 @@ FILL = "（填）"
 DATE_FILL = "（填，YYYY-MM-DD 或 未載）"
 READ_FILL = "（填，完整 或 部分）"
 READ_VALUES = ("完整", "部分")
-TEMPLATE_VERSION = "1"
+TEMPLATE_VERSION = "2"
+OLD_TEMPLATE_VERSION = "1"  # 第一版的卡只補掛載（D-116），不算檔頭有問題
 SKIPPED_READS = ("credential", "placeholder", "too_large", "error")  # error 也列份數（裁定 29）
 INDEX_HEAD = ("# 總目錄\n"
               "這是什麼：你的檔案都在這裡，點進去是那份檔的卡，卡裡有開原檔的連結。\n"
@@ -157,8 +159,35 @@ def filename_ok(name, entry_id, title, max_chars):
     return name == expected_name(title, entry_id, max_chars)
 
 
-def header_for(vault, sources, entry, today=None):
-    """印給製卡者照抄的檔頭：機器欄位填好，製卡者欄位放（填）。today 是 YYYY-MM-DD，沒給用今天。"""
+def prefill_entities(entry, ent_data):
+    """原檔主位置在知識庫實體夾裡（file://知識庫/<型別>/<名稱>/…）且 <名稱> 是登記的 active 實體（型別也對）→ [<名稱>]，
+    否則 []（D-043：位置決定掛哪個）。"""
+    from kb._lib import entities
+    from kb._lib.inventory import KNOWLEDGE
+    alias, rel = _split((entry.get("locations") or [{}])[0].get("uri", ""))
+    parts = rel.split("/")
+    if alias != KNOWLEDGE or len(parts) < 3 or ent_data is None:
+        return []
+    found, _hit = entities.find(ent_data, parts[1])
+    if (found is None or found.get("status") != "active" or entities.is_self(found)
+            or entities.key(found.get("type")) != entities.key(parts[0]) or entities.key(found["name"]) != entities.key(parts[1])):
+        return []
+    return [found["name"]]
+
+
+def _entities_or_none(vault):
+    from kb._lib import entities
+    try:
+        return entities.load(vault)
+    except ValueError:
+        return None
+
+
+def header_for(vault, sources, entry, today=None, ent_data=False):
+    """印給製卡者照抄的檔頭：機器欄位填好，製卡者欄位放（填）；實體 預填實體夾的那個、待補型別 空。
+    today 是 YYYY-MM-DD，沒給用今天；ent_data 是 entities.load 的結果（沒給自己讀）。"""
+    if ent_data is False:
+        ent_data = _entities_or_none(vault)
     fp = (entry.get("fingerprints") or [{}])[-1]
     front = {
         "編號": entry["id"],
@@ -168,7 +197,8 @@ def header_for(vault, sources, entry, today=None):
     }
     if fp.get("text_sha256"):
         front["內容指紋"] = fp["text_sha256"]
-    front.update({"標題": FILL, "卡型": FILL, "文件日期": DATE_FILL, "讀取": READ_FILL,
+    front.update({"標題": FILL, "卡型": FILL, "實體": prefill_entities(entry, ent_data), "待補型別": [],
+                  "文件日期": DATE_FILL, "讀取": READ_FILL,
                   "製卡日期": today or date.today().isoformat(),
                   "範本版本": TEMPLATE_VERSION, "敏感資料種類": [], "開原檔": entry_link(vault, sources, entry)})
     return "\n".join(_front_lines(front)) + "\n"
@@ -225,11 +255,18 @@ def _filled(value):
     return isinstance(value, str) and value.strip() and "（填" not in value
 
 
-def problems(vault, rel, front, entries_by_id, sources=None):
-    """檔頭解析得了之後的全部問題 [(代號, 原因)]，照 validate 的順序。代號給 todo 分桶。"""
+def _is_v1(front):
+    return front.get("範本版本") == OLD_TEMPLATE_VERSION
+
+
+def problems(vault, rel, front, entries_by_id, sources=None, ent_data=False, prof=None):
+    """檔頭解析得了之後的全部問題 [(代號, 原因)]，照 validate 的順序。代號給 todo 分桶。
+    範本第一版（沒有 實體、待補型別 兩欄）只錯在版本 → 代號 v1（todo 收進 unlinked，D-116）；
+    第二版多驗 實體 每個名稱要是登記的名稱（entity）、待補型別 不能是型別表已有的（missing_type，todo 收進 unlinked）。
+    ent_data 是 entities.load 的結果、prof 是設定檔（都沒給自己讀）。"""
     from kb._lib import sources as sources_lib
     for key in KEYS:
-        if key not in OPTIONAL and key not in front:
+        if key not in OPTIONAL and key not in front and not (key in V2_KEYS and _is_v1(front)):
             return [("missing_key", f"檔頭少了「{key}」")]
     for key in KEYS:  # 型別先驗（裁定 21）：不對的值不拿去查清冊、比字串
         if key not in front:
@@ -270,15 +307,42 @@ def problems(vault, rel, front, entries_by_id, sources=None):
         out.append(("date", "文件日期要寫 YYYY-MM-DD 或 未載"))
     if front["讀取"] not in READ_VALUES:
         out.append(("read", "讀取要寫 完整 或 部分"))
-    if front["範本版本"] != TEMPLATE_VERSION:
+    if _is_v1(front):
+        out.append(("v1", f"範本版本該是 {TEMPLATE_VERSION}"))
+    elif front["範本版本"] != TEMPLATE_VERSION:
         out.append(("version", f"範本版本該是 {TEMPLATE_VERSION}"))
+    else:
+        out.extend(_entity_problems(vault, front, ent_data, prof))
     return out
 
 
-def safe_problems(vault, rel, front, entries_by_id, sources=None):
+def _entity_problems(vault, front, ent_data, prof):
+    """第二版的 實體 與 待補型別：名稱要登記過（merged 的不算登記的名稱），寫別名要改成登記的名稱；待補型別不能是型別表已有的。"""
+    from kb._lib import entities
+    if ent_data is False:
+        ent_data = entities.load(vault)
+    out = []
+    for name in front["實體"]:
+        found, _hit = entities.find(ent_data, name)
+        if found is None:
+            out.append(("entity", f"實體「{name}」還沒登記，先跑 kb entity add"))
+            break
+        if entities.key(found["name"]) != entities.key(name):
+            out.append(("entity", f"實體「{name}」該寫登記的名稱「{found['name']}」"))
+            break
+    if prof is None:
+        prof, _missing = _profile_or_default(vault)
+    have = {entities.key(t["name"]) for t in prof.get("types") or []}
+    known = [t for t in front["待補型別"] if entities.key(t) in have]
+    if known:
+        out.append(("missing_type", f"型別「{known[0]}」已在型別表，先 kb entity add 再掛"))
+    return out
+
+
+def safe_problems(vault, rel, front, entries_by_id, sources=None, ent_data=False, prof=None):
     """problems 整段包住：任何例外都當成解析不了（裁定 21，不靜默放行）。"""
     try:
-        return problems(vault, rel, front, entries_by_id, sources)
+        return problems(vault, rel, front, entries_by_id, sources, ent_data, prof)
     except Exception as e:  # noqa: BLE001
         return [("crash", f"檔頭解析不了：{type(e).__name__}")]
 
@@ -347,10 +411,13 @@ def _profile_or_default(vault):
 
 def todo(vault, sources):
     """讀清冊 active 條目、卡與待處理，分 new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped（D-104）；
-    skipped 多一鍵 skipped（設定檔說不整理、清冊記了 skip_kind 的份數，D-113），另帶 profile 塊（卡型、段落、個資種類）。
+    skipped 多一鍵 skipped（設定檔說不整理、清冊記了 skip_kind 的份數，D-113），另帶 profile 塊（卡型、段落、個資種類、型別、
+    每類段落、關於你）。實體與綜合卡第 4 點：多 unlinked（第一版的卡、待補型別後來進了型別表的卡）、missing_types、
+    synthesis_new／stale／broken、entity_drift（後四桶由 synthesis.buckets 給）與 entities（active、removed 的名稱）。
     不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
-    from kb._lib import extract, inventory, pending
+    from kb._lib import entities, extract, inventory, pending, synthesis
     restored = _restore_pdf(vault)
+    ent_data = entities.load(vault)
     entries = inventory.load(vault)["entries"]
     by_id = {e.get("id"): e for e in entries}
     try:
@@ -368,9 +435,11 @@ def todo(vault, sources):
     missing_open = {first_file(i): i for i in opened if i.get("kind") == "missing_file"}
     groups, broken = _scan_groups(vault)
     out = {"new": [], "stale": [], "moved": [], "duplicates": [], "orphans": [], "unreadable": [], "missing": [],
-           "skipped": dict({k: 0 for k in SKIPPED_READS}, skipped=0), "broken": list(broken), "pdf_restored": restored}
+           "skipped": dict({k: 0 for k in SKIPPED_READS}, skipped=0), "broken": list(broken), "pdf_restored": restored,
+           "unlinked": [], "missing_types": {}}
     data, out["profile_missing"] = _profile_or_default(vault)
     out["profile"] = profile.card_types_for_todo(data)
+    have_types = {entities.key(t["name"]) for t in data.get("types") or []}
     today = date.today().isoformat()
 
     def work_item(entry, card):
@@ -380,12 +449,17 @@ def todo(vault, sources):
                 "dir": card_dir(entry), "filename_pattern": f"<標題>-{short_id(entry['id'])}.md",
                 "existing_card": card["path"] if card else None,
                 "created": _created_date(entry),
-                "header": header_for(vault, sources, entry, today)}
+                "header": header_for(vault, sources, entry, today, ent_data)}
 
     def broken_item(entry, card, reason):
         """編號對得到 active 條目的壞卡：多帶 id 與 header，製卡者照它整張寫回 path（審閱後補）。"""
         return {"path": card["path"], "reason": reason, "id": entry["id"],
-                "header": header_for(vault, sources, entry, today)}
+                "header": header_for(vault, sources, entry, today, ent_data)}
+
+    def unlinked_item(entry, card, reason):
+        types = [t for t in card["front"].get("待補型別") or [] if entities.key(t) in have_types] if reason != "v1" else []
+        return {"id": entry["id"], "path": card["path"], "reason": reason, "types": types,
+                "prefill": prefill_entities(entry, ent_data)}
 
     carded = set()
     for cid, group in groups.items():
@@ -394,7 +468,7 @@ def todo(vault, sources):
             out["orphans"].extend(c["path"] for c in group)
             continue
         carded.add(cid)
-        codes_of = {c["path"]: safe_problems(vault, c["path"], c["front"], by_id, sources) for c in group}
+        codes_of = {c["path"]: safe_problems(vault, c["path"], c["front"], by_id, sources, ent_data, data) for c in group}
         if len(group) > 1:  # 同編號多張（裁定 20）：全過的那張是正本；沒有就留最新的，其餘交 sync 刪
             good = [c for c in group if not codes_of[c["path"]]]
             keep = good[0] if good else max(group, key=lambda c: _mtime(vault, c["path"]))
@@ -405,12 +479,20 @@ def todo(vault, sources):
         codes = codes_of[keep["path"]]
         names = dict(codes)
         others = [c for c in codes if c[0] != "link"]
+        if keep["front"].get("範本版本") == TEMPLATE_VERSION and isinstance(keep["front"].get("待補型別"), list):
+            for t in dict.fromkeys(keep["front"]["待補型別"]):
+                if isinstance(t, str) and t and entities.key(t) not in have_types:
+                    out["missing_types"][t] = out["missing_types"].get(t, 0) + 1
         if names.keys() & {"missing_key", "format", "crash"}:
             out["broken"].append(broken_item(entry, keep, codes[0][1]))
         elif "dir" in names or keep["front"].get("原檔") != _uris(entry):
             out["moved"].append({"id": cid, "from": keep["path"], "to": card_dir(entry)})
         elif "fingerprint" in names:
             out["stale"].append(work_item(entry, keep))
+        elif {c[0] for c in others} == {"v1"}:  # 第一版、其他都過：只補掛載（D-116）
+            out["unlinked"].append(unlinked_item(entry, keep, "v1"))
+        elif {c[0] for c in others} == {"missing_type"}:  # 待補型別後來進了型別表（D-124）
+            out["unlinked"].append(unlinked_item(entry, keep, "types_added"))
         elif others:  # broken 只收開原檔以外的錯（裁定 19）
             out["broken"].append(broken_item(entry, keep, others[0][1]))
         elif "link" in names:  # 只有開原檔對不上（來源搬家、連結形式改了）：sync 重寫（裁定 19）
@@ -440,6 +522,10 @@ def todo(vault, sources):
             continue
         if entry.get("read") == "ok" and eid not in carded and eid not in unreadable_skip:
             out["new"].append(work_item(entry, None))
+    out.update(synthesis.buckets(vault, ent_data, entities.mounts(vault, ent_data), data))
+    out["entities"] = [{"name": e["name"], "type": e.get("type"), "aliases": list(e.get("aliases") or []),
+                        "self": e.get("self") or False}
+                       for e in ent_data["entities"] if e.get("status") in ("active", "removed")]
     return out
 
 
@@ -487,13 +573,38 @@ def skip(vault, sources, fid, kind, turn_id):
             raise SkipRefused(f"「{kind}」不在客戶設定檔的不整理種類裡，先在設定檔第三節加一列再套用")
         groups, _broken = _scan_groups(vault)
         removed = [c["path"] for c in groups.get(fid) or []]
+        mounted = entity_names_of(groups.get(fid) or [])
         for rel in removed:
             remove_card(vault, rel, turn_id)
         turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)
         inventory.set_skip(vault, [fid], kind, locked=True)
         render_index(vault, turn_id)
+    refresh_synthesis(vault, mounted, turn_id)
     return {"id": fid, "card": removed[0] if removed else None, "kind": kind, "removed": removed,
             "uri": entry["locations"][0]["uri"]}
+
+
+def entity_names_of(group):
+    """這幾張卡檔頭 實體 欄的名稱（去重）。"""
+    out = []
+    for c in group:
+        names = c["front"].get("實體")
+        for n in names if isinstance(names, list) else []:
+            if n not in out:
+                out.append(n)
+    return out
+
+
+def refresh_synthesis(vault, names, turn_id):
+    """卡刪了、搬了之後重渲染那些實體的綜合卡快取（實體與綜合卡第 4 點）；實體清單壞了只記 log，不擋卡的動作（I-046）。"""
+    if not names:
+        return []
+    from kb._lib import ledger, synthesis
+    try:
+        return synthesis.render_cache(vault, names, turn_id)
+    except Exception as e:  # noqa: BLE001
+        ledger.log_error(vault, f"綜合卡快取沒更新：{type(e).__name__}: {e}", source="cards")
+        return []
 
 
 # ---------- 搬卡 ----------
@@ -523,6 +634,22 @@ def rewrite_locations(text, uris, link):
             continue
         out.append(line)
         i += 1
+    return "".join(out)
+
+
+def rewrite_entities(text, names):
+    """只換檔頭的 實體 一行（kb entity rename／merge 改掛載），其他行原樣。"""
+    lines = text.splitlines(keepends=True)
+    out, in_front = [], False
+    for i, line in enumerate(lines):
+        bare = line.rstrip("\r\n")
+        if i == 0 and bare.lstrip("﻿") == "---":
+            in_front = True
+        elif in_front and bare == "---":
+            in_front = False
+        elif in_front and bare.startswith("實體:"):
+            line = f"實體: [{', '.join(names)}]" + line[len(bare):]
+        out.append(line)
     return "".join(out)
 
 

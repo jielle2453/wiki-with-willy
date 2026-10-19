@@ -282,5 +282,43 @@ class AfterTest(Base):
                          (3, ["客戶設定檔讀不懂：第 1 節第 2 列欄數不對（要 3 欄或 5 欄）"]))
 
 
+class SchemaTwoApply(Base):
+    """實體與綜合卡第 10 點、驗收 14、15：第五節登記客戶自己、第四節補大類預設、刪光不補。"""
+
+    def add_about(self, row):
+        self.md.write_text(self.md_text().rstrip("\n") + "\n" + row + "\n", encoding="utf-8", newline="\n")
+
+    def test_about_registers_self_entity(self):
+        from kb._lib import entities
+        self.add_about("| 林小姐室內設計 | 公司 | 林小姐 |")
+        self.assertIn("- 關於你 多了 林小姐室內設計（公司）", self.kb("check").stdout.splitlines())
+        lines = self.apply()
+        self.assertEqual(lines, ["已套用客戶設定檔：關於你 +1", "關於你：登記了 林小姐室內設計"])
+        (e,) = entities.load(self.V)["entities"]
+        self.assertEqual((e["name"], e["self"], e["type"], e["aliases"]), ("林小姐室內設計", "company", None, ["林小姐"]))
+        self.assertIn(entities.ENTITIES_POSIX, {c["path"] for c in self.programs()[-1]["changed"]})
+        r = run_kb("entity", "add", "--type", "案子", "--name", "林小姐", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "「林小姐」是你自己（關於你），掛「林小姐室內設計」"))
+        todo = json.loads(run_kb("cards", "todo", "--json", cwd=self.V).stdout)
+        self.assertEqual(todo["profile"]["about"], [{"name": "林小姐室內設計", "kind": "company", "aliases": ["林小姐"]}])
+
+    def test_new_type_gets_category_defaults_and_deleted_rows_not_refilled(self):
+        self.add_types("| 工地 | 事 | 裝修現場 |")
+        self.apply()
+        rows = [(s["type"], x["name"], s["source"]) for s in self.data()["synthesis_sections"] for x in s["sections"]]
+        self.assertIn(("工地", "時程", "inferred"), rows)
+        self.assertIn(("工地", "金額", "inferred"), rows)
+        self.assertIn("| 工地 | 時程 |  | 開始、重要日期、預計結束 | 推測 |", self.md_text())
+        self.drop_line("| 案子 | 時程 |")
+        self.drop_line("| 案子 | 金額 |")
+        self.apply()
+        self.assertNotIn("案子", {s["type"] for s in self.data()["synthesis_sections"]})
+        self.assertEqual(self.data()["schema_version"], 2)
+
+    def test_section_four_error_sentence(self):
+        self.md.write_text(self.md_text().replace("| 案子 | 時程 |", "| 工地 | 時程 |"), encoding="utf-8", newline="\n")
+        self.assertEqual(self.apply(3), ["客戶設定檔讀不懂：第 4 節第 1 列的型別「工地」不在第 1 節"])
+
+
 if __name__ == "__main__":
     unittest.main()

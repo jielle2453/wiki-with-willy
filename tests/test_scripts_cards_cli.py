@@ -448,5 +448,79 @@ class SkipLock(Base):
         self.assertEqual(turn.entries(self.V, t), [])
 
 
+class EntityParts(unittest.TestCase):
+    """實體與綜合卡第 4、5 點、驗收 2、3、4、6：第二版 header、待掛實體、型別表沒有、綜合卡待建／待更新、實體夾有變；
+    drop 一張依據卡後綜合卡的 removed 有它。"""
+
+    def setUp(self):
+        from tests import _entities
+        self.E = _entities
+        self.tmp, self.V, self.raw = _entities.make_entity_vault(with_entities=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def kb(self, *args):
+        return run_kb(*args, cwd=self.V)
+
+    def todo(self):
+        return json.loads(self.kb("cards", "todo", "--json").stdout)
+
+    def first(self):
+        return self.kb("cards", "todo").stdout.splitlines()[0]
+
+    def test_v2_header_and_prefill(self):
+        data = self.todo()
+        fid = _cards.entry_of(self.V, self.E.CONTRACT)["id"]
+        header = next(i for i in data["new"] if i["id"] == fid)["header"]
+        self.assertIn("\n實體: [信義王]\n待補型別: []\n", header)
+        self.assertIn("\n範本版本: 2\n", header)
+        other = next(i for i in data["new"] if i["id"] != fid)["header"]
+        self.assertIn("\n實體: []\n", other)
+
+    def test_first_line_parts_and_missing_types(self):
+        rel = self.E.write_card(self.V, self.E.QUOTE, "信義王報價", [])
+        self.E.to_v1(self.V, rel)
+        self.E.write_card(self.V, self.E.ESTIMATE, "順發請款", ["王宅"], pending=["廠商"])
+        self.E.write_card(self.V, self.E.DRAFT, "王宅會議", ["王宅", "信義王"])
+        (self.V / "案子" / "大安陳").rename(self.V / "案子" / "陳家")
+        lines = self.kb("cards", "todo").stdout.splitlines()
+        self.assertTrue(lines[0].endswith("；待掛實體 1；綜合卡 待建 1（待確認 1）、待更新 1；實體夾有變 1"), lines[0])
+        self.assertEqual(lines[1], "型別表沒有：廠商 1 張")
+
+    def test_threshold_confirm_and_config(self):
+        self.E.write_card(self.V, self.E.QUOTE, "王宅報價", ["王宅"])
+        self.assertEqual(self.todo()["synthesis_new"], [])
+        self.E.write_card(self.V, self.E.ESTIMATE, "王宅估價", ["王宅"])
+        (item,) = self.todo()["synthesis_new"]
+        self.assertFalse(item["confirmed"])
+        self.assertEqual(self.kb("entity", "confirm", "王宅").returncode, 0)
+        (item,) = self.todo()["synthesis_new"]
+        self.assertTrue(item["confirmed"])
+        (self.V / ".system" / "config.json").write_text('{"synthesis_min_cards": 3}', encoding="utf-8")
+        self.assertEqual(self.todo()["synthesis_new"], [])
+
+    def test_drop_card_shows_in_removed_and_cache_rewritten(self):
+        from kb._lib import entities, synthesis
+        self.E.write_card(self.V, self.E.QUOTE, "信義王報價", ["信義王"])
+        self.E.write_card(self.V, self.E.ESTIMATE, "信義王估價", ["信義王"])
+        data = entities.load(self.V)
+        mounts = entities.mounts(self.V, data)
+        e = next(x for x in data["entities"] if x["id"] == self.E.XINYI)
+        card = self.V / "案子" / "信義王" / "信義王.md"
+        card.write_text(self.E.synthesis_text(synthesis.header_for(self.V, e, mounts["信義王"], "2026-10-20"), "信義王"),
+                        encoding="utf-8")
+        self.assertEqual(self.todo()["synthesis_stale"], [])
+        fid = _cards.entry_of(self.V, self.E.ESTIMATE)["id"]
+        (self.raw / self.E.ESTIMATE).unlink()
+        self.assertEqual(self.kb("inventory", "scan").returncode, 0)
+        r = self.kb("cards", "drop", fid)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (item,) = self.todo()["synthesis_stale"]
+        self.assertEqual([x["id"] for x in item["removed"]], [fid])
+        self.assertEqual([x.split(" ", 2)[2] for x in cards.parse_front(card.read_text(encoding="utf-8"))["檔案卡"]],
+                         ["信義王報價"])
+
+
 if __name__ == "__main__":
     unittest.main()

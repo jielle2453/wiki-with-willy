@@ -3,7 +3,7 @@
 check：系統/客戶設定檔.md 跟 .system/profile.json 比，印差異與型別夾對帳，不寫任何檔；讀不懂 exit 3，其餘 0。
 apply：check 的判斷之後，刪了有東西的型別夾那列擋（D-058）；沒有改不寫；否則先建缺的型別夾（只建不刪、建夾不備份；
 建不成就整份不套用，測試後修正裁定 11）→ merge → 兩檔備進回合後寫（D-074）→ 表少了的型別、夾是空的就一起拿掉（確認後修正裁定 21）
-→ 第三節拿掉的「不整理」種類把清冊的 skip_kind 拿掉（清冊先備份）。
+→ 第三節拿掉的「不整理」種類把清冊的 skip_kind 拿掉（清冊先備份）→ 第五節關於你對實體清單（entities.sync_self，先備份）。
 鎖 profile.json 30 秒。終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
 import argparse
@@ -11,7 +11,7 @@ import json
 import os
 
 from kb import journal_cli
-from kb._lib import inventory, profile, turn
+from kb._lib import entities, inventory, profile, turn
 from kb._lib import io as kio
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
@@ -166,6 +166,8 @@ def _apply_locked(vault, as_json, conversation):
     profile.write_locked(vault, data, turn_id)
     removed_dirs, kept_dirs = _remove_empty_dirs(vault, st["removed_empty"])
     unskipped = inventory.unskip_kinds(vault, profile.unskipped_kinds(old, merged), turn_id)
+    about = entities.sync_self(vault, merged["about"], turn_id)
+    about_lines = _about_lines(about)
     summary = _with_dirs(profile.summary_short(st["diff"]), removed_dirs, kept_dirs)
     st["unlisted"] = [n for n in st["unlisted"] if n not in removed_dirs]
     parts = [summary] if summary else []
@@ -176,15 +178,26 @@ def _apply_locked(vault, as_json, conversation):
     body = "；".join(parts) if summary else "沒有內容上的差異，重寫了設定檔" + "".join("；" + p for p in parts)
     sentence = f"已套用客戶設定檔：{body}"
     changed = CHANGED + ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if unskipped else [])
+    if about_lines:
+        changed.append({"path": entities.ENTITIES_POSIX, "action": "modify"})
     journal_cli.record_program_or_warn(vault, sentence[1:], changed, "profile apply", conversation)
     if as_json:
         print(json.dumps(dict(_public(st), applied=True, created_dirs=created, removed_dirs=removed_dirs,
-                              unskipped=len(unskipped)), ensure_ascii=False))
+                              unskipped=len(unskipped), about=about), ensure_ascii=False))
         return 0
     print(sentence)
-    for line in _unlisted_line(st):
+    for line in about_lines + _unlisted_line(st):
         print(line)
     return 0
+
+
+def _about_lines(about):
+    """第五節對實體清單動到的（實體與綜合卡第 10 點）：登記了誰、誰改記成你自己、誰不再記成你自己。"""
+    lines = [f"關於你：登記了 {'、'.join(about['added'])}"] if about["added"] else []
+    lines += [f"關於你：{note}" for note in about["notes"]]
+    if about["released"]:
+        lines.append(f"關於你：{'、'.join(about['released'])} 不再記成你自己")
+    return lines
 
 
 def _apply(vault, as_json, conversation):

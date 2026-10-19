@@ -408,9 +408,6 @@ def roots(vault, sources):
     return out, missing, errors
 
 
-SYNTHESIS_HEAD_BYTES = 4096
-
-
 def _is_card(rel, base=None):
     """型別夾第三層的 .md：檔名等於夾名，或檔頭前 4 KB 解析得到「編號」且以 e- 開頭（夾被改名、卡還是舊名，
     實體與綜合卡第 8 點），都是綜合卡、不入冊。讀不了的照舊入冊。"""
@@ -421,21 +418,9 @@ def _is_card(rel, base=None):
         return True
     if base is None:
         return False
-    try:
-        with open(long_path(os.path.join(base, *parts)), "rb") as f:
-            head = f.read(SYNTHESIS_HEAD_BYTES).decode("utf-8", errors="ignore")
-    except OSError:
-        return False
-    lines = head.lstrip("﻿").splitlines()
-    if not lines or lines[0].strip() != "---":
-        return False
-    for line in lines[1:]:
-        if line.strip() == "---":
-            return False
-        key, sep, value = line.partition(":")
-        if sep and key.strip() == "編號":
-            return value.strip().strip('"').startswith("e-")
-    return False
+    from kb._lib.entities import head_id
+    eid = head_id(long_path(os.path.join(base, *parts)))
+    return bool(eid and eid.startswith("e-"))
 
 
 def _iter_root(root, stopper):

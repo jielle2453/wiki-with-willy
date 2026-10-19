@@ -50,7 +50,7 @@ class Add(Base):
     def test_success_sentence_state_backup_and_md(self):
         t = self.new_turn()
         (line,) = self.kb("add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王")
-        self.assertRegex(line, rf"^已加進日程：2026-11-30 交屋（到期，信義王）{ID}$")
+        self.assertRegex(line, rf"^已加進日程：2026-11-30（週一）交屋（到期，信義王）{ID}$")
         (it,) = self.items()
         self.assertEqual((it["source"], it["origin"], it["status"], it["entities"]), ("confirmed", None, "open", ["信義王"]))
         self.assertIn(line.rsplit("）", 1)[1], it["id"])
@@ -65,12 +65,12 @@ class Add(Base):
 
     def test_no_entity_and_time_in_sentence(self):
         (line,) = self.kb("add", "--kind", "會議", "--date", "2026-09-25", "--time", "14:00", "--text", "跟王先生看磁磚")
-        self.assertRegex(line, rf"^已加進日程：2026-09-25 14:00 跟王先生看磁磚（會議）{ID}$")
+        self.assertRegex(line, rf"^已加進日程：2026-09-25（週五）14:00 跟王先生看磁磚（會議）{ID}$")
 
     def test_period_sentence(self):
         (line,) = self.kb("add", "--kind", "期間", "--start", "2026-09-01", "--date", "2026-11-30", "--text", "施工",
                           "--entity", "信義王")
-        self.assertRegex(line, rf"^已加進日程：2026-09-01～2026-11-30 施工（期間，信義王）{ID}$")
+        self.assertRegex(line, rf"^已加進日程：2026-09-01（週二）～2026-11-30（週一）施工（期間，信義王）{ID}$")
 
     def test_refusals_exact(self):
         base = ["add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王"]
@@ -102,11 +102,11 @@ class Add(Base):
     def test_card_makes_it_inferred_and_repeat_returns_existing(self):
         cid, fp = self.card()
         (line,) = self.kb("add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王", "--card", cid)
-        self.assertRegex(line, rf"^已加進日程：2026-11-30 交屋（到期，信義王）（推測，出處 {cid}）{ID}$")
+        self.assertRegex(line, rf"^已加進日程：2026-11-30（週一）交屋（到期，信義王）（推測，出處 {cid}）{ID}$")
         (it,) = self.items()
         self.assertEqual((it["source"], it["origin"]), ("inferred", {"card": cid, "fp": fp}))
         (again,) = self.kb("add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王", "--card", cid)
-        self.assertRegex(again, rf"^日程裡已經有這條：2026-11-30 交屋（到期，信義王）（推測，出處 {cid}）{ID}$")
+        self.assertRegex(again, rf"^日程裡已經有這條：2026-11-30（週一）交屋（到期，信義王）（推測，出處 {cid}）{ID}$")
         self.assertEqual(len(self.items()), 1)
 
     def test_card_whose_file_is_gone(self):
@@ -137,7 +137,7 @@ class EditStatus(Base):
     def test_edit_sentence_and_corrected(self):
         cid, _fp = self.card()
         aid = self.add("--card", cid)
-        self.assertEqual(self.kb("edit", aid, "--date", "2026-12-15"), ["已改：交屋 2026-11-30 → 2026-12-15"])
+        self.assertEqual(self.kb("edit", aid, "--date", "2026-12-15"), ["已改：交屋 2026-11-30（週一）→ 2026-12-15（週二）"])
         (it,) = self.items()
         self.assertEqual((it["date"], it["source"], len(it["history"])), ("2026-12-15", "corrected", 1))
 

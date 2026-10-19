@@ -466,6 +466,11 @@ def proposal_items(data):
     return [i for i in data["items"] if i.get("status") == "open" and isinstance(i.get("proposal"), dict)]
 
 
+def with_weekday(day):
+    """YYYY-MM-DD → 「YYYY-MM-DD（週X）」，星期由程式算（成功句與日程.md 共用，AI 不自己推）。"""
+    return f"{day}（週{WEEKDAYS[dt.date.fromisoformat(day).weekday()]}）"
+
+
 def md_of(day):
     """YYYY-MM-DD → M/D（不補零）。"""
     d = dt.date.fromisoformat(day)
@@ -546,7 +551,7 @@ def _entities_suffix(it):
 
 def _line(it):
     d = dt.date.fromisoformat(it["date"])
-    when = f"{it['date']}（週{WEEKDAYS[d.weekday()]}）" + (f"{it['time']} " if it.get("time") else "")
+    when = with_weekday(it["date"]) + (f"{it['time']} " if it.get("time") else "")
     mark = INFERRED_MARK if it.get("source") == "inferred" else ""
     return f"- {when}{KIND_TEXT.get(it.get('kind'), it.get('kind'))} {it.get('text')}{_entities_suffix(it)}{mark}"
 

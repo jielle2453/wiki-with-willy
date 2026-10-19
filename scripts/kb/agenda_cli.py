@@ -63,12 +63,14 @@ def _out(as_json, lines, payload):
 
 
 def _describe(it):
-    """「2026-11-30 交屋（到期，信義王）」：期間寫成 開始～結束，有時間接在日期後面。"""
-    when = f"{it['start']}～{it['date']}" if it.get("kind") == "period" and it.get("start") else it["date"]
+    """「2026-11-30（週一）交屋（到期，信義王）」：日期後接程式算的星期；期間寫成 開始～結束，有時間接在星期後面。"""
+    when = agenda.with_weekday(it["date"])
+    if it.get("kind") == "period" and it.get("start"):
+        when = f"{agenda.with_weekday(it['start'])}～{when}"
     if it.get("time"):
-        when += f" {it['time']}"
+        when += f"{it['time']} "
     inside = [agenda.KIND_TEXT.get(it["kind"], it["kind"])] + list(it.get("entities") or [])
-    return f"{when} {it['text']}（{'，'.join(inside)}）"
+    return f"{when}{it['text']}（{'，'.join(inside)}）"
 
 
 def _origin(it):
@@ -91,7 +93,7 @@ def _changes(before, after):
     """(句子片段, 日誌用片段)：日期變了寫「說明 舊 → 新」，其他欄位寫「欄名 舊 → 新」。"""
     parts, labels = [], []
     if before.get("date") != after.get("date"):
-        parts.append(f"{before['text']} {before['date']} → {after['date']}")
+        parts.append(f"{before['text']} {agenda.with_weekday(before['date'])}→ {agenda.with_weekday(after['date'])}")
     for key, label in FIELD_LABEL:
         old, new = agenda.show(before.get(key)), agenda.show(after.get(key))
         if old != new:

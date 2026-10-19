@@ -167,5 +167,57 @@ class Register(unittest.TestCase):
         self.assertEqual(sorted(e["locations"][0]["uri"] for e in data["entries"]), ["file://AI 產出/x.md", "file://AI 產出/y.md"])
 
 
+class SkipKind(unittest.TestCase):
+    """客戶設定檔與型別第 4 點：選填欄 skip_kind；scan／apply／reconcile 保留它；set_skip、unskip_kinds。"""
+
+    def setUp(self):
+        from tests import _cards
+        from tests.test_lib_inventory_scan import make_inv_vault
+        self.tmp, self.V, self.raw = make_inv_vault()
+        _cards.scan_apply(self.V)
+        self.entry = _cards.entry_of(self.V, "報價與合約/合約範本.txt")
+        self.t = turn.start(self.V, None, "")["turn"]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def by_id(self):
+        return {e["id"]: e for e in inventory.load(self.V)["entries"]}
+
+    def test_set_and_clear(self):
+        inventory.set_skip(self.V, [self.entry["id"]], "請款")
+        self.assertEqual(self.by_id()[self.entry["id"]]["skip_kind"], "請款")
+        inventory.set_skip(self.V, [self.entry["id"]], None)
+        self.assertNotIn("skip_kind", self.by_id()[self.entry["id"]])
+
+    def test_kept_after_scan_apply_and_reconcile(self):
+        from tests import _cards
+        from kb._lib import sources as sources_lib
+        inventory.set_skip(self.V, [self.entry["id"]], "請款")
+        (self.raw / "報價與合約" / "合約範本.txt").write_text("改過了，內容不一樣\n", encoding="utf-8")
+        _cards.scan_apply(self.V)
+        self.assertEqual(self.by_id()[self.entry["id"]]["skip_kind"], "請款")
+        inventory.reconcile(self.V, sources_lib.load(self.V), self.t)
+        self.assertEqual(self.by_id()[self.entry["id"]]["skip_kind"], "請款")
+
+    def test_unskip_kinds_returns_ids_and_backs_up(self):
+        others = [e["id"] for e in inventory.load(self.V)["entries"] if e["id"] != self.entry["id"]][:1]
+        inventory.set_skip(self.V, [self.entry["id"]], "請款")
+        inventory.set_skip(self.V, others, "薪資")
+        self.assertEqual(inventory.unskip_kinds(self.V, ["請款"], self.t), [self.entry["id"]])
+        got = self.by_id()
+        self.assertNotIn("skip_kind", got[self.entry["id"]])
+        self.assertEqual(got[others[0]]["skip_kind"], "薪資")
+        self.assertIn(inventory.INVENTORY_POSIX, {e["path"] for e in turn.entries(self.V, self.t)})
+
+    def test_unskip_nothing_writes_nothing(self):
+        p = self.V / ".system" / "inventory.json"
+        before = p.stat().st_mtime_ns
+        t2 = turn.start(self.V, None, "")["turn"]
+        self.assertEqual(inventory.unskip_kinds(self.V, ["請款"], t2), [])
+        self.assertEqual(p.stat().st_mtime_ns, before)
+        self.assertEqual(turn.entries(self.V, t2), [])
+
+
 if __name__ == "__main__":
     unittest.main()

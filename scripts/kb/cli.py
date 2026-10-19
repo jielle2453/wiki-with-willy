@@ -18,6 +18,7 @@ COMMANDS = {
     "convert": ("kb.convert", "抽字：把一份原檔轉成純文字暫存檔給製卡者讀；PDF、圖片指給 Read"),
     "cards": ("kb.cards", "檔案卡：todo 列該做的卡，sync 跟著原檔搬卡，drop 拿掉原檔已刪的卡，index 重寫總目錄"),
     "pending": ("kb.pending_cli", "待處理：list 列等你決定的事，resolve 記下怎麼處理，dismiss 記成不用管"),
+    "profile": ("kb.profile_cli", "客戶設定檔：check 看改了什麼，apply 套用並建型別夾"),
 }
 
 

@@ -1,0 +1,280 @@
+{
+  "schema_version": 1,
+  "applied": null,
+  "md_sha256": "7dea35a61ee0bac46d07b91edb9c2db8b6c442c704a3bbab1c6d901298275cfe",
+  "types": [],
+  "card_types": [
+    {
+      "name": "報價",
+      "sections": [
+        {
+          "name": "重點",
+          "required": false,
+          "hint": "這份檔要記住的事，一點一行"
+        },
+        {
+          "name": "日期與數字",
+          "required": false,
+          "hint": "期限、金額、數量、面積；照原檔寫，不換算"
+        },
+        {
+          "name": "提到的人與單位",
+          "required": false,
+          "hint": "人名加角色、公司、廠商"
+        },
+        {
+          "name": "沒讀到的部分",
+          "required": false,
+          "hint": "讀取是「部分」時寫哪些沒讀、為什麼"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "name": "合約",
+      "sections": [
+        {
+          "name": "重點",
+          "required": false,
+          "hint": "這份檔要記住的事，一點一行"
+        },
+        {
+          "name": "日期與數字",
+          "required": false,
+          "hint": "期限、金額、數量、面積；照原檔寫，不換算"
+        },
+        {
+          "name": "提到的人與單位",
+          "required": false,
+          "hint": "人名加角色、公司、廠商"
+        },
+        {
+          "name": "沒讀到的部分",
+          "required": false,
+          "hint": "讀取是「部分」時寫哪些沒讀、為什麼"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "name": "會議紀錄",
+      "sections": [
+        {
+          "name": "重點",
+          "required": false,
+          "hint": "這份檔要記住的事，一點一行"
+        },
+        {
+          "name": "日期與數字",
+          "required": false,
+          "hint": "期限、金額、數量、面積；照原檔寫，不換算"
+        },
+        {
+          "name": "提到的人與單位",
+          "required": false,
+          "hint": "人名加角色、公司、廠商"
+        },
+        {
+          "name": "沒讀到的部分",
+          "required": false,
+          "hint": "讀取是「部分」時寫哪些沒讀、為什麼"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "name": "型錄",
+      "sections": [
+        {
+          "name": "重點",
+          "required": false,
+          "hint": "這份檔要記住的事，一點一行"
+        },
+        {
+          "name": "日期與數字",
+          "required": false,
+          "hint": "期限、金額、數量、面積；照原檔寫，不換算"
+        },
+        {
+          "name": "提到的人與單位",
+          "required": false,
+          "hint": "人名加角色、公司、廠商"
+        },
+        {
+          "name": "沒讀到的部分",
+          "required": false,
+          "hint": "讀取是「部分」時寫哪些沒讀、為什麼"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "name": "進度表",
+      "sections": [
+        {
+          "name": "重點",
+          "required": false,
+          "hint": "這份檔要記住的事，一點一行"
+        },
+        {
+          "name": "日期與數字",
+          "required": false,
+          "hint": "期限、金額、數量、面積；照原檔寫，不換算"
+        },
+        {
+          "name": "提到的人與單位",
+          "required": false,
+          "hint": "人名加角色、公司、廠商"
+        },
+        {
+          "name": "沒讀到的部分",
+          "required": false,
+          "hint": "讀取是「部分」時寫哪些沒讀、為什麼"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "name": "範本",
+      "sections": [
+        {
+          "name": "重點",
+          "required": false,
+          "hint": "這份檔要記住的事，一點一行"
+        },
+        {
+          "name": "日期與數字",
+          "required": false,
+          "hint": "期限、金額、數量、面積；照原檔寫，不換算"
+        },
+        {
+          "name": "提到的人與單位",
+          "required": false,
+          "hint": "人名加角色、公司、廠商"
+        },
+        {
+          "name": "沒讀到的部分",
+          "required": false,
+          "hint": "讀取是「部分」時寫哪些沒讀、為什麼"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "name": "說明",
+      "sections": [
+        {
+          "name": "重點",
+          "required": false,
+          "hint": "這份檔要記住的事，一點一行"
+        },
+        {
+          "name": "日期與數字",
+          "required": false,
+          "hint": "期限、金額、數量、面積；照原檔寫，不換算"
+        },
+        {
+          "name": "提到的人與單位",
+          "required": false,
+          "hint": "人名加角色、公司、廠商"
+        },
+        {
+          "name": "沒讀到的部分",
+          "required": false,
+          "hint": "讀取是「部分」時寫哪些沒讀、為什麼"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "name": "其他",
+      "sections": [
+        {
+          "name": "重點",
+          "required": false,
+          "hint": "這份檔要記住的事，一點一行"
+        },
+        {
+          "name": "日期與數字",
+          "required": false,
+          "hint": "期限、金額、數量、面積；照原檔寫，不換算"
+        },
+        {
+          "name": "提到的人與單位",
+          "required": false,
+          "hint": "人名加角色、公司、廠商"
+        },
+        {
+          "name": "沒讀到的部分",
+          "required": false,
+          "hint": "讀取是「部分」時寫哪些沒讀、為什麼"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    }
+  ],
+  "exclusions": [
+    {
+      "kind": "身分證字號",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "kind": "護照號碼",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "kind": "銀行帳號",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "kind": "信用卡號",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "kind": "密碼",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "kind": "個人薪資金額",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "kind": "統一編號",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "kind": "電話",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    },
+    {
+      "kind": "地址",
+      "action": "kind_only",
+      "source": "inferred",
+      "date": "2026-10-19"
+    }
+  ]
+}

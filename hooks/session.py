@@ -2,7 +2,8 @@
 
 狀態行固定順序、回 None 的不印；第一行固定以「【wiki-with-willy】」開頭，知識庫 CLAUDE.md 的哨兵句認這個字串（D-088）。
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
-唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）。
+唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
+客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -102,6 +103,37 @@ def line_missing_sources(vault):
     return MISSING_SOURCES_LINE.format(names=names)
 
 
+PROFILE_CHANGED = "設定檔有改（{summary}）：跑 kb profile check 複述後問客戶要不要套用，說好才 apply"
+PROFILE_ERROR = "設定檔有改但讀不懂（{error}），改好下次再問"
+PROFILE_UNLISTED = "第一層夾{names}不在型別表，請客戶在設定檔補一列"
+PROFILE_LINE_MAX = 120
+PROFILE_UNLISTED_SHOWN = 2
+
+
+def line_profile(vault):
+    """客戶設定檔與型別第 7 點：profile.status 只讀、不寫 JSON 也不寫 md。有改（有內容差異）或讀不懂各一句；
+    第一層有不在型別表的夾接在同一行後面，沒有前半時自己成一行（開頭「設定檔：」）；整行超過 120 字夾名只列 2 個。"""
+    from kb._lib import profile
+
+    st = profile.status(vault)
+    head = None
+    if st["state"] == "changed" and profile.has_diff(st["diff"]):
+        head = PROFILE_CHANGED.format(summary=profile.summary_short(st["diff"]))
+    elif st["state"] == "error":
+        head = PROFILE_ERROR.format(error=st["error"])
+    if not st["unlisted"]:
+        return head
+
+    def joined(names, more):
+        text = "、".join(f"「{n}」" for n in names) + (f"等 {more} 個" if more else "")
+        tail = PROFILE_UNLISTED.format(names=text)
+        return f"{head}；{tail}" if head else f"設定檔：{tail}"
+    line = joined(st["unlisted"], 0)
+    if len(line) > PROFILE_LINE_MAX:
+        line = joined(st["unlisted"][:PROFILE_UNLISTED_SHOWN], len(st["unlisted"]))
+    return line
+
+
 def line_agenda(vault):
     """等日程題。"""
     return None
@@ -125,7 +157,8 @@ def line_compact(vault, source):
 def status_lines(vault, source):
     """固定順序；每一行各自 try：出錯那行回 None、寫 hook-errors.log，其他行照印（I-046）。kb 行不包，它出錯走整段出錯。"""
     out = [line_kb(vault)]
-    for fn in (line_version, line_changes, line_ingest_hint, line_missing_sources, line_agenda, line_backup, line_health,
+    for fn in (line_version, line_changes, line_ingest_hint, line_missing_sources, line_profile, line_agenda, line_backup,
+               line_health,
                lambda v: line_compact(v, source)):
         try:
             line = fn(vault)

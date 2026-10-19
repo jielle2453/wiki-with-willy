@@ -1,4 +1,5 @@
-"""kb init <路徑>：從 skeleton/ 建客戶端總資料夾的五區骨架加 .system/sources.json（D-077、D-080）。
+"""kb init <路徑>：從 skeleton/ 建客戶端總資料夾的五區骨架加 .system/sources.json（D-077、D-080），
+再加客戶設定檔兩份 .system/profile.json 與 系統/客戶設定檔.md（預設值與渲染，D-111）。
 
 缺的才建，既有檔一律不碰（I-066）；.gitkeep 只為了讓 git 留住空夾，不複製；.system/ 不在骨架裡，由這裡建。
 目標的上層已是知識庫就拒絕（I-054，用 guard.find_vault 找）。CLAUDE.md、.claude/、.system/ 在 Windows 設隱藏屬性，設不成只印一句。
@@ -11,11 +12,13 @@ import os
 from pathlib import Path
 
 from kb import guard, journal_cli
+from kb._lib import profile
 from kb._lib import sources as sources_lib
-from kb._lib.io import read_text, write_text_atomic
+from kb._lib.io import read_text, write_json_atomic, write_text_atomic
 from kb._lib.paths import plugin_root
 
 SKELETON_REL = "skeleton"
+PROFILE_FILES = (profile.PROFILE_POSIX, profile.MD_POSIX)  # 不住 skeleton：由 profile 的預設值與渲染寫（D-067）
 GITKEEP = ".gitkeep"
 HIDDEN_ITEMS = ("CLAUDE.md", ".claude", ".system")
 EMPTY_SOURCES = {"schema_version": 1, "sources": []}
@@ -46,7 +49,33 @@ def plan_items():
         else:
             files.append(rel)
     files.append(sources_lib.SOURCES_REL)
+    files.extend(PROFILE_FILES)
     return [(d, "dir") for d in sorted(dirs)] + [(f, "file") for f in sorted(files)]
+
+
+def _fill_profile(p, have_json, have_md, notes):
+    """補客戶設定檔（客戶設定檔與型別第 3 點），回 (建了的 rel, 只改了 md_sha256 的 rel)：
+    兩份都缺：寫預設 JSON、渲染 md、回填 sha；只缺 md：從 JSON 渲染回來、更新 sha；
+    只缺 JSON（半份）：寫預設 JSON、不動 md、md_sha256 留 null，下次開場就會問要不要套用。"""
+    if have_json and have_md:
+        return [], []
+    if have_md:
+        write_json_atomic(p / profile.PROFILE_POSIX, profile.defaults())
+        return [profile.PROFILE_POSIX], []
+    if have_json:
+        try:
+            data = profile.load(p)
+        except ValueError as e:
+            notes.append(f"{profile.PROFILE_POSIX} 讀不到，沒補 {profile.MD_POSIX}：{e}")
+            return [], []
+    else:
+        data = profile.defaults()
+    (p / profile.PROFILE_POSIX).parent.mkdir(parents=True, exist_ok=True)
+    data["md_sha256"] = profile.sha256_text(profile.render(p, data))
+    write_json_atomic(p / profile.PROFILE_POSIX, data)
+    if have_json:
+        return [profile.MD_POSIX], [profile.PROFILE_POSIX]
+    return [profile.PROFILE_POSIX, profile.MD_POSIX], []
 
 
 def _vault_above(p):
@@ -106,6 +135,8 @@ def run(args):
         if have:
             existing.append(rel)
             continue
+        if rel in PROFILE_FILES:
+            continue  # 設定檔兩份互相牽動，下面一起補
         target = p / rel
         if kind == "dir":
             target.mkdir(parents=True, exist_ok=True)
@@ -116,6 +147,9 @@ def run(args):
             else:
                 write_text_atomic(target, read_text(skeleton_root() / rel))
         created.append(rel)
+    have = {rel: h for rel, _k, h in status}
+    made, touched = _fill_profile(p, have[profile.PROFILE_POSIX], have[profile.MD_POSIX], notes)
+    created += made
     for name in HIDDEN_ITEMS:
         if name in created:
             why = _hide(p / name)
@@ -123,8 +157,9 @@ def run(args):
                 notes.append(f"隱藏屬性沒設成：{name}，{why}")
     if created:  # 程式段（D-085）：只數骨架項目；沒有缺的不寫；不開回合
         note = f"建立知識庫：建了 {len(created)} 項" if not existed else f"補齊了 {len(created)} 項"
-        journal_cli.record_program_or_warn(p, note, [{"path": rel, "action": "create"} for rel in created], "init",
-                                           journal_cli.in_conversation(p))
+        changed = [{"path": rel, "action": "create"} for rel in created] + [{"path": rel, "action": "modify"}
+                                                                             for rel in touched]
+        journal_cli.record_program_or_warn(p, note, changed, "init", journal_cli.in_conversation(p))
     if as_json:
         print(json.dumps({"vault": str(p), "created": created, "existing": existing}, ensure_ascii=False))
     elif not existed:

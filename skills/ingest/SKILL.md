@@ -31,7 +31,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 3. 跑 `cards todo --json`，看 `new`、`stale`、`moved`、`duplicates`、`missing`、`unreadable`、`broken`。
 4. `moved` 或 `duplicates` 有項目就先跑 `cards sync`（卡跟著原檔搬、檔名不變；同編號多張留正本），跑完再跑一次 `cards todo --json`，照新的清單做下面幾步（搬了又改過的檔，搬完才會列進 `stale`）。
 5. 待製卡份數直接看 `--json` 的 `new` 加 `stale` 幾項，≤ 上限就不問客戶要不要、不說「要不要接著整理」，直接做完在回答末尾一句告知（上限是開場那行寫的「超過 N 份」，沒有那行用 5）；超過先問「有 N 份要整理，現在做嗎？大約 N 分鐘」（一份抓 10 秒，不到 1 分鐘說「一兩分鐘」）。客戶說好就全部做、每 5 份講一句進度；說之後再說，這個對話不再問。
-6. 每一份照 `references/carding.md` 做：
+6. 每一份照 `references/carding.md` 做（讀完判斷是 `profile.exclusions` 裡 `no_card` 的種類就不做卡、跑 `cards skip`）：
    - `convert <編號>`；
    - 讀它指的東西：暫存檔用 Read 分段讀（PDF 也是暫存檔，掃描頁另外印「圖：…」，用 Read 看那些 PNG）；圖片檔用 Read 看原檔；
    - 用 Write 寫卡：檔頭照 todo 給的 `header` 一字不改（含 `開原檔` 那行），只填（填）的欄，有個資就把 `敏感資料種類` 的 `[]` 換成種類；路徑是總資料夾接 `dir`，檔名照 `filename_pattern` 把 `<標題>` 換成標題。標題寫之前先照 carding.md 第二節對一次：檔名寫錯被打回時，錯名的檔會留在 `檔案索引/`，要等 `cards sync` 收；

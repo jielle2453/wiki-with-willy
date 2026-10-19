@@ -340,5 +340,85 @@ class OpeningIngestHint(unittest.TestCase):
         self.assertEqual(self.hint_lines(self.status()), [INGEST_HINT.format(n=3)])
 
 
+ASK = "跑 kb profile check 複述後問客戶要不要套用，說好才 apply"
+TYPE_ROW = "| 案子 | 事 |  | 推測 | 2026-10-19 |\n"
+
+
+class OpeningProfile(unittest.TestCase):
+    """客戶設定檔與型別第 7 點、驗收 10：沒改不印；有改一行；讀不懂一行；unlisted 接在同一行或自成一行；只讀不寫；
+    profile.json 壞了其他行照印、log 一行。fixture 的型別表只有「案子」。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        self.md = self.V / "系統" / "客戶設定檔.md"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    status = OpeningInventory.status
+
+    def profile_lines(self, lines=None):
+        return [ln for ln in (lines if lines is not None else self.status()) if ln.startswith("設定檔")]
+
+    def edit(self, old, new):
+        text = self.md.read_text(encoding="utf-8")
+        self.assertIn(old, text)
+        self.md.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\n")
+
+    def test_unchanged_no_line(self):
+        self.assertEqual(self.profile_lines(), [])
+
+    def test_changed_line(self):
+        self.edit(TYPE_ROW, TYPE_ROW + "| 工地 | 事 | x |\n")
+        self.assertEqual(self.profile_lines(), [f"設定檔有改（型別 +1）：{ASK}"])
+
+    def test_whitespace_only_change_no_line(self):
+        self.edit(TYPE_ROW, TYPE_ROW + "\n")
+        self.assertEqual(self.profile_lines(), [])
+
+    def test_unreadable_line(self):
+        self.edit(TYPE_ROW, TYPE_ROW + "| 工地 | 事 |\n")
+        self.assertEqual(self.profile_lines(),
+                         ["設定檔有改但讀不懂（第 1 節第 2 列欄數不對（要 3 欄或 5 欄）），改好下次再問"])
+
+    def test_unlisted_alone_and_joined(self):
+        (self.V / "廠商").mkdir()
+        self.assertEqual(self.profile_lines(), ["設定檔：第一層夾「廠商」不在型別表，請客戶在設定檔補一列"])
+        self.edit(TYPE_ROW, TYPE_ROW + "| 工地 | 事 | x |\n")
+        self.assertEqual(self.profile_lines(),
+                         [f"設定檔有改（型別 +1）：{ASK}；第一層夾「廠商」不在型別表，請客戶在設定檔補一列"])
+
+    def test_long_unlisted_lists_two(self):
+        for i in range(5):
+            (self.V / f"很長很長很長很長的第一層資料夾名稱第{i}號").mkdir()
+        self.edit(TYPE_ROW, TYPE_ROW + "| 工地 | 事 | x |\n")
+        line = self.profile_lines()[0]
+        self.assertLessEqual(len(line), 160)
+        self.assertIn("「很長很長很長很長的第一層資料夾名稱第0號」、「很長很長很長很長的第一層資料夾名稱第1號」等 5 個", line)
+
+    def test_reads_only(self):
+        (self.V / "廠商").mkdir()
+
+        def stamps():
+            return {p.relative_to(self.V).as_posix(): p.stat().st_mtime_ns
+                    for p in (self.V / ".system").rglob("*") if p.is_file()}
+        for change in ((TYPE_ROW, TYPE_ROW + "| 工地 | 事 | x |\n"), ("| 工地 | 事 | x |", "| 工地 | 事 |")):
+            before = stamps()
+            self.edit(*change)
+            self.assertTrue(self.profile_lines())
+            after = stamps()
+            self.assertEqual({k for k in after if before.get(k) != after[k]} - {".system/env.json"}, set())
+        self.assertEqual(self.md.read_text(encoding="utf-8").count("| 工地 | 事 |"), 1)
+
+    def test_broken_profile_json_other_lines_printed(self):
+        (self.V / ".system" / "profile.json").write_text("{bad", encoding="utf-8")
+        lines = self.status("compact")
+        self.assertEqual((lines[0], lines[-1]), (KB_LINE, COMPACT_LINE))
+        self.assertEqual(self.profile_lines(lines), [])
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0].split("\t")[1], "session")
+
+
 if __name__ == "__main__":
     unittest.main()

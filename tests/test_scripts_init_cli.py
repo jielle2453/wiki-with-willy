@@ -14,7 +14,8 @@ from tests._guard_fixture import KB, ROOT, make_vault
 
 SKELETON = ROOT / "skeleton"
 EXPECTED_DIRS = ["AI 產出", "收件匣", "檔案索引", "系統/工作日誌", "系統/健檢報告", ".claude", ".system"]
-EXPECTED_FILES = ["CLAUDE.md", ".claude/settings.json", ".system/sources.json"]
+EXPECTED_FILES = ["CLAUDE.md", ".claude/settings.json", ".system/sources.json", ".system/profile.json",
+                  "系統/客戶設定檔.md"]
 SKELETON_TRACKED = {"CLAUDE.md", ".claude/settings.json", "AI 產出/.gitkeep", "收件匣/.gitkeep", "檔案索引/.gitkeep",
                     "系統/工作日誌/.gitkeep", "系統/健檢報告/.gitkeep"}
 
@@ -169,6 +170,87 @@ class Init(unittest.TestCase):
         r = self.init("知識庫")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue((self.V / ".system" / "sources.json").is_file())
+
+
+class InitProfile(unittest.TestCase):
+    """客戶設定檔與型別第 3 點、驗收 1：init 多建 profile.json（預設值）與 系統/客戶設定檔.md（渲染版）；
+    只缺 md 從 JSON 渲染回來並更新 sha；只缺 JSON 寫預設、不動 md、md_sha256 留 null。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kbinit-")).resolve()
+        self.V = self.tmp / "知識庫"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def init(self, path=None):
+        r = run_kb("init", str(path or self.V), cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def json(self):
+        return json.loads((self.V / ".system" / "profile.json").read_text(encoding="utf-8"))
+
+    def md(self):
+        return self.V / "系統" / "客戶設定檔.md"
+
+    def test_new_vault_gets_defaults_and_rendered_md(self):
+        from datetime import date
+        from kb._lib import profile
+        self.init()
+        today = date.today().isoformat()
+        want_md = (ROOT / "tests" / "fixtures" / "profile" / "客戶設定檔.md").read_text(encoding="utf-8")
+        self.assertEqual(self.md().read_text(encoding="utf-8"), want_md.replace("2026-10-19", today))
+        data = self.json()
+        want = profile.defaults(today)
+        want["md_sha256"] = profile.md_sha256(self.V)
+        self.assertEqual(data, want)
+        self.assertEqual(data["md_sha256"], profile.sha256_text(self.md().read_text(encoding="utf-8")))
+
+    def test_check_lists_both(self):
+        r = run_kb("init", str(self.V), "--check", cwd=self.tmp)
+        self.assertIn("會建 .system/profile.json", r.stdout.splitlines())
+        self.assertIn("會建 系統/客戶設定檔.md", r.stdout.splitlines())
+
+    def test_existing_vault_without_profile_gets_two(self):
+        tmp, V, _raw = make_vault()
+        try:
+            self.init(V)  # fixture 少了 git 留不住的空夾，先補齊
+            self.assertEqual(self.init(V).strip(), f"{V} 已是知識庫，沒有缺的", "fixture 已帶設定檔兩份")
+            (V / ".system" / "profile.json").unlink()
+            (V / "系統" / "客戶設定檔.md").unlink()
+            claude = (V / "CLAUDE.md").read_bytes()
+            out = self.init(V)
+            self.assertEqual(out.strip(), f"{V} 已是知識庫，補齊了 2 項")
+            self.assertTrue((V / ".system" / "profile.json").is_file())
+            self.assertEqual((V / "CLAUDE.md").read_bytes(), claude)
+            self.assertEqual(self.init(V).strip(), f"{V} 已是知識庫，沒有缺的")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_only_md_missing_renders_from_json(self):
+        from kb._lib import profile
+        self.init()
+        data = self.json()
+        data["types"] = [{"name": "工地", "category": "matter", "note": "", "source": "interview", "date": "2026-10-01"}]
+        (self.V / ".system" / "profile.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        self.md().unlink()
+        self.assertEqual(self.init().strip(), f"{self.V} 已是知識庫，補齊了 1 項")
+        self.assertIn("| 工地 | 事 |  | 訪談 | 2026-10-01 |", self.md().read_text(encoding="utf-8"))
+        self.assertEqual(self.json()["md_sha256"], profile.md_sha256(self.V))
+        self.assertEqual(self.json()["types"], data["types"])
+
+    def test_only_json_missing_writes_defaults_and_leaves_md(self):
+        self.init()
+        with open(self.md(), "a", encoding="utf-8", newline="\n") as f:
+            f.write("客戶加的一行\n")
+        before = self.md().read_bytes()
+        (self.V / ".system" / "profile.json").unlink()
+        self.assertEqual(self.init().strip(), f"{self.V} 已是知識庫，補齊了 1 項")
+        self.assertEqual(self.md().read_bytes(), before)
+        data = self.json()
+        self.assertIsNone(data["md_sha256"])
+        self.assertEqual(data["types"], [])
 
 
 class InitJournal(unittest.TestCase):

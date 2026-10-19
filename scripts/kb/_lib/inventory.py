@@ -248,6 +248,43 @@ def set_status(vault, ids, status):
         _write(vault, data["entries"])
 
 
+def set_skip(vault, ids, kind):
+    """選填欄 skip_kind（客戶設定檔說「不整理」的種類，D-113）：kind 是 None 就拿掉欄。呼叫端先備份。
+    scan／apply／reconcile 對既有條目原樣保留它，不在 _migrate 裡補。"""
+    ids = set(ids)
+    p = _path(vault)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(p):
+        data = load(vault)
+        for entry in data["entries"]:
+            if entry.get("id") in ids:
+                if kind is None:
+                    entry.pop("skip_kind", None)
+                else:
+                    entry["skip_kind"] = kind
+        _write(vault, data["entries"])
+
+
+def unskip_kinds(vault, kinds, turn_id=None):
+    """skip_kind 是 kinds 之一的條目拿掉該欄，回動到的 id；有動到才在鎖裡備份（給了 turn_id）、寫。"""
+    kinds = set(kinds)
+    p = _path(vault)
+    if not kinds or not p.exists():
+        return []
+    with FileLock(p):
+        data = load(vault)
+        hits = [e for e in data["entries"] if e.get("skip_kind") in kinds]
+        if not hits:
+            return []
+        if turn_id:
+            from kb._lib import turn
+            turn.backup(vault, INVENTORY_POSIX, turn_id)
+        for e in hits:
+            e.pop("skip_kind", None)
+        _write(vault, data["entries"])
+    return [e["id"] for e in hits]
+
+
 # ---------- 走訪 ----------
 
 def _skipped_name(name):

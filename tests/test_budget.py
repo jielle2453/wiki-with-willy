@@ -125,12 +125,14 @@ class ClientClaudeMdBudget(unittest.TestCase):
         self.assertLessEqual(len(text), CLIENT_CLAUDE_MD_MAX_CHARS)
 
 
-def opening_status(source):
-    """跑 hooks/session.py，回 additionalContext 在 core 全文之前的狀態行（不含隔開的空行）。"""
+def opening_status(source, prepare=None):
+    """跑 hooks/session.py，回 additionalContext 在 core 全文之前的狀態行（不含隔開的空行）。prepare(vault) 先改 fixture 複本。"""
     tmp = Path(tempfile.mkdtemp(prefix="kbbudget-"))
     try:
         vault = tmp / "vault"
         shutil.copytree(FIXTURE_VAULT, vault)
+        if prepare is not None:
+            prepare(vault)
         data = {"session_id": "budget", "cwd": str(vault), "hook_event_name": "SessionStart", "source": source}
         r = subprocess.run([sys.executable, str(SESSION_HOOK)], input=json.dumps(data), capture_output=True,
                            text=True, encoding="utf-8", cwd=str(vault), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT)))
@@ -152,6 +154,32 @@ class OpeningBudget(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertLessEqual(count_lines(status), OPENING_MAX_LINES)
                 self.assertLessEqual(len(status), OPENING_MAX_CHARS)
+
+
+def all_lines_vault(vault):
+    """變動、有變動、找不到來源、設定檔四行同時在（客戶設定檔與型別第 12 點）：fixture 沒複製 raw，兩個來源都找不到、
+    清冊是空的（知識庫裡的檔都算新增）；設定檔三節各改一處，再加一個不在型別表的第一層夾。"""
+    md = vault / "系統" / "客戶設定檔.md"
+    text = md.read_text(encoding="utf-8")
+    text = text.replace("| 案子 | 事 |  | 推測 | 2026-10-19 |", "| 案子 | 事 |  | 推測 | 2026-10-19 |\n| 工地 | 事 | 一個裝修案 |")
+    text = text.replace("| 報價 | 日期與數字 |  |", "| 報價 | 日期與數字 | ✓ |")
+    text = text.replace("| 地址 | 只記種類 | 推測 | 2026-10-19 |", "| 地址 | 只記種類 | 推測 | 2026-10-19 |\n| 請款 | 不整理 |")
+    md.write_text(text, encoding="utf-8", newline="\n")
+    (vault / "合作廠商與工班名冊").mkdir()
+
+
+class OpeningAllLines(unittest.TestCase):
+    def test_six_lines_within_budget(self):
+        if not SESSION_HOOK.exists():
+            self.skipTest("hooks/session.py 尚未建立")
+        for source in ("startup", "compact"):
+            status = opening_status(source, all_lines_vault)
+            lines = status.splitlines()
+            with self.subTest(source=source):
+                for head in ("變動：", "有變動：", "這台電腦找不到來源", "設定檔有改（"):
+                    self.assertEqual(sum(1 for ln in lines if ln.startswith(head)), 1, (head, lines))
+                self.assertLessEqual(count_lines(status), OPENING_MAX_LINES)
+                self.assertLessEqual(len(status), OPENING_MAX_CHARS, (len(status), lines))
 
 
 class ResidentTotal(unittest.TestCase):

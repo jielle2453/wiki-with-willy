@@ -71,6 +71,7 @@
 | B-059 | 2026-10-19 | open | `cards todo` 的 orphans 不分「條目 excluded（客戶說不讀）」與「編號不在清冊」，AI 把排除夾的孤兒卡說成「原檔不見了要確認是不是刪了」誤導客戶；todo 的 orphans 帶原因、SKILL 寫「排除夾的卡不跟客戶提」；manage 第二版清殘留時一起收。另：AI 對客戶用「您」（R-10 語氣，低） | ingest 製卡確認 G11 |
 | B-060 | 2026-10-19 | open | `test_budget` 的開場 8 行 400 字量的是開發機 worktree 路徑下的 kb 那行；客戶機 plugin 裝在 `~/.claude/plugins/cache/...` 路徑更長（六行都在時開發機 356 字）。upgrade 題定下安裝路徑後，用那個長度重量一次，或讓 test_budget 用最長合理路徑算 kb 行 | 客戶設定檔與型別實作回報 C |
 | B-061 | 2026-10-19 | deferred | 低：`profile apply` 建夾失敗那句把 OS 的 strerror 原樣接進去，句尾「存取被拒。；設定檔沒有套用」標點疊用；接 OS 錯誤字串的句子一律先去尾端句號（convert 的「讀不到」同類檢查一次） | 客戶設定檔與型別測試第二輪 |
+| B-062 | 2026-10-19 | deferred | 低：`versions revert` 退掉 `kb entity rename` 那回合時，程式改名的實體夾（裡面有客戶原檔）不會改回來，清冊退回舊 uri，下次 scan 把那份原檔當搬動；夾的改名不在回合備份裡（同 profile apply 建的夾）。真要退得乾淨要讓回合記資料夾動作 | 實體與綜合卡實作疑義 12 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

@@ -344,5 +344,34 @@ class SynthesisCheck(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, ""))
 
 
+
+class EntitiesUnreadable(unittest.TestCase):
+    """測試後修正裁定 11：實體清單讀不到時，檔案卡與綜合卡都 block 那一句（不說成卡檔頭的錯）。"""
+
+    def setUp(self):
+        from tests import _entities
+        self.E = _entities
+        self.tmp, self.V, self.raw = _entities.make_entity_vault(with_entities=True)
+        turn.start(self.V, SID, "整理")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_block_sentence_for_both_kinds(self):
+        item = self.E.new_item(self.V, self.E.QUOTE)
+        path = _cards.card_path(self.V, item, "信義王報價")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = self.E.with_entities(_cards.card_text(item, "信義王報價"), ["信義王"])
+        synthesis = self.V / "案子" / "信義王" / "信義王.md"
+        synthesis_text = synthesis.read_text(encoding="utf-8")
+        (self.V / ".system" / "entities.json").write_text("{bad", encoding="utf-8")
+        want = {"decision": "block", "reason": "實體清單讀不到（.system/entities.json），先停下來說「檢查」"}
+        for p, t in ((path, text), (synthesis, synthesis_text)):
+            with self.subTest(path=p.name):
+                r = write_via_tools(self.V, p, t)
+                (line,) = r.stdout.splitlines()
+                self.assertEqual(json.loads(line), want)
+
+
 if __name__ == "__main__":
     unittest.main()

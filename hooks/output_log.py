@@ -4,6 +4,7 @@
 只做四個寫入工具；目標檔案真的存在才做；回合代號取 turn.current(vault, session_id)。
 Z5：cards.validate 不過就印一行 {"decision": "block", "reason": "檔頭有錯：<原因>。改好再寫一次。"}；
 過了不印，接著重渲染 總目錄.md（備進目前回合，實作疑義裁定 4）與這張卡新舊 實體 聯集的綜合卡快取（舊的從回合備份讀）。
+實體清單讀不到時兩種卡都 block「實體清單讀不到（.system/entities.json），先停下來說「檢查」」（測試後修正裁定 11）。
 Z1：synthesis.validate 不過印 {"decision": "block", "reason": "綜合卡有錯：<原因>。改好再寫一次。"}；
 過了不印，接著 entities.set_card(True) 與重渲染它的快取（檔案卡、相關實體兩欄）。
 驗過之後的事失敗只記 log（I-046）。任何例外寫 .system/hook-errors.log，永遠 exit 0；除了 block，不輸出。
@@ -28,6 +29,7 @@ CARDS_ZONE = "Z5"
 SYNTHESIS_ZONE = "Z1"
 BLOCK_REASON = "檔頭有錯：{}。改好再寫一次。"
 SYNTHESIS_BLOCK = "綜合卡有錯：{}。改好再寫一次。"
+ENTITIES_UNREADABLE = "實體清單讀不到（.system/entities.json），先停下來說「檢查」"  # 測試後修正裁定 11
 
 
 def main():
@@ -75,9 +77,22 @@ def _block(reason):
     sys.stdout.flush()
 
 
+def _entities_ok(vault):
+    """實體清單讀得到嗎；讀不到就 block 那一句（不把狀態檔的錯說成卡檔頭的錯）。"""
+    from kb._lib import entities
+    try:
+        entities.load(vault)
+    except ValueError:
+        _block(ENTITIES_UNREADABLE)
+        return False
+    return True
+
+
 def _check_card(vault, rel, sources, turn_id, payload):
     from kb._lib import cards, inventory
 
+    if not _entities_ok(vault):
+        return
     by_id = {e.get("id"): e for e in inventory.load(vault)["entries"]}
     ok, reason = cards.validate(vault, rel, by_id, sources)
     if not ok:
@@ -114,6 +129,8 @@ def _entity_names(path):
 def _check_synthesis(vault, rel, turn_id, payload):
     from kb._lib import cards, entities, synthesis
 
+    if not _entities_ok(vault):
+        return
     ok, reason = synthesis.validate(vault, rel)
     if not ok:
         _block(SYNTHESIS_BLOCK.format(reason))

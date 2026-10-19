@@ -539,5 +539,16 @@ class TemplateTwo(unittest.TestCase):
         self.assertIn("\n實體: [王宅]\n", new)
 
 
+
+class RewriteEntitiesBlock(unittest.TestCase):
+    """測試後修正裁定 13：實體 寫成「實體:」下接「  - 項」的區塊也換，換完寫成一行的清單。"""
+
+    def test_block_form_replaced_by_inline(self):
+        text = "---\n編號: f-1\n卡型: 報價\n實體:\n  - 信義王\n  - 林小姐室內設計\n待補型別: []\n---\n# 卡\n"
+        new = cards.rewrite_entities(text, ["王宅", "林小姐室內設計"])
+        self.assertEqual(new, "---\n編號: f-1\n卡型: 報價\n實體: [王宅, 林小姐室內設計]\n待補型別: []\n---\n# 卡\n")
+        self.assertEqual(cards.parse_front(new)["實體"], ["王宅", "林小姐室內設計"])
+
+
 if __name__ == "__main__":
     unittest.main()

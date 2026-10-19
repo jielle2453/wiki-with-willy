@@ -534,5 +534,17 @@ class SchemaOneMigration(unittest.TestCase):
         self.assertEqual(st["new"]["about"], [])
 
 
+
+class AboutListChars(unittest.TestCase):
+    """測試後修正裁定 10：第五節的名稱與別名也擋 , [ ]（併進「含不能用的字元」）。"""
+
+    def test_name_and_alias(self):
+        base = md_with(["| 案子 | 事 | x |"])
+        self.assertEqual(message(with_rows(base, "五", ["| Lee[Inc] | 公司 |  |"])),
+                         "第 5 節第 1 列的名稱「Lee[Inc]」不能用（含不能用的字元）")
+        self.assertEqual(message(with_rows(base, "五", ["| 林小姐室內設計 | 公司 | 林[小姐] |"])),
+                         "第 5 節第 1 列的別名「林[小姐]」不能用（含不能用的字元）")
+
+
 if __name__ == "__main__":
     unittest.main()

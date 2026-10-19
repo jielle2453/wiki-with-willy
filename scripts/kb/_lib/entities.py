@@ -8,6 +8,7 @@ date、card（寫過綜合卡沒有）、created_turn。名稱在整個知識庫
 檔頭格式與驗證住 synthesis.py。drift 只讀：認出客戶在檔案總管改了實體夾名、卡名、刪夾（D-057）。
 """
 import os
+import posixpath
 import secrets
 import unicodedata
 from datetime import date
@@ -39,8 +40,20 @@ def empty():
     return {"schema_version": SCHEMA_VERSION, "entities": []}
 
 
+class Unreadable(ValueError):
+    """entities.json 讀不了：訊息是「.system/entities.json（<原因>）」（測試後修正裁定 11）。"""
+
+
 def load(vault):
-    """沒檔回空的；壞 JSON、不是物件、entities 不是清單、元素不是物件、版本比這版新丟 ValueError。"""
+    """沒檔回空的；壞 JSON、不是物件、entities 不是清單、元素不是物件、版本比這版新丟 Unreadable（ValueError），
+    訊息帶檔名，CLI 照「狀態檔讀不到：…」印。"""
+    try:
+        return _load(vault)
+    except ValueError as e:
+        raise Unreadable(f"{ENTITIES_POSIX}（{e}）") from e
+
+
+def _load(vault):
     data = read_json(_path(vault))
     if data is None:
         return empty()
@@ -62,10 +75,12 @@ def lock(vault):
     return FileLock(_path(vault))
 
 
-def _save(vault, data, turn_id):
-    """呼叫端持有鎖：先備進回合再寫。"""
+def _save(vault, data, turn_id, undo=None):
+    """呼叫端持有鎖：先備進回合再寫；undo 給了就記舊內容（中途出錯還原用）。"""
     from kb._lib import turn
     turn.backup(vault, ENTITIES_POSIX, turn_id)
+    if undo is not None:
+        undo.file(ENTITIES_POSIX)
     write_json_atomic(_path(vault), {"schema_version": SCHEMA_VERSION, "entities": data["entities"]})
 
 
@@ -126,6 +141,8 @@ def _collision(data, name, ignore=None):
 
 def _char_problem(vault, name):
     why = profile.type_name_problem(name)
+    if not why and profile._LIST_CHARS.search(name):
+        why = "含不能用的字元"
     if not why and profile._WINDOWS_RESERVED.match(name):
         why = "Windows 保留名"
     max_chars = config.get(vault, "card_title_max_chars")
@@ -389,31 +406,116 @@ def _files_under(folder, skip=None):
     return out
 
 
-def _rmdir_if_empty(vault, folder_rel):
+def _rmdir_if_empty(vault, folder_rel, undo=None):
     d = Path(vault) / folder_rel
     try:
         if d.is_dir() and not any(d.iterdir()):
             d.rmdir()
+            if undo is not None:
+                undo.rmdir(folder_rel)
             return True
     except OSError:
         pass
     return False
 
 
-def _delete_card(vault, rel, turn_id):
+class PartialWrite(EntityRefused):
+    """寫到一半失敗、還原也沒成功：訊息就是給人看的那句（不能說「沒有寫入」）。"""
+
+
+class _Undo:
+    """這個指令動過的檔與夾，照發生順序記（測試後修正裁定 8）：改、建、刪檔之前記舊內容（沒有是 None），
+    搬夾或改檔名之後記 (來源, 目的)，拿掉空夾之後記夾。中途出錯就倒著做回去。回合備份照記，不還原（帳本）。"""
+
+    def __init__(self, vault):
+        self.v = Path(vault)
+        self.steps = []
+
+    def file(self, rel):
+        p = self.v / rel
+        self.steps.append(("file", rel, p.read_bytes() if p.is_file() else None))
+
+    def moved(self, src, dst):
+        self.steps.append(("move", src, dst))
+
+    def rmdir(self, rel):
+        self.steps.append(("rmdir", rel, None))
+
+    def rollback(self):
+        for kind, a, b in reversed(self.steps):
+            if kind == "file":
+                p = self.v / a
+                if b is None:
+                    if p.is_file():
+                        os.remove(p)
+                else:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(b)
+            elif kind == "move":
+                os.rename(self.v / b, self.v / a)
+            else:
+                (self.v / a).mkdir(parents=True, exist_ok=True)
+
+
+def _guarded(vault, act):
+    """act(undo) 動手；中途任何例外就照 undo 還原再丟回去（OSError 由 CLI 印「沒有寫入：…」）。
+    還原本身也失敗才丟 PartialWrite：檔可能留一半，請客戶說「退回上一版」。"""
+    undo = _Undo(vault)
+    try:
+        return act(undo)
+    except Exception as e:  # noqa: BLE001
+        try:
+            undo.rollback()
+        except OSError as again:
+            raise PartialWrite(f"寫到一半失敗、沒能全部還原（{type(e).__name__}: {e}；還原時 {type(again).__name__}）；"
+                               "說「退回上一版」救得回來") from e
+        raise
+
+
+def _delete_card(vault, rel, turn_id, undo=None):
     """綜合卡備成 delete 後刪；夾空了 rmdir。回夾裡剩幾個檔。"""
     from kb._lib import turn
     turn.backup(vault, rel, turn_id, action="delete", by="program")
+    if undo is not None:
+        undo.file(rel)
     os.remove(Path(vault) / rel)
     folder = rel.rpartition("/")[0]
-    if _rmdir_if_empty(vault, folder):
+    if _rmdir_if_empty(vault, folder, undo):
         return 0
     return len(_files_under(Path(vault) / folder))
 
 
+def _write(vault, rel, text, undo):
+    if undo is not None:
+        undo.file(rel)
+    write_text_atomic(Path(vault) / rel, text)
+
+
+def _card_fields(prof, entry):
+    from kb._lib import synthesis
+    return {"名稱": entry["name"], "別名": list(entry.get("aliases") or []), "型別": entry.get("type"),
+            "大類": synthesis.category_text(prof, entry.get("type"))}
+
+
+def _refresh_fields(vault, entry, prof, turn_id, changed, undo):
+    """程式改了實體的名稱、別名、型別（測試後修正裁定 9）：它的綜合卡檔頭那幾欄跟著改（by program）；客戶自己的不碰。"""
+    from kb._lib import synthesis, turn
+    if is_self(entry) or not entry.get("type"):
+        return
+    loc = locate(vault, entry)
+    if not loc:
+        return
+    text = (Path(vault) / loc).read_text(encoding="utf-8")
+    new = synthesis.replace_front(text, _card_fields(prof, entry))
+    if new != text:
+        turn.backup(vault, loc, turn_id, by="program")
+        _write(vault, loc, new, undo)
+        changed.append({"path": loc, "action": "modify"})
+
+
 # ---------- 檔案卡的 實體 欄 ----------
 
-def retarget_cards(vault, mapping, turn_id):
+def retarget_cards(vault, mapping, turn_id, undo=None):
     """檔案索引/ 每張卡的 實體 欄，名稱 key 在 mapping 裡的換成 mapping 的值（去重，順序照原樣）；改到的卡先備進回合。
     回 [(相對路徑, 換之前的名稱清單)]。"""
     from kb._lib import cards, turn
@@ -433,18 +535,24 @@ def retarget_cards(vault, mapping, turn_id):
             if all(key(x) != key(n) for x in new):
                 new.append(n)
         turn.backup(vault, rel, turn_id, by="program")
-        write_text_atomic(p, cards.rewrite_entities(text, new))
+        _write(vault, rel, cards.rewrite_entities(text, new), undo)
         changed.append((rel, names))
     return changed
 
 
 # ---------- 改名、合併、移除、重寫、清 ----------
 
+def _occupied(vault, loc, target):
+    if loc and key(loc) != key(target) and (Path(vault) / target).exists():
+        raise EntityRefused(f"「{target}」已經有檔，沒有改名；先把它搬走")
+
+
 def rename(vault, ref, new_name, new_type, turn_id):
-    """kb entity rename：名稱（舊名進別名）、型別；全部檔案卡的 實體 欄換新名；有綜合卡就搬到 <新型別>/<新名>/<新名>.md
-    （目標夾不在就整個夾改名，在就只搬卡）、檔頭的名稱／別名／型別／大類改寫。整段在鎖裡。
+    """kb entity rename：名稱（舊名進別名）、型別；有綜合卡就搬到 <新型別>/<新名>/<新名>.md（目標夾不在就整個夾改名，在就只搬卡）、
+    檔頭的名稱／別名／型別／大類與正文標題改寫；全部檔案卡的 實體 欄換新名。整段在鎖裡。
+    會擋的條件先驗完才動手；動手順序：搬夾與卡 → 檔案卡 → entities.json，中途出錯照 _Undo 還原（測試後修正裁定 8）。
     回 {"entity", "old_name", "via_alias", "cards"（改到的檔案卡）, "changed"（日誌用）, "moved_files", "card"}。"""
-    from kb._lib import synthesis, turn
+    from kb._lib import synthesis
     prof = _profile(vault)
     with lock(vault):
         data = load(vault)
@@ -464,70 +572,82 @@ def rename(vault, ref, new_name, new_type, turn_id):
             entry["aliases"].append(old_name)
         if row is not None:
             entry["type"] = row["name"]
-        changed = []
-        touched = retarget_cards(vault, {key(old_name): new_name}, turn_id) if old_name != new_name else []
-        changed += [{"path": rel, "action": "modify"} for rel, _names in touched]
-        moved_files = 0
         target = card_rel(entry)
-        if loc:
-            text = (Path(vault) / loc).read_text(encoding="utf-8")
-            text = synthesis.replace_front(text, {"名稱": entry["name"], "別名": entry["aliases"],
-                                                  "型別": entry["type"],
-                                                  "大類": synthesis.category_text(prof, entry["type"])})
-            text = synthesis.replace_title(text, old_name, entry["name"])
-            moved_files = _move_card(vault, loc, target, text, turn_id, changed)
-        _save(vault, data, turn_id)
-        changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+        _occupied(vault, loc, target)
+
+        def act(undo):
+            changed, moved = [], 0
+            if loc:
+                text = (Path(vault) / loc).read_text(encoding="utf-8")
+                text = synthesis.replace_title(synthesis.replace_front(text, _card_fields(prof, entry)), old_name,
+                                               entry["name"])
+                moved = _move_card(vault, loc, target, text, turn_id, changed, undo)
+            touched = retarget_cards(vault, {key(old_name): new_name}, turn_id, undo) if old_name != new_name else []
+            changed += [{"path": rel, "action": "modify"} for rel, _names in touched]
+            _save(vault, data, turn_id, undo)
+            changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+            return touched, changed, moved
+
+        touched, changed, moved_files = _guarded(vault, act)
     return {"entity": entry, "old_name": old_name, "via_alias": hit == "alias", "cards": [r for r, _n in touched],
             "changed": changed, "moved_files": moved_files, "card": target if loc else None}
 
 
-def _move_card(vault, loc, target, text, turn_id, changed):
+def _move_card(vault, loc, target, text, turn_id, changed, undo=None):
     """綜合卡從 loc 搬到 target 並寫成 text。夾不同、目標夾不在 → 整個夾改名（os.rename）；目標夾在 → 只搬卡，舊夾空了拿掉。
-    備份：卡沒換位置是 modify；換了位置舊路徑 delete、新路徑 create（都在動手之前，退回才回得去）。回跟著夾搬的其他檔數。"""
+    備份：卡沒換位置是 modify；換了位置舊路徑 delete、新路徑 create（都在動手之前，退回才回得去）。每一步記進 undo。
+    回跟著夾搬的其他檔數。"""
     from kb._lib import turn
     v = Path(vault)
+    undo = undo if undo is not None else _Undo(vault)
     cur_folder, tgt_folder = loc.rpartition("/")[0], target.rpartition("/")[0]
     same_folder = key(cur_folder) == key(tgt_folder)
     if key(loc) == key(target):  # 同一個位置（頂多大小寫不同）：改大小寫後照 modify 備
         if cur_folder != tgt_folder:
             os.rename(v / cur_folder, v / tgt_folder)
+            undo.moved(cur_folder, tgt_folder)
         interim = f"{tgt_folder}/{loc.rpartition('/')[2]}"
         if interim != target:
             os.replace(v / interim, v / target)
+            undo.moved(interim, target)
         if (v / target).read_text(encoding="utf-8") != text:
             turn.backup(vault, target, turn_id, by="program")
-            write_text_atomic(v / target, text)
+            _write(vault, target, text, undo)
             changed.append({"path": target, "action": "modify"})
         return 0
-    if (v / target).exists():
-        raise EntityRefused(f"「{target}」已經有檔，沒有改名；先把它搬走")
+    _occupied(vault, loc, target)
     turn.backup(vault, loc, turn_id, action="delete", by="program")
     turn.backup(vault, target, turn_id, action="create", by="program")
     moved, interim = 0, loc
     if cur_folder != tgt_folder and (same_folder or not (v / tgt_folder).exists()):
         (v / tgt_folder).parent.mkdir(parents=True, exist_ok=True)
         os.rename(v / cur_folder, v / tgt_folder)
+        undo.moved(cur_folder, tgt_folder)
         interim = f"{tgt_folder}/{loc.rpartition('/')[2]}"
         if not same_folder:
             moved = len(_files_under(v / tgt_folder, skip=v / interim))
     if key(interim) == key(target):
         if interim != target:
             os.replace(v / interim, v / target)
+            undo.moved(interim, target)
     else:
         (v / target).parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(v / target, text)
+        _write(vault, target, text, undo)
+        undo.file(interim)
         os.remove(v / interim)
         if not same_folder:
-            _rmdir_if_empty(vault, cur_folder)
-    write_text_atomic(v / target, text)
+            _rmdir_if_empty(vault, cur_folder, undo)
+    _write(vault, target, text, undo)
     changed += [{"path": loc, "action": "delete"}, {"path": target, "action": "create"}]
     return moved
 
 
 def merge(vault, src_ref, dst_ref, turn_id):
-    """kb entity merge：來源併進目標（同型別、都 active、都不是客戶自己）。目標別名加來源名稱與別名；檔案卡 實體 欄來源換目標（去重）；
-    來源的綜合卡刪掉（夾裡有其他檔就擋）；來源 merged、merged_into 目標。回 {"source","target","added","changed","target_card"}。"""
+    """kb entity merge：來源併進目標（同型別、都 active、都不是客戶自己）。目標別名加來源名稱與別名、目標綜合卡檔頭跟著改
+    （之後是 synthesis_stale，測試後修正裁定 9）；檔案卡 實體 欄來源換目標（去重）；來源的綜合卡刪掉（夾裡有其他檔就擋）；
+    來源 merged、merged_into 目標。會擋的先驗完；動手順序：刪來源卡 → 目標卡檔頭 → 檔案卡 → entities.json，中途出錯還原。
+    回 {"source","target","added","changed","target_card"}。"""
+    prof = _profile(vault)
     with lock(vault):
         data = load(vault)
         src, _h1 = _need(data, src_ref)
@@ -550,35 +670,47 @@ def merge(vault, src_ref, dst_ref, turn_id):
         for w in words(src):
             if key(w) != key(dst["name"]) and all(key(a) != key(w) for a in dst.get("aliases") or []):
                 dst.setdefault("aliases", []).append(w)
-        changed = [{"path": rel, "action": "modify"}
-                   for rel, _n in retarget_cards(vault, {key(src["name"]): dst["name"]}, turn_id)]
-        if loc:
-            _delete_card(vault, loc, turn_id)
-            changed.append({"path": loc, "action": "delete"})
-        elif (Path(vault) / folder).is_dir():
-            _rmdir_if_empty(vault, folder)
         src["status"] = "merged"
         src["merged_into"] = dst["id"]
-        _save(vault, data, turn_id)
-        changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+
+        def act(undo):
+            changed = []
+            if loc:
+                _delete_card(vault, loc, turn_id, undo)
+                changed.append({"path": loc, "action": "delete"})
+            elif (Path(vault) / folder).is_dir():
+                _rmdir_if_empty(vault, folder, undo)
+            _refresh_fields(vault, dst, prof, turn_id, changed, undo)
+            changed += [{"path": rel, "action": "modify"}
+                        for rel, _n in retarget_cards(vault, {key(src["name"]): dst["name"]}, turn_id, undo)]
+            _save(vault, data, turn_id, undo)
+            changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+            return changed
+
+        changed = _guarded(vault, act)
         target_card = bool(dst.get("card")) and locate(vault, dst) is not None
     return {"source": src, "target": dst, "added": added, "changed": changed, "target_card": target_card}
 
 
 def remove(vault, ref, turn_id):
-    """kb entity remove：status removed（知識不刪、檔案卡上的掛載留著）；綜合卡還在就刪，夾裡沒別的檔就 rmdir。"""
+    """kb entity remove：status removed（知識不刪、檔案卡上的掛載留著）；綜合卡還在就刪，夾裡沒別的檔就 rmdir。中途出錯還原。"""
     with lock(vault):
         data = load(vault)
         entry, _hit = _need(data, ref)
         _need_plain(entry, "移除")
-        changed = []
         loc = locate(vault, entry)
-        if loc:
-            _delete_card(vault, loc, turn_id)
-            changed.append({"path": loc, "action": "delete"})
         entry["status"] = "removed"
-        _save(vault, data, turn_id)
-        changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+
+        def act(undo):
+            changed = []
+            if loc:
+                _delete_card(vault, loc, turn_id, undo)
+                changed.append({"path": loc, "action": "delete"})
+            _save(vault, data, turn_id, undo)
+            changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+            return changed
+
+        changed = _guarded(vault, act)
     return {"entity": entry, "changed": changed}
 
 
@@ -598,9 +730,12 @@ def rebuild(vault, ref, turn_id):
 def clean(vault, rel, turn_id):
     """kb entity clean：型別夾第三層、檔頭編號 e- 開頭、又不在那個實體自己的 card_rel 的 .md，備成 delete 後刪；夾空了拿掉。
     回 {"path", "left"（夾裡還剩幾個檔）}。"""
+    rel = posixpath.normpath(str(rel).replace("\\", "/")).lstrip("/") if rel else ""
     with lock(vault):
         data = load(vault)
         parts = rel.split("/")
+        if rel.startswith("..") or any(x in ("", ".", "..") for x in parts):
+            raise EntityRefused("這不是綜合卡，不能用 clean")
         top_ok = len(parts) == 3 and key(parts[0]) in {key(n) for n in profile._first_level_dirs(vault)}
         eid = head_id(Path(vault) / rel) if top_ok and rel.casefold().endswith(".md") else None
         if not eid or not eid.startswith("e-"):

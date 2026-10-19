@@ -137,8 +137,17 @@ def _apply_locked(vault, as_json, conversation):
     if st["state"] == "error":
         _refuse(as_json, st, f"客戶設定檔讀不懂：{st['error']}")
         return 3
-    if st["state"] == "ok":
-        _refuse(as_json, st, NOT_APPLIED)
+    if st["state"] == "ok":  # 沒有內容差異也補跑一次關於你（冪等；上次寫完設定檔才失敗的會補上，測試後修正裁定 12）
+        about = entities.sync_self(vault, st["data"].get("about") or [], turn.current(vault)["turn"])
+        lines = _about_lines(about)
+        if lines:
+            journal_cli.record_program_or_warn(vault, lines[0], [{"path": entities.ENTITIES_POSIX, "action": "modify"}],
+                                               "profile apply", conversation)
+        if as_json:
+            print(json.dumps(dict(_public(st), applied=False, created_dirs=[], unskipped=0, message=NOT_APPLIED,
+                                  about=about), ensure_ascii=False))
+        else:
+            print("\n".join([NOT_APPLIED] + lines))
         return 0
     if st["removed_nonempty"]:
         name, n = st["removed_nonempty"][0]

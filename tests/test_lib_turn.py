@@ -543,13 +543,29 @@ class ProgramBackup(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def write(self, rel):
+        return turn.before_write(self.V, str(self.V / rel), str(self.V), "Z1", SID)
+
     def test_by_program_written_and_not_counted(self):
         turn.backup(self.V, self.cards[0], self.t, by="program")
         turn.backup(self.V, self.cards[1], self.t)
         rows = {e["path"]: e for e in turn.entries(self.V, self.t)}
         self.assertEqual(rows[self.cards[0]]["by"], "program")
         self.assertNotIn("by", rows[self.cards[1]])
-        self.assertEqual(turn.modified_synthesis_count(self.V, self.t), 1)
+        self.assertEqual(turn.modified_synthesis_count(self.V, self.t), 0, "只有程式備份、AI 沒寫過")
+
+    def test_ai_write_after_program_backup_still_counts(self):
+        """測試後修正裁定 7（F1）：程式先備份（by program）、AI 後改同一張，照樣算一張；同一張再改不重複算。"""
+        turn.backup(self.V, self.cards[0], self.t, by="program")
+        self.assertEqual(self.write(self.cards[0]), (True, "", ""))
+        self.assertEqual(self.write(self.cards[0]), (True, "", ""))
+        self.assertEqual(self.write(self.cards[1]), (True, "", ""))
+        self.assertEqual(turn.modified_synthesis_count(self.V, self.t), 2)
+        self.assertEqual(turn.current(self.V, SID)["ai_synthesis"], self.cards[:2])
+        (self.V / ".system" / "config.json").write_text('{"big_change_synthesis_max": 2}', encoding="utf-8")
+        turn.backup(self.V, self.cards[2], self.t, by="program")
+        ok, code, _reason = self.write(self.cards[2])
+        self.assertEqual((ok, code), (False, "big_change"))
 
     def test_only_program_accepted(self):
         with self.assertRaises(ValueError):

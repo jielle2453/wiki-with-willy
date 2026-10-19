@@ -274,5 +274,129 @@ class Clean(Base):
         self.assertTrue(stray.parent.is_dir())
 
 
+class AfterTest(Base):
+    """測試後修正裁定 8～14：先驗後做與中途還原、merge 後目標卡是 stale、名稱擋 , [ ]、實體清單壞了講檔名、
+    clean 正規化 ..。"""
+
+    def snapshot(self):
+        out = {}
+        for p in sorted(self.V.rglob("*")):
+            rel = p.relative_to(self.V).as_posix()
+            if p.is_file() and not rel.startswith((".system/versions/", ".system/turns/", ".system/journal/")) \
+                    and not rel.startswith("系統/工作日誌/") and not rel.endswith(".lock"):
+                out[rel] = p.read_bytes()
+        return out
+
+    def test_occupied_target_refused_before_touching_cards(self):
+        """F2 確定性版本：目標路徑已有檔 → 擋下，檔案卡、實體清單、夾都沒動。"""
+        E.write_card(self.V, E.QUOTE, "信義王報價", ["信義王"])
+        d = self.V / "案子" / "王宅邸"
+        d.mkdir()
+        (d / "王宅邸.md").write_text("客戶自己的檔\n", encoding="utf-8")
+        before = self.snapshot()
+        self.assertEqual(self.kb("rename", "信義王", "--to", "王宅邸", code=3),
+                         ["「案子/王宅邸/王宅邸.md」已經有檔，沒有改名；先把它搬走"])
+        self.assertEqual(self.snapshot(), before)
+
+    def run_in_process(self, *argv):
+        import contextlib
+        import io
+        import os
+        from kb import cli
+        out = io.StringIO()
+        cwd = os.getcwd()
+        os.chdir(self.V)
+        try:
+            with contextlib.redirect_stdout(out):
+                code = cli.main(list(argv))
+        finally:
+            os.chdir(cwd)
+        return code, out.getvalue().splitlines()
+
+    def fail_on_entities_write(self):
+        from unittest import mock
+        real = entities.write_json_atomic
+
+        def boom(path, data):
+            if Path(path).name == "entities.json":
+                raise PermissionError(13, "被別的程式開著")
+            return real(path, data)
+        return mock.patch.object(entities, "write_json_atomic", side_effect=boom)
+
+    def test_rename_failure_rolls_back_everything(self):
+        """F2：搬夾、改檔案卡之後才失敗 → 全部還原，印「沒有寫入：…」exit 3。"""
+        E.write_card(self.V, E.QUOTE, "信義王報價", ["信義王", "王宅"])
+        before = self.snapshot()
+        with self.fail_on_entities_write():
+            code, lines = self.run_in_process("entity", "rename", "信義王", "--to", "信義王宅邸")
+        self.assertEqual(code, 3)
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("沒有寫入：PermissionError"), lines)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.V / "案子" / "信義王宅邸").exists())
+
+    def test_merge_and_remove_failure_roll_back(self):
+        E.write_card(self.V, E.QUOTE, "王宅報價", ["王宅"])
+        before = self.snapshot()
+        with self.fail_on_entities_write():
+            code, _lines = self.run_in_process("entity", "merge", "大安陳", "--into", "信義王")
+            self.assertEqual(code, 3)
+            code, _lines = self.run_in_process("entity", "remove", "大安陳")
+            self.assertEqual(code, 3)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_partial_write_when_rollback_fails(self):
+        from unittest import mock
+        boom = mock.patch.object(entities._Undo, "rollback", side_effect=PermissionError(13, "還原不了"))
+        with self.fail_on_entities_write(), boom:
+            code, lines = self.run_in_process("entity", "remove", "大安陳")
+        self.assertEqual(code, 3)
+        self.assertTrue(lines[0].startswith("寫到一半失敗、沒能全部還原（"), lines)
+        self.assertTrue(lines[0].endswith("說「退回上一版」救得回來"), lines)
+
+    def test_merge_into_carded_target_is_stale_not_broken(self):
+        """F3：merge 後目標綜合卡的 別名 跟著改，todo 把它列進 synthesis_stale（added 是來源的卡）。"""
+        rel = E.write_card(self.V, E.QUOTE, "王宅報價", ["王宅"])
+        fid = self.front(rel)["編號"]
+        t = self.new_turn()
+        self.kb("merge", "王宅", "--into", "信義王")
+        self.assertEqual(self.front("案子/信義王/信義王.md")["別名"], ["信義王宅", "王宅"])
+        self.assertEqual({r["path"]: r.get("by") for r in turn.entries(self.V, t)}["案子/信義王/信義王.md"], "program")
+        data = self.todo()
+        self.assertEqual(data["synthesis_broken"], [])
+        (item,) = [i for i in data["synthesis_stale"] if i["entity_id"] == E.XINYI]
+        self.assertEqual([x["id"] for x in item["added"]], [fid])
+
+    def test_list_chars_refused(self):
+        """F4：名稱擋 , [ ]，句子併進「含不能用的字元」。"""
+        for name in ("Smith, John", "x]", "[甲"):
+            with self.subTest(name=name):
+                self.assertEqual(self.kb("add", "--type", "業主", "--name", name, code=3),
+                                 [f"名稱「{name}」不能用（含不能用的字元）"])
+        self.assertEqual(self.kb("rename", "信義王", "--to", "王,宅", code=3), ["名稱「王,宅」不能用（含不能用的字元）"])
+
+    def test_broken_entities_says_file(self):
+        """F5：entities.json 壞了，cards todo 與 kb entity 都講檔名。"""
+        (self.V / ".system" / "entities.json").write_text("{bad", encoding="utf-8")
+        for args in (("cards", "todo"), ("entity", "list"), ("entity", "add", "--type", "案子", "--name", "王")):
+            with self.subTest(args=args):
+                r = run_kb(*args, cwd=self.V)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertTrue(r.stdout.startswith("狀態檔讀不到：.system/entities.json（"), r.stdout)
+
+    def test_clean_normalizes_dotdot(self):
+        """F8：案子/../z.md 會碰到知識庫根 → 擋下，檔還在。"""
+        z = self.V / "z.md"
+        shutil.copy2(E.FIX / "大安陳.md", z)
+        for path in ("案子/../z.md", "../z.md", "案子/./信義王/../王宅.md"):
+            with self.subTest(path=path):
+                self.assertEqual(self.kb("clean", path, code=3), ["這不是綜合卡，不能用 clean"])
+        self.assertTrue(z.is_file())
+        stray = self.V / "案子" / "王宅" / "王宅.md"
+        stray.parent.mkdir()
+        shutil.copy2(E.FIX / "信義王.md", stray)
+        self.assertEqual(self.kb("clean", "案子/王宅/./王宅.md"), ["已清掉放錯的綜合卡：案子/王宅/王宅.md"])
+
+
 if __name__ == "__main__":
     unittest.main()

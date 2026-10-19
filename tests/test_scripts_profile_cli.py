@@ -335,5 +335,24 @@ class SchemaTwoApply(Base):
         self.assertEqual(self.apply(3), ["客戶設定檔讀不懂：第 4 節第 1 列的型別「工地」不在第 1 節"])
 
 
+
+class AboutResync(Base):
+    """測試後修正裁定 12：上次 apply 寫完設定檔、關於你沒登記成（實體清單壞了），修好後再 apply（沒有內容差異）會補上。"""
+
+    def test_apply_without_diff_still_syncs_about(self):
+        from kb._lib import entities
+        ent = self.V / ".system" / "entities.json"
+        ent.write_text("{bad", encoding="utf-8")
+        self.md.write_text(self.md_text().rstrip("\n") + "\n| 林小姐室內設計 | 公司 | 林小姐 |\n", encoding="utf-8",
+                           newline="\n")
+        self.assertEqual(self.apply(3)[0][:len("狀態檔讀不到：.system/entities.json（")],
+                         "狀態檔讀不到：.system/entities.json（")
+        ent.unlink()
+        self.assertEqual(self.apply(), ["客戶設定檔沒有改，沒有套用", "關於你：登記了 林小姐室內設計"])
+        self.assertEqual([e["name"] for e in entities.load(self.V)["entities"]], ["林小姐室內設計"])
+        self.assertEqual(self.programs()[-1]["note"], "關於你：登記了 林小姐室內設計")
+        self.assertEqual(self.apply(), ["客戶設定檔沒有改，沒有套用"], "冪等：第二次沒有動到就不印")
+
+
 if __name__ == "__main__":
     unittest.main()

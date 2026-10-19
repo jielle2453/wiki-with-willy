@@ -312,23 +312,25 @@ def zone_of(vault, rel, sources=None):
 
 
 def modified_synthesis_count(vault, turn_id):
-    from kb._lib import sources as sources_lib
-    rows = [e for e in entries(vault, turn_id) if e.get("action") == "modify" and e.get("by") != "program"]
-    if not rows:
-        return 0
-    sources = sources_lib.load(vault)
-    return sum(1 for e in rows if zone_of(vault, e["path"], sources) == "Z1")
+    """這回合 AI 用檔案工具改過的既有綜合卡張數：數回合檔的 ai_synthesis 清單（測試後修正裁定 7），不看 manifest——
+    程式先備份（by program）、AI 後改同一張照樣算。"""
+    data = _find_turn(vault, turn_id) or {}
+    return len(data.get("ai_synthesis") or [])
 
 
 def before_write(vault, target, cwd, zone, session_id):
-    """守門放行後、真的寫之前：大改動門檻（只數 Z1 modify）、回合備份。回 (ok, code, reason)。"""
+    """守門放行後、真的寫之前：大改動門檻（數 ai_synthesis）、回合備份。回 (ok, code, reason)。
+    Z1 既有檔放行時把路徑記進回合檔的 ai_synthesis（去重）；同一張再改不重複算。"""
     t = current(vault, session_id)
     rel = rel_path(vault, target, cwd)
-    if zone == "Z1" and (Path(vault) / rel).is_file() and not t.get("approved"):
-        if not any(e.get("path") == rel for e in entries(vault, t["turn"])):
-            n = modified_synthesis_count(vault, t["turn"])
-            if n >= config.get(vault, "big_change_synthesis_max"):
+    if zone == "Z1" and (Path(vault) / rel).is_file():
+        done = list(t.get("ai_synthesis") or [])
+        if rel not in done:
+            n = len(done)
+            if not t.get("approved") and n >= config.get(vault, "big_change_synthesis_max"):
                 return False, "big_change", BIG_CHANGE_REASON.format(n=n)
+            t["ai_synthesis"] = done + [rel]
+            _write_turn(vault, t)
     try:
         backup(vault, rel, t["turn"], None)
     except OSError as e:

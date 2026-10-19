@@ -638,18 +638,25 @@ def rewrite_locations(text, uris, link):
 
 
 def rewrite_entities(text, names):
-    """只換檔頭的 實體 一行（kb entity rename／merge 改掛載），其他行原樣。"""
+    """只換檔頭的 實體 欄（kb entity rename／merge 改掛載），其他行原樣。一行清單或「實體:」下接「  - 項」的區塊都換，
+    換完一律寫成一行的清單（測試後修正裁定 13，收法同 rewrite_locations）。"""
     lines = text.splitlines(keepends=True)
-    out, in_front = [], False
-    for i, line in enumerate(lines):
+    out, i, in_front = [], 0, False
+    while i < len(lines):
+        line = lines[i]
         bare = line.rstrip("\r\n")
         if i == 0 and bare.lstrip("﻿") == "---":
             in_front = True
         elif in_front and bare == "---":
             in_front = False
         elif in_front and bare.startswith("實體:"):
-            line = f"實體: [{', '.join(names)}]" + line[len(bare):]
+            out.append(f"實體: [{', '.join(names)}]" + (line[len(bare):] or "\n"))
+            i += 1
+            while i < len(lines) and lines[i].startswith(("  - ", "- ")):
+                i += 1
+            continue
         out.append(line)
+        i += 1
     return "".join(out)
 
 

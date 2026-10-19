@@ -73,6 +73,8 @@ TABLE_HEADS = (("名稱", "大類", "一句說明", "來源", "日期"),
                ("名稱", "是什麼", "別名", "來源", "日期"))
 
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
+# 實體名稱、第五節名稱與別名另擋卡檔頭清單的分隔與括號（測試後修正裁定 10）
+_LIST_CHARS = re.compile(r"[,\[\]]")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Windows 保留裝置名（測試後修正裁定 12）：帶副檔名也算，不分大小寫
 _WINDOWS_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE)
@@ -349,6 +351,8 @@ def _parse_about(rows, types, max_chars):
     for m, cells in enumerate(rows, 1):
         (name, kind, aliases), extra = _columns(5, m, cells)
         why = type_name_problem(name)
+        if not why and _LIST_CHARS.search(name):
+            why = "含不能用的字元"
         if not why and _WINDOWS_RESERVED.match(name):
             why = "Windows 保留名"
         if not why and len(name) > max_chars:
@@ -361,6 +365,9 @@ def _parse_about(rows, types, max_chars):
             _err(5, m, "的是什麼要是 公司 或 本人")
         source, when = _source_date(5, m, extra)
         alias_list = [a for a in split_aliases(aliases) if _key(a) != _key(name)]
+        for a in alias_list:
+            if _BAD_CHARS.search(a) or _LIST_CHARS.search(a):
+                _err(5, m, f"的別名「{a}」不能用（含不能用的字元）")
         for word in [name] + alias_list:
             if _key(word) in seen:
                 _err(5, m, f"跟第 {seen[_key(word)]} 列重複（{word}）")

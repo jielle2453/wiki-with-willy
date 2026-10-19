@@ -219,7 +219,7 @@ llm-wiki-j/
 │  └─ kb/
 │     ├─ cli.py
 │     ├─ init.py env.py inventory.py changes.py update.py batch.py convert.py reindex.py
-│     ├─ versions.py source_edit.py folders.py ai_output.py intake.py office.py agenda.py profile.py
+│     ├─ versions.py source_edit.py folders.py ai_output.py intake.py office.py agenda.py profile.py entity.py
 │     ├─ upgrade.py backup.py relocate.py guard_status.py search.py unlock.py
 │     ├─ sources/{file.py,...}  sinks/{...}
 │     ├─ lint/runner.py + checks/   十七項見 D-064

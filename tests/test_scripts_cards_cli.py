@@ -321,5 +321,132 @@ class AfterTest(Base):
         self.assertEqual((self.V / ".system" / "inventory.json").read_bytes(), inv_before)
 
 
+PAY = "| 地址 | 只記種類 | 推測 | 2026-10-19 |\n"
+
+
+class Skip(Base):
+    """客戶設定檔與型別第 5、6 點、驗收 8：kb cards skip；todo 的 skipped.skipped；apply 拿掉種類後回到待製卡。"""
+
+    def md(self):
+        return self.V / "系統" / "客戶設定檔.md"
+
+    def set_no_card(self, on=True):
+        text = self.md().read_text(encoding="utf-8")
+        row = "| 請款 | 不整理 |\n"
+        text = text.replace(PAY, PAY + row) if on else "".join(
+            ln for ln in text.splitlines(keepends=True) if not ln.startswith("| 請款 |"))
+        self.md().write_text(text, encoding="utf-8", newline="\n")
+        r = self.kb("profile", "apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout.splitlines()
+
+    def fid(self, rel=_cards.MEETING):
+        return _cards.entry_of(self.V, rel)["id"]
+
+    def entry(self, fid):
+        return next(e for e in inventory.load(self.V)["entries"] if e["id"] == fid)
+
+    def test_skip_then_todo_then_unskip(self):
+        self.set_no_card()
+        fid = self.fid()
+        r = self.kb("cards", "skip", fid, "--kind", "請款")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(),
+                         f"已記成不整理（請款）：file://{_cards.MEETING}；有卡的已拿掉，說「退回上一版」救得回來")
+        self.assertEqual(self.entry(fid)["skip_kind"], "請款")
+        data = self.todo()
+        self.assertNotIn(fid, [i["id"] for i in data["new"]])
+        self.assertEqual(data["skipped"]["skipped"], 1)
+        self.assertEqual(self.kb("cards", "todo").stdout.splitlines()[1], "不製卡：檔名像密碼或金鑰 1、依設定不整理 1")
+        prog = self.programs()[-1]
+        self.assertEqual((prog["command"], prog["note"]), ("cards skip", "依設定不整理：請款（會議紀錄_1.docx）"))
+        self.scan()
+        self.assertEqual(self.entry(fid)["skip_kind"], "請款", "scan 後還在")
+        self.assertEqual(self.set_no_card(False), ["已套用客戶設定檔：不整理與敏感 -1；1 份回到待製卡"])
+        self.assertNotIn("skip_kind", self.entry(fid))
+        self.assertIn(fid, [i["id"] for i in self.todo()["new"]])
+
+    def test_skip_removes_existing_card(self):
+        self.set_no_card()
+        item = self.item()
+        p = _cards.write_card(self.V, item, "大安陳第一次會議")
+        self.kb("cards", "index")
+        before = cards.render_index(self.V)
+        t = turn.start(self.V, None, "")["turn"]
+        r = self.kb("cards", "skip", item["id"], "--kind", "請款", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rel = p.relative_to(self.V).as_posix()
+        self.assertEqual(json.loads(r.stdout), {"id": item["id"], "kind": "請款", "card": rel})
+        self.assertFalse(p.exists())
+        self.assertEqual(self.manifest(t)[rel], "delete")
+        self.assertEqual(self.manifest(t)[inventory.INVENTORY_POSIX], "modify")
+        self.assertEqual(cards.render_index(self.V), before - 1)
+        self.assertEqual(self.programs()[-1]["changed"],
+                         [{"path": inventory.INVENTORY_POSIX, "action": "modify"}, {"path": rel, "action": "delete"},
+                          {"path": cards.INDEX_POSIX, "action": "modify"}])
+
+    def test_refusals(self):
+        self.set_no_card()
+        fid = self.fid()
+        r = self.kb("cards", "skip", fid, "--kind", "薪資")
+        self.assertEqual((r.returncode, r.stdout.strip()),
+                         (3, "「薪資」不在客戶設定檔的不整理種類裡，先在設定檔第三節加一列再套用"))
+        cred = next(e for e in inventory.load(self.V)["entries"] if e["read"] == "credential")
+        r = self.kb("cards", "skip", cred["id"], "--kind", "請款")
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "這份不是待製卡的檔（active／credential）"))
+        r = self.kb("cards", "skip", "f-00000000", "--kind", "請款")
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "清冊沒有 f-00000000"))
+        self.assertNotIn("skip_kind", self.entry(fid))
+
+
+class TodoProfile(Base):
+    """驗收 9：todo --json 的 profile 塊等於設定檔去掉來源日期；設定檔壞了用預設、profile_missing、人讀多一行、exit 0。"""
+
+    def test_profile_block(self):
+        from kb._lib import profile
+        data = self.todo()
+        self.assertEqual(data["profile"], profile.card_types_for_todo(profile.load(self.V)))
+        self.assertFalse(data["profile_missing"])
+        self.assertEqual(data["skipped"]["skipped"], 0)
+
+    def test_broken_profile_uses_defaults(self):
+        from kb._lib import profile
+        (self.V / ".system" / "profile.json").write_text("{bad", encoding="utf-8")
+        data = self.todo()
+        self.assertEqual(data["profile"], profile.card_types_for_todo(profile.defaults()))
+        self.assertTrue(data["profile_missing"])
+        r = self.kb("cards", "todo")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.splitlines()[-1], "客戶設定檔讀不到，卡型用預設")
+
+
+class SkipLock(Base):
+    """測試後修正裁定 13：skip 先拿清冊的鎖，等不到時卡與清冊都沒動。"""
+
+    md = Skip.md
+    set_no_card = Skip.set_no_card
+
+    def test_lock_timeout_touches_nothing(self):
+        from kb import cards as cards_cli
+        from kb._lib import io as kio
+        self.set_no_card()
+        item = self.item()
+        card = _cards.write_card(self.V, item, "大安陳會議一")
+        t = turn.start(self.V, None, "")["turn"]
+        inv_before = (self.V / ".system" / "inventory.json").read_bytes()
+        lock = self.V / ".system" / "inventory.json.lock"
+        lock.write_text("", encoding="utf-8")
+        old = kio.LOCK_TIMEOUT
+        kio.LOCK_TIMEOUT = 0.3
+        try:
+            self.assertEqual(cards_cli._skip(self.V, item["id"], "請款", False, True), 3)
+        finally:
+            kio.LOCK_TIMEOUT = old
+            lock.unlink()
+        self.assertTrue(card.is_file())
+        self.assertEqual((self.V / ".system" / "inventory.json").read_bytes(), inv_before)
+        self.assertEqual(turn.entries(self.V, t), [])
+
+
 if __name__ == "__main__":
     unittest.main()

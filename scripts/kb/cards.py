@@ -4,6 +4,7 @@ todo：讀清冊、卡與待處理現算該做的事，不寫任何檔、不開�
 sync：moved 的卡搬到現在該在的夾（檔名不變；同夾只改檔頭），原檔清單與開原檔重算、其他行原樣；舊路徑備成 delete、新路徑備成 create。
 drop <編號>：原檔不見（status missing）才做；先備清冊，卡備成 delete 後刪、條目改 deleted、對應 missing_file 待處理 done。
 index：手動重渲染總資料夾根的 總目錄.md。sync、drop、index 都把 總目錄.md 備進回合（實作疑義裁定 4）。
+skip <編號> --kind <種類>：客戶設定檔第三節說不整理的種類，清冊記 skip_kind、有卡的拿掉（客戶設定檔與型別第 6 點，D-113）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
 import argparse
@@ -20,7 +21,8 @@ from kb.inventory_cli import NOT_IN_VAULT, find_vault, name_of
 
 CLI_LOCK_TIMEOUT = 30
 SKIPPED_TEXT = (("credential", "檔名像密碼或金鑰"), ("placeholder", "只在雲端"), ("too_large", "太大"),
-                ("error", "讀不到"))
+                ("error", "讀不到"), ("skipped", "依設定不整理"))
+PROFILE_MISSING = "客戶設定檔讀不到，卡型用預設"
 
 
 def _limit(text):
@@ -41,7 +43,10 @@ def add_arguments(sub):
     dr = subs.add_parser("drop", help="拿掉原檔已刪的卡", description="原檔不見、客戶說刪了，拿掉它的卡。")
     dr.add_argument("id", help="清冊編號（f-…）")
     ix = subs.add_parser("index", help="重寫總目錄", description="重寫總資料夾根的 總目錄.md。")
-    for p in (td, sy, dr, ix):
+    sk = subs.add_parser("skip", help="記成依設定不整理", description="客戶設定檔說不整理的種類：這份不做卡，有卡的拿掉。")
+    sk.add_argument("id", help="清冊編號（f-…）")
+    sk.add_argument("--kind", required=True, help="客戶設定檔第三節「不整理」的種類")
+    for p in (td, sy, dr, ix, sk):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -74,6 +79,8 @@ def _todo_lines(vault, data, limit):
         lines.append(f"- {label} {item['id']} {name_of(item['uri'])} → {target}")
     if len(work) > limit:
         lines.append(f"……還有 {len(work) - limit} 份")
+    if data.get("profile_missing"):
+        lines.append(PROFILE_MISSING)
     return lines
 
 
@@ -89,24 +96,11 @@ def _todo(vault, args, as_json):
 
 # ---------- sync ----------
 
-def _prune(vault, rel):
-    """刪卡後父夾空就移除，最多到 檔案索引/ 底下第一層（檔案索引本身不刪）。"""
-    parts = rel.split("/")
-    for depth in range(len(parts) - 1, 1, -1):
-        d = Path(vault).joinpath(*parts[:depth])
-        try:
-            if d.is_dir() and not any(d.iterdir()):
-                d.rmdir()
-            else:
-                break
-        except OSError:
-            break
+_prune = cards.prune_dirs
 
 
 def _remove_card(vault, rel, turn_id, changed):
-    turn.backup(vault, rel, turn_id, action="delete")
-    os.remove(Path(vault) / rel)
-    _prune(vault, rel)
+    cards.remove_card(vault, rel, turn_id)
     changed.append({"path": rel, "action": "delete"})
 
 
@@ -240,6 +234,29 @@ def _index(vault, as_json, conversation):
     return 0
 
 
+# ---------- skip ----------
+
+def _skip(vault, fid, kind, as_json, conversation):
+    try:
+        got = cards.skip(vault, sources_lib.load(vault), fid, kind, turn.current(vault)["turn"])
+    except cards.SkipRefused as e:
+        print(str(e))
+        return 3
+    except TimeoutError:
+        print("等不到鎖，沒有寫入")
+        return 3
+    changed = ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}]
+               + [{"path": rel, "action": "delete"} for rel in got["removed"]]
+               + [{"path": cards.INDEX_POSIX, "action": "modify"}])
+    name = name_of(got["uri"]).rpartition("/")[2]
+    journal_cli.record_program_or_warn(vault, f"依設定不整理：{kind}（{name}）", changed, "cards skip", conversation)
+    if as_json:
+        print(json.dumps({"id": fid, "kind": kind, "card": got["card"]}, ensure_ascii=False))
+    else:
+        print(f"已記成不整理（{kind}）：{got['uri']}；有卡的已拿掉，說「退回上一版」救得回來")
+    return 0
+
+
 def run(args):
     vault = find_vault(args)
     if vault is None:
@@ -256,6 +273,8 @@ def run(args):
             return _sync(vault, as_json, conversation)
         if command == "drop":
             return _drop(vault, args.id, as_json, conversation)
+        if command == "skip":
+            return _skip(vault, args.id, args.kind.strip(), as_json, conversation)
         return _index(vault, as_json, conversation)
     except ValueError as e:
         print(f"狀態檔讀不到：{e}")

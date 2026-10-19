@@ -325,6 +325,8 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
         print(f"這 {len(outputs)} 份成品先留著；要刪跟我說，我用 delete-outputs 刪。")
     if target["reverted_turn"]:
         print(f"這一次退的是「退回 {target['reverted_turn']}」本身，{target['reverted_turn']} 不再算已退回。")
+    if any(e.get("path") == ".system/profile.json" for e in target["entries"]):  # 客戶設定檔與型別 實作疑義裁定 1
+        print("套用設定檔時建的資料夾還在，要拿掉請自己刪空夾")
     if inv_error is not None:
         print(f"清冊讀不到：{inv_error}")
     return 0

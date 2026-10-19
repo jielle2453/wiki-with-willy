@@ -11,7 +11,7 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-from kb._lib import config
+from kb._lib import config, profile
 from kb._lib.io import FileLock, write_text_atomic
 
 CARDS_DIR = "檔案索引"
@@ -336,8 +336,18 @@ def _mtime(vault, rel):
         return 0
 
 
+def _profile_or_default(vault):
+    """回 (設定檔, 讀不到嗎)：沒檔或壞了用 profile.defaults，製卡者拿到的 profile 塊永遠有東西（客戶設定檔與型別第 5 點）。"""
+    try:
+        data = profile.load(vault)
+    except ValueError:
+        data = None
+    return (data, False) if data is not None else (profile.defaults(), True)
+
+
 def todo(vault, sources):
-    """讀清冊 active 條目、卡與待處理，分 new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped（D-104）。
+    """讀清冊 active 條目、卡與待處理，分 new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped（D-104）；
+    skipped 多一鍵 skipped（設定檔說不整理、清冊記了 skip_kind 的份數，D-113），另帶 profile 塊（卡型、段落、個資種類）。
     不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
     from kb._lib import extract, inventory, pending
     restored = _restore_pdf(vault)
@@ -358,7 +368,9 @@ def todo(vault, sources):
     missing_open = {first_file(i): i for i in opened if i.get("kind") == "missing_file"}
     groups, broken = _scan_groups(vault)
     out = {"new": [], "stale": [], "moved": [], "duplicates": [], "orphans": [], "unreadable": [], "missing": [],
-           "skipped": {k: 0 for k in SKIPPED_READS}, "broken": list(broken), "pdf_restored": restored}
+           "skipped": dict({k: 0 for k in SKIPPED_READS}, skipped=0), "broken": list(broken), "pdf_restored": restored}
+    data, out["profile_missing"] = _profile_or_default(vault)
+    out["profile"] = profile.card_types_for_todo(data)
     today = date.today().isoformat()
 
     def work_item(entry, card):
@@ -418,6 +430,9 @@ def todo(vault, sources):
         if entry.get("read") in SKIPPED_READS:
             out["skipped"][entry["read"]] += 1
             continue
+        if entry.get("skip_kind"):  # 客戶設定檔說不整理的種類（D-113）：只數份數
+            out["skipped"]["skipped"] += 1
+            continue
         if eid in unreadable_open:
             item = unreadable_open[eid]
             out["unreadable"].append({"id": eid, "uri": entry["locations"][0]["uri"], "reason": item.get("reason"),
@@ -426,6 +441,59 @@ def todo(vault, sources):
         if entry.get("read") == "ok" and eid not in carded and eid not in unreadable_skip:
             out["new"].append(work_item(entry, None))
     return out
+
+
+# ---------- 不整理 ----------
+
+class SkipRefused(ValueError):
+    """kb cards skip 的拒絕：訊息就是給人看的那句。"""
+
+def prune_dirs(vault, rel):
+    """刪卡後父夾空就移除，最多到 檔案索引/ 底下第一層（檔案索引本身不刪）。"""
+    parts = rel.split("/")
+    for depth in range(len(parts) - 1, 1, -1):
+        d = Path(vault).joinpath(*parts[:depth])
+        try:
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+            else:
+                break
+        except OSError:
+            break
+
+
+def remove_card(vault, rel, turn_id):
+    """卡備成 delete 後刪、收空夾。"""
+    from kb._lib import turn
+    turn.backup(vault, rel, turn_id, action="delete")
+    os.remove(Path(vault) / rel)
+    prune_dirs(vault, rel)
+
+
+def skip(vault, sources, fid, kind, turn_id):
+    """kb cards skip（客戶設定檔與型別第 5 點，D-113）：條目要 active、read ok，kind 要是設定檔第三節 no_card 的種類，
+    錯了丟 SkipRefused 帶給人看的句子。有卡（同編號多張全部）備成 delete 後刪；清冊備份後記 skip_kind；重寫總目錄。
+    整段在清冊的鎖裡（測試後修正裁定 13，同 drop）：等不到鎖丟 TimeoutError 時什麼都還沒動。
+    回 {"id", "card"（第一張刪掉的卡或 None）, "kind", "removed"（刪掉的全部卡）}。"""
+    from kb._lib import inventory, turn
+    with FileLock(Path(vault) / inventory.INVENTORY_POSIX):
+        entry = next((e for e in inventory.load(vault)["entries"] if e.get("id") == fid), None)
+        if entry is None:
+            raise SkipRefused(f"清冊沒有 {fid}")
+        if entry.get("status") != "active" or entry.get("read") != "ok":
+            raise SkipRefused(f"這份不是待製卡的檔（{entry.get('status')}／{entry.get('read')}）")
+        data, _missing = _profile_or_default(vault)
+        if kind not in profile.no_card_kinds(data):
+            raise SkipRefused(f"「{kind}」不在客戶設定檔的不整理種類裡，先在設定檔第三節加一列再套用")
+        groups, _broken = _scan_groups(vault)
+        removed = [c["path"] for c in groups.get(fid) or []]
+        for rel in removed:
+            remove_card(vault, rel, turn_id)
+        turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)
+        inventory.set_skip(vault, [fid], kind, locked=True)
+        render_index(vault, turn_id)
+    return {"id": fid, "card": removed[0] if removed else None, "kind": kind, "removed": removed,
+            "uri": entry["locations"][0]["uri"]}
 
 
 # ---------- 搬卡 ----------

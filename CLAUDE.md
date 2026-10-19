@@ -24,7 +24,7 @@
 | `scripts/kb/inventory_cli.py` | 子命令 `inventory scan`：全掃來源與總資料夾，把變動套進清冊（寫前備進回合、終端機記程式段，有動到待處理時 changed 多兩檔）；`--source` 只掃一個來源 |
 | `scripts/kb/convert.py` | 子命令 `convert <目標>`：不收 `--vault`、總資料夾只從 cwd 找；編號、uri 或路徑 → 抽字寫 `.system/temp/`（寫前清超過 `temp_keep_hours` 的一般檔，temp 是連結不清；檔名只用驗過的編號），PDF 經 pypdfium2 抽文字層、掃描頁轉 PNG，圖片指給 Read；抽字前照守門同一套判斷（排除、憑證名、Z11、Z1／Z6／Z7／Z8 拒）；讀不到 exit 3，條目在清冊就記 unreadable 待處理；終端機不印內容 |
 | `scripts/kb/cards.py` | 子命令 `cards todo`／`sync`／`drop`／`index`／`skip`：列該做的卡（不寫檔）、卡跟著原檔搬與收斂同編號多張、原檔已刪拿掉卡、重寫 `總目錄.md`、`skip <編號> --kind` 記成依設定不整理（D-113）；改檔前備進回合、終端機記程式段 |
-| `scripts/kb/profile_cli.py` | 子命令 `profile check`／`apply`：設定檔 md 對 JSON 的差異與型別夾對帳（只讀）；套用：刪有東西的型別那列擋、兩檔備進回合後寫、建缺的型別夾（只建不刪）、拿掉的不整理種類把清冊 `skip_kind` 清掉；鎖 `profile.json`、終端機記程式段 |
+| `scripts/kb/profile_cli.py` | 子命令 `profile check`／`apply`：設定檔 md 對 JSON 的差異與型別夾對帳（只讀）；套用：刪有東西的型別那列擋、兩檔備進回合後寫、先建缺的型別夾、表少了的型別夾是空的一起拿掉、拿掉的不整理種類把清冊 `skip_kind` 清掉；鎖 `profile.json`、終端機記程式段 |
 | `scripts/kb/pending_cli.py` | 子命令 `pending list`／`resolve`／`dismiss`：看與處理待處理 |
 | `scripts/kb/changes.py` | 子命令 `changes`：跟清冊上次掃描比，列新增、修改、搬動、不見、之前就不見；只讀不寫、不開回合；`--quick` 走開場那條路 |
 | `scripts/kb/turn_cli.py` | 子命令 `turn current`／`approve`／`note`／`redact`：看目前回合、解除綜合卡張數上限（D-075）、給這一句的「做了」（D-084）、換掉這一句的「問」（D-086） |

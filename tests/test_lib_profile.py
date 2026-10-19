@@ -351,5 +351,21 @@ class AfterTestParse(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class AfterConfirmParse(unittest.TestCase):
+    """確認後修正裁定 22：表格列之間夾了非表格行要報錯；表格以第一個空行結束，表後的字照舊忽略。"""
+
+    def test_line_without_leading_pipe_inside_table(self):
+        text = md_with(["| 工地 | 事 | x |", "| 客戶 | 對象 | y |"]).replace("| 客戶 | 對象 | y |", "客戶 | 對象 | y |")
+        self.assertEqual(message(text), "第 1 節第 2 列不是表格列（少了開頭的 |，或多了一行字）")
+
+    def test_extra_text_line_right_after_rows(self):
+        text = md_with(cards=["| 報價 | 重點 |  | x |"]).replace("| 報價 | 重點 |  | x |\n", "| 報價 | 重點 |  | x |\n備註：還要加\n")
+        self.assertEqual(message(text), "第 2 節第 2 列不是表格列（少了開頭的 |，或多了一行字）")
+
+    def test_text_after_blank_line_ignored(self):
+        text = md_with(["| 工地 | 事 | x |"]).replace("| 工地 | 事 | x |\n", "| 工地 | 事 | x |\n\n備註：這行不算\n| 亂 |\n")
+        self.assertEqual([t["name"] for t in profile.parse_md(text)["types"]], ["工地"])
+
+
 if __name__ == "__main__":
     unittest.main()

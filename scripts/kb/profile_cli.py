@@ -2,11 +2,13 @@
 
 check：系統/客戶設定檔.md 跟 .system/profile.json 比，印差異與型別夾對帳，不寫任何檔；讀不懂 exit 3，其餘 0。
 apply：check 的判斷之後，刪了有東西的型別夾那列擋（D-058）；沒有改不寫；否則先建缺的型別夾（只建不刪、建夾不備份；
-建不成就整份不套用，測試後修正裁定 11）→ merge → 兩檔備進回合後寫（D-074）→ 第三節拿掉的「不整理」種類把清冊的 skip_kind 拿掉（清冊先備份）。
+建不成就整份不套用，測試後修正裁定 11）→ merge → 兩檔備進回合後寫（D-074）→ 表少了的型別、夾是空的就一起拿掉（確認後修正裁定 21）
+→ 第三節拿掉的「不整理」種類把清冊的 skip_kind 拿掉（清冊先備份）。
 鎖 profile.json 30 秒。終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
 import argparse
 import json
+import os
 
 from kb import journal_cli
 from kb._lib import inventory, profile, turn
@@ -42,7 +44,7 @@ def _detail_lines(st):
     nonempty = dict(st["removed_nonempty"])
     lines = [f"- 型別 多了 {n}（{cats.get(new_types[n]['category'], '')}）" for n in d["types"]["added"]]
     for n in d["types"]["removed"]:
-        why = f"夾裡還有 {nonempty[n]} 項，套用會被擋" if n in nonempty else "夾是空的，會留著"
+        why = f"夾裡還有 {nonempty[n]} 項，套用會被擋" if n in nonempty else "空夾會一起拿掉"
         lines.append(f"- 型別 少了 {n}（{why}）")
     lines += [f"- 型別 {n} 改了" for n in d["types"]["changed"]]
     for word, key in (("多了", "added"), ("少了", "removed"), ("改了", "changed")):
@@ -95,6 +97,31 @@ def _refuse(as_json, st, line):
         print(line)
 
 
+def _remove_empty_dirs(vault, names):
+    """表少了一列、夾是空的：寫完設定檔後一起拿掉（確認後修正裁定 21）；rmdir 失敗（剛好被佔用）就留著。回 (拿掉的, 留著的)。"""
+    removed, kept = [], []
+    for name in names:
+        path = vault / name
+        if not path.is_dir():
+            continue
+        try:
+            os.rmdir(path)
+        except OSError:
+            kept.append(name)
+            continue
+        removed.append(name)
+    return removed, kept
+
+
+def _with_dirs(summary, removed, kept):
+    """「型別 -1」後面接「（拿掉了空夾 X；Y 夾是空的，會留著）」。"""
+    notes = (["拿掉了空夾 " + "、".join(removed)] if removed else []) + [f"{n} 夾是空的，會留著" for n in kept]
+    if not notes or not summary.startswith("型別 "):
+        return summary
+    head, sep, rest = summary.partition("、")
+    return f"{head}（{'；'.join(notes)}）{sep}{rest}"
+
+
 def _apply_locked(vault, as_json, conversation):
     st = profile.status(vault)
     if st["state"] == "missing":
@@ -130,8 +157,10 @@ def _apply_locked(vault, as_json, conversation):
     merged = profile.merge(old, new, first=old.get("applied") is None)
     data = dict(old, **merged, applied=profile.now())
     profile.write_locked(vault, data, turn_id)
+    removed_dirs, kept_dirs = _remove_empty_dirs(vault, st["removed_empty"])
     unskipped = inventory.unskip_kinds(vault, profile.unskipped_kinds(old, merged), turn_id)
-    summary = profile.summary_short(st["diff"])
+    summary = _with_dirs(profile.summary_short(st["diff"]), removed_dirs, kept_dirs)
+    st["unlisted"] = [n for n in st["unlisted"] if n not in removed_dirs]
     parts = [summary] if summary else []
     if created:
         parts.append("建了資料夾 " + "、".join(created))
@@ -142,8 +171,8 @@ def _apply_locked(vault, as_json, conversation):
     changed = CHANGED + ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if unskipped else [])
     journal_cli.record_program_or_warn(vault, sentence[1:], changed, "profile apply", conversation)
     if as_json:
-        print(json.dumps(dict(_public(st), applied=True, created_dirs=created, unskipped=len(unskipped)),
-                         ensure_ascii=False))
+        print(json.dumps(dict(_public(st), applied=True, created_dirs=created, removed_dirs=removed_dirs,
+                              unskipped=len(unskipped)), ensure_ascii=False))
         return 0
     print(sentence)
     for line in _unlisted_line(st):

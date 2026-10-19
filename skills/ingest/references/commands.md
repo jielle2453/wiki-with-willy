@@ -106,7 +106,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - 最後一行 `第一層夾不在型別表：X（…）` → 請客戶在設定檔第一節補一列，這版不代改。
 - 開場是「設定檔有改但讀不懂：…；改好下次再問」→ 照冒號後那句告訴客戶哪一列要改；不用跑 `check`。
 
-`apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`，照著講；有「回到待製卡」就跑 `cards todo --json` 從 SKILL.md 第 3 步起做。設定檔只讓客戶自己改，你不改 `系統/客戶設定檔.md`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`unskipped`。拒絕（exit 3）：
+`apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`（拿掉的型別夾是空的會一起拿掉，印在「型別 -1（拿掉了空夾 X）」），照著講；有「回到待製卡」就跑 `cards todo --json` 從 SKILL.md 第 3 步起做。設定檔只讓客戶自己改，你不改 `系統/客戶設定檔.md`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`removed_dirs`、`unskipped`。拒絕（exit 3）：
 
 - `客戶設定檔讀不懂：第 N 節第 M 列…`（`check` 也是 exit 3）→ 照句子告訴客戶哪一列要改，改好再說一次。
 - `型別「X」底下還有 N 項，先搬走再拿掉這列` → 照講；夾裡的東西不幫客戶搬。

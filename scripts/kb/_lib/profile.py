@@ -138,15 +138,22 @@ def _sections(lines):
     return found
 
 
-def _table_rows(lines):
-    """這節第一張表（以 | 開頭的連續行）去掉表頭列與分隔列，回每列的格子清單。"""
+def _table_rows(section, lines):
+    """這節第一張表（第一個 | 開頭的行起，到第一個空行為止）去掉表頭列與分隔列，回每列的格子清單。
+    表裡夾了非空、非 | 開頭的行就報錯，不靜默切斷（確認後修正裁定 22）；空行之後的字照舊忽略。"""
     table, started = [], False
     for line in lines:
-        if line.lstrip().startswith("|"):
-            table.append(line.strip())
-            started = True
-        elif started:
+        if not started:
+            if line.lstrip().startswith("|"):
+                table.append(line.strip())
+                started = True
+            continue
+        if not line.strip():
             break
+        if not line.lstrip().startswith("|"):
+            n = sum(1 for t in table[1:] if not _SEPARATOR.match(t)) + 1
+            _err(section, n, "不是表格列（少了開頭的 |，或多了一行字）")
+        table.append(line.strip())
     rows = []
     for line in table[1:]:
         if _SEPARATOR.match(line):
@@ -265,9 +272,9 @@ def parse_md(text, max_type_chars=TYPE_NAME_MAX):
     for i, num in enumerate(NUMERALS, 1):
         if i not in found:
             raise ProfileError(i, None, f"少了第 {i} 節（## {num}、…）")
-    return {"types": _parse_types(_table_rows(found[1]), max_type_chars),
-            "card_types": _parse_card_types(_table_rows(found[2])),
-            "exclusions": _parse_exclusions(_table_rows(found[3]))}
+    return {"types": _parse_types(_table_rows(1, found[1]), max_type_chars),
+            "card_types": _parse_card_types(_table_rows(2, found[2])),
+            "exclusions": _parse_exclusions(_table_rows(3, found[3]))}
 
 
 # ---------- 比對與合併 ----------

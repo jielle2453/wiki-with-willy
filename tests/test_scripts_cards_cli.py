@@ -50,13 +50,29 @@ def snapshot(V):
 
 
 class Todo(Base):
+    def set_max(self, n):
+        (self.V / ".system" / "config.json").write_text(json.dumps({"ingest_auto_max": n}), encoding="utf-8")
+
     def test_json_has_plan_asks_tell(self):
-        """整理 ingest：既有鍵照舊，多 plan、asks、tell 三鍵；新檔超過 ingest_auto_max 時 plan 空、asks 第一題是 batch。"""
+        """整理 ingest：既有鍵照舊，多 plan、asks、tell 三鍵，都是清單。"""
         data = self.todo()
         self.assertTrue({"new", "stale", "moved", "missing", "unreadable", "skipped", "profile", "entity_drift"} <= set(data))
         for key in ("plan", "asks", "tell"):
             self.assertIsInstance(data[key], list, key)
-        self.assertEqual(data["plan"] == [], data["asks"][:1] != [] and data["asks"][0]["id"] == "batch")
+
+    def test_plan_lists_cards_step_when_under_the_limit(self):
+        self.set_max(100)
+        data = self.todo()
+        self.assertEqual([a["id"] for a in data["asks"]], [])
+        (step,) = data["plan"]
+        self.assertEqual((step["step"], step["items"]), ("cards", len(data["new"])))
+
+    def test_over_the_limit_asks_batch_first_and_clips_plan(self):
+        self.set_max(1)
+        data = self.todo()
+        self.assertEqual(data["asks"][0]["id"], "batch")
+        self.assertEqual([s["step"] for s in data["plan"]], [])
+        self.assertEqual([s["step"] for s in data["asks"][0]["results"][0]["then"]], ["cards"])
 
     def test_json_and_read_only(self):
         before = snapshot(self.V)

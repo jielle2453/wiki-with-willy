@@ -10,13 +10,25 @@ import math
 import re
 
 from kb._lib import cards, entities, inventory
+from kb._lib.paths import plugin_root
 
 SYNC = "kb cards sync"
 CARDING = "references/carding.md"
-SYNTHESIS_RULES = "${CLAUDE_PLUGIN_ROOT}/rules/synthesis.md"
+FREE_TEXT_RULE = "一句白話，不含 \" $ ` \\ 這四種字元"  # 這四個字元放進雙引號會壞引號或被展開
 BATCH_SECONDS = 10  # 一份抓 10 秒（D-100）
 UNREADABLE_LISTED = 5
 PENDING_FILE = "記在 系統/待處理.md"
+# 讀不到的原因（convert 會記進待處理的那幾種）→ 客戶怎麼辦；這是講法的唯一來源，commands.md 只指向 tell
+UNREADABLE_ADVICE = (
+    ("有密碼", "另存一份沒密碼的，或跟我說先跳過"),
+    ("舊格式", "用 Word／Excel 另存成新格式就讀得到"),
+    ("不支援的格式", "這種格式還讀不了，跟我說先跳過，或換一份檔"),
+    ("只在雲端", "請在檔案上按右鍵選保留在這台電腦上，我再整理"),
+    ("還沒裝 PDF 元件", "請服務人員跑 pip install pypdfium2，裝好後我會自動整理"),
+    ("檔案壞了", "換一份，或跟我說先跳過"),
+    ("檔案太大", "這版讀不了，跟我說先跳過"),
+    ("編碼", "換一份檔，或跟我說先跳過"),
+)
 SKIPPED_TEXT = (("credential", "檔名像密碼或金鑰"), ("placeholder", "只在雲端"), ("too_large", "太大"),
                 ("error", "讀不到"))
 CLOUD_SENTENCE = "請在檔案上按右鍵選保留在這台電腦上，我再整理"
@@ -60,6 +72,10 @@ def _step(step, items, do, read):
     return {"step": step, "items": items, "do": do, "read": read}
 
 
+def _synthesis_rules():
+    return str(plugin_root() / "rules" / "synthesis.md")
+
+
 def _plan(out):
     steps = []
     sync = len(out.get("moved") or []) + len(out.get("duplicates") or [])
@@ -71,12 +87,12 @@ def _plan(out):
         steps.append(_step("cards", carding, "照清單寫卡（new、stale、broken）", f"{CARDING} 一～六節"))
     for key, read, text in (("unlinked", f"{CARDING} 第七節", "照清單補掛實體（unlinked）"),
                             ("synthesis_broken", f"{CARDING} 第八節", "照清單處理放錯位置的綜合卡（synthesis_broken）"),
-                            ("synthesis_stale", SYNTHESIS_RULES, "照清單改綜合卡（synthesis_stale）")):
+                            ("synthesis_stale", _synthesis_rules(), "照清單改綜合卡（synthesis_stale）")):
         if out.get(key):
             steps.append(_step(key, len(out[key]), text, read))
     confirmed = [i for i in out.get("synthesis_new") or [] if i.get("confirmed")]
     if confirmed:
-        steps.append(_step("synthesis_new", len(confirmed), "照清單寫綜合卡（synthesis_new）", SYNTHESIS_RULES))
+        steps.append(_step("synthesis_new", len(confirmed), "照清單寫綜合卡（synthesis_new）", _synthesis_rules()))
     return steps
 
 
@@ -150,7 +166,8 @@ def _missing(m):
     pid = m["pending_id"]
     return _ask(f"missing:{pid}", "missing", m["question"], [
         _result("刪了，卡也拿掉", [cmd("cards", "drop", m["id"])], strict=True),
-        _result("沒刪，先留著", [cmd("pending", "resolve", pid, "--how") + ' "{客戶的話}"'], fill=["客戶的話"]),
+        _result("沒刪，先留著", [cmd("pending", "resolve", pid, "--how") + ' "{客戶的話}"'],
+                fill=[{"name": "客戶的話", "rule": FREE_TEXT_RULE}]),
         _result("不用管", [cmd("pending", "dismiss", pid)])])
 
 
@@ -180,7 +197,7 @@ def _tell(out, vault):
     if unreadable:
         for item in unreadable[:UNREADABLE_LISTED]:
             name = item["uri"].rsplit("/", 1)[-1]
-            lines.append(f"{name} 讀不到：{item['reason']}" if item.get("reason") else f"{name} 讀不到")
+            lines.append(_unreadable_line(name, item.get("reason")))
         if len(unreadable) > UNREADABLE_LISTED:
             lines.append(f"另有 {len(unreadable) - UNREADABLE_LISTED} 份讀不到")
         lines[-1] += f"；{PENDING_FILE}"
@@ -197,6 +214,13 @@ def _tell(out, vault):
     if out.get("pdf_restored"):
         lines.append(f"PDF 元件裝好了，{out['pdf_restored']} 份 PDF 回到待製卡")
     return lines
+
+
+def _unreadable_line(name, reason):
+    if not reason:
+        return f"{name} 讀不到"
+    advice = next((text for head, text in UNREADABLE_ADVICE if reason.startswith(head)), None)
+    return f"{name} 讀不到：{reason}；{advice}" if advice else f"{name} 讀不到：{reason}"
 
 
 def _by_setting(total, vault):

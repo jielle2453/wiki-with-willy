@@ -1,6 +1,7 @@
 """plan.build（整理 ingest 第 1 點，D-132、D-134、D-135）：plan 的步驟與順序、asks 的順序與結果清單（do 字串一字不差、strict、
 fill、連號跨題、引號）、多量先問、tell 的句子；最後一組拿真知識庫逐條跑 do（驗收 6）。"""
 import json
+import re
 import shlex
 import shutil
 import tempfile
@@ -11,8 +12,11 @@ from tests import _cards
 from tests import _entities as E
 from tests.test_scripts_inventory_cli import run_kb
 from kb._lib import config, inventory, plan  # noqa: E402
+from kb._lib.paths import plugin_root  # noqa: E402
 
 TYPES = [{"name": "案子", "category": "matter"}, {"name": "業主", "category": "party"}]
+SYNTHESIS_RULES = str(plugin_root() / "rules" / "synthesis.md")
+FREE_TEXT = {"name": "客戶的話", "rule": "一句白話，不含 \" $ ` \\ 這四種字元"}
 
 
 def base(**kw):
@@ -67,7 +71,7 @@ class Plan(Base):
         self.assertEqual(got, [
             {"step": "cards", "items": 2, "do": "照清單寫卡（new、stale、broken）", "read": "references/carding.md 一～六節"},
             {"step": "synthesis_stale", "items": 1, "do": "照清單改綜合卡（synthesis_stale）",
-             "read": "${CLAUDE_PLUGIN_ROOT}/rules/synthesis.md"}])
+             "read": SYNTHESIS_RULES}])
 
     def test_cards_count_new_stale_and_broken_with_header(self):
         broken = [{"path": "a", "reason": "x", "id": "f-1", "header": "h"}, {"path": "b", "reason": "y"}]
@@ -85,7 +89,7 @@ class Plan(Base):
         new = [{"entity_id": "e-1", "name": "甲", "confirmed": True}, {"entity_id": "e-2", "name": "乙", "confirmed": False, "question": "Q"}]
         got = self.build(synthesis_new=new)["plan"]
         self.assertEqual([(s["step"], s["items"], s["read"]) for s in got],
-                         [("synthesis_new", 1, "${CLAUDE_PLUGIN_ROOT}/rules/synthesis.md")])
+                         [("synthesis_new", 1, SYNTHESIS_RULES)])
         self.assertEqual(self.steps(synthesis_new=new[1:]), [])
 
     def test_full_order(self):
@@ -118,6 +122,20 @@ class Batch(Base):
         got = self.build(new=work(2), moved=[{"id": "f-1"}], synthesis_stale=[{"entity_id": "e"}])
         now = got["asks"][0]["results"][0]
         self.assertEqual([s["step"] for s in now["then"]], ["sync", "cards", "synthesis_stale"])
+
+    def test_then_equals_the_unclipped_plan(self):
+        """裁定 6：batch 的「現在做」帶的 then，就是沒超過上限時算出來的那份 plan。"""
+        kw = dict(new=work(2), moved=[{"id": "f-1"}], unlinked=[{"id": "f-2"}], synthesis_stale=[{"entity_id": "e"}],
+                  synthesis_new=[{"entity_id": "e", "name": "甲", "confirmed": True}])
+        self.set_max(1)
+        clipped = self.build(**kw)
+        self.set_max(100)
+        unclipped = self.build(**kw)
+        self.assertEqual(unclipped["asks"], [])
+        self.assertEqual([s["step"] for s in unclipped["plan"]],
+                         ["sync", "cards", "unlinked", "synthesis_stale", "synthesis_new"])
+        self.assertEqual(clipped["asks"][0]["results"][0]["then"], unclipped["plan"])
+        self.assertEqual(clipped["plan"], unclipped["plan"][:1])
 
     def test_counts_new_stale_and_unlinked(self):
         self.set_max(2)
@@ -200,7 +218,7 @@ class Asks(Base):
         self.assertEqual((ask["id"], ask["kind"], ask["question"]), ("missing:p-1a2b3c4d", "missing", "Q-missing"))
         self.assertEqual(self.results(ask), [
             (1, "刪了，卡也拿掉", ["kb cards drop f-98c66aa7"], True, []),
-            (2, "沒刪，先留著", ['kb pending resolve p-1a2b3c4d --how "{客戶的話}"'], False, ["客戶的話"]),
+            (2, "沒刪，先留著", ['kb pending resolve p-1a2b3c4d --how "{客戶的話}"'], False, [FREE_TEXT]),
             (3, "不用管", ["kb pending dismiss p-1a2b3c4d"], False, [])])
 
     def test_name_confirm(self):
@@ -233,6 +251,23 @@ class Asks(Base):
         self.assertEqual([a["id"] for a in got], ["batch", "drift:e-5c1d0a7e"])
         self.assertEqual([r["n"] for a in got for r in a["results"]], [1, 2, 3, 4, 5])
 
+    def test_free_text_fill_carries_a_rule(self):
+        """裁定 5：自由文字的空格是 {"name","rule"}，其他空格是名稱字串；do 裡每個 {空格} 都在 fill 裡。"""
+        asks = self.build(
+            missing=[{"id": "f-98c66aa7", "uri": "file://a/b.docx", "pending_id": "p-1a2b3c4d", "question": "Q"}],
+            entity_drift=[drift("folder_renamed", found="案子/王宅/信義王.md")],
+            synthesis_new=[{"entity_id": "e-0f3e9a21", "name": "王宅", "confirmed": False, "question": "Q"}])["asks"]
+        free = []
+        for ask in asks:
+            for r in ask["results"]:
+                names = [f["name"] if isinstance(f, dict) else f for f in r["fill"]]
+                slots = sorted(set(re.findall(r"\{([^{}]+)\}", " ".join(r["do"]))))
+                self.assertEqual(sorted(names), slots, r["label"])
+                free += [f for f in r["fill"] if isinstance(f, dict)]
+        self.assertEqual(free, [FREE_TEXT])
+        for ch in ('"', "$", "`", "\\"):
+            self.assertIn(ch, FREE_TEXT["rule"])
+
     def test_names_with_spaces_are_quoted(self):
         ask = self.one(entity_drift=[drift("missing", name="陳 先生")])
         self.assertEqual(ask["results"][0]["do"], ['kb entity remove "陳 先生"'])
@@ -261,18 +296,42 @@ class Tell(Base):
 
     def test_unreadable_each_with_trailer(self):
         got = self.tell(unreadable=[{"id": "f-1", "uri": "file://客戶案件/信義王/合約_加密.pdf", "reason": "有密碼"}])
-        self.assertEqual(got, ["合約_加密.pdf 讀不到：有密碼；記在 系統/待處理.md"])
+        self.assertEqual(got, ["合約_加密.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過；記在 系統/待處理.md"])
 
     def test_unreadable_two(self):
         got = self.tell(unreadable=[{"id": "f-1", "uri": "file://a/甲.pdf", "reason": "有密碼"},
                                     {"id": "f-2", "uri": "file://a/乙.doc", "reason": "舊格式"}])
-        self.assertEqual(got, ["甲.pdf 讀不到：有密碼", "乙.doc 讀不到：舊格式；記在 系統/待處理.md"])
+        self.assertEqual(got, ["甲.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過",
+                               "乙.doc 讀不到：舊格式；用 Word／Excel 另存成新格式就讀得到；記在 系統/待處理.md"])
 
     def test_unreadable_five_listed_six_merged(self):
         items = [{"id": f"f-{i}", "uri": f"file://a/{i}.pdf", "reason": "有密碼"} for i in range(6)]
         self.assertEqual(len(self.tell(unreadable=items[:5])), 5)
         got = self.tell(unreadable=items)
-        self.assertEqual(got, [f"{i}.pdf 讀不到：有密碼" for i in range(5)] + ["另有 1 份讀不到；記在 系統/待處理.md"])
+        self.assertEqual(got, [f"{i}.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過" for i in range(5)]
+                         + ["另有 1 份讀不到；記在 系統/待處理.md"])
+
+    ADVICE = {
+        "有密碼": "另存一份沒密碼的，或跟我說先跳過",
+        "舊格式（.doc）": "用 Word／Excel 另存成新格式就讀得到",
+        "不支援的格式（.zip）": "這種格式還讀不了，跟我說先跳過，或換一份檔",
+        "只在雲端、還沒下載到電腦": "請在檔案上按右鍵選保留在這台電腦上，我再整理",
+        "還沒裝 PDF 元件（pip install pypdfium2）": "請服務人員跑 pip install pypdfium2，裝好後我會自動整理",
+        "檔案壞了：PDF 打不開": "換一份，或跟我說先跳過",
+        "檔案太大": "這版讀不了，跟我說先跳過",
+        "編碼": "換一份檔，或跟我說先跳過",
+    }
+
+    def test_unreadable_advice_for_every_recorded_reason(self):
+        """裁定 7：convert 會記進待處理的每個原因，tell 都帶「怎麼辦」。"""
+        for reason, advice in self.ADVICE.items():
+            with self.subTest(reason=reason):
+                got = self.tell(unreadable=[{"id": "f-1", "uri": "file://a/甲.x", "reason": reason}])
+                self.assertEqual(got, [f"甲.x 讀不到：{reason}；{advice}；記在 系統/待處理.md"])
+
+    def test_unreadable_unknown_reason_has_no_advice(self):
+        got = self.tell(unreadable=[{"id": "f-1", "uri": "file://a/甲.x", "reason": "怪原因"}])
+        self.assertEqual(got, ["甲.x 讀不到：怪原因；記在 系統/待處理.md"])
 
     def test_not_carded_counts(self):
         got = self.tell(skipped={"credential": 2, "placeholder": 0, "too_large": 1, "error": 0, "skipped": 0})
@@ -334,7 +393,8 @@ class WithRealVault(unittest.TestCase):
 
     def run_result(self, ask_id, n_in_ask, fills=None):
         result = self.result_of(ask_id, n_in_ask)
-        self.assertEqual(sorted(fills or {}), sorted(result["fill"]))
+        names = [f["name"] if isinstance(f, dict) else f for f in result["fill"]]
+        self.assertEqual(sorted(fills or {}), sorted(names))
         for line in result["do"]:
             self.run_do(line, fills)
 

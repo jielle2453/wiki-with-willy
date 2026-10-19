@@ -73,11 +73,13 @@
 | B-061 | 2026-10-19 | deferred | 低：`profile apply` 建夾失敗那句把 OS 的 strerror 原樣接進去，句尾「存取被拒。；設定檔沒有套用」標點疊用；接 OS 錯誤字串的句子一律先去尾端句號（convert 的「讀不到」同類檢查一次） | 客戶設定檔與型別測試第二輪 |
 | B-062 | 2026-10-19 | deferred | 低：`versions revert` 退掉 `kb entity rename` 那回合時，程式改名的實體夾（裡面有客戶原檔）不會改回來，清冊退回舊 uri，下次 scan 把那份原檔當搬動；夾的改名不在回合備份裡（同 profile apply 建的夾）。真要退得乾淨要讓回合記資料夾動作 | 實體與綜合卡實作疑義 12 |
 | B-063 | 2026-10-19 | deferred | 實體與綜合卡測試第二輪低項 L1～L7：同回合新建後被打回重寫的綜合卡也算進 ai_synthesis；`_Undo.rollback` 沒逐步 try；改型別失敗時先建的空型別夾不拿掉；apply 補登記關於你時 `--json` 的 applied 仍 false；commands.md 那處 rules/synthesis.md 沒帶 ${CLAUDE_PLUGIN_ROOT}（已滿 150 行）；`modified_synthesis_count` 只剩測試在叫；clean 對含 .. 的一律拒（比裁定 14 嚴）。細節 reports/實體與綜合卡-測試.md 第二輪 | 實體與綜合卡測試第二輪 |
-| B-064 | 2026-10-19 | open | 中：AI 在工具之間寫英文自言自語給客戶看（「Step 1 is to write out the answer…」「All 35 cards are done. Step 9: …」），ingest 製卡確認 G10 起就有，步驟多時更常出現；R-10 已寫仍被違反。候選：skeleton CLAUDE.md 加一句「工具之間的過場也是給客戶看的，一律繁體中文、不唸步驟編號」（語言這種身分級的事放客戶端 CLAUDE.md 才收得住，manage 題的經驗）、SKILL.md 的順序不用「第 N 步」編號；日程第一題（note skill）一起處理，既有知識庫要等升級才拿得到新 CLAUDE.md | 實體與綜合卡確認 I1 |
+| B-064 | 2026-10-19 | open | 中：AI 在工具之間寫英文自言自語給客戶看（「Step 1 is to write out the answer…」「All 35 cards are done. Step 9: …」），ingest 製卡確認 G10 起就有，步驟多時更常出現；R-10 已寫仍被違反。候選：skeleton CLAUDE.md 加一句「工具之間的過場也是給客戶看的，一律繁體中文、不唸步驟編號」（語言這種身分級的事放客戶端 CLAUDE.md 才收得住，manage 題的經驗）、SKILL.md 的順序不用「第 N 步」編號；日程第一題（note skill）一起處理，既有知識庫要等升級才拿得到新 CLAUDE.md | 實體與綜合卡確認 I1；整理 ingest 確認補：中文旁白露出 `cards todo --json`、`plan` 這類內部用語也算 |
 | B-065 | 2026-10-19 | deferred | 實體與綜合卡確認低項：carding.md 第七節補「實體、待補型別、範本版本同一次 Edit 改完」（分兩次會被 PostToolUse 擋一次，I2）；回答末尾的「綜合卡：新寫 X、更新 Y」沒出現（I3）；profile check／apply 不報程式補的每類段落預設列（I5）；AI 把 drift 問句改寫成像要客戶自己動手（I6）；問題上限 3 個要寫明含 AI 自己加的（裁定 20） | 實體與綜合卡確認 |
 | B-066 | 2026-10-19 | open | 「實體夾有變」在客戶回答前每次開場都印、AI 每次都問（I-045／I-059 同類：客戶不想答就變成天天出現的訊號）；要有「先不管」的路，例如答「先不管」記進 env 或實體條目、同一個變化不再問，夾又變了才再問 | 實體與綜合卡結案查核 |
 | B-067 | 2026-10-20 | deferred | 整理 ingest 的 skill-reviewer 沒改的 minor：本文共通節與 core.md R-10／R-14 重複；commands.md 已滿 150 行放不下 turn note／turn approve 小節；carding.md 第一節與 commands.md convert 節對 convert 輸出各寫一份（去重要動 convert 輸出格式的敘述）。日程題動 commands.md 前先騰空間 | 整理 ingest 實作回報 |
 | B-068 | 2026-10-20 | open | 疑似 v0.11.0 的問題：ingest-check 複本跑 `cards sync` 之後，只要來源多一份新檔再 `inventory scan`，`cards todo` 又列 moved 36（整理 ingest 測試順帶發現）；要查是 sync 沒把檔頭的原檔清單或開原檔寫成跟清冊一致，還是 scan 改了主位置的順序 | 整理 ingest 測試 |
+| B-069 | 2026-10-20 | open | 原檔不見、客戶還沒答「是不是刪了」時，`entities.mounts` 只算條目 active 的卡，那張卡就從實體的掛載消失，`synthesis_stale` 列它為 removed，AI 提前從綜合卡拿掉它的內容（與「卡先留著」不一致）。missing 的條目在客戶答之前應該照算掛載 | 整理 ingest 確認 (4) |
+| B-070 | 2026-10-20 | deferred | 低：寫檔案卡通過後 PostToolUse 重渲染相關綜合卡的檔頭快取，AI 若之前讀過那張綜合卡、接著要改它，Claude Code 會擋「讀過之後被改動」，要重讀再寫，多一輪 | 整理 ingest 確認 (5) |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

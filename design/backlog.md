@@ -72,6 +72,7 @@
 | B-060 | 2026-10-19 | open | `test_budget` 的開場 8 行 400 字量的是開發機 worktree 路徑下的 kb 那行；客戶機 plugin 裝在 `~/.claude/plugins/cache/...` 路徑更長（六行都在時開發機 356 字）。upgrade 題定下安裝路徑後，用那個長度重量一次，或讓 test_budget 用最長合理路徑算 kb 行 | 客戶設定檔與型別實作回報 C |
 | B-061 | 2026-10-19 | deferred | 低：`profile apply` 建夾失敗那句把 OS 的 strerror 原樣接進去，句尾「存取被拒。；設定檔沒有套用」標點疊用；接 OS 錯誤字串的句子一律先去尾端句號（convert 的「讀不到」同類檢查一次） | 客戶設定檔與型別測試第二輪 |
 | B-062 | 2026-10-19 | deferred | 低：`versions revert` 退掉 `kb entity rename` 那回合時，程式改名的實體夾（裡面有客戶原檔）不會改回來，清冊退回舊 uri，下次 scan 把那份原檔當搬動；夾的改名不在回合備份裡（同 profile apply 建的夾）。真要退得乾淨要讓回合記資料夾動作 | 實體與綜合卡實作疑義 12 |
+| B-063 | 2026-10-19 | deferred | 實體與綜合卡測試第二輪低項 L1～L7：同回合新建後被打回重寫的綜合卡也算進 ai_synthesis；`_Undo.rollback` 沒逐步 try；改型別失敗時先建的空型別夾不拿掉；apply 補登記關於你時 `--json` 的 applied 仍 false；commands.md 那處 rules/synthesis.md 沒帶 ${CLAUDE_PLUGIN_ROOT}（已滿 150 行）；`modified_synthesis_count` 只剩測試在叫；clean 對含 .. 的一律拒（比裁定 14 嚴）。細節 reports/實體與綜合卡-測試.md 第二輪 | 實體與綜合卡測試第二輪 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

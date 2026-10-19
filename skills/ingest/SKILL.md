@@ -42,8 +42,8 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
    - `broken` 是檔頭有問題的卡：有 `header` 的照它與 `reason` 整張重寫（`reason` 是「檔名該是…」就寫到新檔名，其他寫回 `path`）；沒有 `header` 的這版不修，不用跟客戶說。
    - 這批有寫到新路徑的（被打回改名、改夾），全部做完再跑一次 `cards sync`，把留下的舊檔收掉。
 7. `unlinked` 的卡照 carding.md 第七節補掛實體（份數算進第 5 步的上限）。
-8. `entity_drift` 在回答末尾問它的 `question`（`found` 是找到的卡，相對總資料夾，`<型別>/<夾>/<檔>.md`）。客戶說跟著改：`folder_renamed`、`both_renamed` → `entity rename <name> --to <夾名>`；`card_renamed` → `--to <檔名去 .md>`；`moved_type` → `entity rename <name> --to <name> --type <found 的第一層>`。說改回來 → `entity rename <name> --to <name>`。`missing`（夾或綜合卡不見）：不要了 → `entity remove`；刪錯了 → 先請他從資源回收筒還原，沒有才 `entity rebuild`。含糊再問一次。
-9. 第 6～8 步有寫卡、補掛、改實體，先再跑一次 `cards todo --json`，照新的 `synthesis_*` 做（舊的 `header`、`path` 已不對）。綜合卡照 `rules/synthesis.md` 寫（寫前一定先讀它）：`synthesis_stale` 直接改，不問；`synthesis_new` 裡 `confirmed` 的直接寫，沒確認的在回答末尾問 `question`（每次最多 3 個）。客戶說對 → `entity confirm`；說是同一個 X → `entity merge <它> --into X`；說名字叫 Y → `entity rename <它> --to Y` 再 `entity confirm`；改完實體重跑 `cards todo --json`，用新的那項寫卡；含糊再問一次，這句不寫。寫綜合卡被守門擋「大改動」就停下來，跟客戶說這次要改 N 張綜合卡，他說好才 `turn approve`，再重寫被擋的那張。
+8. `entity_drift` 在回答末尾問 `question`（`found` 是 `<型別>/<夾>/<檔>.md`）。跟著改：`folder_renamed`、`both_renamed` → `entity rename <name> --to <夾>`；`card_renamed` → `--to <檔名>`；`moved_type` → `--to <name> --type <found 第一層>`。改回來 → `--to <name>`。`missing`：不要了 → `entity remove`；刪錯了 → 先請他從資源回收筒還原，沒有才 `entity rebuild`。含糊再問。
+9. 第 6～8 步有動到卡或實體，先重跑 `cards todo --json`，照新的 `synthesis_*` 做。綜合卡照 `rules/synthesis.md` 寫（寫前一定先讀它）：`synthesis_stale` 直接改，不問；`synthesis_new` 裡 `confirmed` 的直接寫，沒確認的在回答末尾問 `question`（每次最多 3 個）。客戶說對 → `entity confirm`；說是同一個 X → `entity merge <它> --into X`；說名字叫 Y → `entity rename <它> --to Y` 再 `entity confirm`；改完實體重跑 `cards todo --json`，用新的那項寫卡；含糊再問一次，這句不寫。寫綜合卡被守門擋「大改動」就停下來，跟客戶說這次要改 N 張綜合卡，他說好才 `turn approve`，再重寫被擋的那張。
 10. `synthesis_broken` 照 `reason` 與 `rules/synthesis.md` 第七節改；是「綜合卡該放在…」就寫到正確路徑，再 `entity clean <錯的路徑>`。
 11. `missing` 的條目在回答末尾問，每次最多 3 件，問法照 todo 給的 `question`；客戶答過的程式不會再列。客戶怎麼答：
    - 明確說刪了 → `cards drop <編號>`，說已拿掉卡、說「退回上一版」救得回來；

@@ -1,0 +1,22 @@
+[
+  {"query": "9/25 下午兩點我要跟王先生去看磁磚，幫我記一下，別到時候忘了", "should_trigger": true},
+  {"query": "我答應了大安陳 10/10 前給他第二版報價，這個要記", "should_trigger": true},
+  {"query": "信義王的交屋日改成 12/10 了，之前記的 11/30 不對", "should_trigger": true},
+  {"query": "第二期款他們已經付了，不用再提醒我", "should_trigger": true},
+  {"query": "信義王這案子結案了，尾款也收完", "should_trigger": true},
+  {"query": "大安陳先暫停，業主出國到年底才回來", "should_trigger": true},
+  {"query": "以後我出的報價單一律要附有效日期，你記住", "should_trigger": true},
+  {"query": "你上次記的單價有誤，磁磚是每坪 8500 不是 5800，更正一下", "should_trigger": true},
+  {"query": "我們決定內湖李那案改用系統櫃，不做木工了，把這個決定記下來", "should_trigger": true},
+  {"query": "幫我新增一個『廠商』的型別，另外『案子』改叫『工地』比較順", "should_trigger": true},
+  {"query": "我改了大安陳的報價單，第三期金額換了，幫我整理一下", "should_trigger": false},
+  {"query": "把 D 槽的報價資料夾也加進來", "should_trigger": false},
+  {"query": "這週要做什麼？有哪些事快到期了", "should_trigger": false},
+  {"query": "信義王現在怎樣了？做到哪一步", "should_trigger": false},
+  {"query": "上次那份報價在哪？信義王的第二版", "should_trigger": false},
+  {"query": "幫我把信義王的報價整理成 Word 檔，我要寄給業主", "should_trigger": false},
+  {"query": "最近有什麼要注意的嗎", "should_trigger": false},
+  {"query": "我把信義王的合約換成新版了，檔名一樣", "should_trigger": false},
+  {"query": "內湖李的估價單上寫的總價是多少", "should_trigger": false},
+  {"query": "私人那個資料夾不要讀了", "should_trigger": false}
+]

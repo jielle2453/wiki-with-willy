@@ -522,7 +522,8 @@ class TemplateTwo(unittest.TestCase):
 
     def test_entities_and_profile_blocks(self):
         data = self.todo()
-        self.assertEqual(data["entities"][0], {"name": "信義王", "type": "案子", "aliases": ["信義王宅"], "self": False})
+        self.assertEqual(data["entities"][0], {"name": "信義王", "type": "案子", "aliases": ["信義王宅"], "self": False,
+                                               "progress": "ongoing", "asked_evidence": []})
         self.assertIn({"name": "林小姐室內設計", "type": None, "aliases": ["林小姐"], "self": "company"}, data["entities"])
         self.assertEqual(data["profile"]["types"], [{"name": "案子", "category": "matter"},
                                                     {"name": "業主", "category": "party"}])

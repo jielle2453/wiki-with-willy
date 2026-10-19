@@ -9,12 +9,15 @@ tell：回答末尾要講的現成句子。
 import math
 import re
 
-from kb._lib import cards, entities, inventory
+from kb._lib import agenda, cards, entities, inventory, pending
 from kb._lib.paths import plugin_root
 
 SYNC = "kb cards sync"
 CARDING = "references/carding.md"
 FREE_TEXT_RULE = "一句白話，不含 \" $ ` \\ 這四種字元"  # 這四個字元放進雙引號會壞引號或被展開
+NAME_RULE = "一個名字，不含 \" $ ` \\ 這四種字元；有空白就加雙引號"  # 名字也會被貼進指令（entities.name_problem 同樣擋）
+DATE_RULE = "YYYY-MM-DD"
+AGENDA_RECHECK = "agenda_recheck"
 BATCH_SECONDS = 10  # 一份抓 10 秒（D-100）
 UNREADABLE_LISTED = 5
 PENDING_FILE = "記在 系統/待處理.md"
@@ -85,6 +88,8 @@ def _plan(out):
                + sum(1 for b in out.get("broken") or [] if b.get("header")))
     if carding:
         steps.append(_step("cards", carding, "照清單寫卡（new、stale、broken）", f"{CARDING} 一～六節"))
+    if out.get(AGENDA_RECHECK):
+        steps.append(_step(AGENDA_RECHECK, len(out[AGENDA_RECHECK]), "照清單重對日程（agenda_recheck）", f"{CARDING} 第九節"))
     for key, read, text in (("unlinked", f"{CARDING} 第七節", "照清單補掛實體（unlinked）"),
                             ("synthesis_broken", f"{CARDING} 第八節", "照清單處理放錯位置的綜合卡（synthesis_broken）"),
                             ("synthesis_stale", _synthesis_rules(), "照清單改綜合卡（synthesis_stale）")):
@@ -97,6 +102,10 @@ def _plan(out):
 
 
 # ---------- asks ----------
+
+def _fill(name, rule):
+    return {"name": name, "rule": rule}
+
 
 def _result(label, do=(), strict=False, fill=(), **extra):
     return dict({"n": 0, "label": label, "do": list(do), "strict": strict, "fill": list(fill)}, **extra)
@@ -115,6 +124,7 @@ def _asks(out, vault, config, full_plan):
     asks.extend(_drift(d, out) for d in drifts if d["kind"] == "missing")
     asks.extend(_drift(d, out) for d in drifts if d["kind"] != "missing")
     asks.extend(_missing(m) for m in out.get("missing") or [])
+    asks.extend(_agenda_asks(vault))
     asks.extend(_name(i) for i in out.get("synthesis_new") or [] if not i.get("confirmed"))
     return asks
 
@@ -134,7 +144,7 @@ def _rename(name, to, *more):
 def _rename_results(name, new, label):
     return [_result(label, [_rename(name, new)]),
             _result(f"改回{name}", [_rename(name, name)]),
-            _result("改成別的名字", [_rename(name, Slot("新名字"))], fill=["新名字"])]
+            _result("改成別的名字", [_rename(name, Slot("新名字"))], fill=[_fill("新名字", NAME_RULE)])]
 
 
 def _drift(d, out):
@@ -167,7 +177,7 @@ def _missing(m):
     return _ask(f"missing:{pid}", "missing", m["question"], [
         _result("刪了，卡也拿掉", [cmd("cards", "drop", m["id"])], strict=True),
         _result("沒刪，先留著", [cmd("pending", "resolve", pid, "--how") + ' "{客戶的話}"'],
-                fill=[{"name": "客戶的話", "rule": FREE_TEXT_RULE}]),
+                fill=[_fill("客戶的話", FREE_TEXT_RULE)]),
         _result("不用管", [cmd("pending", "dismiss", pid)])])
 
 
@@ -175,9 +185,86 @@ def _name(item):
     name = item["name"]
     return _ask(f"name:{item['entity_id']}", "name", item["question"], [
         _result("名字對", [cmd("entity", "confirm", name)]),
-        _result("跟已有的另一個是同一個", [cmd("entity", "merge", name, "--into", Slot("同一個"))], fill=["同一個"]),
+        _result("跟已有的另一個是同一個", [cmd("entity", "merge", name, "--into", Slot("同一個"))],
+                fill=[_fill("同一個", NAME_RULE)]),
         _result("名字改成別的", [_rename(name, Slot("新名字")), cmd("entity", "confirm", Slot("新名字"))],
-                fill=["新名字"])])
+                fill=[_fill("新名字", NAME_RULE)])])
+
+
+# ---------- 日程的三種題（日程第 5 點：逾期、日程有出入、結案） ----------
+
+def _agenda_asks(vault):
+    """逾期（程式自己認得）、日程有出入（條目有 proposal）、結案（待處理 kind close）。狀態檔讀不到就不問，開場那行會記 log。"""
+    out = []
+    titles = None
+    try:
+        data = agenda.load(vault)
+    except ValueError:
+        data = {"items": []}
+    out.extend(_overdue(it) for it in agenda.overdue_items(data))
+    proposals = agenda.proposal_items(data)
+    if proposals:
+        titles = agenda.card_titles(vault)
+        out.extend(_conflict(it, titles.get(it["proposal"].get("card"))) for it in proposals)
+    out.extend(_close_asks(vault, titles))
+    return out
+
+
+def _with_entities(it):
+    names = it.get("entities") or []
+    return it["text"] + (f"（{'、'.join(names)}）" if names else "")
+
+
+def _overdue(it):
+    aid = it["id"]
+    return _ask(f"overdue:{aid}", "overdue", f"{agenda.md_of(it['date'])} {_with_entities(it)}過了，完成了嗎？", [
+        _result("完成了", [cmd("agenda", "done", aid)]),
+        _result("不用了", [cmd("agenda", "cancel", aid)], strict=True),
+        _result("還沒，改到某天", [cmd("agenda", "edit", aid, "--date", Slot("新日期"))], fill=[_fill("新日期", DATE_RULE)]),
+        _result("還沒，下次再問", note="這個對話不再問")])
+
+
+def _conflict(it, title):
+    aid, prop = it["id"], it["proposal"]
+    newer = f"新版{title}寫" if title else "新版寫"
+    if prop["date"] != it["date"]:
+        old, new = agenda.md_of(it["date"]), agenda.md_of(prop["date"])
+        question = f"{it['text']}你之前說 {old}，{newer} {new}，要用哪個？"
+        edit = ["agenda", "edit", aid, "--date", prop["date"]]
+        if prop["text"] != it["text"]:
+            edit += ["--text", prop["text"]]
+        labels = (f"用新版 {new}", f"維持 {old}")
+    else:
+        question = f"{it['text']}你之前說「{it['text']}」，{newer}「{prop['text']}」，要用哪個？"
+        edit = ["agenda", "edit", aid, "--text", prop["text"]]
+        labels = (f"用新版「{prop['text']}」", f"維持「{it['text']}」")
+    return _ask(f"conflict:{aid}", "agenda_conflict", question, [
+        _result(labels[0], [cmd(*edit)]), _result(labels[1], [cmd("agenda", "recheck", aid)])])
+
+
+def _close_asks(vault, titles):
+    try:
+        items = [i for i in pending.load(vault)["items"] if i.get("kind") == "close" and i.get("status") == "open"]
+        if not items:
+            return []
+        names = {e.get("id"): e for e in entities.load(vault)["entities"]}
+    except ValueError:
+        return []
+    titles = agenda.card_titles(vault) if titles is None else titles
+    out = []
+    for item in items:
+        entity = next((names[i] for i in item.get("entity_ids") or [] if i in names), None)
+        if entity is None or entity.get("status") != "active":
+            continue
+        evidence = list(item.get("file_ids") or [])
+        flags = [a for f in evidence for a in ("--evidence", f)]
+        name = entity["name"]
+        question = item.get("text", "") + f"（依據：{'、'.join(titles.get(f, f) for f in evidence)}）"
+        out.append(_ask(f"close:{item['id']}", "close", question, [
+            _result("對，結案了", [cmd("entity", "progress", name, "結案", *flags)]),
+            _result("還沒", [cmd("entity", "progress", name, "進行中", *flags, "--note", "客戶說還沒結案")]),
+            _result("先暫停了", [cmd("entity", "progress", name, "擱置", *flags)])]))
+    return out
 
 
 def _number(asks):
@@ -213,6 +300,7 @@ def _tell(out, vault):
                      "要加的話在客戶設定檔第一節加一列，下次開對話我會問你要不要套用")
     if out.get("pdf_restored"):
         lines.append(f"PDF 元件裝好了，{out['pdf_restored']} 份 PDF 回到待製卡")
+    lines.extend(agenda.tell_lines(vault))
     return lines
 
 

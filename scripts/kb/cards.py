@@ -5,7 +5,7 @@ sync：moved 的卡搬到現在該在的夾（檔名不變；同夾只改檔頭�
 drop <編號>：原檔不見（status missing）才做；先備清冊，卡備成 delete 後刪、條目改 deleted、對應 missing_file 待處理 done。
 index：手動重渲染總資料夾根的 總目錄.md。sync、drop、index 都把 總目錄.md 備進回合（實作疑義裁定 4）。
 skip <編號> --kind <種類>：客戶設定檔第三節說不整理的種類，清冊記 skip_kind、有卡的拿掉（客戶設定檔與型別第 6 點，D-113）。
-todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
+todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變、日程待重對；drop 拿掉卡也把從那張卡抽的推測日程改成取消（D-130）；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
 import argparse
@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 
 from kb import journal_cli
-from kb._lib import cards, config, inventory, pending, turn
+from kb._lib import agenda, cards, config, inventory, pending, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault, name_of
@@ -106,6 +106,8 @@ def _entity_parts(data):
         parts.append("綜合卡 " + "、".join(bits))
     if data.get("entity_drift"):
         parts.append(f"實體夾有變 {len(data['entity_drift'])}")
+    if data.get("agenda_recheck"):
+        parts.append(f"日程待重對 {len(data['agenda_recheck'])}")
     return parts
 
 
@@ -238,6 +240,13 @@ def _drop(vault, fid, as_json, conversation):
             changed += [{"path": pending.PENDING_POSIX, "action": "modify"}, {"path": pending.MD_POSIX, "action": "modify"}]
     except ValueError as e:  # pending.json 壞了：卡與清冊已改好，待處理下次 scan 補
         print(f"待處理沒更新：{e}")
+    cancelled = []
+    try:  # 從這張卡抽的推測日程跟著取消（D-130）；日程檔壞了或等不到鎖，卡與清冊已經改好，只說一聲
+        cancelled = agenda.cancel_from_card(vault, fid, turn_id)
+    except (ValueError, OSError) as e:
+        print(f"日程沒更新：{e}")
+    if cancelled:
+        changed += [{"path": agenda.AGENDA_POSIX, "action": "modify"}, {"path": agenda.MD_POSIX, "action": "modify"}]
     cards.render_index(vault, turn_id)
     changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
     cards.refresh_synthesis(vault, touched, turn_id)
@@ -245,11 +254,15 @@ def _drop(vault, fid, as_json, conversation):
     note = f"拿掉「{name}」的卡（原檔已刪）" if card else f"記下「{name}」已刪（沒有卡）"
     journal_cli.record_program_or_warn(vault, note, changed, "cards drop", conversation)
     if as_json:
-        print(json.dumps({"id": fid, "card": card["path"] if card else None, "title": title}, ensure_ascii=False))
-    elif card:
+        print(json.dumps({"id": fid, "card": card["path"] if card else None, "title": title,
+                          "agenda_cancelled": [i["id"] for i in cancelled]}, ensure_ascii=False))
+        return 0
+    if card:
         print(f"已拿掉「{title}」的卡；說「退回上一版」救得回來")
     else:
         print(f"已記下「{name}」刪了（這份沒有卡）；說「退回上一版」救得回來")
+    if cancelled:
+        print(f"從這張卡抽的日程 {len(cancelled)} 條改成取消")
     return 0
 
 

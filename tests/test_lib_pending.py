@@ -217,5 +217,48 @@ class Answered(Base):
         self.assertEqual((self.items()[0]["status"], self.items()[0]["how"]), ("done", "檔案換了，重新讀"))
 
 
+class CloseKind(Base):
+    """日程第 3 點：kind close 帶 entity_ids；同一份依據可以問兩個實體；auto_done_entity 只關那個實體的；渲染多「要確認結案的」。"""
+
+    def add(self, entity, files=("f-aaaaaaaa",)):
+        return pending.add(self.V, "close", list(files), f"「{entity}」看起來已經結束了，要記成結案嗎？",
+                           f"依據〔{files[0]}〕", self.t, entity_ids=[f"e-{entity}"])
+
+    def test_entity_ids_recorded_and_deduped_per_entity(self):
+        a = self.add("甲")
+        self.assertEqual(self.add("甲"), a)
+        b = self.add("乙")
+        self.assertNotEqual(a, b)
+        self.assertEqual([i["entity_ids"] for i in self.items()], [["e-甲"], ["e-乙"]])
+        self.assertIn("close", pending.KINDS)
+
+    def test_auto_done_entity_only_closes_that_entity(self):
+        self.add("甲")
+        self.add("乙")
+        self.assertTrue(pending.auto_done_entity(self.V, "e-甲", "close", "客戶回答", self.t))
+        self.assertEqual([(i["entity_ids"][0], i["status"]) for i in self.items()], [("e-甲", "done"), ("e-乙", "open")])
+        self.assertFalse(pending.auto_done_entity(self.V, "e-甲", "close", "客戶回答", self.t))
+        self.assertFalse(pending.auto_done_entity(self.V, "e-沒有", "close", "客戶回答", self.t))
+
+    def test_auto_done_entity_without_file_writes_nothing(self):
+        self.assertFalse(pending.auto_done_entity(self.V, "e-甲", "close", "x", self.t))
+        self.assertFalse((self.V / ".system" / "pending.json").exists())
+
+    def test_render_has_its_own_section_with_the_reason(self):
+        self.add("甲")
+        md = self.md()
+        self.assertIn("## 要確認結案的（1）", md)
+        self.assertIn("「甲」看起來已經結束了，要記成結案嗎？（依據〔f-aaaaaaaa〕）", md)
+        pending.auto_done_entity(self.V, "e-甲", "close", "x", self.t)
+        self.assertNotIn("要確認結案的", self.md())
+
+    def test_resolve_and_dismiss_work_on_close_items(self):
+        a = self.add("甲")
+        b = self.add("乙")
+        pending.resolve(self.V, a, "客戶說結案", self.t)
+        pending.dismiss(self.V, b, self.t)
+        self.assertEqual([i["status"] for i in self.items()], ["done", "dismissed"])
+
+
 if __name__ == "__main__":
     unittest.main()

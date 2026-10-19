@@ -3,7 +3,7 @@
 狀態行固定順序、回 None 的不印；第一行固定以「【wiki-with-willy】」開頭，知識庫 CLAUDE.md 的哨兵句認這個字串（D-088）。
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
 唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
-客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）。
+客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）；日程行只讀 agenda.json。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -157,9 +157,23 @@ def line_profile(vault):
     return line
 
 
+AGENDA_OVERDUE_HINT = "（回答末尾跑 kb asks 照著問）"
+
+
 def line_agenda(vault):
-    """等日程題。"""
-    return None
+    """日程題第 6 點（D-060、D-129）：逾期、今天、N 天內三個數字，0 的項不印、全 0 整行不印；有逾期時數字後面接一句，
+    叫 AI 回答末尾跑 kb asks 照著問。N 讀 agenda_window_days。只讀（agenda.json 壞了丟例外，由 status_lines 記 log、其他行照印）。"""
+    from kb._lib import agenda, config
+
+    counts = agenda.counts(vault, agenda.load(vault))
+    parts = []
+    if counts["overdue"]:
+        parts.append(f"逾期 {counts['overdue']}{AGENDA_OVERDUE_HINT}")
+    if counts["today"]:
+        parts.append(f"今天 {counts['today']}")
+    if counts["upcoming"]:
+        parts.append(f"{config.get(vault, 'agenda_window_days')} 天內 {counts['upcoming']}")
+    return "日程：" + "、".join(parts) if parts else None
 
 
 def line_backup(vault):

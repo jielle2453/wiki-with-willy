@@ -11,12 +11,16 @@ from pathlib import Path
 from tests import _cards
 from tests import _entities as E
 from tests.test_scripts_inventory_cli import run_kb
-from kb._lib import config, inventory, plan  # noqa: E402
+from kb._lib import agenda, config, inventory, plan, turn  # noqa: E402
 from kb._lib.paths import plugin_root  # noqa: E402
 
 TYPES = [{"name": "案子", "category": "matter"}, {"name": "業主", "category": "party"}]
 SYNTHESIS_RULES = str(plugin_root() / "rules" / "synthesis.md")
 FREE_TEXT = {"name": "客戶的話", "rule": "一句白話，不含 \" $ ` \\ 這四種字元"}
+NAME_RULE = "一個名字，不含 \" $ ` \\ 這四種字元；有空白就加雙引號"
+NEW_NAME = {"name": "新名字", "rule": NAME_RULE}
+SAME_ONE = {"name": "同一個", "rule": NAME_RULE}
+NEW_DATE = {"name": "新日期", "rule": "YYYY-MM-DD"}
 
 
 def base(**kw):
@@ -24,7 +28,7 @@ def base(**kw):
            "skipped": {"credential": 0, "placeholder": 0, "too_large": 0, "error": 0, "skipped": 0}, "broken": [],
            "pdf_restored": 0, "unlinked": [], "missing_types": {}, "profile_missing": False,
            "profile": {"types": TYPES}, "synthesis_new": [], "synthesis_stale": [], "synthesis_broken": [],
-           "entity_drift": [], "entities": []}
+           "entity_drift": [], "entities": [], "agenda_recheck": [], "agenda_counts": {"overdue": 0, "today": 0, "upcoming": 0}}
     out.update(kw)
     return out
 
@@ -80,6 +84,15 @@ class Plan(Base):
     def test_broken_without_header_is_not_a_step(self):
         self.assertEqual(self.steps(broken=[{"path": "b", "reason": "y"}]), [])
 
+    def test_agenda_recheck_comes_right_after_cards(self):
+        rows = [{"id": "a-1", "card": "f-1", "card_path": "p", "kind": "到期", "date": "2026-11-30", "text": "交屋",
+                 "source": "inferred"}]
+        got = self.build(new=work(1), unlinked=[{"id": "f-2"}], agenda_recheck=rows)["plan"]
+        self.assertEqual([s["step"] for s in got], ["cards", "agenda_recheck", "unlinked"])
+        self.assertEqual(got[1], {"step": "agenda_recheck", "items": 1, "do": "照清單重對日程（agenda_recheck）",
+                                  "read": "references/carding.md 第九節"})
+        self.assertEqual(self.steps(agenda_recheck=rows), [("agenda_recheck", 1)])
+
     def test_unlinked_and_synthesis_broken_read_sections(self):
         got = self.build(unlinked=[{"id": "f-1"}], synthesis_broken=[{"path": "p", "reason": "r"}])["plan"]
         self.assertEqual([(s["step"], s["read"]) for s in got], [
@@ -97,6 +110,8 @@ class Plan(Base):
                          synthesis_stale=[{"entity_id": "e"}], synthesis_new=[{"entity_id": "e", "confirmed": True}])
         self.assertEqual([s for s, _n in got],
                          ["sync", "cards", "unlinked", "synthesis_broken", "synthesis_stale", "synthesis_new"])
+        got = self.steps(moved=[{"id": "f-1"}], new=work(1), agenda_recheck=[{"id": "a-1"}], unlinked=[{"id": "f-2"}])
+        self.assertEqual([s for s, _n in got], ["sync", "cards", "agenda_recheck", "unlinked"])
 
     def test_pure(self):
         out = base(new=work(2))
@@ -174,7 +189,7 @@ class Asks(Base):
         self.assertEqual(self.results(ask), [
             (1, "跟著改名叫王宅", ["kb entity rename 信義王 --to 王宅"], False, []),
             (2, "改回信義王", ["kb entity rename 信義王 --to 信義王"], False, []),
-            (3, "改成別的名字", ["kb entity rename 信義王 --to {新名字}"], False, ["新名字"])])
+            (3, "改成別的名字", ["kb entity rename 信義王 --to {新名字}"], False, [NEW_NAME])])
 
     def test_both_renamed_same_results(self):
         ask = self.one(entity_drift=[drift("both_renamed", found="案子/王宅/王宅.md")])
@@ -187,7 +202,7 @@ class Asks(Base):
         self.assertEqual(self.results(ask), [
             (1, "用新檔名王宅", ["kb entity rename 信義王 --to 王宅"], False, []),
             (2, "改回信義王", ["kb entity rename 信義王 --to 信義王"], False, []),
-            (3, "改成別的名字", ["kb entity rename 信義王 --to {新名字}"], False, ["新名字"])])
+            (3, "改成別的名字", ["kb entity rename 信義王 --to {新名字}"], False, [NEW_NAME])])
 
     def test_moved_type(self):
         ask = self.one(entity_drift=[drift("moved_type", found="業主/信義王/信義王.md")])
@@ -227,8 +242,8 @@ class Asks(Base):
         self.assertEqual((ask["id"], ask["kind"], ask["question"]), ("name:e-0f3e9a21", "name", "Q-name"))
         self.assertEqual(self.results(ask), [
             (1, "名字對", ["kb entity confirm 王宅"], False, []),
-            (2, "跟已有的另一個是同一個", ["kb entity merge 王宅 --into {同一個}"], False, ["同一個"]),
-            (3, "名字改成別的", ["kb entity rename 王宅 --to {新名字}", "kb entity confirm {新名字}"], False, ["新名字"])])
+            (2, "跟已有的另一個是同一個", ["kb entity merge 王宅 --into {同一個}"], False, [SAME_ONE]),
+            (3, "名字改成別的", ["kb entity rename 王宅 --to {新名字}", "kb entity confirm {新名字}"], False, [NEW_NAME])])
 
     def test_confirmed_new_has_no_ask(self):
         self.assertEqual(self.build(synthesis_new=[{"entity_id": "e", "name": "甲", "confirmed": True}])["asks"], [])
@@ -251,22 +266,25 @@ class Asks(Base):
         self.assertEqual([a["id"] for a in got], ["batch", "drift:e-5c1d0a7e"])
         self.assertEqual([r["n"] for a in got for r in a["results"]], [1, 2, 3, 4, 5])
 
-    def test_free_text_fill_carries_a_rule(self):
-        """裁定 5：自由文字的空格是 {"name","rule"}，其他空格是名稱字串；do 裡每個 {空格} 都在 fill 裡。"""
+    def test_every_fill_is_an_object_with_a_rule(self):
+        """日程釐清（整理 ingest 裁定 12 留下的）：fill 一律 {"name","rule"}；do 裡每個 {空格} 都在 fill 裡；
+        名字類的 rule 也擋 " $ ` \\ 四種字元。"""
         asks = self.build(
             missing=[{"id": "f-98c66aa7", "uri": "file://a/b.docx", "pending_id": "p-1a2b3c4d", "question": "Q"}],
             entity_drift=[drift("folder_renamed", found="案子/王宅/信義王.md")],
             synthesis_new=[{"entity_id": "e-0f3e9a21", "name": "王宅", "confirmed": False, "question": "Q"}])["asks"]
-        free = []
+        fills = []
         for ask in asks:
             for r in ask["results"]:
-                names = [f["name"] if isinstance(f, dict) else f for f in r["fill"]]
+                self.assertTrue(all(isinstance(f, dict) and set(f) == {"name", "rule"} for f in r["fill"]), r["label"])
+                names = [f["name"] for f in r["fill"]]
                 slots = sorted(set(re.findall(r"\{([^{}]+)\}", " ".join(r["do"]))))
                 self.assertEqual(sorted(names), slots, r["label"])
-                free += [f for f in r["fill"] if isinstance(f, dict)]
-        self.assertEqual(free, [FREE_TEXT])
-        for ch in ('"', "$", "`", "\\"):
-            self.assertIn(ch, FREE_TEXT["rule"])
+                fills += r["fill"]
+        self.assertEqual(fills, [NEW_NAME, FREE_TEXT, SAME_ONE, NEW_NAME])
+        for rule in (FREE_TEXT["rule"], NAME_RULE):
+            for ch in ('"', "$", "`", "\\"):
+                self.assertIn(ch, rule)
 
     def test_names_with_spaces_are_quoted(self):
         ask = self.one(entity_drift=[drift("missing", name="陳 先生")])
@@ -370,12 +388,211 @@ class Tell(Base):
         self.assertEqual([s.split(" ")[0] for s in got], ["甲.pdf", "不製卡：檔名像密碼或金鑰", "3", "有", "PDF"])
 
 
+DAY0 = "2020-01-01"  # 一定已經過了的日期
+
+
+def agenda_item(**kw):
+    base = {"id": "a-5e6f7a8b", "kind": "deadline", "start": None, "date": DAY0, "ended": None, "time": None,
+            "text": "付第二期款", "entities": ["王宅"], "status": "open", "source": "inferred", "origin": None,
+            "lead_days": None, "created_turn": "20200101-000000-test", "history": []}
+    base.update(kw)
+    return base
+
+
+def put_agenda(V, *items):
+    (Path(V) / ".system" / "agenda.json").write_text(
+        json.dumps({"schema_version": 1, "items": list(items)}, ensure_ascii=False), encoding="utf-8")
+
+
+def close_item(**kw):
+    base = {"id": "p-9a8b7c6d", "kind": "close", "file_ids": ["f-3a553095"], "entity_ids": ["e-0f3e9a21"],
+            "text": "「王宅」看起來已經結束了，要記成結案嗎？", "reason": "依據〔f-3a553095〕", "created": "2026-10-20T10:00:00",
+            "created_turn": "t", "status": "open", "resolved": None, "how": None}
+    base.update(kw)
+    return base
+
+
+def put_pending(V, *items):
+    (Path(V) / ".system" / "pending.json").write_text(
+        json.dumps({"schema_version": 1, "items": list(items)}, ensure_ascii=False), encoding="utf-8")
+
+
+def put_entities(V):
+    E.put_entities(V, [E.entity("e-0f3e9a21", "王宅", source="inferred")])
+
+
+class AgendaAsks(Base):
+    """日程第 5 點：overdue、agenda_conflict、close 三種題的結果清單與 do 字串、順序、編號。"""
+
+    def one(self):
+        (ask,) = self.build()["asks"]
+        return ask
+
+    def results(self, ask):
+        return [(r["n"], r["label"], r["do"], r["strict"], r["fill"]) for r in ask["results"]]
+
+    def test_overdue(self):
+        put_agenda(self.V, agenda_item())
+        ask = self.one()
+        self.assertEqual((ask["id"], ask["kind"], ask["question"]),
+                         ("overdue:a-5e6f7a8b", "overdue", "1/1 付第二期款（王宅）過了，完成了嗎？"))
+        self.assertEqual(self.results(ask), [
+            (1, "完成了", ["kb agenda done a-5e6f7a8b"], False, []),
+            (2, "不用了", ["kb agenda cancel a-5e6f7a8b"], True, []),
+            (3, "還沒，改到某天", ["kb agenda edit a-5e6f7a8b --date {新日期}"], False, [NEW_DATE]),
+            (4, "還沒，下次再問", [], False, [])])
+        self.assertEqual(ask["results"][3]["note"], "這個對話不再問")
+
+    def test_overdue_question_without_entities_and_with_two(self):
+        put_agenda(self.V, agenda_item(entities=[]), agenda_item(id="a-00000002", entities=["王宅", "大安陳"], date="2020-02-03",
+                                                              kind="promise", text="給報價"))
+        asks = self.build()["asks"]
+        self.assertEqual([a["question"] for a in asks], ["1/1 付第二期款過了，完成了嗎？", "2/3 給報價（王宅、大安陳）過了，完成了嗎？"])
+
+    def test_overdue_only_tracked_open_past(self):
+        put_agenda(self.V, agenda_item(kind="meeting"), agenda_item(id="a-2", kind="reminder"),
+                   agenda_item(id="a-3", status="done"), agenda_item(id="a-4", kind="period", start="2019-01-01"),
+                   agenda_item(id="a-5", date="2999-01-01"), agenda_item(id="a-6", kind="promise"))
+        self.assertEqual([a["id"] for a in self.build()["asks"]], ["overdue:a-6"])
+
+    def test_conflict_without_card_title(self):
+        put_agenda(self.V, agenda_item(id="a-1b2c3d4e", text="交屋", date="2999-12-15", source="confirmed",
+                                       proposal={"date": "2999-12-20", "text": "交屋", "card": "f-1", "fp": "a"}))
+        ask = self.one()
+        self.assertEqual((ask["id"], ask["kind"], ask["question"]),
+                         ("conflict:a-1b2c3d4e", "agenda_conflict", "交屋你之前說 12/15，新版寫 12/20，要用哪個？"))
+        self.assertEqual(self.results(ask), [
+            (1, "用新版 12/20", ["kb agenda edit a-1b2c3d4e --date 2999-12-20"], False, []),
+            (2, "維持 12/15", ["kb agenda recheck a-1b2c3d4e"], False, [])])
+
+    def test_conflict_with_text_change(self):
+        put_agenda(self.V, agenda_item(id="a-1b2c3d4e", text="交屋", date="2999-12-15", source="corrected",
+                                       proposal={"date": "2999-12-20", "text": "交屋驗收", "card": "f-1", "fp": "a"}))
+        ask = self.one()
+        self.assertEqual(ask["results"][0]["do"], ["kb agenda edit a-1b2c3d4e --date 2999-12-20 --text 交屋驗收"])
+
+    def test_conflict_text_only(self):
+        put_agenda(self.V, agenda_item(id="a-1b2c3d4e", text="交屋", date="2999-12-15", source="confirmed",
+                                       proposal={"date": "2999-12-15", "text": "交屋驗收", "card": "f-1", "fp": "a"}))
+        ask = self.one()
+        self.assertEqual(ask["question"], "交屋你之前說「交屋」，新版寫「交屋驗收」，要用哪個？")
+        self.assertEqual(self.results(ask)[0][1:3], ("用新版「交屋驗收」", ["kb agenda edit a-1b2c3d4e --text 交屋驗收"]))
+        self.assertEqual(ask["results"][1]["label"], "維持「交屋」")
+
+    def test_conflict_text_with_space_is_quoted(self):
+        put_agenda(self.V, agenda_item(id="a-1b2c3d4e", text="交屋", date="2999-12-15", source="confirmed",
+                                       proposal={"date": "2999-12-20", "text": "交屋 驗收", "card": "f-1", "fp": "a"}))
+        self.assertEqual(self.one()["results"][0]["do"], ['kb agenda edit a-1b2c3d4e --date 2999-12-20 --text "交屋 驗收"'])
+
+    def test_conflict_ignores_closed_items(self):
+        put_agenda(self.V, agenda_item(kind="meeting", status="done", proposal={"date": "2999-12-20", "text": "x", "card": "f-1", "fp": "a"}))
+        self.assertEqual(self.build()["asks"], [])
+
+    def test_close(self):
+        put_entities(self.V)
+        put_pending(self.V, close_item())
+        ask = self.one()
+        self.assertEqual((ask["id"], ask["kind"], ask["question"]),
+                         ("close:p-9a8b7c6d", "close", "「王宅」看起來已經結束了，要記成結案嗎？（依據：f-3a553095）"))
+        self.assertEqual(self.results(ask), [
+            (1, "對，結案了", ["kb entity progress 王宅 結案 --evidence f-3a553095"], False, []),
+            (2, "還沒", ["kb entity progress 王宅 進行中 --evidence f-3a553095 --note 客戶說還沒結案"], False, []),
+            (3, "先暫停了", ["kb entity progress 王宅 擱置 --evidence f-3a553095"], False, [])])
+
+    def test_close_two_evidence_and_name_with_space(self):
+        E.put_entities(self.V, [E.entity("e-0f3e9a21", "陳 先生宅")])
+        put_pending(self.V, close_item(file_ids=["f-1", "f-2"]))
+        ask = self.one()
+        self.assertEqual(ask["results"][0]["do"], ['kb entity progress "陳 先生宅" 結案 --evidence f-1 --evidence f-2'])
+
+    def test_close_skips_answered_and_unknown_entity(self):
+        put_entities(self.V)
+        put_pending(self.V, close_item(status="done"), close_item(id="p-2", entity_ids=["e-ffffffff"]))
+        self.assertEqual(self.build()["asks"], [])
+
+    def test_order_and_numbering(self):
+        put_entities(self.V)
+        put_agenda(self.V, agenda_item(),
+                   agenda_item(id="a-1b2c3d4e", kind="meeting", status="open", source="confirmed", date="2999-01-01",
+                               proposal={"date": "2999-02-01", "text": "x", "card": "f-1", "fp": "a"}))
+        put_pending(self.V, close_item())
+        new = {"entity_id": "e-0f3e9a21", "name": "王宅", "confirmed": False, "question": "Q-name"}
+        missing = {"id": "f-98c66aa7", "uri": "file://a/b.docx", "pending_id": "p-1a2b3c4d", "question": "Q-file"}
+        got = self.build(synthesis_new=[new], missing=[missing], entity_drift=[drift("missing")])["asks"]
+        self.assertEqual([a["id"] for a in got], ["drift:e-5c1d0a7e", "missing:p-1a2b3c4d", "overdue:a-5e6f7a8b",
+                                                   "conflict:a-1b2c3d4e", "close:p-9a8b7c6d", "name:e-0f3e9a21"])
+        self.assertEqual([r["n"] for a in got for r in a["results"]], list(range(1, 1 + sum(len(a["results"]) for a in got))))
+
+    def test_broken_state_files_give_no_agenda_asks(self):
+        (self.V / ".system" / "agenda.json").write_text("{bad", encoding="utf-8")
+        (self.V / ".system" / "pending.json").write_text("{bad", encoding="utf-8")
+        self.assertEqual(self.build()["asks"], [])
+
+
+class AgendaTell(Base):
+    def setUp(self):
+        super().setUp()
+        self.t = turn.start(self.V, None, "")["turn"]
+
+    def tell(self):
+        return self.build()["tell"]
+
+    def added(self, n, **kw):
+        return [agenda_item(id=f"a-{i:08x}", date=f"2026-10-{5 + i:02d}", text=f"事{i}", created_turn=self.t,
+                            origin={"card": "f-1", "fp": "a"}, entities=[], **kw) for i in range(n)]
+
+    def test_three_added_this_turn_in_one_sentence_sorted_by_date(self):
+        items = [agenda_item(id="a-1", kind="meeting", text="開會", date="2026-10-05", created_turn=self.t, origin={"card": "f", "fp": "a"}),
+                 agenda_item(id="a-3", text="交屋", date="2026-11-30", created_turn=self.t, origin={"card": "f", "fp": "a"}),
+                 agenda_item(id="a-2", text="付第二期款", date="2026-10-20", created_turn=self.t, origin={"card": "f", "fp": "a"})]
+        put_agenda(self.V, *items)
+        self.assertEqual(self.tell(), ["加進日程：10/5 開會、10/20 付第二期款、11/30 交屋"])
+
+    def test_period_shows_span(self):
+        put_agenda(self.V, agenda_item(kind="period", start="2026-09-01", date="2026-11-30", text="施工", created_turn=self.t,
+                                       origin={"card": "f", "fp": "a"}))
+        self.assertEqual(self.tell(), ["加進日程：9/1～11/30 施工"])
+
+    def test_five_listed_six_counted(self):
+        put_agenda(self.V, *self.added(5))
+        self.assertEqual(len(self.tell()[0].split("、")), 5)
+        put_agenda(self.V, *self.added(6))
+        self.assertEqual(self.tell(), ["加進日程 6 條，看 系統/日程.md"])
+
+    def test_other_turns_and_client_said_and_cancelled_are_not_listed(self):
+        put_agenda(self.V, agenda_item(created_turn="20200101-000000-old", origin={"card": "f", "fp": "a"}),
+                   agenda_item(id="a-2", created_turn=self.t, origin=None, source="confirmed"),
+                   agenda_item(id="a-3", created_turn=self.t, origin={"card": "f", "fp": "a"}, status="cancelled"))
+        self.assertEqual(self.tell(), [])
+
+    def test_reworked_inferred_item_this_turn(self):
+        hist = [{"date": "2026-10-21", "change": "date 2026-11-30 → 2999-12-15", "by": "ai", "turn": self.t}]
+        put_agenda(self.V, agenda_item(text="交屋", date="2999-12-15", history=hist, origin={"card": "f", "fp": "a"}))
+        self.assertEqual(self.tell(), ["交屋從 11/30 改成 12/15 了"])
+
+    def test_reworked_in_another_turn_or_corrected_is_not_told(self):
+        old = [{"date": "2026-10-21", "change": "date 2026-11-30 → 2999-12-15", "by": "ai", "turn": "20200101-000000-old"}]
+        mine = [{"date": "2026-10-21", "change": "date 2026-11-30 → 2999-12-15", "by": "ai", "turn": self.t}]
+        put_agenda(self.V, agenda_item(history=old), agenda_item(id="a-2", history=mine, source="corrected"))
+        self.assertEqual(self.tell(), [])
+
+    def test_no_current_turn_is_quiet(self):
+        (self.V / ".system" / "turns" / "current.json").unlink()
+        put_agenda(self.V, *self.added(1))
+        self.assertEqual(self.tell(), [])
+
+    def test_agenda_lines_come_after_the_others(self):
+        put_agenda(self.V, *self.added(1))
+        got = self.build(pdf_restored=1)["tell"]
+        self.assertEqual([x.split(" ")[0].split("：")[0] for x in got], ["PDF", "加進日程"])
+
+
 class WithRealVault(unittest.TestCase):
     """真知識庫：依設定不整理帶種類；todo --json 帶三個鍵、既有鍵不變；asks 的每條 do 實際跑（驗收 6）。"""
 
     OLD_KEYS = {"new", "stale", "moved", "duplicates", "orphans", "unreadable", "missing", "skipped", "broken", "pdf_restored",
                 "unlinked", "missing_types", "profile_missing", "profile", "synthesis_new", "synthesis_stale",
-                "synthesis_broken", "entity_drift", "entities"}
+                "synthesis_broken", "entity_drift", "entities", "agenda_recheck", "agenda_counts"}
 
     def setUp(self):
         self.tmp, self.V, self.raw = E.make_entity_vault(with_entities=True)
@@ -402,7 +619,7 @@ class WithRealVault(unittest.TestCase):
 
     def run_result(self, ask_id, n_in_ask, fills=None):
         result = self.result_of(ask_id, n_in_ask)
-        names = [f["name"] if isinstance(f, dict) else f for f in result["fill"]]
+        names = [f["name"] for f in result["fill"]]
         self.assertEqual(sorted(fills or {}), sorted(names))
         for line in result["do"]:
             self.run_do(line, fills)

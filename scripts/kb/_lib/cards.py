@@ -414,9 +414,10 @@ def todo(vault, sources):
     skipped 多一鍵 skipped（設定檔說不整理、清冊記了 skip_kind 的份數，D-113），另帶 profile 塊（卡型、段落、個資種類、型別、
     每類段落、關於你）。實體與綜合卡第 4 點：多 unlinked（第一版的卡、待補型別後來進了型別表的卡）、missing_types、
     synthesis_new／stale／broken、entity_drift（後四桶由 synthesis.buckets 給）與 entities（active、removed 的名稱），
-    最後併進 plan、asks、tell 三鍵（plan.build，整理 ingest）。
+    日程第 5 點：多 agenda_recheck（出處卡重做後待重對的日程條目）與 agenda_counts（逾期、今天、接下來）；
+    entities 塊的事類條目多 progress 與 asked_evidence。最後併進 plan、asks、tell 三鍵（plan.build，整理 ingest）。
     不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
-    from kb._lib import entities, extract, inventory, pending, plan, synthesis
+    from kb._lib import agenda, entities, extract, inventory, ledger, pending, plan, synthesis
     restored = _restore_pdf(vault)
     ent_data = entities.load(vault)
     entries = inventory.load(vault)["entries"]
@@ -524,9 +525,18 @@ def todo(vault, sources):
         if entry.get("read") == "ok" and eid not in carded and eid not in unreadable_skip:
             out["new"].append(work_item(entry, None))
     out.update(synthesis.buckets(vault, ent_data, entities.mounts(vault, ent_data), data))
-    out["entities"] = [{"name": e["name"], "type": e.get("type"), "aliases": list(e.get("aliases") or []),
-                        "self": e.get("self") or False}
+    out["entities"] = [dict({"name": e["name"], "type": e.get("type"), "aliases": list(e.get("aliases") or []),
+                             "self": e.get("self") or False},
+                            **({"progress": e["progress"], "asked_evidence": entities.asked_evidence(vault, e)}
+                               if e.get("progress") else {}))
                        for e in ent_data["entities"] if e.get("status") in ("active", "removed")]
+    try:  # 日程壞了不能擋整理的主流程：兩塊給空的，開場那行與 kb agenda 自己會報
+        ag = agenda.load(vault)
+        out.update(agenda.buckets(vault, ag))
+        out["agenda_counts"] = agenda.counts(vault, ag)
+    except ValueError as e:
+        ledger.log_error(vault, f"日程讀不到，agenda_recheck 先給空的：{e}", source="cards")
+        out["agenda_recheck"], out["agenda_counts"] = [], {"overdue": 0, "today": 0, "upcoming": 0}
     out.update(plan.build(out, vault, config))
     return out
 

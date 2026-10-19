@@ -477,3 +477,85 @@ class OpeningProfile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpeningAgenda(unittest.TestCase):
+    """日程題第 6 點、驗收 5：日程行三種（沒有、有逾期帶提示、只有接下來）、0 的項不印、agenda.json 壞了其他行照印、開場不寫檔。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def put(self, *specs):
+        """specs：(kind, 距今天數, status)。"""
+        from datetime import date, timedelta
+        items = [{"id": f"a-{i:08x}", "kind": kind, "start": None, "date": (date.today() + timedelta(days=days)).isoformat(),
+                  "ended": None, "time": None, "text": f"事{i}", "entities": [], "status": status, "source": "confirmed",
+                  "origin": None, "lead_days": None, "created_turn": "t", "history": []}
+                 for i, (kind, days, status) in enumerate(specs)]
+        (self.V / ".system" / "agenda.json").write_text(
+            json.dumps({"schema_version": 1, "items": items}, ensure_ascii=False), encoding="utf-8")
+
+    def status(self, source="startup"):
+        r = run(payload(self.V, source))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r.stdout.encode("ascii")
+        ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+        return ctx.split("\n\n", 1)[0].split("\n")
+
+    def agenda_lines(self, lines):
+        return [ln for ln in lines if ln.startswith("日程：")]
+
+    def test_no_agenda_no_line(self):
+        self.assertEqual(self.agenda_lines(self.status()), [])
+
+    def test_overdue_line_has_the_hint(self):
+        self.put(("deadline", -3, "open"))
+        self.assertEqual(self.agenda_lines(self.status()), ["日程：逾期 1（回答末尾跑 kb asks 照著問）"])
+
+    def test_all_three_numbers(self):
+        self.put(("deadline", -3, "open"), ("promise", -1, "open"), ("meeting", 0, "open"), ("reminder", 2, "open"),
+                 ("deadline", 5, "open"))
+        self.assertEqual(self.agenda_lines(self.status()), ["日程：逾期 2（回答末尾跑 kb asks 照著問）、今天 1、7 天內 2"])
+
+    def test_only_upcoming(self):
+        self.put(("meeting", 2, "open"), ("reminder", 6, "open"), ("deadline", 30, "open"))
+        self.assertEqual(self.agenda_lines(self.status()), ["日程：7 天內 2"])
+
+    def test_zero_everywhere_prints_nothing(self):
+        self.put(("deadline", -3, "done"), ("meeting", -3, "open"), ("deadline", 3, "cancelled"), ("period", 3, "open"))
+        self.assertEqual(self.agenda_lines(self.status()), [])
+
+    def test_window_reads_config(self):
+        self.put(("meeting", 2, "open"), ("meeting", 5, "open"))
+        (self.V / ".system" / "config.json").write_text(json.dumps({"agenda_window_days": 3}), encoding="utf-8")
+        self.assertEqual(self.agenda_lines(self.status()), ["日程：3 天內 1"])
+
+    def test_line_sits_before_compact_line(self):
+        self.put(("meeting", 2, "open"))
+        lines = self.status("compact")
+        self.assertEqual((lines[-2], lines[-1]), ("日程：7 天內 1", COMPACT_LINE))
+
+    def test_broken_agenda_other_lines_still_printed_and_one_log_line(self):
+        (self.V / ".system" / "agenda.json").write_text("{bad", encoding="utf-8")
+        lines = self.status("compact")
+        self.assertEqual((lines[0], lines[-1]), (KB_LINE, COMPACT_LINE))
+        self.assertEqual(self.agenda_lines(lines), [])
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0].split("\t")[1], "session")
+        self.assertIn(".system/agenda.json", log[0])
+
+    def test_opening_writes_nothing_but_env_json(self):
+        self.put(("deadline", -3, "open"), ("meeting", 2, "open"))
+
+        def stamps():
+            return {p.relative_to(self.V).as_posix(): p.stat().st_mtime_ns
+                    for p in (self.V / ".system").rglob("*") if p.is_file()}
+        before = stamps()
+        self.status()
+        after = stamps()
+        self.assertEqual({k for k in after if before.get(k) != after[k]} - {".system/env.json"}, set())
+        self.assertFalse((self.V / "系統" / "日程.md").exists())

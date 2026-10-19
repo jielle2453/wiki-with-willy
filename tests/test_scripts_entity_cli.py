@@ -98,8 +98,8 @@ class ConfirmListRender(Base):
     def test_list_and_json(self):
         E.write_card(self.V, E.QUOTE, "信義王報價", ["信義王", "林小姐室內設計"])
         lines = self.kb("list")
-        self.assertIn("- 信義王（案子，確認）掛 1 張，有綜合卡", lines)
-        self.assertIn("- 王宅（案子，待確認）掛 0 張", lines)
+        self.assertIn("- 信義王（案子，確認，進行中）掛 1 張，有綜合卡", lines)
+        self.assertIn("- 王宅（案子，待確認，進行中）掛 0 張", lines)
         self.assertIn("- 林小姐室內設計（你自己）掛 1 張", lines)
         rows = json.loads(run_kb("entity", "list", "--json", cwd=self.V).stdout)["entities"]
         xinyi = next(r for r in rows if r["id"] == E.XINYI)

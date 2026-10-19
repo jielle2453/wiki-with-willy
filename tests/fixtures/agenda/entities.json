@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "entities": [
+    {
+      "id": "e-5c1d0a7e", "type": "案子", "name": "信義王", "aliases": ["信義王宅"], "self": false,
+      "status": "active", "source": "confirmed", "date": "2026-10-20", "card": false,
+      "created_turn": "20261020-101500-ab12",
+      "progress": "ongoing", "progress_source": "confirmed",
+      "progress_history": [
+        {"date": "2026-10-01", "progress": "paused", "source": "confirmed", "evidence": [], "note": "業主出國"},
+        {"date": "2026-10-15", "progress": "ongoing", "source": "confirmed", "evidence": [], "note": ""}
+      ]
+    }
+  ]
+}

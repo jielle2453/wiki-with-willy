@@ -1,6 +1,7 @@
 """待處理 .system/pending.json（schema 1，D-102、D-062）與渲染視圖 系統/待處理.md（D-067：JSON 為真）。
 
-這版只有兩種 kind：missing_file（原檔不見，照清冊狀態由 sync_missing 開與自動 done）、unreadable（kb convert 讀不到）。
+三種 kind：missing_file（原檔不見，照清冊狀態由 sync_missing 開與自動 done）、unreadable（kb convert 讀不到）、
+close（事類實體看起來結案了，等客戶答；entity_ids 帶實體，file_ids 是依據，日程第 3 點、D-127；客戶答了 kb entity progress 自動 done）。
 每次寫都在 pending.json 的 FileLock 裡：先 turn.backup pending.json 與 待處理.md 兩個（退回後客戶看到的要一致），
 再原子寫，寫完重渲染 md。沒有改動就什麼都不寫（不建檔、不備份）。形狀不對的 pending.json 丟 ValueError。
 """
@@ -15,8 +16,8 @@ PENDING_POSIX = ".system/pending.json"
 MD_POSIX = "系統/待處理.md"
 SCHEMA_VERSION = 1
 EMPTY = {"schema_version": SCHEMA_VERSION, "items": []}
-KINDS = ("missing_file", "unreadable")
-SECTIONS = (("missing_file", "原檔不見"), ("unreadable", "讀不到"))
+KINDS = ("missing_file", "unreadable", "close")
+SECTIONS = (("missing_file", "原檔不見"), ("unreadable", "讀不到"), ("close", "要確認結案的"))
 HEADER = ("# 待處理\n"
           "這是什麼：等你回答或處理的事，程式從 .system/pending.json 整理出來。\n"
           "怎麼用：在對話裡直接回答我，處理完會從這裡消失。\n"
@@ -66,9 +67,11 @@ def file_label(uri):
     return f"「{name}」（{folder}）" if folder else f"「{name}」"
 
 
-def _find_open(items, file_id, kind):
+def _find_open(items, file_id, kind, entity_ids=None):
+    """同一份檔同一種 kind 的 open 條目；close 還要同一個實體（同一份依據可以問兩個案子）。"""
     return next((i for i in items if i.get("status") == "open" and i.get("kind") == kind
-                 and (i.get("file_ids") or [None])[0] == file_id), None)
+                 and (i.get("file_ids") or [None])[0] == file_id
+                 and (kind != "close" or (i.get("entity_ids") or []) == list(entity_ids or []))), None)
 
 
 def open_for(vault, file_id, kind):
@@ -91,26 +94,26 @@ def _edit(vault, turn_id, change):
     return result
 
 
-def _new_item(items, kind, file_ids, text, reason, turn_id):
+def _new_item(items, kind, file_ids, text, reason, turn_id, entity_ids=None):
     taken = {i.get("id") for i in items}
     while True:
         pid = "p-" + secrets.token_hex(4)
         if pid not in taken:
             break
-    return {"id": pid, "kind": kind, "file_ids": list(file_ids), "entity_ids": [], "text": text, "reason": reason,
+    return {"id": pid, "kind": kind, "file_ids": list(file_ids), "entity_ids": list(entity_ids or []), "text": text, "reason": reason,
             "created": _now(), "created_turn": turn_id, "status": "open", "resolved": None, "how": None}
 
 
-def add(vault, kind, file_ids, text, reason, turn_id):
-    """同 file_ids[0]＋kind 已有 open 的不重複，回既有 id。"""
+def add(vault, kind, file_ids, text, reason, turn_id, entity_ids=None):
+    """同 file_ids[0]＋kind 已有 open 的不重複，回既有 id（close 另比實體）。"""
     found = {}
 
     def change(items):
-        old = _find_open(items, file_ids[0], kind)
+        old = _find_open(items, file_ids[0], kind, entity_ids)
         if old is not None:
             found["id"] = old["id"]
             return False
-        item = _new_item(items, kind, file_ids, text, reason, turn_id)
+        item = _new_item(items, kind, file_ids, text, reason, turn_id, entity_ids)
         items.append(item)
         found["id"] = item["id"]
         return True
@@ -158,6 +161,20 @@ def auto_done(vault, file_id, kind, how, turn_id, statuses=("open",)):
     return _edit(vault, turn_id, change)
 
 
+def auto_done_entity(vault, entity_id, kind, how, turn_id):
+    """這個實體有 open 的 kind 條目就 done；回有沒有關到（客戶答了結案問句，kb entity progress 呼叫）。"""
+    if not _path(vault).exists():
+        return False
+
+    def change(items):
+        hits = [i for i in items if i.get("status") == "open" and i.get("kind") == kind
+                and entity_id in (i.get("entity_ids") or [])]
+        for item in hits:
+            _close(item, "done", how)
+        return bool(hits)
+    return _edit(vault, turn_id, change)
+
+
 def answered(items, entry):
     """這次不見之後客戶答過了嗎：有任何 missing_file 條目（open、done、dismissed 都算）是這份檔、
     且建立時間不早於 missing_since（測試後修正裁定 31）。"""
@@ -194,6 +211,8 @@ def sync_missing(vault, entries, turn_id):
 def ask_of(item):
     if item.get("kind") == "missing_file":
         return MISSING_ASK
+    if item.get("kind") == "close":
+        return ""
     reason = item.get("reason") or ""
     return next((ask for head, ask in UNREADABLE_ASKS if reason.startswith(head)), UNREADABLE_OTHER)
 
@@ -201,6 +220,8 @@ def ask_of(item):
 def line_of(item):
     """「<text>。<問法>」；讀不到有 reason 時 text 後面接「：<reason>」。"""
     text = item.get("text", "")
+    if item.get("kind") == "close":
+        return text + (f"（{item['reason']}）" if item.get("reason") else "")
     if item.get("kind") == "unreadable" and item.get("reason"):
         text += f"：{item['reason']}"
     return f"{text}。{ask_of(item)}"

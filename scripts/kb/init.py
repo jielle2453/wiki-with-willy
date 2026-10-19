@@ -6,7 +6,8 @@
 不開回合、不備份、不寫 ledger：init 之前還沒有知識庫。
 有建東西就寫一段工作日誌程式段（D-085），代號用現在時間、不碰 turns/；日誌自己的檔不在骨架計畫裡，不算項數。
 既有知識庫的 profile.json 是 schema 1（實體與綜合卡第 11 點）：md 沒改過就寫遷移後的 schema 2、重渲染 md（補第四、五節）；
-md 改過就不動，請客戶先 kb profile apply。缺 entities.json 不建（第一次寫時才建）。
+md 改過就不動，請客戶先 kb profile apply。缺 entities.json、agenda.json 不建（第一次寫時才建）；
+缺 系統/日程.md 渲染一份空的（日程第 11 點）。
 """
 import argparse
 import json
@@ -14,13 +15,14 @@ import os
 from pathlib import Path
 
 from kb import guard, journal_cli
-from kb._lib import profile
+from kb._lib import agenda, profile
 from kb._lib import sources as sources_lib
 from kb._lib.io import read_text, write_json_atomic, write_text_atomic
 from kb._lib.paths import plugin_root
 
 SKELETON_REL = "skeleton"
 PROFILE_FILES = (profile.PROFILE_POSIX, profile.MD_POSIX)  # 不住 skeleton：由 profile 的預設值與渲染寫（D-067）
+GENERATED_FILES = PROFILE_FILES + (agenda.MD_POSIX,)  # 日程.md 也由程式渲染，缺的才補
 GITKEEP = ".gitkeep"
 HIDDEN_ITEMS = ("CLAUDE.md", ".claude", ".system")
 EMPTY_SOURCES = {"schema_version": 1, "sources": []}
@@ -53,7 +55,7 @@ def plan_items():
         else:
             files.append(rel)
     files.append(sources_lib.SOURCES_REL)
-    files.extend(PROFILE_FILES)
+    files.extend(GENERATED_FILES)
     return [(d, "dir") for d in sorted(dirs)] + [(f, "file") for f in sorted(files)]
 
 
@@ -164,8 +166,8 @@ def run(args):
         if have:
             existing.append(rel)
             continue
-        if rel in PROFILE_FILES:
-            continue  # 設定檔兩份互相牽動，下面一起補
+        if rel in GENERATED_FILES:
+            continue  # 設定檔兩份互相牽動、日程.md 要渲染，下面各自補
         target = p / rel
         if kind == "dir":
             target.mkdir(parents=True, exist_ok=True)
@@ -179,6 +181,12 @@ def run(args):
     have = {rel: h for rel, _k, h in status}
     made, touched = _fill_profile(p, have[profile.PROFILE_POSIX], have[profile.MD_POSIX], notes)
     created += made
+    if not have[agenda.MD_POSIX]:
+        try:
+            agenda.render(p)
+            created.append(agenda.MD_POSIX)
+        except ValueError as e:  # agenda.json 壞了：骨架照建，日程.md 之後 kb agenda render 補
+            notes.append(f"{agenda.MD_POSIX} 沒補：{e}")
     if upgrade == "upgrade":
         _upgrade_profile(p)
         touched = [profile.PROFILE_POSIX, profile.MD_POSIX]

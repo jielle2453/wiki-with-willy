@@ -1,0 +1,132 @@
+"""skills/note 的形狀（日程第 7 點，驗收 12）：frontmatter 只有 name、description；描述 150 字內、不帶英文且涵蓋 note 的全部（D-131）；
+本文 120 行內、目標 3000 字內，沒有「第 N 步」或 Step、沒有欄位名與 agenda edit 這類指令對照，原則帶理由與編號（D-132），
+含 D-127、D-131、D-135；用 ${CLAUDE_PLUGIN_ROOT} 叫 kb.py；references/agenda.md ≤150 行；tests/evals/note.json 20 句、各半，
+該觸發的涵蓋偏好與糾正不只日程，不該觸發的有 ingest、manage、answer 的句子。字數上限另在 test_budget。"""
+import json
+import re
+import unittest
+
+from tests._guard_fixture import ROOT
+
+SKILL_DIR = ROOT / "skills" / "note"
+SKILL = SKILL_DIR / "SKILL.md"
+REF = SKILL_DIR / "references" / "agenda.md"
+EVALS = ROOT / "tests" / "evals" / "note.json"
+DESC_MAX = 150
+BODY_TARGET_CHARS = 3000
+BODY_MAX_LINES = 120
+REFERENCE_MAX_LINES = 150
+ABS_PATH = re.compile(r"(?<![A-Za-z$])[A-Za-z]:[\\/]|/Users/|/home/")
+FIELD_NAMES = ("kind", "date", "start", "entities", "status", "source", "origin", "lead_days", "proposal", "created_turn",
+               "history", "ended")
+COMMAND_MAP = re.compile(r"agenda\s+(add|edit|done|cancel|reopen|recheck|render)\b|--(kind|date|text|entity|start|time|card)\b")
+DESCRIBES = ("偏好", "糾正", "決定", "記下來", "型別", "日程", "結案")
+NOT_TRIGGER = ("整理一下", "加進來", "這週要做什麼", "信義王現在怎樣", "上次那份報價在哪", "做成 Word")
+
+
+def split(text):
+    lines = text.splitlines()
+    assert lines and lines[0] == "---", "SKILL.md 開頭不是 ---"
+    end = lines.index("---", 1)
+    return lines[1:end], "\n".join(lines[end + 1:])
+
+
+class Frontmatter(unittest.TestCase):
+    def setUp(self):
+        front, _body = split(SKILL.read_text(encoding="utf-8"))
+        self.fields = dict(line.split(":", 1) for line in front)
+
+    def test_only_name_and_description(self):
+        self.assertEqual(set(self.fields), {"name", "description"})
+        self.assertEqual(self.fields["name"].strip(), "note")
+
+    def test_description_short_chinese_and_complete(self):
+        desc = self.fields["description"].strip()
+        self.assertLessEqual(len(desc), DESC_MAX)
+        self.assertIsNone(re.search(r"[A-Za-z]{2,}", desc), desc)
+        for word in DESCRIBES:
+            with self.subTest(word=word):
+                self.assertIn(word, desc)
+
+
+class Body(unittest.TestCase):
+    def setUp(self):
+        self.body = split(SKILL.read_text(encoding="utf-8"))[1]
+
+    def test_size(self):
+        self.assertLessEqual(len(self.body.splitlines()), BODY_MAX_LINES)
+        self.assertLessEqual(len(self.body), BODY_TARGET_CHARS)
+
+    def test_calls_kb_through_plugin_root(self):
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/kb.py", self.body)
+
+    def test_no_step_numbering(self):
+        """B-064：過場不唸步驟編號，本文自己也不編。"""
+        self.assertIsNone(re.search(r"第\s*[0-9一二三四五六七八九十]+\s*步|\bStep\b", self.body, re.IGNORECASE))
+        self.assertIsNone(re.search(r"^\d+\. ", self.body, re.MULTILINE))
+
+    def test_no_field_names_or_command_map(self):
+        for name in FIELD_NAMES:
+            with self.subTest(field=name):
+                self.assertNotRegex(self.body, rf"(?<![A-Za-z_]){name}(?![A-Za-z_])")
+        self.assertIsNone(COMMAND_MAP.search(self.body), COMMAND_MAP.search(self.body))
+
+    def test_principles_have_reasons_and_codes(self):
+        section = self.body[self.body.index("## 原則"):self.body.index("## 骨架")]
+        bullets = [ln for ln in section.splitlines() if ln.startswith("- ")]
+        self.assertGreaterEqual(len(bullets), 5)
+        for ln in bullets:
+            with self.subTest(principle=ln[:12]):
+                self.assertRegex(ln, r"[DI]-\d{3}")
+                self.assertGreater(len(ln), 40, "要帶一句理由")
+        for code in ("D-127", "D-131", "D-135"):
+            self.assertIn(code, section)
+
+    def test_discriminates_unsupported_kinds(self):
+        for want in ("還記不起來", "沒有寫任何檔", "不要說「記下了」"):
+            with self.subTest(want=want):
+                self.assertIn(want, self.body)
+
+    def test_skeleton_mentions_the_three_programs(self):
+        skeleton = self.body[self.body.index("## 骨架"):self.body.index("## 共通")]
+        for want in ("list --json", "kb entity progress", "kb asks --json", "turn note", "references/agenda.md"):
+            with self.subTest(want=want):
+                self.assertIn(want, skeleton)
+
+    def test_no_absolute_paths(self):
+        for p in (SKILL, REF):
+            with self.subTest(file=p.name):
+                self.assertIsNone(ABS_PATH.search(p.read_text(encoding="utf-8")), p.name)
+
+    def test_reference_exists_short_and_linked(self):
+        self.assertIn("references/agenda.md", self.body)
+        self.assertLessEqual(len(REF.read_text(encoding="utf-8").splitlines()), REFERENCE_MAX_LINES)
+
+
+class Evals(unittest.TestCase):
+    def setUp(self):
+        self.items = json.loads(EVALS.read_text(encoding="utf-8"))
+
+    def test_twenty_half_and_half_unique(self):
+        self.assertEqual(len(self.items), 20)
+        for item in self.items:
+            self.assertEqual(set(item), {"query", "should_trigger"})
+            self.assertIsInstance(item["should_trigger"], bool)
+        self.assertEqual(sum(i["should_trigger"] for i in self.items), 10)
+        self.assertEqual(len({i["query"] for i in self.items}), 20)
+
+    def test_positives_cover_more_than_the_agenda(self):
+        positives = " ".join(i["query"] for i in self.items if i["should_trigger"])
+        for want in ("以後", "更正", "決定", "型別", "結案", "暫停", "付了", "改成"):
+            with self.subTest(want=want):
+                self.assertIn(want, positives)
+
+    def test_negatives_cover_neighbours(self):
+        negatives = [i["query"] for i in self.items if not i["should_trigger"]]
+        for want in ("整理一下", "加進來", "這週要做什麼", "現在怎樣", "上次那份報價在哪", "Word"):
+            with self.subTest(want=want):
+                self.assertTrue(any(want in q for q in negatives), want)
+
+
+if __name__ == "__main__":
+    unittest.main()

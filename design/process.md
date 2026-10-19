@@ -111,7 +111,7 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 ```
 先在 C:\Users\Jie\Desktop\llm-wiki-j 跑 git worktree add ..\llm-wiki-j-<題目> -b spec/<題目>，之後全部在 C:\Users\Jie\Desktop\llm-wiki-j-<題目> 做。讀 design/specs/<題目>.md 並照它實作。
 - 只改 spec「可以動」列的檔。
-- 怎麼做照 design/conventions.md 第五節：superpowers:test-driven-development 先寫測試；碰 hook／skill／command／agent 先讀對應的 plugin-dev 指引；收尾 superpowers:verification-before-completion，動過 hooks.json 或 manifest 跑 claude plugin validate。
+- 怎麼做照 design/conventions.md 第五節：先寫測試、看它紅了再實作；碰 hook／skill／command／agent 先讀對應的 plugin-dev 指引（改 skill 另讀 skill-creator 的寫法，照 D-132）；開工先確認這些 skill 載得到，載不到就讀磁碟上的 SKILL.md 並在回報寫明；收尾實跑全部測試看 exit code，動過 hooks.json 或 manifest 跑 claude plugin validate。
 - spec 有疑義或做不到時停下來回報，不要自己決定。
 - 寫完跑 python -m unittest discover tests。
 - commit 訊息開頭寫 spec 題目。不要 push。

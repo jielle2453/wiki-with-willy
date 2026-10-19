@@ -113,15 +113,17 @@ llm-wiki-j/
 
 | 步驟 | 用 |
 |---|---|
-| 討論與決策 | `superpowers:brainstorming`；定目錄時 `plugin-dev:plugin-structure` |
+| 討論與決策 | 一次一題、候選加推薦（設計 session 的做法）；定目錄時 `plugin-dev:plugin-structure`；寫或改 skill 前 `plugin-dev:skill-development` 與 `skill-creator:skill-creator` |
 | 寫 spec | 本流程的範本。不用 `superpowers:writing-plans`，兩份會漂 |
-| 實作 | `superpowers:test-driven-development`、`superpowers:verification-before-completion`；碰到什麼用對應的 `plugin-dev:hook-development`／`skill-development`／`command-development`／`agent-development`；寫或改 skill 描述時再用 `anthropic-skills:skill-creator`（內建，不用裝）寫描述、建 `tests/evals/<skill>.json` 的 20 句（D-091），描述要守 D-070 的 150 字；測試紅了 `superpowers:systematic-debugging` |
+| 實作 | 先寫測試、看它紅了再實作；收尾前實跑全部測試看 exit code 才回報（這兩條寫在開場訊息裡，不靠 superpowers）；碰到什麼用對應的 `plugin-dev:hook-development`／`skill-development`／`command-development`／`agent-development`；寫或改 skill 描述時再用 `anthropic-skills:skill-creator`（內建，不用裝）寫描述、建 `tests/evals/<skill>.json` 的 20 句（D-091），描述要守 D-070 的 150 字；測試紅了先找出原因再改，不猜著改 |
 | 改寫既有 skill | 照 D-132：`skill-creator` 的新舊版對照（同幾個真實情境，舊版快照與新版各跑一次）；本文照 D-132 五條自查，再跑 agent `plugin-dev:skill-reviewer` |
 | 實作收尾 | 動過 manifest、目錄、hooks.json 跑 agent `plugin-dev:plugin-validator`；動過 SKILL.md 跑 agent `plugin-dev:skill-reviewer` |
 | 測試 | `code-review` 等級 high；碰守門、權限、路徑時加 `security-review`；改了 skill 描述時用 `anthropic-skills:skill-creator` 的 `run_eval` 跑 `tests/evals/<skill>.json`（門檻見 D-091），在同時裝著舊 `llm-wiki` 的機器上跑 |
 | 確認、發行 | 無，照流程手動 |
 
 plugin-dev 要先裝：`claude plugin install plugin-dev@claude-plugins-official`（開發機 2026-10-12 已裝，使用者層）。
+
+superpowers 選用、預設停用（2026-10-20）：它在每個對話開頭注入一大段說明，多花用量、影響模型行為，啟用是整台電腦一起生效；它在這裡只提供先寫測試與收尾驗證，兩件都已寫進流程。
 
 不用：`cowork-plugin-management:*`、`plugin-authoring`、`plugin-dev:mcp-integration`、`superpowers:subagent-driven-development`、`executing-plans`、`finishing-a-development-branch`。
 

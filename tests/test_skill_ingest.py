@@ -1,5 +1,5 @@
 """skills/ingest 的形狀（ingest 製卡第 9 點，驗收 16、17、21）：frontmatter 只有 name、description；描述 150 字內、不帶英文；
-本文 120 行內、用 ${CLAUDE_PLUGIN_ROOT} 叫 kb.py、不寫絕對路徑；兩份 reference 在且 ≤150 行；
+本文 120 行內（字數上限在 test_budget，目標 3000 字內）、用 ${CLAUDE_PLUGIN_ROOT} 叫 kb.py、不寫絕對路徑；兩份 reference 在且 ≤150 行；
 tests/evals/ingest.json 20 句、各半、不重複，不該觸發的有 manage、answer、note、produce 句；
 templates/card.md 的檔頭鍵與 carding.md 的欄位表跟 cards.KEYS 一致；manage 只改了「加資料夾」那列的收尾句。
 字數門檻在 test_budget，這裡只守形狀。"""
@@ -58,16 +58,30 @@ class Body(unittest.TestCase):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/kb.py", self.body)
 
     def test_order_of_steps(self):
-        """順序：kb changes → inventory scan → cards todo → sync → convert → turn note。"""
-        marks = ["changes", "inventory scan", "cards todo --json", "cards sync", "convert", "turn note"]
-        steps = self.body[self.body.index("## 順序"):self.body.index("## 回答末尾")]
+        """骨架一節依序出現：changes → cards todo --json → plan → asks → turn note（整理 ingest 實作疑義裁定 1）。"""
+        marks = ["changes", "cards todo --json", "plan", "asks", "turn note"]
+        steps = self.body[self.body.index("## 骨架"):self.body.index("## 共通")]
         pos = [steps.index(m) for m in marks]
         self.assertEqual(pos, sorted(pos), marks)
 
-    def test_mentions_refusals_and_hands_off(self):
-        for want in ("manage", "收件", "還沒存檔", "cards drop", "pending resolve", "dismiss", "系統/待處理.md"):
+    def test_mentions_judgment_words_and_principles(self):
+        """仍屬判斷的字眼留在本文；答法對照（指令字串）不能回來（驗收 7）；兩條原則帶編號（裁定 1、2）。"""
+        for want in ("manage", "收件", "還沒存檔"):
             with self.subTest(want=want):
                 self.assertIn(want, self.body)
+        for banned in ("cards drop", "pending resolve", "entity rename"):
+            with self.subTest(banned=banned):
+                self.assertNotIn(banned, self.body)
+        for lead, code in (("刪除只認明確確認", "I-082"), ("一次最多 3 個問題", "D-135")):
+            with self.subTest(principle=lead):
+                line = next((ln for ln in self.body.splitlines() if lead in ln), "")
+                self.assertIn(code, line)
+
+    def test_no_card_field_names(self):
+        """驗收 7：欄位名住程式輸出，本文不寫。"""
+        for field in ("new", "stale", "unlinked", "synthesis_new", "entity_drift"):
+            with self.subTest(field=field):
+                self.assertNotRegex(self.body, rf"(?<![A-Za-z_]){field}(?![A-Za-z_])")
 
     def test_no_absolute_paths(self):
         for p in (SKILL, *(SKILL_DIR / r for r in REFS)):

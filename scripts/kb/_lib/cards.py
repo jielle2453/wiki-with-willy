@@ -413,9 +413,10 @@ def todo(vault, sources):
     """讀清冊 active 條目、卡與待處理，分 new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped（D-104）；
     skipped 多一鍵 skipped（設定檔說不整理、清冊記了 skip_kind 的份數，D-113），另帶 profile 塊（卡型、段落、個資種類、型別、
     每類段落、關於你）。實體與綜合卡第 4 點：多 unlinked（第一版的卡、待補型別後來進了型別表的卡）、missing_types、
-    synthesis_new／stale／broken、entity_drift（後四桶由 synthesis.buckets 給）與 entities（active、removed 的名稱）。
+    synthesis_new／stale／broken、entity_drift（後四桶由 synthesis.buckets 給）與 entities（active、removed 的名稱），
+    最後併進 plan、asks、tell 三鍵（plan.build，整理 ingest）。
     不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
-    from kb._lib import entities, extract, inventory, pending, synthesis
+    from kb._lib import entities, extract, inventory, pending, plan, synthesis
     restored = _restore_pdf(vault)
     ent_data = entities.load(vault)
     entries = inventory.load(vault)["entries"]
@@ -526,6 +527,7 @@ def todo(vault, sources):
     out["entities"] = [{"name": e["name"], "type": e.get("type"), "aliases": list(e.get("aliases") or []),
                         "self": e.get("self") or False}
                        for e in ent_data["entities"] if e.get("status") in ("active", "removed")]
+    out.update(plan.build(out, vault, config))
     return out
 
 

@@ -50,6 +50,14 @@ def snapshot(V):
 
 
 class Todo(Base):
+    def test_json_has_plan_asks_tell(self):
+        """整理 ingest：既有鍵照舊，多 plan、asks、tell 三鍵；新檔超過 ingest_auto_max 時 plan 空、asks 第一題是 batch。"""
+        data = self.todo()
+        self.assertTrue({"new", "stale", "moved", "missing", "unreadable", "skipped", "profile", "entity_drift"} <= set(data))
+        for key in ("plan", "asks", "tell"):
+            self.assertIsInstance(data[key], list, key)
+        self.assertEqual(data["plan"] == [], data["asks"][:1] != [] and data["asks"][0]["id"] == "batch")
+
     def test_json_and_read_only(self):
         before = snapshot(self.V)
         data = self.todo()

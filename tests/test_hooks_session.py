@@ -379,7 +379,13 @@ class OpeningProfile(unittest.TestCase):
     def test_unreadable_line(self):
         self.edit(TYPE_ROW, TYPE_ROW + "| 工地 | 事 |\n")
         self.assertEqual(self.profile_lines(),
-                         ["設定檔有改但讀不懂（第 1 節第 2 列欄數不對（要 3 欄或 5 欄）），改好下次再問"])
+                         ["設定檔有改但讀不懂：第 1 節第 2 列欄數不對（要 3 欄或 5 欄）；改好下次再問"])
+
+    def test_unreadable_line_has_no_unlisted_part(self):
+        (self.V / "廠商").mkdir()
+        self.edit(TYPE_ROW, TYPE_ROW + "| 工地 | 事 |\n")
+        self.assertEqual(self.profile_lines(),
+                         ["設定檔有改但讀不懂：第 1 節第 2 列欄數不對（要 3 欄或 5 欄）；改好下次再問"])
 
     def test_unlisted_alone_and_joined(self):
         (self.V / "廠商").mkdir()

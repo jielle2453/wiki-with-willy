@@ -1,8 +1,8 @@
 """kb profile check／apply（客戶設定檔與型別第 2 點，D-110～D-113）。
 
 check：系統/客戶設定檔.md 跟 .system/profile.json 比，印差異與型別夾對帳，不寫任何檔；讀不懂 exit 3，其餘 0。
-apply：check 的判斷之後，刪了有東西的型別夾那列擋（D-058）；沒有改不寫；否則 merge → 兩檔備進回合後寫（D-074）→
-建缺的型別夾（只建不刪、建夾不備份）→ 第三節拿掉的「不整理」種類把清冊的 skip_kind 拿掉（清冊先備份）。
+apply：check 的判斷之後，刪了有東西的型別夾那列擋（D-058）；沒有改不寫；否則先建缺的型別夾（只建不刪、建夾不備份；
+建不成就整份不套用，測試後修正裁定 11）→ merge → 兩檔備進回合後寫（D-074）→ 第三節拿掉的「不整理」種類把清冊的 skip_kind 拿掉（清冊先備份）。
 鎖 profile.json 30 秒。終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
 import argparse
@@ -70,7 +70,7 @@ def check_lines(st):
     if st["state"] == "missing":
         return [MISSING], 0
     if st["state"] == "error":
-        return [f"客戶設定檔讀不懂：{st['error']}"] + _unlisted_line(st), 3
+        return [f"客戶設定檔讀不懂：{st['error']}"], 3
     if st["state"] == "ok":
         return [NO_CHANGE] + _unlisted_line(st), 0
     if not profile.has_diff(st["diff"]):
@@ -114,15 +114,22 @@ def _apply_locked(vault, as_json, conversation):
     if blocked:
         _refuse(as_json, st, f"「{blocked[0]}」已經有同名的檔，不能建成型別夾；先改名或搬走")
         return 3
+    created = []
+    for name in st["to_create"]:  # 先建夾再寫檔（測試後修正裁定 11）：建不成就整份不套用，已建的夾留著
+        try:
+            (vault / name).mkdir(exist_ok=True)
+        except OSError as e:
+            line = f"建不了資料夾「{name}」：{e.strerror or e}；設定檔沒有套用"
+            _refuse(as_json, st, line)
+            if created and not as_json:
+                print("已建的資料夾留著：" + "、".join(created))
+            return 3
+        created.append(name)
     old, new = st["data"], st["new"]
     turn_id = turn.current(vault)["turn"]
     merged = profile.merge(old, new, first=old.get("applied") is None)
     data = dict(old, **merged, applied=profile.now())
     profile.write_locked(vault, data, turn_id)
-    created = []
-    for name in st["to_create"]:
-        (vault / name).mkdir(exist_ok=True)
-        created.append(name)
     unskipped = inventory.unskip_kinds(vault, profile.unskipped_kinds(old, merged), turn_id)
     summary = profile.summary_short(st["diff"])
     parts = [summary] if summary else []

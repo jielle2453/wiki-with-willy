@@ -473,23 +473,25 @@ def remove_card(vault, rel, turn_id):
 def skip(vault, sources, fid, kind, turn_id):
     """kb cards skip（客戶設定檔與型別第 5 點，D-113）：條目要 active、read ok，kind 要是設定檔第三節 no_card 的種類，
     錯了丟 SkipRefused 帶給人看的句子。有卡（同編號多張全部）備成 delete 後刪；清冊備份後記 skip_kind；重寫總目錄。
+    整段在清冊的鎖裡（測試後修正裁定 13，同 drop）：等不到鎖丟 TimeoutError 時什麼都還沒動。
     回 {"id", "card"（第一張刪掉的卡或 None）, "kind", "removed"（刪掉的全部卡）}。"""
     from kb._lib import inventory, turn
-    entry = next((e for e in inventory.load(vault)["entries"] if e.get("id") == fid), None)
-    if entry is None:
-        raise SkipRefused(f"清冊沒有 {fid}")
-    if entry.get("status") != "active" or entry.get("read") != "ok":
-        raise SkipRefused(f"這份不是待製卡的檔（{entry.get('status')}／{entry.get('read')}）")
-    data, _missing = _profile_or_default(vault)
-    if kind not in profile.no_card_kinds(data):
-        raise SkipRefused(f"「{kind}」不在客戶設定檔的不整理種類裡，先在設定檔第三節加一列再套用")
-    groups, _broken = _scan_groups(vault)
-    removed = [c["path"] for c in groups.get(fid) or []]
-    for rel in removed:
-        remove_card(vault, rel, turn_id)
-    turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)
-    inventory.set_skip(vault, [fid], kind)
-    render_index(vault, turn_id)
+    with FileLock(Path(vault) / inventory.INVENTORY_POSIX):
+        entry = next((e for e in inventory.load(vault)["entries"] if e.get("id") == fid), None)
+        if entry is None:
+            raise SkipRefused(f"清冊沒有 {fid}")
+        if entry.get("status") != "active" or entry.get("read") != "ok":
+            raise SkipRefused(f"這份不是待製卡的檔（{entry.get('status')}／{entry.get('read')}）")
+        data, _missing = _profile_or_default(vault)
+        if kind not in profile.no_card_kinds(data):
+            raise SkipRefused(f"「{kind}」不在客戶設定檔的不整理種類裡，先在設定檔第三節加一列再套用")
+        groups, _broken = _scan_groups(vault)
+        removed = [c["path"] for c in groups.get(fid) or []]
+        for rel in removed:
+            remove_card(vault, rel, turn_id)
+        turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)
+        inventory.set_skip(vault, [fid], kind, locked=True)
+        render_index(vault, turn_id)
     return {"id": fid, "card": removed[0] if removed else None, "kind": kind, "removed": removed,
             "uri": entry["locations"][0]["uri"]}
 

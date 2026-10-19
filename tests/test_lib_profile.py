@@ -46,9 +46,9 @@ class self_raises:
         return True
 
 
-def message(text):
+def message(text, **kw):
     with self_raises() as cm:
-        profile.parse_md(text)
+        profile.parse_md(text, **kw)
     return cm.error.message
 
 
@@ -314,6 +314,41 @@ class Vault(unittest.TestCase):
         self.assertEqual(got["card_types"][0], {"name": "報價", "sections": [
             {"name": s, "required": False, "hint": h} for s, h in profile.DEFAULT_SECTIONS]})
         self.assertEqual(got["exclusions"][0], {"kind": "身分證字號", "action": "kind_only"})
+
+
+class AfterTestParse(unittest.TestCase):
+    """測試後修正裁定 11、12：型別名太長、Windows 保留名。"""
+
+    def test_windows_reserved_names(self):
+        for name in ("CON", "con", "Prn", "AUX", "aux.txt", "NUL", "COM1", "com9", "LPT1", "lpt9.log"):
+            with self.subTest(name=name):
+                self.assertEqual(message(md_with(["| 工地 | 事 | x |", f"| {name} | 事 | x |"])),
+                                 f"第 1 節第 2 列的型別名「{name}」是 Windows 保留名，不能當資料夾")
+        got = profile.parse_md(md_with(["| COM10 | 事 | x |", "| CONSOLE | 事 | x |", "| 工地.aux | 事 | x |"]))
+        self.assertEqual([t["name"] for t in got["types"]], ["COM10", "CONSOLE", "工地.aux"])
+
+    def test_type_name_too_long(self):
+        name = "長" * 41
+        self.assertEqual(message(md_with([f"| {name} | 事 | x |"])),
+                         "第 1 節第 1 列的型別名「長長長長長長長長長長…」太長（最多 40 字）")
+        self.assertEqual(profile.parse_md(md_with(["| " + "長" * 40 + " | 事 | x |"]))["types"][0]["name"], "長" * 40)
+        self.assertEqual(message(md_with(["| 工地很長 | 事 | x |"]), max_type_chars=3),
+                         "第 1 節第 1 列的型別名「工地很長…」太長（最多 3 字）")
+
+    def test_status_uses_config_max(self):
+        tmp, V, _raw = make_inv_vault()
+        try:
+            (V / ".system" / "config.json").write_text('{"card_title_max_chars": 3}', encoding="utf-8")
+            md = V / "系統" / "客戶設定檔.md"
+            text = md.read_text(encoding="utf-8")
+            md.write_text(text.replace("| 案子 | 事 |  | 推測 | 2026-10-19 |\n",
+                                       "| 案子 | 事 |  | 推測 | 2026-10-19 |\n| 工地很長 | 事 | x |\n"), encoding="utf-8")
+            st = profile.status(V)
+            self.assertEqual((st["state"], st["error"]), ("error", "第 1 節第 2 列的型別名「工地很長…」太長（最多 3 字）"))
+            (V / "廠商").mkdir()
+            self.assertEqual(profile.status(V)["unlisted"], [], "讀不懂時不對帳（裁定 14）")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

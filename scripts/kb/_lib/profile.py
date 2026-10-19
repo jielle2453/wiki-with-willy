@@ -55,6 +55,10 @@ TABLE_HEADS = (("名稱", "大類", "一句說明", "來源", "日期"),
 
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Windows 保留裝置名（測試後修正裁定 12）：帶副檔名也算，不分大小寫
+_WINDOWS_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE)
+TYPE_NAME_MAX = 40  # card_title_max_chars 的預設；status 從 config 讀（測試後修正裁定 11）
+NAME_SHOWN = 10
 _SEPARATOR = re.compile(r"^[|\-: ]+$")
 _REVERSED = {v: k for k, v in CATEGORIES.items()}, {v: k for k, v in SOURCES.items()}, {v: k for k, v in ACTIONS.items()}
 
@@ -183,7 +187,7 @@ def _source_date(section, row, extra):
 
 
 def type_name_problem(name, taken=()):
-    """型別名不能用的原因（括號裡那句），能用回 None。taken 是已出現過的 _key。"""
+    """型別名不能用的原因（括號裡那句），能用回 None。taken 是已出現過的 _key。保留名與長度另由 _parse_types 擋。"""
     if not name:
         return "空的"
     if _key(name) in RESERVED_KEYS:
@@ -197,13 +201,17 @@ def type_name_problem(name, taken=()):
     return None
 
 
-def _parse_types(rows):
+def _parse_types(rows, max_chars):
     out, taken = [], set()
     for m, cells in enumerate(rows, 1):
         (name, category, note), extra = _columns(1, m, cells)
         why = type_name_problem(name, taken)
         if why:
             _err(1, m, f"的型別名「{name}」不能用（{why}）")
+        if _WINDOWS_RESERVED.match(name):
+            _err(1, m, f"的型別名「{name}」是 Windows 保留名，不能當資料夾")
+        if len(name) > max_chars:
+            _err(1, m, f"的型別名「{name[:NAME_SHOWN]}…」太長（最多 {max_chars} 字）")
         if category not in CATEGORIES:
             _err(1, m, "的大類要是 對象、事、物、主題 之一")
         source, when = _source_date(1, m, extra)
@@ -249,15 +257,15 @@ def _parse_exclusions(rows):
     return out
 
 
-def parse_md(text):
+def parse_md(text, max_type_chars=TYPE_NAME_MAX):
     """md → {"types", "card_types", "exclusions"}（跟 JSON 同形，source／date 沒填是 None）；讀不懂丟 ProfileError。
-    三節都在但沒有任何列算成功；少任何一節就是錯（I-097：命中 0 節不回空）。"""
+    三節都在但沒有任何列算成功；少任何一節就是錯（I-097：命中 0 節不回空）。型別名長度上限是 max_type_chars。"""
     lines = str(text).lstrip("﻿").splitlines()
     found = _sections(lines)
     for i, num in enumerate(NUMERALS, 1):
         if i not in found:
             raise ProfileError(i, None, f"少了第 {i} 節（## {num}、…）")
-    return {"types": _parse_types(_table_rows(found[1])),
+    return {"types": _parse_types(_table_rows(found[1]), max_type_chars),
             "card_types": _parse_card_types(_table_rows(found[2])),
             "exclusions": _parse_exclusions(_table_rows(found[3]))}
 
@@ -509,7 +517,8 @@ def status(vault):
         out["state"] = "ok"
     else:
         try:
-            new = parse_md(md.read_text(encoding="utf-8"))
+            from kb._lib import config
+            new = parse_md(md.read_text(encoding="utf-8"), config.get(vault, "card_title_max_chars"))
         except ProfileError as e:
             out["state"], out["error"] = "error", e.message
         except UnicodeDecodeError:
@@ -520,6 +529,8 @@ def status(vault):
     out.update(folder_check(vault, types, data["types"]))
     if out["state"] != "changed":  # 沒有要套用的表：刪列的對帳不算
         out["removed_empty"], out["removed_nonempty"] = [], []
+    if out["state"] == "error":  # 表讀不了，第一層夾的對帳沒意義（測試後修正裁定 14）
+        out["unlisted"], out["to_create"] = [], []
     return out
 
 

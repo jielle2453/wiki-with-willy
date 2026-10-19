@@ -248,13 +248,15 @@ def set_status(vault, ids, status):
         _write(vault, data["entries"])
 
 
-def set_skip(vault, ids, kind):
+def set_skip(vault, ids, kind, locked=False):
     """選填欄 skip_kind（客戶設定檔說「不整理」的種類，D-113）：kind 是 None 就拿掉欄。呼叫端先備份。
+    locked：呼叫端已持有清冊的鎖（cards skip 整段包在鎖裡，測試後修正裁定 13）。
     scan／apply／reconcile 對既有條目原樣保留它，不在 _migrate 裡補。"""
     ids = set(ids)
     p = _path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with FileLock(p):
+
+    def change():
         data = load(vault)
         for entry in data["entries"]:
             if entry.get("id") in ids:
@@ -263,6 +265,11 @@ def set_skip(vault, ids, kind):
                 else:
                     entry["skip_kind"] = kind
         _write(vault, data["entries"])
+    if locked:
+        change()
+        return
+    with FileLock(p):
+        change()
 
 
 def unskip_kinds(vault, kinds, turn_id=None):

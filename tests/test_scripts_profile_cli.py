@@ -220,5 +220,50 @@ class Apply(Base):
         self.assertIn("套用設定檔時建的資料夾還在，要拿掉請自己刪空夾", r.stdout.splitlines())
 
 
+class AfterTest(Base):
+    """測試後修正裁定 11、14：先建夾再寫檔，建不了就整份不套用；check 讀不懂不印 unlisted。"""
+
+    def test_mkdir_failure_writes_nothing_and_keeps_made_folders(self):
+        import contextlib
+        import io
+        import pathlib
+        from unittest import mock
+        from kb import profile_cli
+        self.add_types(ROW, "| 工班 | 對象 | 施工班底 |")
+        before_json, before_md = self.data(), self.md_text()
+        real = pathlib.Path.mkdir
+
+        def fake(path, *a, **kw):
+            if path.name == "工班":
+                raise PermissionError(13, "存取被拒")
+            return real(path, *a, **kw)
+        out = io.StringIO()
+        with mock.patch.object(pathlib.Path, "mkdir", fake), contextlib.redirect_stdout(out):
+            code = profile_cli._apply(self.V, False, True)
+        self.assertEqual(code, 3)
+        self.assertEqual(out.getvalue().splitlines(),
+                         ["建不了資料夾「工班」：存取被拒；設定檔沒有套用", "已建的資料夾留著：工地"])
+        self.assertEqual((self.data(), self.md_text()), (before_json, before_md))
+        self.assertTrue((self.V / "工地").is_dir())
+        self.assertFalse((self.V / "工班").exists())
+        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 +2；建了資料夾 工班"])
+
+    def test_too_long_and_windows_name_refused_before_anything(self):
+        self.add_types("| " + "長" * 300 + " | 事 | x |")
+        before = self.stamps()
+        self.assertEqual(self.apply(3), ["客戶設定檔讀不懂：第 1 節第 2 列的型別名「長長長長長長長長長長…」太長（最多 40 字）"])
+        self.drop_line("| 長")
+        self.add_types("| NUL | 事 | x |")
+        self.assertEqual(self.apply(3), ["客戶設定檔讀不懂：第 1 節第 2 列的型別名「NUL」是 Windows 保留名，不能當資料夾"])
+        self.assertEqual(self.stamps(), before)
+
+    def test_check_unreadable_has_no_unlisted_line(self):
+        (self.V / "廠商").mkdir()
+        self.add_types("| 工地 | 事 |")
+        r = self.kb("check")
+        self.assertEqual((r.returncode, r.stdout.splitlines()),
+                         (3, ["客戶設定檔讀不懂：第 1 節第 2 列欄數不對（要 3 欄或 5 欄）"]))
+
+
 if __name__ == "__main__":
     unittest.main()

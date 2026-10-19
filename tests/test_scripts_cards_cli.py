@@ -420,5 +420,33 @@ class TodoProfile(Base):
         self.assertEqual(r.stdout.splitlines()[-1], "客戶設定檔讀不到，卡型用預設")
 
 
+class SkipLock(Base):
+    """測試後修正裁定 13：skip 先拿清冊的鎖，等不到時卡與清冊都沒動。"""
+
+    md = Skip.md
+    set_no_card = Skip.set_no_card
+
+    def test_lock_timeout_touches_nothing(self):
+        from kb import cards as cards_cli
+        from kb._lib import io as kio
+        self.set_no_card()
+        item = self.item()
+        card = _cards.write_card(self.V, item, "大安陳會議一")
+        t = turn.start(self.V, None, "")["turn"]
+        inv_before = (self.V / ".system" / "inventory.json").read_bytes()
+        lock = self.V / ".system" / "inventory.json.lock"
+        lock.write_text("", encoding="utf-8")
+        old = kio.LOCK_TIMEOUT
+        kio.LOCK_TIMEOUT = 0.3
+        try:
+            self.assertEqual(cards_cli._skip(self.V, item["id"], "請款", False, True), 3)
+        finally:
+            kio.LOCK_TIMEOUT = old
+            lock.unlink()
+        self.assertTrue(card.is_file())
+        self.assertEqual((self.V / ".system" / "inventory.json").read_bytes(), inv_before)
+        self.assertEqual(turn.entries(self.V, t), [])
+
+
 if __name__ == "__main__":
     unittest.main()

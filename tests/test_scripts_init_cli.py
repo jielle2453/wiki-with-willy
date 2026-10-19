@@ -252,6 +252,51 @@ class InitProfile(unittest.TestCase):
         self.assertIsNone(data["md_sha256"])
         self.assertEqual(data["types"], [])
 
+    def put_schema1(self):
+        self.init()
+        fix = ROOT / "tests" / "fixtures" / "profile"
+        shutil.copy2(fix / "schema1.json", self.V / ".system" / "profile.json")
+        shutil.copy2(fix / "schema1.md", self.md())
+
+    def test_schema1_unchanged_md_upgraded(self):
+        """實體與綜合卡第 11 點：md 沒改過 → JSON 升 2、第四節照型別補大類預設、md 重渲染（五節）。"""
+        from kb._lib import profile
+        self.put_schema1()
+        r = run_kb("init", str(self.V), "--check", cwd=self.tmp)
+        self.assertEqual(r.stdout.splitlines()[-1], "設定檔升級：補第四、五節")
+        self.assertEqual(self.json()["schema_version"], 1, "--check 不寫")
+        out = self.init().splitlines()
+        self.assertEqual(out, [f"{self.V} 已是知識庫，沒有缺的", "設定檔升級：補第四、五節"])
+        data = self.json()
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual([(s["type"], [x["name"] for x in s["sections"]], s["source"]) for s in data["synthesis_sections"]],
+                         [("案子", ["時程", "金額"], "inferred")])
+        self.assertEqual(data["about"], [])
+        text = self.md().read_text(encoding="utf-8")
+        self.assertIn("## 四、每類最想知道什麼", text)
+        self.assertIn("## 五、關於你", text)
+        self.assertEqual(data["md_sha256"], profile.md_sha256(self.V))
+        self.assertEqual(self.init().strip(), f"{self.V} 已是知識庫，沒有缺的", "升過就不再印")
+
+    def test_schema1_changed_md_left_alone(self):
+        self.put_schema1()
+        with open(self.md(), "a", encoding="utf-8", newline="\n") as f:
+            f.write("客戶加的一行\n")
+        before = (self.md().read_bytes(), (self.V / ".system" / "profile.json").read_bytes())
+        out = self.init().splitlines()
+        self.assertEqual(out[-1], "設定檔有沒套用的改動，先 kb profile apply 再跑 kb init 升級")
+        self.assertEqual((self.md().read_bytes(), (self.V / ".system" / "profile.json").read_bytes()), before)
+
+    def test_schema1_unchanged_md_check_says_no_change(self):
+        """schema 1 JSON 加沒改過的舊 md：profile check 是「客戶設定檔沒有改」，不報少了第 4 節。"""
+        self.put_schema1()
+        r = run_kb("profile", "check", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.splitlines()), (0, ["客戶設定檔沒有改"]))
+
+    def test_new_vault_has_no_entities_json(self):
+        self.init()
+        self.assertFalse((self.V / ".system" / "entities.json").exists())
+
 
 class InitJournal(unittest.TestCase):
     """工作日誌程式段（D-085）：init 成功寫一段 kind program；沒有缺的不寫；不開回合；對話裡叫的不寫。"""

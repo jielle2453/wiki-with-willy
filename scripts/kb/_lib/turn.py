@@ -267,11 +267,14 @@ def entries(vault, turn_id):
     return rows
 
 
-def backup(vault, rel, turn_id, action=None):
+def backup(vault, rel, turn_id, action=None, by=None):
     """寫入前把舊版複製到 versions/<turn_id>/files/<rel>，manifest 追加一行。同回合同路徑只做第一次。
     action 預設存在 modify、不存在 create；呼叫端刪檔前傳 delete。
+    by 只收 "program"：程式自己改的（綜合卡檔頭快取重渲染、改名、合併），寫進那行，大改動門檻不數（實體與綜合卡第 9 點）。
     查重、複製、記帳在同一把鎖裡（第一輪 M1／L3）；複製失敗或鎖逾時丟 OSError（TimeoutError 也是）。
     """
+    if by not in (None, "program"):
+        raise ValueError(f"backup 的 by 只收 program：{by!r}")
     target = Path(vault) / rel
     vdir = turn_dir(vault, turn_id)
     manifest = vdir / "manifest.jsonl"
@@ -285,6 +288,8 @@ def backup(vault, rel, turn_id, action=None):
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, dst)
         row = {"path": rel, "action": action, "time": _now().strftime("%Y-%m-%dT%H:%M:%S")}
+        if by:
+            row["by"] = by
         lead = ""
         if manifest.is_file() and manifest.stat().st_size > 0:
             with open(manifest, "rb") as f:
@@ -307,23 +312,25 @@ def zone_of(vault, rel, sources=None):
 
 
 def modified_synthesis_count(vault, turn_id):
-    from kb._lib import sources as sources_lib
-    rows = [e for e in entries(vault, turn_id) if e.get("action") == "modify"]
-    if not rows:
-        return 0
-    sources = sources_lib.load(vault)
-    return sum(1 for e in rows if zone_of(vault, e["path"], sources) == "Z1")
+    """這回合 AI 用檔案工具改過的既有綜合卡張數：數回合檔的 ai_synthesis 清單（測試後修正裁定 7），不看 manifest——
+    程式先備份（by program）、AI 後改同一張照樣算。"""
+    data = _find_turn(vault, turn_id) or {}
+    return len(data.get("ai_synthesis") or [])
 
 
 def before_write(vault, target, cwd, zone, session_id):
-    """守門放行後、真的寫之前：大改動門檻（只數 Z1 modify）、回合備份。回 (ok, code, reason)。"""
+    """守門放行後、真的寫之前：大改動門檻（數 ai_synthesis）、回合備份。回 (ok, code, reason)。
+    Z1 既有檔放行時把路徑記進回合檔的 ai_synthesis（去重）；同一張再改不重複算。"""
     t = current(vault, session_id)
     rel = rel_path(vault, target, cwd)
-    if zone == "Z1" and (Path(vault) / rel).is_file() and not t.get("approved"):
-        if not any(e.get("path") == rel for e in entries(vault, t["turn"])):
-            n = modified_synthesis_count(vault, t["turn"])
-            if n >= config.get(vault, "big_change_synthesis_max"):
+    if zone == "Z1" and (Path(vault) / rel).is_file():
+        done = list(t.get("ai_synthesis") or [])
+        if rel not in done:
+            n = len(done)
+            if not t.get("approved") and n >= config.get(vault, "big_change_synthesis_max"):
                 return False, "big_change", BIG_CHANGE_REASON.format(n=n)
+            t["ai_synthesis"] = done + [rel]
+            _write_turn(vault, t)
     try:
         backup(vault, rel, t["turn"], None)
     except OSError as e:

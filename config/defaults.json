@@ -29,6 +29,8 @@
   "_why_card_source_big_chars": "kb convert 抽出的文字超過就提示大檔、照 carding.md 摘要加定位；xlsx 抽到這裡就停（照舊 plugin BIG_CHARS）",
   "card_title_max_chars": 40,
   "_why_card_title_max_chars": "卡標題與檔名的標題段最多幾字（D-029、B-040），檔名加短編號後仍在 Windows 路徑長度內",
+  "synthesis_min_cards": 2,
+  "_why_synthesis_min_cards": "實體掛到幾張檔案卡才列進待建綜合卡（D-114）；只出現一次的不建，免得長出跟檔案卡重複的薄卡",
   "temp_keep_hours": 24,
   "_why_temp_keep_hours": "kb convert 寫在 .system/temp/ 的暫存檔保留幾小時，每次 convert 先清掉更舊的；再長的體積由 lint 題管（D-018）"
 }

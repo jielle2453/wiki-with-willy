@@ -53,7 +53,7 @@
 ```
 待製卡 N 份（新 N、重做 N）；搬動 N；讀不到 N、原檔不見 N（見 系統/待處理.md）
 ```
-PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到待製卡`（之前記成「還沒裝 PDF 元件」的待處理自動關掉）。全部 0 印 `卡都是最新的`；有檔頭壞的卡第一行尾多「；檔頭有問題 N 張」，同編號多張多「；同編號多張 N 組（跑 kb cards sync）」。不製卡的份數不為 0 時第二行 `不製卡：檔名像密碼或金鑰 N、只在雲端 N、太大 N、讀不到 N、依設定不整理 N`（0 的項不印）。之後每份一行 `- 新 f-… 客戶案件/信義王/報價_v3.pdf → 檔案索引/客戶案件/信義王/<標題>-3f9a1b2c.md`（重做的是 `- 重做 f-… <原檔> → <舊卡路徑>`），`--limit` 預設是開場的份數上限，多的印 `……還有 N 份`。
+PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到待製卡`（之前記成「還沒裝 PDF 元件」的待處理自動關掉）。全部 0 印 `卡都是最新的`；有檔頭壞的卡第一行尾多「；檔頭有問題 N 張」，同編號多張多「；同編號多張 N 組（跑 kb cards sync）」。實體與綜合卡有事時第一行尾再接「；待掛實體 N」「；綜合卡 待建 N（待確認 N）、待更新 N、有問題 N」「；實體夾有變 N」（0 的項不印）；`missing_types` 有值時多一行 `型別表沒有：廠商 4 張`。不製卡的份數不為 0 時第二行 `不製卡：檔名像密碼或金鑰 N、只在雲端 N、太大 N、讀不到 N、依設定不整理 N`（0 的項不印）。之後每份一行 `- 新 f-… 客戶案件/信義王/報價_v3.pdf → 檔案索引/客戶案件/信義王/<標題>-3f9a1b2c.md`（重做的是 `- 重做 f-… <原檔> → <舊卡路徑>`），`--limit` 預設是開場的份數上限，多的印 `……還有 N 份`。
 
 `--json`（做卡時用這個）：
 - `new`、`stale`：每項 `id`、`uri`、`path`（原檔絕對路徑）、`origin`、`kind`、`dir`（卡放的夾）、`filename_pattern`（`<標題>-八碼.md`）、`existing_card`（stale 才有，舊卡路徑）、`created`（條目產出那天，AI 產出的卡寫起草日用）、`header`（照抄的檔頭）。
@@ -64,7 +64,10 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - `orphans`：卡的編號不在清冊或原檔已不在；這版不處理，不用動它。
 - `broken`：`{"path","reason"}`，檔頭有問題的卡；編號對得到清冊的多帶 `id`、`header`，照 `reason` 與 `header` 整張重寫（`reason` 是「檔名該是…」就寫到新檔名，其他寫回 `path`）；沒有 `header` 的這版不修，不用跟客戶說。
 - `skipped`：`{"credential","placeholder","too_large","error","skipped"}` 份數；`skipped` 是跑過 `cards skip` 的（依設定不整理）。
-- `profile`：客戶設定檔的 `card_types`（`[{"name","sections":[{"name","required","hint"}]}]`，卡型與段落照它）與 `exclusions`（`[{"kind","action"}]`，`action` 是 `kind_only` 或 `no_card`）。`profile_missing` 是 true 時設定檔讀不到、這塊是預設值，人讀最後多一行 `客戶設定檔讀不到，卡型用預設`；照常做卡，不用跟客戶說。
+- `profile`：客戶設定檔的 `card_types`（`[{"name","sections":[{"name","required","hint"}]}]`，卡型與段落照它）與 `exclusions`（`[{"kind","action"}]`，`action` 是 `kind_only` 或 `no_card`）。`profile_missing` 是 true 時設定檔讀不到、這塊是預設值，人讀最後多一行 `客戶設定檔讀不到，卡型用預設`；照常做卡，不用跟客戶說。另有 `types`（`[{"name","category"}]`）、`synthesis_sections`（`[{"type","sections"}]`，設定檔第四節）、`about`（`[{"name","kind","aliases"}]`，客戶自己）。
+- `entities`：`[{"name","type","aliases","self"}]`，登記的實體（`self` 是 false、company 或 person）；檔案卡 `實體` 欄照 `name` 寫。
+- `unlinked`：`{"id","path","reason","types","prefill"}`，要補掛實體的卡（carding.md 第七節）。`missing_types`：`{型別名: 張數}`，`待補型別` 裡型別表沒有的。
+- `synthesis_new`：`{"entity_id","name","type","category","confirmed","path","cards":[{"id","path","title"}],"sections","header","question"}`，`path` 相對總資料夾，`sections` 是 `[{"name","required","hint"}]`、已含現況、紀事、推算，`question` 只有沒確認的有。`synthesis_stale`：`{"entity_id","name","path","header","added","changed","removed"}`。`synthesis_broken`：`{"path","reason"}`。`entity_drift`：`{"entity_id","name","type","kind","found","question"}`（`found` 是找到的卡，相對總資料夾，`missing` 是 null），`kind` 是 folder_renamed｜card_renamed｜both_renamed｜moved_type｜missing。寫法看 `rules/synthesis.md`。
 
 ## cards sync [--json]
 
@@ -92,8 +95,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 ## pending list|resolve|dismiss
 
 - `pending list [--json]`：列還沒處理的，每行 `- p-… 原檔不見 「會議紀錄_1.docx」（客戶案件/大安陳）不見了`；沒有就印 `目前沒有等你決定的事`。
-- `pending resolve <p-…> --how "<一句>"`：客戶說不是刪的、先留著；印 `已記下`。
-- `pending dismiss <p-…>`：客戶說不用管、先跳過；印 `已記下`。
+- `pending resolve <p-…> --how "<一句>"`：客戶說不是刪的、先留著；`pending dismiss <p-…>`：客戶說不用管、先跳過；都印 `已記下`。
 - 拒絕（exit 3）：`沒有這條待處理：p-…`、`這條已經處理過了：p-…` → 重跑 `pending list` 看現在的。
 
 ## profile check|apply [--json]
@@ -106,7 +108,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - 最後一行 `第一層夾不在型別表：X（…）` → 請客戶在設定檔第一節補一列，這版不代改。
 - 開場是「設定檔有改但讀不懂：…；改好下次再問」→ 照冒號後那句告訴客戶哪一列要改；不用跑 `check`。
 
-`apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`（拿掉的型別夾是空的會一起拿掉，印在「型別 -1（拿掉了空夾 X）」），照著講；有「回到待製卡」就跑 `cards todo --json` 從 SKILL.md 第 3 步起做。設定檔只讓客戶自己改，你不改 `系統/客戶設定檔.md`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`removed_dirs`、`unskipped`。拒絕（exit 3）：
+`apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`（拿掉的型別夾是空的會一起拿掉，印在「型別 -1（拿掉了空夾 X）」），第五節有改多一行 `關於你：登記了 X`（或「「X」改記成你自己；…」），照著講；有「回到待製卡」就跑 `cards todo --json` 從 SKILL.md 第 3 步起做。設定檔只讓客戶自己改，你不改 `系統/客戶設定檔.md`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`removed_dirs`、`unskipped`。拒絕（exit 3）：
 
 - `客戶設定檔讀不懂：第 N 節第 M 列…`（`check` 也是 exit 3）→ 照句子告訴客戶哪一列要改，改好再說一次。
 - `型別「X」底下還有 N 項，先搬走再拿掉這列` → 照講；夾裡的東西不幫客戶搬。
@@ -117,7 +119,30 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 `apply` 印 `客戶設定檔沒有改，沒有套用` 是 exit 0，不是拒絕 → 告訴客戶設定檔跟上次一樣，可能還沒存檔。
 
-## cards、pending、profile 共通的拒絕（exit 3）
+## entity …（都收 `--vault`、`--json`）
+
+實體只經這些指令改，你不碰 `.system/entities.json`。名稱或編號都可以指定，寫別名也找得到。
+
+| 指令 | 成功印 | 什麼時候 |
+|---|---|---|
+| `entity add --type 案子 --name 王宅` | `已登記：王宅（案子，待確認）`；已有就 `已登記過：王宅（案子）` | 寫卡前，實體不在 `entities` 裡 |
+| `entity confirm 王宅` | `已確認：王宅（案子）` | 客戶說名字對 |
+| `entity rename 信義王 --to 王宅 [--type 業主]` | `已改名：信義王 → 王宅（舊名記成別名）`；搬到夾裡的檔多一行 `資料夾裡的 N 個檔跟著搬了…`；改回原名印 `已照「信義王」把資料夾與綜合卡改回來` | 客戶說名字叫 Y、資料夾改名要跟著改或改回來 |
+| `entity merge 王宅 --into 信義王` | `已合併：王宅 併進 信義王（王宅記成別名）` | 客戶說是同一個 |
+| `entity remove 大安陳` | `已移除：大安陳（知識不刪，檔案卡上的掛載留著）` | 客戶說不要了 |
+| `entity rebuild 大安陳` | `好，「大安陳」會照檔案卡重寫一張` | 綜合卡被刪、回收筒也沒有，客戶要重寫 |
+| `entity clean 案子/王宅/王宅.md`（相對總資料夾） | `已清掉放錯的綜合卡：…` | 綜合卡寫到正確路徑之後，清掉寫錯的那張 |
+| `entity list`／`entity render` | 每行 `- 信義王（案子，確認）掛 12 張，有綜合卡`／`重寫了 N 張綜合卡的檔頭` | 查看；平常不用 render |
+
+拒絕（exit 3），照講或照做：
+- `型別「X」不在型別表；在設定檔第一節加一列再套用` → 不登記，這份寫進 `待補型別`。
+- `已有「信義王」（案子）；是同一件就掛它，不是就加區分詞（例：…）` → 是同一件就掛既有的名稱；不是就換個帶區分詞的名稱再 add。
+- `「林小姐」是你自己（關於你），掛「林小姐室內設計」` → 照掛那個名稱。`名稱「X」不能用（…）` → 換名稱。
+- `型別不同：先 kb entity rename …` → 照那句先跑再合併；`「X」的夾裡還有 N 個檔，先把檔搬到「Y」再合併` → 告訴客戶，夾裡的檔不幫客戶搬。
+- `實體清單沒有「X」`、`「X」的綜合卡還在，不用重寫`、`這張綜合卡位置是對的，不用清`、`這不是綜合卡，不能用 clean` → 是你判錯，重跑 `cards todo --json`。
+- `等不到鎖，沒有寫入` → 等一下再跑一次。
+
+## cards、pending、profile、entity 共通的拒絕（exit 3）
 
 - `這裡不是知識庫；到知識庫裡執行，或加 --vault` → 不用跟客戶說；對話要開在知識庫裡。
 - `狀態檔讀不到：…`、`待處理讀不到：…` → 「知識庫的狀態檔讀不了，我先停下來；說「檢查」我看原因。」

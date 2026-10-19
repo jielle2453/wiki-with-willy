@@ -5,6 +5,7 @@ sync：moved 的卡搬到現在該在的夾（檔名不變；同夾只改檔頭�
 drop <編號>：原檔不見（status missing）才做；先備清冊，卡備成 delete 後刪、條目改 deleted、對應 missing_file 待處理 done。
 index：手動重渲染總資料夾根的 總目錄.md。sync、drop、index 都把 總目錄.md 備進回合（實作疑義裁定 4）。
 skip <編號> --kind <種類>：客戶設定檔第三節說不整理的種類，清冊記 skip_kind、有卡的拿掉（客戶設定檔與型別第 6 點，D-113）。
+todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
 import argparse
@@ -60,16 +61,19 @@ def _todo_lines(vault, data, limit):
     lines = []
     if data.get("pdf_restored"):
         lines.append(f"PDF 元件裝好了，{data['pdf_restored']} 份 PDF 回到待製卡")
-    if new or stale or moved or unreadable or missing or broken or dups:
+    extra = _entity_parts(data)
+    if new or stale or moved or unreadable or missing or broken or dups or extra:
         first = (f"待製卡 {new + stale} 份（新 {new}、重做 {stale}）；搬動 {moved}；"
                  f"讀不到 {unreadable}、原檔不見 {missing}（見 系統/待處理.md）")
         if broken:
             first += f"；檔頭有問題 {broken} 張"
         if dups:
             first += f"；同編號多張 {dups} 組（跑 kb cards sync）"
-        lines.append(first)
+        lines.append(first + "".join(f"；{x}" for x in extra))
     else:
         lines.append("卡都是最新的")
+    if data.get("missing_types"):
+        lines.append("型別表沒有：" + "、".join(f"{t} {n} 張" for t, n in data["missing_types"].items()))
     skipped = [f"{text} {data['skipped'][k]}" for k, text in SKIPPED_TEXT if data["skipped"][k]]
     if skipped:
         lines.append("不製卡：" + "、".join(skipped))
@@ -82,6 +86,27 @@ def _todo_lines(vault, data, limit):
     if data.get("profile_missing"):
         lines.append(PROFILE_MISSING)
     return lines
+
+
+def _entity_parts(data):
+    """第一行後面接的實體與綜合卡幾段（實體與綜合卡第 5 點）；0 的項不印。"""
+    parts = []
+    if data.get("unlinked"):
+        parts.append(f"待掛實體 {len(data['unlinked'])}")
+    new = data.get("synthesis_new") or []
+    unconfirmed = sum(1 for i in new if not i.get("confirmed"))
+    bits = []
+    if new:
+        bits.append(f"待建 {len(new)}" + (f"（待確認 {unconfirmed}）" if unconfirmed else ""))
+    if data.get("synthesis_stale"):
+        bits.append(f"待更新 {len(data['synthesis_stale'])}")
+    if data.get("synthesis_broken"):
+        bits.append(f"有問題 {len(data['synthesis_broken'])}")
+    if bits:
+        parts.append("綜合卡 " + "、".join(bits))
+    if data.get("entity_drift"):
+        parts.append(f"實體夾有變 {len(data['entity_drift'])}")
+    return parts
 
 
 def _todo(vault, args, as_json):
@@ -117,6 +142,10 @@ def _sync(vault, as_json, conversation):
     by_id = {e["id"]: e for e in inventory.load(vault)["entries"]}
     turn_id = turn.current(vault)["turn"]
     moved, updated, skipped, changed, dropped = [], [], [], [], []
+    groups, _broken = cards._scan_groups(vault)
+    touched = cards.entity_names_of([c for g in groups.values() for c in g
+                                     if c["path"] in {i["from"] for i in data["moved"]}
+                                     | {r for d in data["duplicates"] for r in d["drop"]}])
     for dup in data["duplicates"]:  # 同編號多張：留正本，其餘備進回合後刪（測試後修正裁定 20）
         for rel in dup["drop"]:
             _remove_card(vault, rel, turn_id, changed)
@@ -153,6 +182,7 @@ def _sync(vault, as_json, conversation):
     if moved or updated or dropped:
         cards.render_index(vault, turn_id)
         changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
+        cards.refresh_synthesis(vault, touched, turn_id)
         note = f"搬了 {len(moved)} 張卡" + (f"、刪掉重複卡 {len(dropped)} 張" if dropped else "")
         journal_cli.record_program_or_warn(vault, note, changed, "cards sync", conversation)
     if as_json:
@@ -188,6 +218,7 @@ def _drop(vault, fid, as_json, conversation):
     card = group[0] if group else None
     changed = []
     title = None
+    touched = cards.entity_names_of(group)
     # 先拿清冊的鎖再刪卡（測試後修正裁定 30）：等不到鎖就什麼都還沒動
     with kio.FileLock(Path(vault) / inventory.INVENTORY_POSIX):
         turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)
@@ -209,6 +240,7 @@ def _drop(vault, fid, as_json, conversation):
         print(f"待處理沒更新：{e}")
     cards.render_index(vault, turn_id)
     changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
+    cards.refresh_synthesis(vault, touched, turn_id)
     name = title or name_of(entry["locations"][0]["uri"]).rpartition("/")[2]
     note = f"拿掉「{name}」的卡（原檔已刪）" if card else f"記下「{name}」已刪（沒有卡）"
     journal_cli.record_program_or_warn(vault, note, changed, "cards drop", conversation)

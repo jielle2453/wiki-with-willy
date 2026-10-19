@@ -527,5 +527,50 @@ class PromptHeadOrder(unittest.TestCase):
         self.assertEqual(turn.start(self.V, SID, "幫我登入，密碼如下：\n\nabc123")["prompt_head"], "幫我登入，密碼███")
 
 
+class ProgramBackup(unittest.TestCase):
+    """實體與綜合卡第 9 點：backup 帶 by="program" 寫進 manifest；modified_synthesis_count 不數它（D-075 只攔 AI 自己改的）。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        self.t = turn.start(self.V, SID, "整理")["turn"]
+        self.cards = []
+        for i in range(3):
+            d = self.V / "案子" / f"案{i}"
+            d.mkdir()
+            (d / f"案{i}.md").write_text(f"# 案{i}\n", encoding="utf-8")
+            self.cards.append(f"案子/案{i}/案{i}.md")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write(self, rel):
+        return turn.before_write(self.V, str(self.V / rel), str(self.V), "Z1", SID)
+
+    def test_by_program_written_and_not_counted(self):
+        turn.backup(self.V, self.cards[0], self.t, by="program")
+        turn.backup(self.V, self.cards[1], self.t)
+        rows = {e["path"]: e for e in turn.entries(self.V, self.t)}
+        self.assertEqual(rows[self.cards[0]]["by"], "program")
+        self.assertNotIn("by", rows[self.cards[1]])
+        self.assertEqual(turn.modified_synthesis_count(self.V, self.t), 0, "只有程式備份、AI 沒寫過")
+
+    def test_ai_write_after_program_backup_still_counts(self):
+        """測試後修正裁定 7（F1）：程式先備份（by program）、AI 後改同一張，照樣算一張；同一張再改不重複算。"""
+        turn.backup(self.V, self.cards[0], self.t, by="program")
+        self.assertEqual(self.write(self.cards[0]), (True, "", ""))
+        self.assertEqual(self.write(self.cards[0]), (True, "", ""))
+        self.assertEqual(self.write(self.cards[1]), (True, "", ""))
+        self.assertEqual(turn.modified_synthesis_count(self.V, self.t), 2)
+        self.assertEqual(turn.current(self.V, SID)["ai_synthesis"], self.cards[:2])
+        (self.V / ".system" / "config.json").write_text('{"big_change_synthesis_max": 2}', encoding="utf-8")
+        turn.backup(self.V, self.cards[2], self.t, by="program")
+        ok, code, _reason = self.write(self.cards[2])
+        self.assertEqual((ok, code), (False, "big_change"))
+
+    def test_only_program_accepted(self):
+        with self.assertRaises(ValueError):
+            turn.backup(self.V, self.cards[2], self.t, by="ai")
+
+
 if __name__ == "__main__":
     unittest.main()

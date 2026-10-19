@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "applied": null,
-  "md_sha256": "7dea35a61ee0bac46d07b91edb9c2db8b6c442c704a3bbab1c6d901298275cfe",
+  "md_sha256": "b5422ee995241721b593ccd3a7f47042bac4f5981efe216595581706d5dd432a",
   "types": [],
   "card_types": [
     {
@@ -276,5 +276,7 @@
       "source": "inferred",
       "date": "2026-10-19"
     }
-  ]
+  ],
+  "synthesis_sections": [],
+  "about": []
 }

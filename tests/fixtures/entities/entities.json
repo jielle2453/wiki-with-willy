@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "entities": [
+    {
+      "id": "e-5c1d0a7e",
+      "type": "案子",
+      "name": "信義王",
+      "aliases": ["信義王宅"],
+      "self": false,
+      "status": "active",
+      "source": "confirmed",
+      "date": "2026-10-20",
+      "card": true,
+      "created_turn": "20261020-101500-ab12"
+    },
+    {
+      "id": "e-0f3e9a21",
+      "type": "案子",
+      "name": "王宅",
+      "aliases": [],
+      "self": false,
+      "status": "active",
+      "source": "inferred",
+      "date": "2026-10-20",
+      "card": false,
+      "created_turn": "20261020-101500-ab12"
+    },
+    {
+      "id": "e-7a6b5c4d",
+      "type": null,
+      "name": "林小姐室內設計",
+      "aliases": ["林小姐"],
+      "self": "company",
+      "status": "active",
+      "source": "interview",
+      "date": "2026-10-20",
+      "card": false,
+      "created_turn": "20261020-101500-ab12"
+    },
+    {
+      "id": "e-1a2b3c4d",
+      "type": "案子",
+      "name": "大安陳",
+      "aliases": [],
+      "self": false,
+      "status": "active",
+      "source": "confirmed",
+      "date": "2026-10-20",
+      "card": true,
+      "created_turn": "20261020-101500-ab12"
+    }
+  ]
+}

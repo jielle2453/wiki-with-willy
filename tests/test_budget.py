@@ -158,7 +158,8 @@ class OpeningBudget(unittest.TestCase):
 
 def all_lines_vault(vault):
     """變動、有變動、找不到來源、設定檔四行同時在（客戶設定檔與型別第 12 點）：fixture 沒複製 raw，兩個來源都找不到、
-    清冊是空的（知識庫裡的檔都算新增）；設定檔三節各改一處，再加一個不在型別表的第一層夾。"""
+    清冊是空的（知識庫裡的檔都算新增）；設定檔三節各改一處，再加一個不在型別表的第一層夾。
+    變動行帶「實體夾有變」（實體與綜合卡第 7 點）：信義王 card true、夾被客戶改名。"""
     md = vault / "系統" / "客戶設定檔.md"
     text = md.read_text(encoding="utf-8")
     text = text.replace("| 案子 | 事 |  | 推測 | 2026-10-19 |", "| 案子 | 事 |  | 推測 | 2026-10-19 |\n| 工地 | 事 | 一個裝修案 |")
@@ -166,6 +167,10 @@ def all_lines_vault(vault):
     text = text.replace("| 地址 | 只記種類 | 推測 | 2026-10-19 |", "| 地址 | 只記種類 | 推測 | 2026-10-19 |\n| 請款 | 不整理 |")
     md.write_text(text, encoding="utf-8", newline="\n")
     (vault / "合作廠商與工班名冊").mkdir()
+    entities_fix = ROOT / "tests" / "fixtures" / "entities"
+    shutil.copy2(entities_fix / "entities.json", vault / ".system" / "entities.json")
+    shutil.copy2(entities_fix / "信義王.md", vault / "案子" / "信義王" / "信義王.md")
+    (vault / "案子" / "信義王").rename(vault / "案子" / "信義王的家")
 
 
 class OpeningAllLines(unittest.TestCase):
@@ -178,6 +183,7 @@ class OpeningAllLines(unittest.TestCase):
             with self.subTest(source=source):
                 for head in ("變動：", "有變動：", "這台電腦找不到來源", "設定檔有改（"):
                     self.assertEqual(sum(1 for ln in lines if ln.startswith(head)), 1, (head, lines))
+                self.assertTrue(next(ln for ln in lines if ln.startswith("變動：")).endswith("、實體夾有變 2"), lines)
                 self.assertLessEqual(count_lines(status), OPENING_MAX_LINES)
                 self.assertLessEqual(len(status), OPENING_MAX_CHARS, (len(status), lines))
 

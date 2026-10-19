@@ -340,6 +340,55 @@ class OpeningIngestHint(unittest.TestCase):
         self.assertEqual(self.hint_lines(self.status()), [INGEST_HINT.format(n=3)])
 
 
+class OpeningEntityDrift(unittest.TestCase):
+    """實體與綜合卡第 7 點、驗收 13：實體夾有變接在變動行後、或自成一行，下一行是有變動指示；實體清單壞了變動行照印、log 一行；
+    只寫 env.json。fixture 的 案子/信義王/信義王.md 換成 tests/fixtures/entities 的綜合卡，信義王 card true。"""
+
+    setUp_inventory = OpeningInventory.setUp
+    tearDown = OpeningInventory.tearDown
+    status = OpeningInventory.status
+    change_lines = OpeningInventory.change_lines
+
+    def setUp(self):
+        self.setUp_inventory()
+        fix = ROOT / "tests" / "fixtures" / "entities"
+        shutil.copy2(fix / "entities.json", self.V / ".system" / "entities.json")
+        shutil.copy2(fix / "信義王.md", self.V / "案子" / "信義王" / "信義王.md")
+        (self.V / "案子" / "大安陳").mkdir()
+        shutil.copy2(fix / "大安陳.md", self.V / "案子" / "大安陳" / "大安陳.md")
+
+    def stamps(self):
+        return {p.relative_to(self.V).as_posix(): p.stat().st_mtime_ns
+                for p in (self.V / ".system").rglob("*") if p.is_file()}
+
+    def test_no_drift_no_line(self):
+        self.assertEqual(self.change_lines(self.status()), [])
+
+    def test_drift_alone_then_hint(self):
+        (self.V / "案子" / "信義王").rename(self.V / "案子" / "王宅")
+        before = self.stamps()
+        lines = self.status()
+        i = lines.index("變動：實體夾有變 1")
+        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=5))
+        after = self.stamps()
+        self.assertLessEqual({k for k in after if before.get(k) != after[k]}, {".system/env.json"})
+
+    def test_drift_appended_to_counts(self):
+        (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")
+        shutil.rmtree(self.V / "案子" / "大安陳")
+        lines = self.status()
+        i = lines.index("變動：新增 1、修改 0、不見 0、實體夾有變 1")
+        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=5))
+
+    def test_broken_entities_change_line_still_printed(self):
+        (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")
+        (self.V / ".system" / "entities.json").write_text("{bad", encoding="utf-8")
+        self.assertEqual(self.change_lines(self.status()), ["變動：新增 1、修改 0、不見 0"])
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0].split("\t")[1], "session")
+
+
 ASK = "先 kb profile check 複述，客戶說好才 apply"
 TYPE_ROW = "| 案子 | 事 |  | 推測 | 2026-10-19 |\n"
 

@@ -55,7 +55,8 @@ def message(text, **kw):
 class Defaults(unittest.TestCase):
     def test_shape(self):
         d = profile.defaults(DAY)
-        self.assertEqual((d["schema_version"], d["applied"], d["md_sha256"], d["types"]), (1, None, None, []))
+        self.assertEqual((d["schema_version"], d["applied"], d["md_sha256"], d["types"]), (2, None, None, []))
+        self.assertEqual((d["synthesis_sections"], d["about"]), ([], []))
         self.assertEqual([c["name"] for c in d["card_types"]],
                          ["報價", "合約", "會議紀錄", "型錄", "進度表", "範本", "說明", "其他"])
         for c in d["card_types"]:
@@ -116,7 +117,7 @@ class Parse(unittest.TestCase):
 
     def test_three_sections_empty_is_ok(self):
         self.assertEqual(profile.parse_md(md_with(cards=[], exclusions=[])),
-                         {"types": [], "card_types": [], "exclusions": []})
+                         {"types": [], "card_types": [], "exclusions": [], "synthesis_sections": [], "about": []})
 
     def test_missing_section(self):
         text = md_with().replace("## 二、卡型與段落", "## 卡型與段落")
@@ -365,6 +366,184 @@ class AfterConfirmParse(unittest.TestCase):
     def test_text_after_blank_line_ignored(self):
         text = md_with(["| 工地 | 事 | x |"]).replace("| 工地 | 事 | x |\n", "| 工地 | 事 | x |\n\n備註：這行不算\n| 亂 |\n")
         self.assertEqual([t["name"] for t in profile.parse_md(text)["types"]], ["工地"])
+
+
+def with_rows(text, num, rows):
+    """在第 num 節（四、五）的表格分隔列後面插入列。"""
+    start = text.index(f"## {num}、")
+    sep = text.index("\n|---", start) + 1
+    at = text.index("\n", sep) + 1
+    return text[:at] + "".join(r + "\n" for r in rows) + text[at:]
+
+
+SECTION4_PROMPT = ("每類的綜合卡除了現況、紀事、推算，還要固定寫哪些段？一段一列；「必出現」打 ✓ 的段沒內容時寫「未知」。"
+                   "新加的型別我會先填一組預設，你再改。")
+SECTION5_PROMPT = "你的公司與你本人叫什麼？檔案裡出現這些名字時我知道是你，不會替你自己寫一張。別名用頓號分開。"
+
+
+class SchemaTwo(unittest.TestCase):
+    """實體與綜合卡第 10 點：第四節每類段落、第五節關於你；schema 1 在記憶體遷移；merge 補大類預設、刪光不補。"""
+
+    def base(self, types=("| 案子 | 事 | 裝修案 |",)):
+        return md_with(list(types))
+
+    def test_render_has_five_sections_with_prompts_and_heads(self):
+        text = profile.render_text(profile.defaults(DAY))
+        self.assertIn("\n## 四、每類最想知道什麼\n" + SECTION4_PROMPT + "\n\n| 型別 | 段落 | 必出現 | 提示 | 來源 | 日期 |\n"
+                      "|---|---|---|---|---|---|\n", text)
+        self.assertIn("\n## 五、關於你\n" + SECTION5_PROMPT + "\n\n| 名稱 | 是什麼 | 別名 | 來源 | 日期 |\n|---|---|---|---|---|\n",
+                      text)
+
+    def test_parse_sections_four_and_five(self):
+        text = with_rows(self.base(), "四", ["| 案子 | 時程 | ✓ | 開始與結束 |", "| 案子 | 金額 |  | 總價 | 訪談 | 2026-10-01 |"])
+        text = with_rows(text, "五", ["| 林小姐室內設計 | 公司 | 林小姐、林設計 |", "| 林美華 | 本人 | 美華,Mia |"])
+        got = profile.parse_md(text)
+        self.assertEqual(got["synthesis_sections"], [
+            {"type": "案子", "sections": [{"name": "時程", "required": True, "hint": "開始與結束"},
+                                         {"name": "金額", "required": False, "hint": "總價"}],
+             "source": None, "date": None}])
+        self.assertEqual(got["about"], [
+            {"name": "林小姐室內設計", "kind": "company", "aliases": ["林小姐", "林設計"], "source": None, "date": None},
+            {"name": "林美華", "kind": "person", "aliases": ["美華", "Mia"], "source": None, "date": None}])
+
+    def test_round_trip_with_new_sections(self):
+        d = profile.defaults(DAY)
+        d["types"] = [{"name": "案子", "category": "matter", "note": "", "source": "interview", "date": DAY}]
+        d["synthesis_sections"] = profile.default_sections(d["types"], DAY)
+        d["about"] = [{"name": "林小姐室內設計", "kind": "company", "aliases": ["林小姐"], "source": "interview", "date": DAY}]
+        text = profile.render_text(d)
+        self.assertIn("| 案子 | 時程 |  | 開始、重要日期、預計結束 | 推測 | 2026-10-19 |", text)
+        self.assertIn("| 林小姐室內設計 | 公司 | 林小姐 | 訪談 | 2026-10-19 |", text)
+        self.assertEqual(profile.parse_md(text), {k: d[k] for k in profile.LISTS})
+
+    def test_new_error_sentences(self):
+        cases = [
+            (with_rows(self.base(), "四", ["| 工地 | 時程 |  | x |"]), "第 4 節第 1 列的型別「工地」不在第 1 節"),
+            (with_rows(self.base(), "五", ["| 林小姐室內設計 | 公司行號 |  |"]), "第 5 節第 1 列的是什麼要是 公司 或 本人"),
+            (with_rows(self.base(), "五", ["| a/b | 公司 |  |"]), "第 5 節第 1 列的名稱「a/b」不能用（含不能用的字元）"),
+            (with_rows(self.base(), "五", ["| 案子 | 公司 |  |"]), "第 5 節第 1 列的名稱「案子」不能用（跟第 1 節的型別名一樣）"),
+            (with_rows(self.base(), "五", ["| 林小姐室內設計 | 公司 | 林小姐 |", "| 林美華 | 本人 | 林小姐 |"]),
+             "第 5 節第 2 列跟第 1 列重複（林小姐）"),
+        ]
+        for text, want in cases:
+            with self.subTest(want=want):
+                self.assertEqual(message(text), want)
+
+    def test_removed_type_rows_dropped_only_when_known(self):
+        """實作回報裁定 1：舊 JSON 第一節有、這次拿掉的型別，第四節的列丟掉；從來不在第一節的照樣報錯。"""
+        text = with_rows(self.base(), "四", ["| 工地 | 時程 |  | x |", "| 案子 | 金額 |  | y |"])
+        self.assertEqual(message(text), "第 4 節第 1 列的型別「工地」不在第 1 節")
+        got = profile.parse_md(text, known_types=["案子", "工地"])
+        self.assertEqual([(s["type"], [x["name"] for x in s["sections"]]) for s in got["synthesis_sections"]],
+                         [("案子", ["金額"])])
+        self.assertEqual(message(text, known_types=["案子"]), "第 4 節第 1 列的型別「工地」不在第 1 節")
+
+    def test_missing_new_sections_error_unless_legacy(self):
+        text = self.base()
+        old = text[:text.index("\n## 四、")] + "\n"
+        self.assertEqual(message(old), "少了第 4 節（## 四、…）")
+        got = profile.parse_md(old, legacy=True)
+        self.assertEqual((got["synthesis_sections"], got["about"]), (None, None))
+        self.assertEqual([t["name"] for t in got["types"]], ["案子"])
+
+    def test_merge_adds_category_defaults_for_new_type_only(self):
+        old = profile.defaults(DAY)
+        old["types"] = [{"name": "案子", "category": "matter", "note": "", "source": "inferred", "date": DAY}]
+        old["synthesis_sections"] = profile.default_sections(old["types"], DAY)
+        new = profile.parse_md(self.base(["| 案子 | 事 |  |", "| 工地 | 事 | x |", "| 業主 | 對象 | y |", "| 規定 | 主題 | z |"]))
+        merged = profile.merge(old, new, today="2026-10-20")
+        rows = [(s["type"], x["name"], s["source"], s["date"]) for s in merged["synthesis_sections"] for x in s["sections"]]
+        self.assertEqual(rows, [("工地", "時程", "inferred", "2026-10-20"), ("工地", "金額", "inferred", "2026-10-20"),
+                                ("業主", "聯絡與往來", "inferred", "2026-10-20"), ("業主", "偏好與禁忌", "inferred", "2026-10-20")])
+        self.assertNotIn("案子", {s["type"] for s in merged["synthesis_sections"]}, "第四節刪光的型別不補回")
+
+    def test_merge_keeps_given_rows_for_new_type(self):
+        old = profile.defaults(DAY)
+        new = profile.parse_md(with_rows(self.base(["| 工地 | 事 | x |"]), "四", ["| 工地 | 預算 |  | 錢 |"]))
+        merged = profile.merge(old, new, today="2026-10-20", first=True)
+        self.assertEqual([x["name"] for s in merged["synthesis_sections"] for x in s["sections"]], ["預算"])
+
+    def test_merge_about_stamped(self):
+        old = profile.defaults(DAY)
+        new = profile.parse_md(with_rows(self.base(), "五", ["| 林小姐室內設計 | 公司 | 林小姐 |"]))
+        merged = profile.merge(old, new, today="2026-10-20", first=True)
+        self.assertEqual(merged["about"], [{"name": "林小姐室內設計", "kind": "company", "aliases": ["林小姐"],
+                                            "source": "interview", "date": "2026-10-20"}])
+
+    def test_diff_and_summary(self):
+        old = profile.defaults(DAY)
+        old["types"] = [{"name": "案子", "category": "matter", "note": "裝修案", "source": "inferred", "date": DAY}]
+        text = with_rows(self.base(), "四", ["| 案子 | 時程 |  | x |", "| 案子 | 金額 |  | y |"])
+        new = profile.parse_md(with_rows(text, "五", ["| 林小姐室內設計 | 公司 | 林小姐 |"]))
+        d = profile.diff(old, new)
+        self.assertEqual(d["synthesis_sections"]["added"], [["案子", "時程"], ["案子", "金額"]])
+        self.assertEqual(d["about"]["added"], ["林小姐室內設計"])
+        self.assertEqual(profile.summary_full(d), "每類段落 +2 -0 ~0、關於你 +1 -0 ~0")
+        self.assertEqual(profile.summary_short(d), "每類段落 +2、關於你 +1")
+
+    def test_card_types_for_todo_has_types_sections_about(self):
+        d = profile.defaults(DAY)
+        d["types"] = [{"name": "案子", "category": "matter", "note": "", "source": "inferred", "date": DAY}]
+        d["synthesis_sections"] = profile.default_sections(d["types"], DAY)
+        d["about"] = [{"name": "林小姐室內設計", "kind": "company", "aliases": ["林小姐"], "source": "interview", "date": DAY}]
+        got = profile.card_types_for_todo(d)
+        self.assertEqual(got["types"], [{"name": "案子", "category": "matter"}])
+        self.assertEqual(got["synthesis_sections"], [{"type": "案子", "sections": [
+            {"name": "時程", "required": False, "hint": "開始、重要日期、預計結束"},
+            {"name": "金額", "required": False, "hint": "報價、合約總價、付款期別與已付"}]}])
+        self.assertEqual(got["about"], [{"name": "林小姐室內設計", "kind": "company", "aliases": ["林小姐"]}])
+
+    def test_category_sections(self):
+        self.assertEqual({k: [n for n, _h in v] for k, v in profile.CATEGORY_SECTIONS.items()},
+                         {"party": ["聯絡與往來", "偏好與禁忌"], "matter": ["時程", "金額"], "asset": ["規格", "期限"],
+                          "topic": []})
+
+
+class SchemaOneMigration(unittest.TestCase):
+    def setUp(self):
+        self.tmp, self.V, _raw = make_inv_vault()
+        shutil.copy2(PROFILE / "schema1.json", self.V / ".system" / "profile.json")
+        shutil.copy2(PROFILE / "schema1.md", self.V / "系統" / "客戶設定檔.md")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_load_migrates_in_memory_without_writing(self):
+        p = self.V / ".system" / "profile.json"
+        before = p.read_bytes()
+        data = profile.load(self.V)
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual([(s["type"], [x["name"] for x in s["sections"]], s["source"]) for s in data["synthesis_sections"]],
+                         [("案子", ["時程", "金額"], "inferred")])
+        self.assertEqual(data["about"], [])
+        self.assertEqual(p.read_bytes(), before)
+        self.assertEqual(profile.stored_schema(self.V), 1)
+
+    def test_unchanged_old_md_is_ok(self):
+        self.assertEqual(profile.status(self.V)["state"], "ok")
+
+    def test_changed_old_md_parses_as_legacy(self):
+        md = self.V / "系統" / "客戶設定檔.md"
+        md.write_text(md.read_text(encoding="utf-8").replace("| 案子 | 事 |  | 推測 | 2026-10-19 |\n",
+                                                             "| 案子 | 事 |  | 推測 | 2026-10-19 |\n| 工地 | 事 | x |\n"),
+                      encoding="utf-8", newline="\n")
+        st = profile.status(self.V)
+        self.assertEqual(st["state"], "changed", st["error"])
+        self.assertEqual(st["diff"]["types"]["added"], ["工地"])
+        self.assertEqual(st["diff"]["synthesis_sections"], {"added": [], "removed": [], "changed": []})
+        self.assertEqual(st["new"]["about"], [])
+
+
+
+class AboutListChars(unittest.TestCase):
+    """測試後修正裁定 10：第五節的名稱與別名也擋 , [ ]（併進「含不能用的字元」）。"""
+
+    def test_name_and_alias(self):
+        base = md_with(["| 案子 | 事 | x |"])
+        self.assertEqual(message(with_rows(base, "五", ["| Lee[Inc] | 公司 |  |"])),
+                         "第 5 節第 1 列的名稱「Lee[Inc]」不能用（含不能用的字元）")
+        self.assertEqual(message(with_rows(base, "五", ["| 林小姐室內設計 | 公司 | 林[小姐] |"])),
+                         "第 5 節第 1 列的別名「林[小姐]」不能用（含不能用的字元）")
 
 
 if __name__ == "__main__":

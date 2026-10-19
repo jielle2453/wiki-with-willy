@@ -19,6 +19,8 @@ COMMANDS = {
     "cards": ("kb.cards", "檔案卡：todo 列該做的卡，sync 跟著原檔搬卡，drop 拿掉原檔已刪的卡，index 重寫總目錄"),
     "pending": ("kb.pending_cli", "待處理：list 列等你決定的事，resolve 記下怎麼處理，dismiss 記成不用管"),
     "profile": ("kb.profile_cli", "客戶設定檔：check 看改了什麼，apply 套用並建型別夾"),
+    "entity": ("kb.entity", "實體：add 登記，confirm 確認名稱，rename 改名，merge 合併，remove 移除，rebuild 重寫綜合卡，"
+                            "clean 清放錯的綜合卡，list 列出，render 重寫綜合卡快取"),
 }
 
 

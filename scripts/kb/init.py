@@ -5,6 +5,8 @@
 目標的上層已是知識庫就拒絕（I-054，用 guard.find_vault 找）。CLAUDE.md、.claude/、.system/ 在 Windows 設隱藏屬性，設不成只印一句。
 不開回合、不備份、不寫 ledger：init 之前還沒有知識庫。
 有建東西就寫一段工作日誌程式段（D-085），代號用現在時間、不碰 turns/；日誌自己的檔不在骨架計畫裡，不算項數。
+既有知識庫的 profile.json 是 schema 1（實體與綜合卡第 11 點）：md 沒改過就寫遷移後的 schema 2、重渲染 md（補第四、五節）；
+md 改過就不動，請客戶先 kb profile apply。缺 entities.json 不建（第一次寫時才建）。
 """
 import argparse
 import json
@@ -24,6 +26,8 @@ HIDDEN_ITEMS = ("CLAUDE.md", ".claude", ".system")
 EMPTY_SOURCES = {"schema_version": 1, "sources": []}
 FILE_ATTRIBUTE_HIDDEN = 0x2
 INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+UPGRADE_LINE = "設定檔升級：補第四、五節"
+UPGRADE_BLOCKED = "設定檔有沒套用的改動，先 kb profile apply 再跑 kb init 升級"
 
 
 def add_arguments(sub):
@@ -78,6 +82,26 @@ def _fill_profile(p, have_json, have_md, notes):
     return [profile.PROFILE_POSIX, profile.MD_POSIX], []
 
 
+def _profile_upgrade(p):
+    """兩份設定檔都在、JSON 是 schema 1：md 沒改過回 upgrade，改過回 blocked；其他回 None。"""
+    if not ((p / profile.PROFILE_POSIX).is_file() and (p / profile.MD_POSIX).is_file()):
+        return None
+    if profile.stored_schema(p) != 1:
+        return None
+    try:
+        data = profile.load(p)
+    except ValueError:
+        return None
+    return "upgrade" if profile.md_sha256(p) == data.get("md_sha256") else "blocked"
+
+
+def _upgrade_profile(p):
+    """寫遷移後的 schema 2 JSON、重渲染 md、回填 sha（不開回合、不備份：md 沒改過，內容照 JSON 重寫）。"""
+    data = profile.load(p)
+    data["md_sha256"] = profile.sha256_text(profile.render(p, data))
+    write_json_atomic(p / profile.PROFILE_POSIX, data)
+
+
 def _vault_above(p):
     """p 的上層有沒有知識庫（p 自己有算「補齊」，不算）。回原始大小寫的路徑或 None。"""
     found = guard.find_vault(str(p.parent))
@@ -118,13 +142,18 @@ def run(args):
         return 3
     existed = (p / sources_lib.SOURCES_REL).is_file()
     status = [(rel, kind, (p / rel).exists()) for rel, kind in plan_items()]
+    upgrade = _profile_upgrade(p)
+    upgrade_line = {"upgrade": UPGRADE_LINE, "blocked": UPGRADE_BLOCKED}.get(upgrade)
     if args.check:
         if as_json:  # L8
             print(json.dumps({"vault": str(p), "would_create": [rel for rel, _k, have in status if not have],
-                              "existing": [rel for rel, _k, have in status if have]}, ensure_ascii=False))
+                              "existing": [rel for rel, _k, have in status if have], "profile_upgrade": upgrade},
+                             ensure_ascii=False))
             return 0
         for rel, kind, have in status:
             print(f"{'已有' if have else '會建'} {_label(rel, kind)}")
+        if upgrade_line:
+            print(upgrade_line)
         return 0
     for rel, kind, have in status:
         if have and (p / rel).is_dir() != (kind == "dir"):
@@ -150,24 +179,34 @@ def run(args):
     have = {rel: h for rel, _k, h in status}
     made, touched = _fill_profile(p, have[profile.PROFILE_POSIX], have[profile.MD_POSIX], notes)
     created += made
+    if upgrade == "upgrade":
+        _upgrade_profile(p)
+        touched = [profile.PROFILE_POSIX, profile.MD_POSIX]
     for name in HIDDEN_ITEMS:
         if name in created:
             why = _hide(p / name)
             if why:
                 notes.append(f"隱藏屬性沒設成：{name}，{why}")
-    if created:  # 程式段（D-085）：只數骨架項目；沒有缺的不寫；不開回合
+    if created or upgrade == "upgrade":  # 程式段（D-085）：只數骨架項目；沒有缺的、也沒升級不寫；不開回合
         note = f"建立知識庫：建了 {len(created)} 項" if not existed else f"補齊了 {len(created)} 項"
+        if not created:
+            note = UPGRADE_LINE
+        elif upgrade == "upgrade":
+            note += "；" + UPGRADE_LINE
         changed = [{"path": rel, "action": "create"} for rel in created] + [{"path": rel, "action": "modify"}
                                                                              for rel in touched]
         journal_cli.record_program_or_warn(p, note, changed, "init", journal_cli.in_conversation(p))
     if as_json:
-        print(json.dumps({"vault": str(p), "created": created, "existing": existing}, ensure_ascii=False))
+        print(json.dumps({"vault": str(p), "created": created, "existing": existing, "profile_upgrade": upgrade},
+                         ensure_ascii=False))
     elif not existed:
         print(f"已建立知識庫 {p}：建了 {len(created)} 項")
     elif created:
         print(f"{p} 已是知識庫，補齊了 {len(created)} 項")
     else:
         print(f"{p} 已是知識庫，沒有缺的")
+    if upgrade_line and not as_json:
+        print(upgrade_line)
     for note in notes:
         print(note)
     return 0

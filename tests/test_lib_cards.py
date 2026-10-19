@@ -33,8 +33,8 @@ class ParseFront(unittest.TestCase):
                 cards.parse_front(text)
 
     def test_keys_and_origin_text(self):
-        self.assertEqual(cards.KEYS, ("編號", "出處", "原檔", "指紋", "內容指紋", "標題", "卡型", "文件日期", "讀取",
-                                      "製卡日期", "範本版本", "敏感資料種類", "開原檔"))
+        self.assertEqual(cards.KEYS, ("編號", "出處", "原檔", "指紋", "內容指紋", "標題", "卡型", "實體", "待補型別",
+                                      "文件日期", "讀取", "製卡日期", "範本版本", "敏感資料種類", "開原檔"))
         self.assertEqual(cards.ORIGIN_TEXT, {"client_file": "客戶原檔", "intake": "對話收件", "ai_output": "AI 產出"})
 
 
@@ -109,7 +109,8 @@ class Header(Vault):
         self.assertEqual(front["指紋"], e["fingerprints"][-1]["sha256"])
         self.assertEqual(front["內容指紋"], e["fingerprints"][-1]["text_sha256"])
         self.assertEqual(front["標題"], "（填）")
-        self.assertEqual(front["範本版本"], "1")
+        self.assertEqual(front["範本版本"], "2")
+        self.assertEqual((front["實體"], front["待補型別"]), ([], []))
         self.assertEqual(front["敏感資料種類"], [])
         self.assertEqual(front["開原檔"], cards.open_link(self.raw / _cards.MEETING))
         self.assertEqual(list(front), [k for k in cards.KEYS])
@@ -161,7 +162,7 @@ class Validate(Vault):
             (self.edited("卡型: 會議紀錄", "卡型: （填）"), "卡型"),
             (self.edited("文件日期: 2026-10-01", "文件日期: 115年10月1日"), "文件日期"),
             (self.edited("讀取: 完整", "讀取: 全部"), "讀取"),
-            (self.edited("範本版本: 1", "範本版本: 2"), "範本版本"),
+            (self.edited("範本版本: 2", "範本版本: 3"), "範本版本該是 2"),
             (self.edited("原檔:\n  - file://" + _cards.MEETING + "\n", "原檔: []\n"), "檔頭少了「原檔」"),
         ]
         for text, want in cases:
@@ -428,6 +429,125 @@ class AfterTest(Vault):
         pid = self.todo()["missing"][0]["pending_id"]
         pending.resolve(self.V, pid, "先留著", turn.start(self.V, None, "")["turn"])
         self.assertEqual(self.todo()["missing"], [])
+
+
+class TemplateTwo(unittest.TestCase):
+    """實體與綜合卡第 4 點：第二版檔頭、實體夾預填、實體名稱三種錯、第一版進 unlinked、types_added、missing_types。"""
+
+    def setUp(self):
+        from tests import _entities
+        self.E = _entities
+        self.tmp, self.V, self.raw = _entities.make_entity_vault(with_entities=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def todo(self):
+        return cards.todo(self.V, sources_lib.load(self.V))
+
+    def by_id(self):
+        return {e["id"]: e for e in inventory.load(self.V)["entries"]}
+
+    def reason(self, rel):
+        return cards.validate(self.V, rel, self.by_id())
+
+    def test_fixture_v1_card_has_no_v2_keys(self):
+        front = cards.parse_front((self.E.FIX / "範本第一版-0f0f0f0f.md").read_text(encoding="utf-8"))
+        self.assertEqual(front["範本版本"], cards.OLD_TEMPLATE_VERSION)
+        self.assertFalse(set(cards.V2_KEYS) & set(front))
+        self.assertEqual([k for k in cards.KEYS if k not in front], ["內容指紋", "實體", "待補型別"])
+
+    def test_prefill_from_entity_folder(self):
+        front = cards.parse_front(self.E.new_item(self.V, self.E.CONTRACT)["header"])
+        self.assertEqual(front["實體"], ["信義王"])
+        self.assertEqual(cards.parse_front(self.E.new_item(self.V, self.E.QUOTE)["header"])["實體"], [])
+
+    def test_entity_name_errors(self):
+        cases = [
+            ((["信義王宅"], ()), "實體「信義王宅」該寫登記的名稱「信義王」"),
+            ((["順發"], ()), "實體「順發」還沒登記，先跑 kb entity add"),
+            ((["信義王"], ["案子"]), "型別「案子」已在型別表，先 kb entity add 再掛"),
+            ((["林小姐"], ()), "實體「林小姐」該寫登記的名稱「林小姐室內設計」"),
+        ]
+        rel = self.E.write_card(self.V, self.E.QUOTE, "信義王報價", ["信義王"])
+        self.assertEqual(self.reason(rel), (True, ""))
+        p = self.V / rel
+        good = p.read_text(encoding="utf-8")
+        for (names, pending), want in cases:
+            with self.subTest(want=want):
+                p.write_text(self.E.with_entities(good, names, pending), encoding="utf-8")
+                self.assertEqual(self.reason(rel), (False, want))
+
+    def test_merged_name_points_to_target(self):
+        from kb._lib import entities
+        rows = entities.load(self.V)["entities"]
+        for e in rows:
+            if e["id"] == self.E.WANG:
+                e.update(status="merged", merged_into=self.E.XINYI)
+        self.E.put_entities(self.V, rows)
+        rel = self.E.write_card(self.V, self.E.QUOTE, "信義王報價", ["王宅"])
+        self.assertEqual(self.reason(rel), (False, "實體「王宅」該寫登記的名稱「信義王」"))
+
+    def test_v1_goes_to_unlinked_then_upgrade(self):
+        rel = self.E.write_card(self.V, self.E.QUOTE, "信義王報價", [])
+        self.E.to_v1(self.V, rel)
+        data = self.todo()
+        fid = cards.parse_front((self.V / rel).read_text(encoding="utf-8"))["編號"]
+        self.assertEqual(data["unlinked"], [{"id": fid, "path": rel, "reason": "v1", "types": [], "prefill": []}])
+        self.assertEqual(data["broken"], [])
+        self.assertEqual(self.reason(rel), (False, "範本版本該是 2"))
+        p = self.V / rel
+        text = p.read_text(encoding="utf-8").replace("卡型: 會議紀錄\n", "卡型: 會議紀錄\n實體: [信義王]\n待補型別: []\n")
+        p.write_text(text.replace("範本版本: 1", "範本版本: 2"), encoding="utf-8")
+        self.assertEqual(self.reason(rel), (True, ""))
+        self.assertEqual(self.todo()["unlinked"], [])
+
+    def test_v1_prefill_for_entity_folder_card(self):
+        rel = self.E.write_card(self.V, self.E.CONTRACT, "信義王合約", ["信義王"])
+        self.E.to_v1(self.V, rel)
+        (item,) = self.todo()["unlinked"]
+        self.assertEqual(item["prefill"], ["信義王"])
+
+    def test_missing_types_then_types_added(self):
+        rel = self.E.write_card(self.V, self.E.QUOTE, "順發請款", [], pending=["廠商"])
+        self.assertEqual(self.reason(rel), (True, ""))
+        data = self.todo()
+        self.assertEqual(data["missing_types"], {"廠商": 1})
+        self.assertEqual(data["unlinked"], [])
+        self.E.set_profile(self.V, types=(("案子", "matter"), ("業主", "party"), ("廠商", "party")))
+        data = self.todo()
+        self.assertEqual(data["missing_types"], {})
+        (item,) = data["unlinked"]
+        self.assertEqual((item["path"], item["reason"], item["types"]), (rel, "types_added", ["廠商"]))
+
+    def test_entities_and_profile_blocks(self):
+        data = self.todo()
+        self.assertEqual(data["entities"][0], {"name": "信義王", "type": "案子", "aliases": ["信義王宅"], "self": False})
+        self.assertIn({"name": "林小姐室內設計", "type": None, "aliases": ["林小姐"], "self": "company"}, data["entities"])
+        self.assertEqual(data["profile"]["types"], [{"name": "案子", "category": "matter"},
+                                                    {"name": "業主", "category": "party"}])
+        self.assertEqual([s["type"] for s in data["profile"]["synthesis_sections"]], ["案子", "業主"])
+        for key in ("synthesis_new", "synthesis_stale", "synthesis_broken", "entity_drift"):
+            self.assertEqual(data[key], [], key)
+
+    def test_rewrite_entities_only_touches_that_line(self):
+        rel = self.E.write_card(self.V, self.E.QUOTE, "信義王報價", ["信義王", "王宅"])
+        text = (self.V / rel).read_text(encoding="utf-8")
+        new = cards.rewrite_entities(text, ["王宅"])
+        self.assertEqual([ln for ln in new.splitlines() if not ln.startswith("實體:")],
+                         [ln for ln in text.splitlines() if not ln.startswith("實體:")])
+        self.assertIn("\n實體: [王宅]\n", new)
+
+
+
+class RewriteEntitiesBlock(unittest.TestCase):
+    """測試後修正裁定 13：實體 寫成「實體:」下接「  - 項」的區塊也換，換完寫成一行的清單。"""
+
+    def test_block_form_replaced_by_inline(self):
+        text = "---\n編號: f-1\n卡型: 報價\n實體:\n  - 信義王\n  - 林小姐室內設計\n待補型別: []\n---\n# 卡\n"
+        new = cards.rewrite_entities(text, ["王宅", "林小姐室內設計"])
+        self.assertEqual(new, "---\n編號: f-1\n卡型: 報價\n實體: [王宅, 林小姐室內設計]\n待補型別: []\n---\n# 卡\n")
+        self.assertEqual(cards.parse_front(new)["實體"], ["王宅", "林小姐室內設計"])
 
 
 if __name__ == "__main__":

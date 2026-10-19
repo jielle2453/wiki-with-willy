@@ -89,15 +89,16 @@ class Check(Base):
         self.assertEqual(self.kb("check").stdout.splitlines(), ["客戶設定檔有改，但沒有內容上的差異"])
 
     def test_detail_lines_for_each_section(self):
-        self.drop_line("| 案子 |")
+        self.drop_line("| 案子 | 事 |")  # 只刪第一節那列：第四節案子的列跟著丟掉（實作回報裁定 1）
         self.add_types(ROW)
         text = self.md_text().replace("| 報價 | 日期與數字 |  |", "| 報價 | 日期與數字 | ✓ |")
         text = text.replace("| 地址 | 只記種類 | 推測 | 2026-10-19 |\n", "| 地址 | 只記種類 | 推測 | 2026-10-19 |\n| 請款 | 不整理 |\n")
         self.md.write_text(text, encoding="utf-8", newline="\n")
         lines = self.kb("check").stdout.splitlines()
-        self.assertEqual(lines, ["客戶設定檔有改：型別 +1 -1 ~0、卡型 +0 -0 ~1、不整理與敏感 +1 -0 ~0",
+        self.assertEqual(lines, ["客戶設定檔有改：型別 +1 -1 ~0、卡型 +0 -0 ~1、不整理與敏感 +1 -0 ~0、每類段落 +0 -2 ~0",
                                  "- 型別 多了 工地（事）", "- 型別 少了 案子（夾裡還有 2 項，套用會被擋）",
                                  "- 卡型 報價 的段落 日期與數字 改了", "- 不整理與敏感 多了 請款（不整理）",
+                                 "- 每類段落 案子 的 時程 少了", "- 每類段落 案子 的 金額 少了",
                                  "第一層夾不在型別表：案子（請在設定檔第一節補一列）"])
 
     def test_json(self):
@@ -159,14 +160,14 @@ class Apply(Base):
     def test_remove_empty_row_and_refuse_nonempty(self):
         self.add_types(ROW, "| 工班 | 對象 | 施工班底 |")
         self.apply()
-        self.drop_line("| 工班 |")
+        self.drop_line("| 工班 | 對象 |")
         self.assertIn("- 型別 少了 工班（空夾會一起拿掉）", self.kb("check").stdout.splitlines())
-        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 -1（拿掉了空夾 工班）"])
+        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 -1（拿掉了空夾 工班）、每類段落 -2"])
         self.assertFalse((self.V / "工班").exists(), "空夾一起拿掉（確認後修正裁定 21）")
-        self.assertEqual(self.programs()[-1]["note"], "套用客戶設定檔：型別 -1（拿掉了空夾 工班）")
+        self.assertEqual(self.programs()[-1]["note"], "套用客戶設定檔：型別 -1（拿掉了空夾 工班）、每類段落 -2")
         self.assertEqual([t["name"] for t in self.data()["types"]], ["案子", "工地"])
         (self.V / "工地" / "a.txt").write_text("x", encoding="utf-8")
-        self.drop_line("| 工地 |")
+        self.drop_line("| 工地 | 事 |")
         before_json, before_md = self.data(), self.md_text()
         self.assertEqual(self.apply(3), ["型別「工地」底下還有 1 項，先搬走再拿掉這列"])
         self.assertEqual((self.data(), self.md_text()), (before_json, before_md))
@@ -174,13 +175,16 @@ class Apply(Base):
     def test_rename_is_one_less_one_more(self):
         self.add_types("| 客戶 | 對象 | 業主 |")
         self.apply()
-        text = self.md_text().replace("| 客戶 | 對象 |", "| 業主 | 對象 |")
+        text = self.md_text().replace("| 客戶 | 對象 |", "| 業主 | 對象 |")  # 只改第一節：舊名的第四節列丟掉、新名補預設
         self.md.write_text(text, encoding="utf-8", newline="\n")
         lines = self.kb("check").stdout.splitlines()
         self.assertIn("- 型別 多了 業主（對象）", lines)
         self.assertIn("- 型別 少了 客戶（空夾會一起拿掉）", lines)
-        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 +1 -1（拿掉了空夾 客戶）；建了資料夾 業主"])
+        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 +1 -1（拿掉了空夾 客戶）、每類段落 -2；建了資料夾 業主"])
         self.assertTrue(not (self.V / "客戶").exists() and (self.V / "業主").is_dir())
+        rows = [(x["type"], y["name"], x["source"]) for x in self.data()["synthesis_sections"] for y in x["sections"]]
+        self.assertIn(("業主", "聯絡與往來", "inferred"), rows)
+        self.assertNotIn("客戶", {r[0] for r in rows})
 
     def test_rmdir_failure_keeps_folder_and_says_so(self):
         import contextlib
@@ -189,12 +193,12 @@ class Apply(Base):
         from kb import profile_cli
         self.add_types("| 客戶 | 對象 | 業主 |")
         self.apply()
-        self.drop_line("| 客戶 |")
+        self.drop_line("| 客戶 | 對象 |")
         out = io.StringIO()
         with mock.patch.object(profile_cli.os, "rmdir", side_effect=PermissionError(32, "被佔用")), \
                 contextlib.redirect_stdout(out):
             self.assertEqual(profile_cli._apply(self.V, False, True), 0)
-        self.assertEqual(out.getvalue().splitlines()[0], "已套用客戶設定檔：型別 -1（客戶 夾是空的，會留著）")
+        self.assertEqual(out.getvalue().splitlines()[0], "已套用客戶設定檔：型別 -1（客戶 夾是空的，會留著）、每類段落 -2")
         self.assertTrue((self.V / "客戶").is_dir())
         self.assertEqual([t["name"] for t in self.data()["types"]], ["案子"])
 
@@ -279,6 +283,75 @@ class AfterTest(Base):
         r = self.kb("check")
         self.assertEqual((r.returncode, r.stdout.splitlines()),
                          (3, ["客戶設定檔讀不懂：第 1 節第 2 列欄數不對（要 3 欄或 5 欄）"]))
+
+
+class SchemaTwoApply(Base):
+    """實體與綜合卡第 10 點、驗收 14、15：第五節登記客戶自己、第四節補大類預設、刪光不補。"""
+
+    def add_about(self, row):
+        self.md.write_text(self.md_text().rstrip("\n") + "\n" + row + "\n", encoding="utf-8", newline="\n")
+
+    def test_about_registers_self_entity(self):
+        from kb._lib import entities
+        self.add_about("| 林小姐室內設計 | 公司 | 林小姐 |")
+        self.assertIn("- 關於你 多了 林小姐室內設計（公司）", self.kb("check").stdout.splitlines())
+        lines = self.apply()
+        self.assertEqual(lines, ["已套用客戶設定檔：關於你 +1", "關於你：登記了 林小姐室內設計"])
+        (e,) = entities.load(self.V)["entities"]
+        self.assertEqual((e["name"], e["self"], e["type"], e["aliases"]), ("林小姐室內設計", "company", None, ["林小姐"]))
+        self.assertIn(entities.ENTITIES_POSIX, {c["path"] for c in self.programs()[-1]["changed"]})
+        r = run_kb("entity", "add", "--type", "案子", "--name", "林小姐", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "「林小姐」是你自己（關於你），掛「林小姐室內設計」"))
+        todo = json.loads(run_kb("cards", "todo", "--json", cwd=self.V).stdout)
+        self.assertEqual(todo["profile"]["about"], [{"name": "林小姐室內設計", "kind": "company", "aliases": ["林小姐"]}])
+
+    def test_new_type_gets_category_defaults_and_deleted_rows_not_refilled(self):
+        self.add_types("| 工地 | 事 | 裝修現場 |")
+        self.apply()
+        rows = [(s["type"], x["name"], s["source"]) for s in self.data()["synthesis_sections"] for x in s["sections"]]
+        self.assertIn(("工地", "時程", "inferred"), rows)
+        self.assertIn(("工地", "金額", "inferred"), rows)
+        self.assertIn("| 工地 | 時程 |  | 開始、重要日期、預計結束 | 推測 |", self.md_text())
+        self.drop_line("| 案子 | 時程 |")
+        self.drop_line("| 案子 | 金額 |")
+        self.apply()
+        self.assertNotIn("案子", {s["type"] for s in self.data()["synthesis_sections"]})
+        self.assertEqual(self.data()["schema_version"], 2)
+
+    def test_drop_type_row_only_applies_and_drops_its_sections(self):
+        """實作回報裁定 1：只刪第一節的列，apply 成功，第四節那個型別的列一起拿掉。"""
+        self.add_types("| 廠商 | 對象 | 供應商 |")
+        self.apply()
+        self.assertIn("| 廠商 | 聯絡與往來 |", self.md_text())
+        self.drop_line("| 廠商 | 對象 |")
+        self.assertEqual(self.kb("check").stdout.splitlines()[0], "客戶設定檔有改：型別 +0 -1 ~0、每類段落 +0 -2 ~0")
+        self.assertEqual(self.apply(), ["已套用客戶設定檔：型別 -1（拿掉了空夾 廠商）、每類段落 -2"])
+        self.assertNotIn("廠商", {x["type"] for x in self.data()["synthesis_sections"]})
+        self.assertNotIn("| 廠商 |", self.md_text())
+
+    def test_section_four_error_sentence(self):
+        """第四節的型別從來不在第一節（打錯字）照樣報錯。"""
+        self.md.write_text(self.md_text().replace("| 案子 | 時程 |", "| 工地 | 時程 |"), encoding="utf-8", newline="\n")
+        self.assertEqual(self.apply(3), ["客戶設定檔讀不懂：第 4 節第 1 列的型別「工地」不在第 1 節"])
+
+
+
+class AboutResync(Base):
+    """測試後修正裁定 12：上次 apply 寫完設定檔、關於你沒登記成（實體清單壞了），修好後再 apply（沒有內容差異）會補上。"""
+
+    def test_apply_without_diff_still_syncs_about(self):
+        from kb._lib import entities
+        ent = self.V / ".system" / "entities.json"
+        ent.write_text("{bad", encoding="utf-8")
+        self.md.write_text(self.md_text().rstrip("\n") + "\n| 林小姐室內設計 | 公司 | 林小姐 |\n", encoding="utf-8",
+                           newline="\n")
+        self.assertEqual(self.apply(3)[0][:len("狀態檔讀不到：.system/entities.json（")],
+                         "狀態檔讀不到：.system/entities.json（")
+        ent.unlink()
+        self.assertEqual(self.apply(), ["客戶設定檔沒有改，沒有套用", "關於你：登記了 林小姐室內設計"])
+        self.assertEqual([e["name"] for e in entities.load(self.V)["entities"]], ["林小姐室內設計"])
+        self.assertEqual(self.programs()[-1]["note"], "關於你：登記了 林小姐室內設計")
+        self.assertEqual(self.apply(), ["客戶設定檔沒有改，沒有套用"], "冪等：第二次沒有動到就不印")
 
 
 if __name__ == "__main__":

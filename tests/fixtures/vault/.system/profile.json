@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "applied": null,
-  "md_sha256": "32fdf8d13f8a6663eaad8fa21602c5157a853325cc607dfe914eb06ef94125a8",
+  "md_sha256": "1fa1422282a476240dfbbfd302339a00f81918a49c9db708a37f6d7d9e1b6dcc",
   "types": [
     {
       "name": "案子",
@@ -284,5 +284,25 @@
       "source": "inferred",
       "date": "2026-10-19"
     }
-  ]
+  ],
+  "synthesis_sections": [
+    {
+      "type": "案子",
+      "sections": [
+        {
+          "name": "時程",
+          "required": false,
+          "hint": "開始、重要日期、預計結束"
+        },
+        {
+          "name": "金額",
+          "required": false,
+          "hint": "報價、合約總價、付款期別與已付"
+        }
+      ],
+      "source": "inferred",
+      "date": "2026-10-19"
+    }
+  ],
+  "about": []
 }

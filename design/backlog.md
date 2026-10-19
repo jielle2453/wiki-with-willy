@@ -75,6 +75,7 @@
 | B-063 | 2026-10-19 | deferred | 實體與綜合卡測試第二輪低項 L1～L7：同回合新建後被打回重寫的綜合卡也算進 ai_synthesis；`_Undo.rollback` 沒逐步 try；改型別失敗時先建的空型別夾不拿掉；apply 補登記關於你時 `--json` 的 applied 仍 false；commands.md 那處 rules/synthesis.md 沒帶 ${CLAUDE_PLUGIN_ROOT}（已滿 150 行）；`modified_synthesis_count` 只剩測試在叫；clean 對含 .. 的一律拒（比裁定 14 嚴）。細節 reports/實體與綜合卡-測試.md 第二輪 | 實體與綜合卡測試第二輪 |
 | B-064 | 2026-10-19 | open | 中：AI 在工具之間寫英文自言自語給客戶看（「Step 1 is to write out the answer…」「All 35 cards are done. Step 9: …」），ingest 製卡確認 G10 起就有，步驟多時更常出現；R-10 已寫仍被違反。候選：skeleton CLAUDE.md 加一句「工具之間的過場也是給客戶看的，一律繁體中文、不唸步驟編號」（語言這種身分級的事放客戶端 CLAUDE.md 才收得住，manage 題的經驗）、SKILL.md 的順序不用「第 N 步」編號；日程第一題（note skill）一起處理，既有知識庫要等升級才拿得到新 CLAUDE.md | 實體與綜合卡確認 I1 |
 | B-065 | 2026-10-19 | deferred | 實體與綜合卡確認低項：carding.md 第七節補「實體、待補型別、範本版本同一次 Edit 改完」（分兩次會被 PostToolUse 擋一次，I2）；回答末尾的「綜合卡：新寫 X、更新 Y」沒出現（I3）；profile check／apply 不報程式補的每類段落預設列（I5）；AI 把 drift 問句改寫成像要客戶自己動手（I6）；問題上限 3 個要寫明含 AI 自己加的（裁定 20） | 實體與綜合卡確認 |
+| B-066 | 2026-10-19 | open | 「實體夾有變」在客戶回答前每次開場都印、AI 每次都問（I-045／I-059 同類：客戶不想答就變成天天出現的訊號）；要有「先不管」的路，例如答「先不管」記進 env 或實體條目、同一個變化不再問，夾又變了才再問 | 實體與綜合卡結案查核 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

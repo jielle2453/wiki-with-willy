@@ -103,9 +103,9 @@ def line_missing_sources(vault):
     return MISSING_SOURCES_LINE.format(names=names)
 
 
-PROFILE_CHANGED = "設定檔有改（{summary}）：跑 kb profile check 複述後問客戶要不要套用，說好才 apply"
+PROFILE_CHANGED = "設定檔有改（{summary}）：先 kb profile check 複述，客戶說好才 apply"
 PROFILE_ERROR = "設定檔有改但讀不懂（{error}），改好下次再問"
-PROFILE_UNLISTED = "第一層夾{names}不在型別表，請客戶在設定檔補一列"
+PROFILE_UNLISTED = "第一層夾{names}不在型別表（請客戶補進設定檔）"
 PROFILE_LINE_MAX = 120
 PROFILE_UNLISTED_SHOWN = 2
 

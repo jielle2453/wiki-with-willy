@@ -18,6 +18,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 ## 分辨
 
 - 開場有「變動：…」與「有變動：…」兩行，或客戶說「我加了」「我改了」「我刪了」「搬了」「有新東西嗎」「整理」→ 照下面的順序做。
+- 開場有「設定檔有改」、客戶說「設定檔改好了」「套用」→ 照 commands.md 的 profile 節：先 `profile check` 複述差異、客戶說好才 `profile apply`；開場同時有「有變動」時先處理設定檔再整理。
 - 「把 D 槽加進來」「不要讀…」「那個資料夾不要了」→ 走 manage，不在這裡做。manage 加完資料夾問「要我現在整理成卡嗎？」，客戶說要才回到這裡。
 - 搬動分兩種：**來源根**（登記的那個資料夾本身）搬了或改名 → manage；來源**裡面**的檔或子夾搬了或改名 → 這裡。
 - 「這是合約內容，存起來」（貼一段文字或圖）→ 這版做不到，說「收件功能之後補；先把檔案放進登記的資料夾，我再整理」，不寫任何檔。
@@ -46,13 +47,14 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
    - 不用管 → `pending dismiss <待處理編號>`；
    - 含糊（「嗯」「好像吧」）→ 再問一次，這句話裡不做。刪除不能靠猜。
    - 讀不到的檔客戶說「先跳過」→ `pending dismiss <待處理編號>`（檔案換了程式會自動重讀）。
-8. 這句話裡改了知識庫（寫卡、搬卡、拿掉卡、記待處理），最後跑一次 `turn note "<白話一句>"`，一句講完全部做了什麼；再跑會蓋掉前一次。
+8. 這句話裡改了知識庫（寫卡、搬卡、拿掉卡、記待處理、記成不整理），最後跑一次 `turn note "<白話一句>"`，一句講完全部做了什麼；再跑會蓋掉前一次。
 
 ## 回答末尾
 
 - 一句講做了什麼：檔名最多列 5 個，多的講份數（「我把 報價_v3.txt 整理進去、進度.xlsx 更新了、估價單的卡跟著搬到信義王」）。
 - 讀不到的講份數與原因（「合約_加密.pdf 讀不到：有密碼」），說記在 `系統/待處理.md`。
 - 憑證檔、只在雲端的檔、太大的檔、讀取出錯的檔不做卡；todo 的 `skipped` 有份數時講一句（只在雲端的請客戶在檔案上按右鍵選「保留在這台電腦上」）。
+- 依設定不整理的講一句種類與份數（「請款類 4 份依你的設定不整理」）。
 - 接著問 `missing` 那幾件。
 
 ## 共通
@@ -66,4 +68,4 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 ## 參考
 
 - `references/carding.md`：製卡規則（讀法、檔頭欄位、段落與〔位置〕、長度、個資、特殊情況）。
-- `references/commands.md`：`convert`、`cards todo|sync|drop|index`、`pending list|resolve|dismiss` 的參數、第一行長相、exit code、`--json` 欄位、拒絕原因怎麼跟客戶說。
+- `references/commands.md`：`convert`、`cards todo|sync|drop|index|skip`、`profile check|apply`、`pending list|resolve|dismiss` 的參數、第一行長相、exit code、`--json` 欄位、拒絕原因怎麼跟客戶說。

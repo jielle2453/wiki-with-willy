@@ -340,7 +340,7 @@ class OpeningIngestHint(unittest.TestCase):
         self.assertEqual(self.hint_lines(self.status()), [INGEST_HINT.format(n=3)])
 
 
-ASK = "跑 kb profile check 複述後問客戶要不要套用，說好才 apply"
+ASK = "先 kb profile check 複述，客戶說好才 apply"
 TYPE_ROW = "| 案子 | 事 |  | 推測 | 2026-10-19 |\n"
 
 
@@ -383,10 +383,10 @@ class OpeningProfile(unittest.TestCase):
 
     def test_unlisted_alone_and_joined(self):
         (self.V / "廠商").mkdir()
-        self.assertEqual(self.profile_lines(), ["設定檔：第一層夾「廠商」不在型別表，請客戶在設定檔補一列"])
+        self.assertEqual(self.profile_lines(), ["設定檔：第一層夾「廠商」不在型別表（請客戶補進設定檔）"])
         self.edit(TYPE_ROW, TYPE_ROW + "| 工地 | 事 | x |\n")
         self.assertEqual(self.profile_lines(),
-                         [f"設定檔有改（型別 +1）：{ASK}；第一層夾「廠商」不在型別表，請客戶在設定檔補一列"])
+                         [f"設定檔有改（型別 +1）：{ASK}；第一層夾「廠商」不在型別表（請客戶補進設定檔）"])
 
     def test_long_unlisted_lists_two(self):
         for i in range(5):

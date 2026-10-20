@@ -1,7 +1,9 @@
-"""kb entity add／confirm／rename／merge／remove／rebuild／clean／list／render（實體與綜合卡第 3 點，D-115～D-117、D-057）。
+"""kb entity add／confirm／rename／merge／remove／rebuild／clean／list／render／progress／suggest-close
+（實體與綜合卡第 3 點，D-115～D-117、D-057；日程第 4 點，D-126、D-127）。
 
 實體清單只准這裡寫（I-080）：寫入的子子命令在 entities.json 的鎖裡讀改寫（等 30 秒，等不到「等不到鎖，沒有寫入」exit 3），
 寫前備進回合；改到檔案卡就重寫 總目錄.md，最後重渲染受影響實體的綜合卡快取（synthesis.render_cache，備份帶 by program）。
+progress 改事類實體的進行中／結案／擱置（結案連帶結束它的期間條目），suggest-close 記一條待處理等客戶答。
 rename 搬了夾、夾裡有客戶原檔時，鎖外接著 inventory.scan（只掃知識庫）加 apply，讓原檔的新位置入冊（同 folders add）。
 終端機跑的記一段工作日誌程式段（D-085），command 是 entity <子子命令>；對話裡叫的併進回合。
 """
@@ -10,7 +12,7 @@ import json
 from pathlib import Path
 
 from kb import journal_cli
-from kb._lib import cards, entities, inventory, synthesis, turn
+from kb._lib import agenda, cards, entities, inventory, pending, synthesis, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
@@ -41,13 +43,25 @@ def add_arguments(sub):
     cl.add_argument("path", help="放錯的綜合卡（相對總資料夾，例：案子/王宅/王宅.md）")
     ls = subs.add_parser("list", help="列出實體", description="列出實體、掛了幾張檔案卡、有沒有綜合卡。")
     rd = subs.add_parser("render", help="重寫綜合卡的快取欄", description="重寫全部綜合卡檔頭的 檔案卡、相關實體 兩欄。")
-    for p in (ad, cf, rn, mg, rm, rb, cl, ls, rd):
+    pg = subs.add_parser("progress", help="事類實體的狀態", description="事類實體記成進行中、結案或擱置；結案連帶結束它的期間條目。")
+    pg.add_argument("ref", help="名稱或編號（e-…）")
+    pg.add_argument("state", help="進行中、結案、擱置")
+    pg.add_argument("--evidence", action="append", help="依據的檔案卡編號（f-…），可以重複")
+    pg.add_argument("--note", help="一句白話（例：客戶說還沒結案）")
+    sc = subs.add_parser("suggest-close", help="看起來結案了，記一條待問", description="製卡者讀到結束證據：記一條待處理，由程式問客戶。")
+    sc.add_argument("ref", help="名稱或編號（e-…）")
+    sc.add_argument("--evidence", action="append", required=True, help="依據的檔案卡編號（f-…），可以重複")
+    for p in (ad, cf, rn, mg, rm, rb, cl, ls, rd, pg, sc):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
 
 def _state(entry):
     return "待確認" if entry.get("source") == "inferred" else "確認"
+
+
+PROGRESS_BY_TEXT = {v: k for k, v in entities.PROGRESS_TEXT.items()}
+PROGRESS_REFUSAL = "狀態要是 進行中、結案、擱置 之一"
 
 
 def _out(as_json, lines, payload):
@@ -166,6 +180,54 @@ def _clean(vault, args, as_json, conversation, turn_id):
     return 0
 
 
+def _progress(vault, args, as_json, conversation, turn_id):
+    state = PROGRESS_BY_TEXT.get(args.state.strip())
+    if state is None:
+        print(PROGRESS_REFUSAL)
+        return 3
+    note = args.note.strip() if args.note else None
+    got = entities.set_progress(vault, args.ref, state, turn_id, evidence=args.evidence, note=note)
+    name = got["entity"]["name"]
+    if state == "closed":
+        n = len(got["closed_periods"])
+        lines = [f"已記成結案：{name}" + (f"（期間 {n} 條一起結束）" if n else "")]
+    elif state == "paused":
+        lines = [f"已記成擱置：{name}"]
+    elif got["was"] == "ongoing":
+        lines = [f"已記下：{name}還在進行中" + (f"（{note}）" if note else "")]
+    else:
+        lines = [f"已記成進行中：{name}"]
+    if got["reopened"]:
+        lines.append("期間條目沒有重開，要的話說改期")
+    changed = [{"path": entities.ENTITIES_POSIX, "action": "modify"}]
+    if got["closed_periods"]:
+        changed += [{"path": agenda.AGENDA_POSIX, "action": "modify"}, {"path": agenda.MD_POSIX, "action": "modify"}]
+    if got["pending_closed"]:
+        changed += [{"path": pending.PENDING_POSIX, "action": "modify"}, {"path": pending.MD_POSIX, "action": "modify"}]
+    journal_cli.record_program_or_warn(vault, f"{name}記成{entities.PROGRESS_TEXT[state]}", changed, "entity progress",
+                                       conversation)
+    _out(as_json, lines, {"entity": got["entity"], "closed_periods": [p["id"] for p in got["closed_periods"]]})
+    return 0
+
+
+def _suggest_close(vault, args, as_json, conversation, turn_id):
+    got = entities.suggest_close(vault, args.ref, args.evidence, turn_id)
+    name = got["entity"]["name"]
+    if got["recorded"]:
+        line = f"已記下，會問客戶「{name}」要不要記成結案"
+        journal_cli.record_program_or_warn(
+            vault, f"記下結案待問：{name}",
+            [{"path": pending.PENDING_POSIX, "action": "modify"}, {"path": pending.MD_POSIX, "action": "modify"}],
+            "entity suggest-close", conversation)
+    elif got["skipped"] == "not_ongoing":
+        line = f"「{name}」目前是{entities.PROGRESS_TEXT[got['entity'].get('progress') or 'ongoing']}，不用問結案"
+    else:
+        line = "這份依據問過了，不再問"
+    _out(as_json, [line], {"entity": got["entity"], "recorded": got["recorded"], "skipped": got["skipped"],
+                           "pending_id": got["pending_id"]})
+    return 0
+
+
 def _list(vault, as_json):
     data = entities.load(vault)
     mounts = entities.mounts(vault, data)
@@ -184,7 +246,8 @@ def _list(vault, as_json):
         if entities.is_self(e):
             lines.append(f"- {e['name']}（你自己）掛 {e['mounted']} 張")
         else:
-            lines.append(f"- {e['name']}（{e['type']}，{_state(e)}）掛 {e['mounted']} 張" + ("，有綜合卡" if e["has_card"] else ""))
+            kind = f"{e['type']}，{_state(e)}" + (f"，{entities.PROGRESS_TEXT.get(e['progress'], e['progress'])}" if e.get("progress") else "")
+            lines.append(f"- {e['name']}（{kind}）掛 {e['mounted']} 張" + ("，有綜合卡" if e["has_card"] else ""))
     print("\n".join(lines) if lines else "實體清單是空的")
     return 0
 
@@ -200,7 +263,7 @@ def _render(vault, as_json, conversation, turn_id):
 
 
 WRITERS = {"add": _add, "confirm": _confirm, "rename": _rename, "merge": _merge, "remove": _remove,
-           "rebuild": _rebuild, "clean": _clean}
+           "rebuild": _rebuild, "clean": _clean, "progress": _progress, "suggest-close": _suggest_close}
 
 
 def run(args):

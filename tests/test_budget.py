@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -159,7 +160,8 @@ class OpeningBudget(unittest.TestCase):
 def all_lines_vault(vault):
     """變動、有變動、找不到來源、設定檔四行同時在（客戶設定檔與型別第 12 點）：fixture 沒複製 raw，兩個來源都找不到、
     清冊是空的（知識庫裡的檔都算新增）；設定檔三節各改一處，再加一個不在型別表的第一層夾。
-    變動行帶「實體夾有變」（實體與綜合卡第 7 點）：信義王 card true、夾被客戶改名。"""
+    變動行帶「實體夾有變」（實體與綜合卡第 7 點）：信義王 card true、夾被客戶改名。
+    日程行（日程第 6 點）三個數字都有：一條逾期、一條今天、一條 7 天內，七行是最壞情況。"""
     md = vault / "系統" / "客戶設定檔.md"
     text = md.read_text(encoding="utf-8")
     text = text.replace("| 案子 | 事 |  | 推測 | 2026-10-19 |", "| 案子 | 事 |  | 推測 | 2026-10-19 |\n| 工地 | 事 | 一個裝修案 |")
@@ -171,17 +173,24 @@ def all_lines_vault(vault):
     shutil.copy2(entities_fix / "entities.json", vault / ".system" / "entities.json")
     shutil.copy2(entities_fix / "信義王.md", vault / "案子" / "信義王" / "信義王.md")
     (vault / "案子" / "信義王").rename(vault / "案子" / "信義王的家")
+    agenda_item = {"id": "a-5e6f7a8b", "kind": "deadline", "start": None, "date": "2020-01-01", "ended": None, "time": None,
+                   "text": "付款", "entities": [], "status": "open", "source": "confirmed", "origin": None, "lead_days": None,
+                   "created_turn": "t", "history": []}
+    other = dict(agenda_item, id="a-00000001", kind="meeting", date=date.today().isoformat())
+    soon = dict(agenda_item, id="a-00000002", kind="meeting", date=(date.today() + timedelta(days=2)).isoformat())
+    (vault / ".system" / "agenda.json").write_text(
+        json.dumps({"schema_version": 1, "items": [agenda_item, other, soon]}, ensure_ascii=False), encoding="utf-8")
 
 
 class OpeningAllLines(unittest.TestCase):
-    def test_six_lines_within_budget(self):
+    def test_seven_lines_within_budget(self):
         if not SESSION_HOOK.exists():
             self.skipTest("hooks/session.py 尚未建立")
         for source in ("startup", "compact"):
             status = opening_status(source, all_lines_vault)
             lines = status.splitlines()
             with self.subTest(source=source):
-                for head in ("變動：", "有變動：", "這台電腦找不到來源", "設定檔有改（"):
+                for head in ("變動：", "有變動：", "這台電腦找不到來源", "設定檔有改（", "日程：逾期 1（"):
                     self.assertEqual(sum(1 for ln in lines if ln.startswith(head)), 1, (head, lines))
                 self.assertTrue(next(ln for ln in lines if ln.startswith("變動：")).endswith("、實體夾有變 2"), lines)
                 self.assertLessEqual(count_lines(status), OPENING_MAX_LINES)

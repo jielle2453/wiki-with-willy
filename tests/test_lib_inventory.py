@@ -219,6 +219,46 @@ class SkipKind(unittest.TestCase):
         self.assertEqual(turn.entries(self.V, t2), [])
 
 
+class AgendaFp(unittest.TestCase):
+    """確認後裁定 4：選填欄 agenda_fp（日程抽過時那張卡的指紋）；scan／apply／reconcile 保留它；set_agenda_fp 在鎖裡備份再寫。"""
+
+    def setUp(self):
+        from tests import _cards
+        from tests.test_lib_inventory_scan import make_inv_vault
+        self.tmp, self.V, self.raw = make_inv_vault()
+        _cards.scan_apply(self.V)
+        self.entry = _cards.entry_of(self.V, "報價與合約/合約範本.txt")
+        self.t = turn.start(self.V, None, "")["turn"]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def by_id(self):
+        return {e["id"]: e for e in inventory.load(self.V)["entries"]}
+
+    def test_set_backs_up_and_writes_only_when_it_changes(self):
+        self.assertTrue(inventory.set_agenda_fp(self.V, self.entry["id"], "abc123def456", self.t))
+        self.assertEqual(self.by_id()[self.entry["id"]]["agenda_fp"], "abc123def456")
+        self.assertIn(inventory.INVENTORY_POSIX, {e["path"] for e in turn.entries(self.V, self.t)})
+        t2 = turn.start(self.V, None, "")["turn"]
+        self.assertFalse(inventory.set_agenda_fp(self.V, self.entry["id"], "abc123def456", t2))
+        self.assertEqual(turn.entries(self.V, t2), [])
+
+    def test_unknown_id_is_a_key_error(self):
+        with self.assertRaises(KeyError):
+            inventory.set_agenda_fp(self.V, "f-00000000", "abc123def456", self.t)
+
+    def test_kept_after_scan_apply_and_reconcile(self):
+        from tests import _cards
+        from kb._lib import sources as sources_lib
+        inventory.set_agenda_fp(self.V, self.entry["id"], "abc123def456", self.t)
+        (self.raw / "報價與合約" / "合約範本.txt").write_text("改過了，內容不一樣\n", encoding="utf-8")
+        _cards.scan_apply(self.V)
+        self.assertEqual(self.by_id()[self.entry["id"]]["agenda_fp"], "abc123def456")
+        inventory.reconcile(self.V, sources_lib.load(self.V), self.t)
+        self.assertEqual(self.by_id()[self.entry["id"]]["agenda_fp"], "abc123def456")
+
+
 class SynthesisCardNotInventoried(unittest.TestCase):
     """實體與綜合卡第 8 點：型別夾第三層的 .md，檔名等於夾名、或檔頭有 編號: e-… 的都不入冊；一般 md 照舊入冊。"""
 

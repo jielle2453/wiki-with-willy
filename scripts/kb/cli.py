@@ -20,7 +20,10 @@ COMMANDS = {
     "pending": ("kb.pending_cli", "待處理：list 列等你決定的事，resolve 記下怎麼處理，dismiss 記成不用管"),
     "profile": ("kb.profile_cli", "客戶設定檔：check 看改了什麼，apply 套用並建型別夾"),
     "entity": ("kb.entity", "實體：add 登記，confirm 確認名稱，rename 改名，merge 合併，remove 移除，rebuild 重寫綜合卡，"
-                            "clean 清放錯的綜合卡，list 列出，render 重寫綜合卡快取"),
+                            "clean 清放錯的綜合卡，list 列出，render 重寫綜合卡快取，progress 事類的進行中、結案、擱置，"
+                            "suggest-close 記一條結案待問"),
+    "agenda": ("kb.agenda_cli", "日程：add 加一條，edit 改，done／cancel／reopen 改狀態，recheck 原檔新版看過了，list 列出，render 重寫日程.md"),
+    "asks": ("kb.asks_cli", "要問客戶的事：只讀，列出 asks 與 tell（逾期、日程有出入、結案、名字確認…）"),
 }
 
 

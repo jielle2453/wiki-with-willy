@@ -50,3 +50,11 @@ def write_card(V, item, title, **kw):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(card_text(item, title, **kw), encoding="utf-8", newline="\n")
     return p
+
+
+def mark_dates_scanned(V):
+    """每張現有的檔案卡都記成「日程抽過了」（kb agenda scanned）：不談日程的測試用，第一行才不會多「日程待抽」。"""
+    from kb._lib import agenda, cards
+    t = turn.start(V, None, "")["turn"]
+    for cid in cards._scan_groups(V)[0]:
+        agenda.mark_scanned(V, cid, t)

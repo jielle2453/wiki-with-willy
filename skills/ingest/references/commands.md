@@ -46,7 +46,7 @@
 ```
 待製卡 N 份（新 N、重做 N）；搬動 N；讀不到 N、原檔不見 N（見 系統/待處理.md）
 ```
-PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到待製卡`（之前記成「還沒裝 PDF 元件」的待處理自動關掉）。全部 0 印 `卡都是最新的`；有檔頭壞的卡第一行尾多「；檔頭有問題 N 張」，同編號多張多「；同編號多張 N 組（跑 kb cards sync）」。實體與綜合卡有事時第一行尾再接「；待掛實體 N」「；綜合卡 待建 N（待確認 N）、待更新 N、有問題 N」「；實體夾有變 N」（0 的項不印）；`missing_types` 有值時多一行 `型別表沒有：廠商 4 張`。不製卡的份數不為 0 時第二行 `不製卡：檔名像密碼或金鑰 N、只在雲端 N、太大 N、讀不到 N、依設定不整理 N`（0 的項不印）。之後每份一行 `- 新 f-… 客戶案件/信義王/報價_v3.pdf → 檔案索引/客戶案件/信義王/<標題>-3f9a1b2c.md`（重做的是 `- 重做 f-… <原檔> → <舊卡路徑>`），`--limit` 預設是開場的份數上限，多的印 `……還有 N 份`。
+PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到待製卡`（之前記成「還沒裝 PDF 元件」的待處理自動關掉）。全部 0 印 `卡都是最新的`；有檔頭壞的卡第一行尾多「；檔頭有問題 N 張」，同編號多張多「；同編號多張 N 組（跑 kb cards sync）」。實體與綜合卡有事時第一行尾再接「；待掛實體 N」「；綜合卡 待建 N（待確認 N）、待更新 N、有問題 N」「；實體夾有變 N」「；日程待重對 N」「；日程待抽 N」（0 的項不印；日程待抽不為 0 時不會印「卡都是最新的」）；`missing_types` 有值時多一行 `型別表沒有：廠商 4 張`。不製卡的份數不為 0 時第二行 `不製卡：檔名像密碼或金鑰 N、只在雲端 N、太大 N、讀不到 N、依設定不整理 N`（0 的項不印）。之後每份一行 `- 新 f-… 客戶案件/信義王/報價_v3.pdf → 檔案索引/客戶案件/信義王/<標題>-3f9a1b2c.md`（重做的是 `- 重做 f-… <原檔> → <舊卡路徑>`），`--limit` 預設是開場的份數上限，多的印 `……還有 N 份`。
 
 `--json`（做卡時用這個）：
 - `new`、`stale`：每項 `id`、`uri`、`path`（原檔絕對路徑）、`origin`、`kind`、`dir`（卡放的夾）、`filename_pattern`（`<標題>-八碼.md`）、`existing_card`（stale 才有，舊卡路徑）、`created`（條目產出那天，AI 產出的卡寫起草日用）、`header`（照抄的檔頭）。
@@ -58,14 +58,16 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - `broken`：`{"path","reason"}`，檔頭有問題的卡；編號對得到清冊的多帶 `id`、`header`（carding.md 第六節）。
 - `skipped`：`{"credential","placeholder","too_large","error","skipped"}` 份數；`skipped` 是跑過 `cards skip` 的（依設定不整理）。
 - `profile`：客戶設定檔的 `card_types`（`[{"name","sections":[{"name","required","hint"}]}]`，卡型與段落照它）與 `exclusions`（`[{"kind","action"}]`，`action` 是 `kind_only` 或 `no_card`）。`profile_missing` 是 true 時設定檔讀不到、這塊是預設值，人讀最後多一行 `客戶設定檔讀不到，卡型用預設`；照常做卡，不用跟客戶說。另有 `types`（`[{"name","category"}]`）、`synthesis_sections`（`[{"type","sections"}]`，設定檔第四節）、`about`（`[{"name","kind","aliases"}]`，客戶自己）。
-- `entities`：`[{"name","type","aliases","self"}]`，登記的實體（`self` 是 false、company 或 person）；檔案卡 `實體` 欄照 `name` 寫。
+- `entities`：`[{"name","type","aliases","self"}]`，登記的實體（`self` 是 false、company 或 person）；檔案卡 `實體` 欄照 `name` 寫。案子這類「事」的另有 `progress`（ongoing｜closed｜paused）與 `asked_evidence`（問過結案的依據，同一份不再問）。
+- 日程（carding.md 第九節）：`agenda_recheck`：`{"id"（日程條目）,"card","card_path","kind","date","text","source"}`，出處卡重做後待重對的條目。`agenda_unscanned`：`{"id"（卡編號）,"card_path","title","existing":[{"id","kind","date","text"}]}`，還沒抽過日期的卡，`existing` 是這張卡已加進日程、還 open 的條目。`agenda_counts`：`{"overdue","today","upcoming"}`，開場日程行的三個數字，做卡時不用管。
 - `unlinked`：`{"id","path","reason","types","prefill"}`，要補掛實體的卡（carding.md 第七節）。`missing_types`：`{型別名: 張數}`，`待補型別` 裡型別表沒有的。
 - `synthesis_new`：`{"entity_id","name","type","category","confirmed","path","cards":[{"id","path","title"}],"sections","header","question"}`，`path` 相對總資料夾，`sections` 是 `[{"name","required","hint"}]`、已含現況、紀事、推算，`question` 只有沒確認的有。`synthesis_stale`：`{"entity_id","name","path","header","added","changed","removed"}`。`synthesis_broken`：`{"path","reason"}`。`entity_drift`：`{"entity_id","name","type","kind","found","question"}`（`found` 是找到的卡，相對總資料夾，`missing` 是 null），`kind` 是 folder_renamed｜card_renamed｜both_renamed｜moved_type｜missing，怎麼問怎麼答在 `asks`。寫法看 `rules/synthesis.md`。
 
-`--json` 另有三樣程式算好的，照著做（`new`、`stale` 等是做事的材料，這三樣才是順序與問法）：
+`--json` 另有 `plan`、`asks`、`tell` 三樣程式算好的，照著做（`new`、`stale` 等是做事的材料，這三樣才是順序與問法；第一條是日程的指引）：
+- 日程（`kb agenda`、`kb entity progress`、`kb asks`）的指令與逾期題的答法看 note skill 的 `references/agenda.md`；日程有出入、結案兩種題照 `asks` 的結果做；`plan` 的 `agenda_recheck`、`agenda_unscanned` 兩步照 carding.md 第九節做（`kb agenda scanned` 的說明在 note 的 `references/agenda.md`）。
 - `plan`：照順序要做的事，每步 `{"step","items","do","read"}`；`read` 是先讀的那份（null 不用讀；`references/…` 相對本 skill 資料夾，`rules/synthesis.md` 是實際路徑）。全空是 `[]`；份數超過 `ingest_auto_max` 時只剩 sync，其餘在 `asks` 第一題「現在做」的 `then` 裡。例：`{"step":"cards","items":2,"do":"照清單寫卡（new、stale、broken）","read":"references/carding.md 一～六節"}`。
-- `asks`：要問客戶的題，已排好序（份數多先問、實體夾或綜合卡不見、其他實體夾有變、原檔不見、名字確認），每題 `{"id","kind","question","results":[{"n","label","do","strict","fill"}]}`。`n` 從 1 一路編下去，是程式用來對結果的內部編號，不必給客戶看；`do` 是選了這個結果要依序執行的指令（`kb ` 開頭，空是不跑指令），`fill` 列 `do` 裡 `{新名字}` 這類空格，自由文字的空格是 `{"name","rule"}`，照 `rule` 寫成一句白話；`strict` 是會刪東西的；結果可帶 `note`（給你的一句話）或 `then`（接著要做的 `plan` 步驟）。例：`{"n":2,"label":"沒刪，先留著","do":["kb pending resolve p-1a2b3c4d --how \"{客戶的話}\""],"strict":false,"fill":[{"name":"客戶的話","rule":"一句白話，不含 \" $ ` \\ 這四種字元"}]}`。
-- `tell`：回答末尾要講的句子（讀不到，每份帶原因與怎麼辦、不製卡的份數、依設定不整理、型別表沒有、PDF 元件裝好），順序排好、0 的不列，照講。例：`["合約_加密.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過；記在 系統/待處理.md","請款類 4 份依你的設定不整理"]`。
+- `asks`：要問客戶的題，已排好序（份數多先問、實體夾或綜合卡不見、其他實體夾有變、原檔不見、逾期、日程有出入、結案、名字確認），每題 `{"id","kind","question","results":[{"n","label","do","strict","fill"}]}`。`n` 從 1 一路編下去，是程式用來對結果的內部編號，不必給客戶看；`do` 是選了這個結果要依序執行的指令（`kb ` 開頭，空是不跑指令），`fill` 列 `do` 裡 `{新名字}` 這類空格，每個空格都是 `{"name","rule"}`，照 `rule` 寫（自由文字寫成一句白話，名字有空白就加雙引號）；`strict` 是會刪東西的；結果可帶 `note`（給你的一句話）或 `then`（接著要做的 `plan` 步驟）。例：`{"n":2,"label":"沒刪，先留著","do":["kb pending resolve p-1a2b3c4d --how \"{客戶的話}\""],"strict":false,"fill":[{"name":"客戶的話","rule":"一句白話，不含 \" $ ` \\ 這四種字元"}]}`。
+- `tell`：回答末尾要講的句子（讀不到，每份帶原因與怎麼辦、不製卡的份數、依設定不整理、型別表沒有、PDF 元件裝好、加進日程、照新版改了日期），順序排好、0 的不列，照講。例：`["合約_加密.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過；記在 系統/待處理.md","請款類 4 份依你的設定不整理"]`。
 
 ## cards sync [--json]
 
@@ -123,6 +125,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 | `entity rename 信義王 --to 王宅 [--type 業主]` | `已改名：信義王 → 王宅（舊名記成別名）`；搬到夾裡的檔多一行 `資料夾裡的 N 個檔跟著搬了…`；改回原名印 `已照「信義王」把資料夾與綜合卡改回來` | 改名、改回原名、改型別；`asks` 帶 |
 | `entity merge 王宅 --into 信義王` | `已合併：王宅 併進 信義王（王宅記成別名）` | 兩個是同一個；`asks` 帶 |
 | `entity remove 大安陳` | `已移除：大安陳（知識不刪，檔案卡上的掛載留著）` | 不要這個實體；`asks` 帶 |
+| `entity suggest-close 信義王 --evidence f-…` | `已記下，會問客戶「信義王」要不要記成結案`；依據問過印 `這份依據問過了，不再問`（exit 0）；實體不是進行中印 `「X」目前是擱置，不用問結案`（exit 0） | 讀到結束證據（carding.md 第九節）；問客戶的是 `asks`，你不問 |
 | `entity rebuild 大安陳` | `好，「大安陳」會照檔案卡重寫一張` | 綜合卡被刪、回收筒也沒有；`asks` 帶 |
 | `entity clean 案子/王宅/王宅.md`（相對總資料夾） | `已清掉放錯的綜合卡：…` | 綜合卡寫到正確路徑之後，清掉寫錯的那張 |
 | `entity list`／`entity render` | 每行 `- 信義王（案子，確認）掛 12 張，有綜合卡`／`重寫了 N 張綜合卡的檔頭` | 查看；平常不用 render |

@@ -32,5 +32,9 @@
   "synthesis_min_cards": 2,
   "_why_synthesis_min_cards": "實體掛到幾張檔案卡才列進待建綜合卡（D-114）；只出現一次的不建，免得長出跟檔案卡重複的薄卡",
   "temp_keep_hours": 24,
-  "_why_temp_keep_hours": "kb convert 寫在 .system/temp/ 的暫存檔保留幾小時，每次 convert 先清掉更舊的；再長的體積由 lint 題管（D-018）"
+  "_why_temp_keep_hours": "kb convert 寫在 .system/temp/ 的暫存檔保留幾小時，每次 convert 先清掉更舊的；再長的體積由 lint 題管（D-018）",
+  "agenda_window_days": 7,
+  "_why_agenda_window_days": "開場日程行與 系統/日程.md「接下來」往後看幾天（D-060）；條目自己有 lead_days 就用它；一週夠客戶週一開對話時排這週的事",
+  "agenda_past_days": 30,
+  "_why_agenda_past_days": "系統/日程.md 過去區與甘特圖往回看幾天（D-105）：再久的已過去、完成、取消都在 agenda.json 裡，不佔清單"
 }

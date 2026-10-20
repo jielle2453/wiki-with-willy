@@ -1,9 +1,11 @@
-"""實體清單 .system/entities.json（schema 1，D-114～D-124；實體與綜合卡第 1 點）。
+"""實體清單 .system/entities.json（schema 2，D-114～D-124、D-126、D-127；實體與綜合卡第 1 點、日程第 3 點）。
 
 一筆一個客戶管的對象、事、物、主題：id（e- 加 8 碼 hex）、type（型別表的名稱；客戶自己是 null）、name、aliases、
 self（false｜company｜person，D-120）、status（active｜removed｜merged，merged 帶 merged_into）、source（D-041 四選一）、
 date、card（寫過綜合卡沒有）、created_turn。名稱在整個知識庫唯一（不分型別，NFKC 後不分大小寫，別名也算），
-所以檔案卡檔頭 實體 欄寫名稱就是鍵；改名與合併由這裡把所有檔案卡的那一欄一起改。
+所以檔案卡檔頭 實體 欄寫名稱就是鍵；改名與合併由這裡把所有檔案卡的那一欄與日程條目的實體名稱一起改。
+schema 2（日程第 3 點）：大類是「事」的實體多 progress（ongoing｜closed｜paused）、progress_source、progress_history；
+schema 1 讀進來在記憶體補上，寫的時候寫 2。實體本身在不在是 status，事類進行到哪是 progress，兩件事。
 只准程式寫、讀改寫整段在 FileLock 裡（I-080），寫前備進回合（D-074）。綜合卡的搬、刪也在這裡（在同一把鎖裡），
 檔頭格式與驗證住 synthesis.py。drift 只讀：認出客戶在檔案總管改了實體夾名、卡名、刪夾（D-057）。
 """
@@ -18,7 +20,11 @@ from kb._lib import config, profile
 from kb._lib.io import FileLock, read_json, write_json_atomic, write_text_atomic
 
 ENTITIES_POSIX = ".system/entities.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+PROGRESS = ("ongoing", "closed", "paused")
+PROGRESS_TEXT = {"ongoing": "進行中", "closed": "結案", "paused": "擱置"}
+CLOSE_KIND = "close"
+SHELL_CHARS = '$`'  # 名字會被貼進雙引號的指令：" 與 \ 型別名規則已擋，這兩個另擋（日程釐清，整理 ingest 測試第二輪）
 SELF_KINDS = {"公司": "company", "本人": "person"}
 HEAD_BYTES = 4096
 NOT_FOUND = "實體清單沒有「{}」"
@@ -48,9 +54,11 @@ def load(vault):
     """沒檔回空的；壞 JSON、不是物件、entities 不是清單、元素不是物件、版本比這版新丟 Unreadable（ValueError），
     訊息帶檔名，CLI 照「狀態檔讀不到：…」印。"""
     try:
-        return _load(vault)
+        data = _load(vault)
     except ValueError as e:
         raise Unreadable(f"{ENTITIES_POSIX}（{e}）") from e
+    _fill_progress(vault, data)
+    return data
 
 
 def _load(vault):
@@ -64,11 +72,26 @@ def _load(vault):
         raise ValueError("實體清單沒有 entities 清單")
     if any(not isinstance(e, dict) for e in items):
         raise ValueError("實體清單有一筆不是物件")
-    version = data.get("schema_version", SCHEMA_VERSION)
+    version = data.get("schema_version", 1)
     if not isinstance(version, int) or version > SCHEMA_VERSION:
         raise ValueError(f"實體清單版本 {version!r} 比這版 plugin 新")
     return {"schema_version": SCHEMA_VERSION, "entities": items}
 
+
+def _fill_progress(vault, data):
+    """schema 1 的條目、或型別後來才變成事類的條目：大類是「事」的補 progress ongoing／inferred／空歷程（只在記憶體，下次寫入才落檔）。"""
+    needs = [e for e in data["entities"] if e.get("type") and "progress" not in e]
+    if not needs:
+        return
+    prof = _profile(vault)
+    for e in needs:
+        row = type_of(vault, e["type"], prof)
+        if row is not None and row.get("category") == "matter":
+            e.update(_new_progress())
+
+
+def _new_progress():
+    return {"progress": "ongoing", "progress_source": "inferred", "progress_history": []}
 
 def lock(vault):
     _path(vault).parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +164,7 @@ def _collision(data, name, ignore=None):
 
 def _char_problem(vault, name):
     why = profile.type_name_problem(name)
-    if not why and profile._LIST_CHARS.search(name):
+    if not why and (profile._LIST_CHARS.search(name) or any(c in name for c in SHELL_CHARS)):
         why = "含不能用的字元"
     if not why and profile._WINDOWS_RESERVED.match(name):
         why = "Windows 保留名"
@@ -236,6 +259,8 @@ def add(vault, type_, name, turn_id):
             raise EntityRefused(why)
         entry = {"id": _new_id(data), "type": row["name"], "name": name, "aliases": [], "self": False,
                  "status": "active", "source": "inferred", "date": _today(), "card": False, "created_turn": turn_id}
+        if row.get("category") == "matter":
+            entry.update(_new_progress())
         data["entities"].append(entry)
         _save(vault, data, turn_id)
     return entry, True
@@ -577,6 +602,7 @@ def rename(vault, ref, new_name, new_type, turn_id):
 
         def act(undo):
             changed, moved = [], 0
+            _agenda_snapshot(vault, undo)
             if loc:
                 text = (Path(vault) / loc).read_text(encoding="utf-8")
                 text = synthesis.replace_title(synthesis.replace_front(text, _card_fields(prof, entry)), old_name,
@@ -584,8 +610,11 @@ def rename(vault, ref, new_name, new_type, turn_id):
                 moved = _move_card(vault, loc, target, text, turn_id, changed, undo)
             touched = retarget_cards(vault, {key(old_name): new_name}, turn_id, undo) if old_name != new_name else []
             changed += [{"path": rel, "action": "modify"} for rel, _names in touched]
+            if key(old_name) != key(new_name):
+                changed += _agenda_follow(vault, {key(old_name): new_name}, turn_id)
             _save(vault, data, turn_id, undo)
             changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+            changed += _agenda_md(vault, turn_id)
             return touched, changed, moved
 
         touched, changed, moved_files = _guarded(vault, act)
@@ -675,6 +704,7 @@ def merge(vault, src_ref, dst_ref, turn_id):
 
         def act(undo):
             changed = []
+            _agenda_snapshot(vault, undo)
             if loc:
                 _delete_card(vault, loc, turn_id, undo)
                 changed.append({"path": loc, "action": "delete"})
@@ -683,8 +713,11 @@ def merge(vault, src_ref, dst_ref, turn_id):
             _refresh_fields(vault, dst, prof, turn_id, changed, undo)
             changed += [{"path": rel, "action": "modify"}
                         for rel, _n in retarget_cards(vault, {key(src["name"]): dst["name"]}, turn_id, undo)]
+            changed += _agenda_follow(vault, {key(src["name"]): dst["name"]}, turn_id)
+            changed += _drop_close_items(vault, src, f"實體已合併進「{dst['name']}」", turn_id, undo)
             _save(vault, data, turn_id, undo)
             changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+            changed += _agenda_md(vault, turn_id)
             return changed
 
         changed = _guarded(vault, act)
@@ -706,6 +739,7 @@ def remove(vault, ref, turn_id):
             if loc:
                 _delete_card(vault, loc, turn_id, undo)
                 changed.append({"path": loc, "action": "delete"})
+            changed += _drop_close_items(vault, entry, "實體已移除", turn_id, undo)
             _save(vault, data, turn_id, undo)
             changed.append({"path": ENTITIES_POSIX, "action": "modify"})
             return changed
@@ -745,6 +779,135 @@ def clean(vault, rel, turn_id):
             raise EntityRefused("這張綜合卡位置是對的，不用清")
         left = _delete_card(vault, rel, turn_id)
     return {"path": rel, "left": left}
+
+
+# ---------- 日程跟著走（日程第 3 點） ----------
+
+def _drop_close_items(vault, entry, how, turn_id, undo):
+    """實體移除或合併掉：它 open 的 close 待處理一起 dismiss（確認後裁定 7a），不然永遠留在待處理.md、asks 不問、客戶清不掉。
+    先把待處理兩檔記進 undo（動手出錯一起還原）；回給日誌的 changed。"""
+    from kb._lib import pending
+    if not (Path(vault) / pending.PENDING_POSIX).exists():
+        return []
+    undo.file(pending.PENDING_POSIX)
+    undo.file(pending.MD_POSIX)
+    if pending.dismiss_entity(vault, entry["id"], CLOSE_KIND, how, turn_id):
+        return [{"path": pending.PENDING_POSIX, "action": "modify"}, {"path": pending.MD_POSIX, "action": "modify"}]
+    return []
+
+
+def _agenda_snapshot(vault, undo):
+    """日程檔與 md 在動手之前記進 undo：實體這一步出錯，日程也照樣還原（驗收 9）。沒有日程檔就什麼都不記。"""
+    from kb._lib import agenda
+    if (Path(vault) / agenda.AGENDA_POSIX).exists():
+        undo.file(agenda.AGENDA_POSIX)
+        undo.file(agenda.MD_POSIX)
+
+
+def _agenda_follow(vault, mapping, turn_id):
+    """日程條目掛的實體名稱跟著換；回給日誌的 changed。"""
+    from kb._lib import agenda
+    if agenda.rename_entity(vault, mapping, turn_id):
+        return [{"path": agenda.AGENDA_POSIX, "action": "modify"}, {"path": agenda.MD_POSIX, "action": "modify"}]
+    return []
+
+
+def _agenda_md(vault, turn_id):
+    """實體清單寫完之後重渲染日程.md（擱置段、名稱住實體清單）；內容沒變不寫。回給日誌的 changed。"""
+    from kb._lib import agenda
+    if (Path(vault) / agenda.AGENDA_POSIX).exists() and agenda.render(vault, turn_id):
+        return [{"path": agenda.MD_POSIX, "action": "modify"}]
+    return []
+
+
+# ---------- 事類狀態（日程第 3 點，D-126、D-127） ----------
+
+def is_matter(vault, entry):
+    row = type_of(vault, entry.get("type")) if entry.get("type") else None
+    return row is not None and row.get("category") == "matter"
+
+
+def _need_matter(vault, data, ref):
+    entry, _hit = _need(data, ref)
+    if not is_matter(vault, entry):
+        raise EntityRefused(f"「{entry['name']}」不是「事」類，沒有狀態")
+    if entry.get("status") != "active":
+        raise EntityRefused(f"「{entry['name']}」已移除，不能改狀態")
+    return entry
+
+
+def set_progress(vault, ref, progress, turn_id, evidence=None, note=None, source="confirmed"):
+    """kb entity progress：事類實體的進行中／結案／擱置。歷程加一筆（同狀態再設一次也只加歷程，「客戶說還沒結案」用這個）；
+    改 closed 時同一把鎖裡叫 agenda.close_periods 結束它 open 的期間條目；寫完把這個實體 open 的 close 待處理 auto_done。
+    回 {"entity","was","closed_periods","reopened"（結案改回進行中，期間條目不重開）,"pending_closed"}。"""
+    from kb._lib import agenda, pending
+    if progress not in PROGRESS:
+        raise ValueError(f"progress 要是 {'、'.join(PROGRESS)} 之一：{progress!r}")
+    evidence = list(dict.fromkeys(evidence or []))
+    with lock(vault):
+        data = load(vault)
+        entry = _need_matter(vault, data, ref)
+        was = entry.get("progress") or "ongoing"
+        entry["progress"], entry["progress_source"] = progress, source
+        entry.setdefault("progress_history", []).append(
+            {"date": _today(), "progress": progress, "source": source, "evidence": evidence, "note": note or ""})
+
+        def act(undo):
+            _agenda_snapshot(vault, undo)
+            closed = agenda.close_periods(vault, entry["name"], _today(), turn_id) if progress == "closed" else []
+            _save(vault, data, turn_id, undo)
+            _agenda_md(vault, turn_id)
+            return closed
+
+        closed = _guarded(vault, act)
+    how = f"客戶 {_today()} 回答：{PROGRESS_TEXT[progress]}"
+    done = False
+    try:
+        done = pending.auto_done_entity(vault, entry["id"], CLOSE_KIND, how, turn_id)
+    except ValueError:  # pending.json 壞了：狀態已改好，待處理下次再關
+        pass
+    return {"entity": entry, "was": was, "closed_periods": closed, "reopened": was == "closed" and progress == "ongoing",
+            "pending_closed": done}
+
+
+def asked_evidence(vault, entry):
+    """問過的結案依據（不再問，D-127）：狀態歷程裡全部的 evidence，加上這個實體 close 待處理（open 與已處理的）裡的依據。"""
+    from kb._lib import pending
+    out = []
+    for h in entry.get("progress_history") or []:
+        out.extend(h.get("evidence") or [])
+    try:
+        items = pending.load(vault)["items"]
+    except ValueError:
+        items = []
+    for i in items:
+        if i.get("kind") == CLOSE_KIND and entry.get("id") in (i.get("entity_ids") or []):
+            out.extend(i.get("file_ids") or [])
+    return list(dict.fromkeys(out))
+
+
+def suggest_close(vault, ref, evidence, turn_id):
+    """kb entity suggest-close：製卡者讀到結束證據，記一條 close 待處理，由程式在回答末尾問（D-127）。
+    只收事類、progress 是 ongoing 的實體；依據都問過了 → 不記（skipped asked）；不是進行中 → 不記（skipped not_ongoing）。
+    回 {"entity","recorded","skipped","pending_id"}。"""
+    from kb._lib import inventory, pending
+    evidence = list(dict.fromkeys(evidence or []))
+    if not evidence:
+        raise EntityRefused("要給依據：--evidence f-…")
+    entry = _need_matter(vault, load(vault), ref)
+    known = {e.get("id") for e in inventory.load(vault)["entries"]}
+    for fid in evidence:
+        if fid not in known:
+            raise EntityRefused(f"清冊沒有 {fid}")
+    if (entry.get("progress") or "ongoing") != "ongoing":
+        return {"entity": entry, "recorded": False, "skipped": "not_ongoing", "pending_id": None}
+    asked = set(asked_evidence(vault, entry))
+    fresh = [f for f in evidence if f not in asked]
+    if not fresh:
+        return {"entity": entry, "recorded": False, "skipped": "asked", "pending_id": None}
+    pid = pending.add(vault, CLOSE_KIND, fresh, f"「{entry['name']}」看起來已經結束了，要記成結案嗎？",
+                      "依據" + "".join(f"〔{f}〕" for f in fresh), turn_id, entity_ids=[entry["id"]])
+    return {"entity": entry, "recorded": True, "skipped": None, "pending_id": pid}
 
 
 # ---------- 客戶自己（D-120） ----------

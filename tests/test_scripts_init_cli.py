@@ -15,7 +15,7 @@ from tests._guard_fixture import KB, ROOT, make_vault
 SKELETON = ROOT / "skeleton"
 EXPECTED_DIRS = ["AI 產出", "收件匣", "檔案索引", "系統/工作日誌", "系統/健檢報告", ".claude", ".system"]
 EXPECTED_FILES = ["CLAUDE.md", ".claude/settings.json", ".system/sources.json", ".system/profile.json",
-                  "系統/客戶設定檔.md"]
+                  "系統/客戶設定檔.md", "系統/日程.md"]
 SKELETON_TRACKED = {"CLAUDE.md", ".claude/settings.json", "AI 產出/.gitkeep", "收件匣/.gitkeep", "檔案索引/.gitkeep",
                     "系統/工作日誌/.gitkeep", "系統/健檢報告/.gitkeep"}
 
@@ -362,6 +362,53 @@ class InitJournal(unittest.TestCase):
         r = run_kb("init", str(self.V), cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.rows()), 1)
+
+
+class AgendaMd(unittest.TestCase):
+    """日程第 11 點：init 缺 系統/日程.md 時渲染一份空的，不建 agenda.json；已有的不碰；補齊時算一項。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kbinit-agenda-"))
+        self.V = self.tmp / "知識庫"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def init(self, *extra):
+        r = run_kb("init", str(self.V), *extra, cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def test_creates_an_empty_md_and_no_agenda_json(self):
+        from kb._lib import agenda
+        self.init()
+        self.assertEqual((self.V / "系統" / "日程.md").read_text(encoding="utf-8"),
+                         agenda.HEADER + "\n日程是空的；說「9/25 下午有個會」我就記下來。\n")
+        self.assertFalse((self.V / ".system" / "agenda.json").exists())
+
+    def test_check_lists_it(self):
+        r = run_kb("init", str(self.V), "--check", cwd=self.tmp)
+        self.assertIn("會建 系統/日程.md", r.stdout.splitlines())
+        self.assertFalse((self.V / "系統" / "日程.md").exists())
+
+    def test_existing_md_is_not_touched_and_missing_one_is_refilled(self):
+        self.init()
+        md = self.V / "系統" / "日程.md"
+        md.write_text("客戶改過的\n", encoding="utf-8")
+        self.assertEqual(self.init().strip(), f"{self.V} 已是知識庫，沒有缺的")
+        self.assertEqual(md.read_text(encoding="utf-8"), "客戶改過的\n")
+        md.unlink()
+        self.assertEqual(self.init().strip(), f"{self.V} 已是知識庫，補齊了 1 項")
+        self.assertTrue(md.is_file())
+
+    def test_broken_agenda_json_still_builds_the_rest(self):
+        self.V.mkdir()
+        (self.V / ".system").mkdir()
+        (self.V / ".system" / "agenda.json").write_text("{bad", encoding="utf-8")
+        out = self.init()
+        self.assertIn("系統/日程.md 沒補", out)
+        self.assertTrue((self.V / "系統" / "客戶設定檔.md").is_file())
+        self.assertFalse((self.V / "系統" / "日程.md").exists())
 
 
 if __name__ == "__main__":

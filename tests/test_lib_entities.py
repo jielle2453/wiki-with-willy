@@ -28,9 +28,9 @@ class Base(unittest.TestCase):
 
 class Load(Base):
     def test_missing_is_empty_and_bad_shapes_raise(self):
-        self.assertEqual(entities.load(self.V), {"schema_version": 1, "entities": []})
+        self.assertEqual(entities.load(self.V), {"schema_version": 2, "entities": []})
         p = self.V / ".system" / "entities.json"
-        for text in ("[]", "{}", '{"entities": [1]}', '{"schema_version": 2, "entities": []}', "{bad"):
+        for text in ("[]", "{}", '{"entities": [1]}', '{"schema_version": 3, "entities": []}', "{bad"):
             p.write_text(text, encoding="utf-8")
             with self.subTest(text=text), self.assertRaises(ValueError):
                 entities.load(self.V)

@@ -80,6 +80,7 @@
 | B-068 | 2026-10-20 | open | 疑似 v0.11.0 的問題：ingest-check 複本跑 `cards sync` 之後，只要來源多一份新檔再 `inventory scan`，`cards todo` 又列 moved 36（整理 ingest 測試順帶發現）；要查是 sync 沒把檔頭的原檔清單或開原檔寫成跟清冊一致，還是 scan 改了主位置的順序 | 整理 ingest 測試 |
 | B-069 | 2026-10-20 | open | 原檔不見、客戶還沒答「是不是刪了」時，`entities.mounts` 只算條目 active 的卡，那張卡就從實體的掛載消失，`synthesis_stale` 列它為 removed，AI 提前從綜合卡拿掉它的內容（與「卡先留著」不一致）。missing 的條目在客戶答之前應該照算掛載 | 整理 ingest 確認 (4) |
 | B-070 | 2026-10-20 | deferred | 低：寫檔案卡通過後 PostToolUse 重渲染相關綜合卡的檔頭快取，AI 若之前讀過那張綜合卡、接著要改它，Claude Code 會擋「讀過之後被改動」，要重讀再寫，多一輪 | 整理 ingest 確認 (5) |
+| B-071 | 2026-10-20 | open | 卡型合併後（D-138）舊卡的卡型欄留舊名，同一種卡有兩個卡型名並存；answer 題若要按卡型找卡（「列出所有報價」），要認得併掉的舊名（設定檔記併入關係，或 answer 時改檔頭） | note 改規則設計 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

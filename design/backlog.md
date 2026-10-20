@@ -82,7 +82,7 @@
 | B-070 | 2026-10-20 | deferred | 低：寫檔案卡通過後 PostToolUse 重渲染相關綜合卡的檔頭快取，AI 若之前讀過那張綜合卡、接著要改它，Claude Code 會擋「讀過之後被改動」，要重讀再寫，多一輪 | 整理 ingest 確認 (5) |
 | B-071 | 2026-10-20 | open | 卡型合併後（D-138）舊卡的卡型欄留舊名，同一種卡有兩個卡型名並存；answer 題若要按卡型找卡（「列出所有報價」），要認得併掉的舊名（設定檔記併入關係，或 answer 時改檔頭） | note 改規則設計 |
 | B-072 | 2026-10-20 | open | `系統/日程.md` 甘特圖在 Obsidian 顯示得出來但不好看（日程確認，使用者截圖）：milestone 標籤在菱形左邊斜體、跟別的標籤擠在一起；結案的 bar 灰色、截在今天；沒掛實體的落在「其他」；時間軸只有週刻度。日程第二題或 B-050 spike 時一起看樣式（Mermaid gantt 能調的有限，Obsidian CSS 片段另議） | 日程確認人眼 |
-| B-073 | 2026-10-20 | deferred | 日程第一題測試 code-review 低項：條目有自己的 `lead_days` 時開場「7 天內」與日程.md「接下來 7 天」標籤仍寫全域天數；`agenda edit` 清不掉 `entities`、`lead_days`（取消再加）；`kb asks` 註解寫只讀但跑整個 `cards.todo`（可能 auto_done、寫 log）；只差大小寫或全半形的改名日程不跟、卡跟；`_fill_progress` 每次 load 重讀設定檔；`cards.todo` 為日程多掃檔案索引；`close` 待處理去重只比第一個 file_ids；`_line` 沒用到的變數 | 日程測試 |
+| B-073 | 2026-10-20 | deferred | 日程第一題測試 code-review 低項：條目有自己的 `lead_days` 時開場「7 天內」與日程.md「接下來 7 天」標籤仍寫全域天數；`agenda edit` 清不掉 `entities`、`lead_days`（取消再加）；`kb asks` 註解寫只讀但跑整個 `cards.todo`（可能 auto_done、寫 log）；只差大小寫或全半形的改名日程不跟、卡跟；`_fill_progress` 每次 load 重讀設定檔；`cards.todo` 為日程多掃檔案索引；`close` 待處理去重只比第一個 file_ids；`_line` 沒用到的變數；確認後修正的 skill-reviewer 低項：commands.md 第 49 行過長、`agenda scanned` 的說明散在 carding 第九節與 note agenda.md 兩處、`suggest-close` 拒絕句沒列、`agenda_unscanned` 算進門檻沒寫進 commands.md | 日程測試 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

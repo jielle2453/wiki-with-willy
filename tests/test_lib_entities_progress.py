@@ -197,5 +197,59 @@ class RenameCarriesAgenda(Base):
         self.assertEqual((self.V / ".system" / "agenda.json").read_bytes(), before)
 
 
+class CloseItemsFollowRemoveAndMerge(Base):
+    """確認後裁定 7(a)：remove、merge 時那個實體 open 的 close 待處理一起 dismiss（同一把鎖、同一套 _Undo），不然永遠留在待處理.md。"""
+
+    def statuses(self):
+        return [i["status"] for i in self.close_items()]
+
+    def test_remove_dismisses_its_open_close_items_only(self):
+        entities.suggest_close(self.V, "信義王", [self.f1], self.t)
+        entities.suggest_close(self.V, "大安陳", [self.f2], self.t)
+        entities.remove(self.V, "信義王", self.t)
+        by_entity = {i["entity_ids"][0]: i["status"] for i in self.close_items()}
+        self.assertEqual(by_entity, {E.XINYI: "dismissed", E.DAAN: "open"})
+        md = (self.V / "系統" / "待處理.md").read_text(encoding="utf-8")
+        self.assertIn("大安陳", md)
+        self.assertNotIn("信義王", md)
+
+    def test_merge_dismisses_the_source_items(self):
+        entities.add(self.V, "案子", "王宅邸", self.t)
+        entities.suggest_close(self.V, "王宅邸", [self.f1], self.t)
+        entities.merge(self.V, "王宅邸", "信義王", self.t)
+        self.assertEqual(self.statuses(), ["dismissed"])
+        self.assertNotIn("要確認結案的", (self.V / "系統" / "待處理.md").read_text(encoding="utf-8"))
+
+    def test_asks_no_longer_has_the_close_question(self):
+        from kb._lib import plan
+        entities.suggest_close(self.V, "信義王", [self.f1], self.t)
+        self.assertEqual([a["kind"] for a in plan._agenda_asks(self.V)], ["close"])
+        entities.remove(self.V, "信義王", self.t)
+        self.assertEqual(plan._agenda_asks(self.V), [])
+
+    def test_no_pending_file_and_other_kinds_are_left_alone(self):
+        entities.remove(self.V, "信義王", self.t)
+        self.assertFalse((self.V / ".system" / "pending.json").exists())
+
+    def test_backed_up_into_the_turn(self):
+        entities.suggest_close(self.V, "信義王", [self.f1], self.t)
+        t2 = turn.start(self.V, None, "")["turn"]
+        entities.remove(self.V, "信義王", t2)
+        self.assertTrue({pending.PENDING_POSIX, pending.MD_POSIX} <= {r["path"] for r in turn.entries(self.V, t2)})
+
+    def test_pending_is_rolled_back_when_a_later_step_fails(self):
+        entities.suggest_close(self.V, "信義王", [self.f1], self.t)
+        before = {p: (self.V / p).read_bytes() for p in (pending.PENDING_POSIX, pending.MD_POSIX)}
+        real = entities._save
+        entities._save = lambda *a, **k: (_ for _ in ()).throw(OSError("disk"))
+        try:
+            with self.assertRaises(OSError):
+                entities.remove(self.V, "信義王", self.t)
+        finally:
+            entities._save = real
+        self.assertEqual({p: (self.V / p).read_bytes() for p in before}, before)
+        self.assertEqual(self.statuses(), ["open"])
+
+
 if __name__ == "__main__":
     unittest.main()

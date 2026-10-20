@@ -93,6 +93,15 @@ class Plan(Base):
                                   "read": "references/carding.md 第九節"})
         self.assertEqual(self.steps(agenda_recheck=rows), [("agenda_recheck", 1)])
 
+    def test_agenda_unscanned_follows_recheck_and_precedes_unlinked(self):
+        """確認後裁定 4：cards → agenda_recheck → agenda_unscanned（read 都是第九節）→ 其餘照舊。"""
+        rows = [{"id": "f-1", "card_path": "p", "title": "報價", "existing": []}]
+        got = self.build(new=work(1), agenda_recheck=[{"id": "a-1"}], agenda_unscanned=rows, unlinked=[{"id": "f-2"}])["plan"]
+        self.assertEqual([s["step"] for s in got], ["cards", "agenda_recheck", "agenda_unscanned", "unlinked"])
+        self.assertEqual(got[2], {"step": "agenda_unscanned", "items": 1, "do": "照清單抽日期（agenda_unscanned）",
+                                  "read": "references/carding.md 第九節"})
+        self.assertEqual(self.steps(agenda_unscanned=rows * 2), [("agenda_unscanned", 2)])
+
     def test_unlinked_and_synthesis_broken_read_sections(self):
         got = self.build(unlinked=[{"id": "f-1"}], synthesis_broken=[{"path": "p", "reason": "r"}])["plan"]
         self.assertEqual([(s["step"], s["read"]) for s in got], [
@@ -151,6 +160,16 @@ class Batch(Base):
                          ["sync", "cards", "unlinked", "synthesis_stale", "synthesis_new"])
         self.assertEqual(clipped["asks"][0]["results"][0]["then"], unclipped["plan"])
         self.assertEqual(clipped["plan"], unclipped["plan"][:1])
+
+    def test_agenda_unscanned_counts_toward_the_threshold(self):
+        """確認後裁定 4：份數算進 ingest_auto_max 的門檻（new＋stale＋unlinked＋agenda_unscanned）。"""
+        rows = [{"id": f"f-{i}", "card_path": "p", "title": "t", "existing": []} for i in range(3)]
+        self.set_max(3)
+        self.assertEqual(self.build(agenda_unscanned=rows)["asks"], [])
+        got = self.build(agenda_unscanned=rows, new=work(1))
+        self.assertEqual((got["asks"][0]["id"], got["asks"][0]["question"]), ("batch", "有 4 份要整理，現在做嗎？大約一兩分鐘"))
+        self.assertEqual(got["plan"], [])
+        self.assertEqual([s["step"] for s in got["asks"][0]["results"][0]["then"]], ["cards", "agenda_unscanned"])
 
     def test_counts_new_stale_and_unlinked(self):
         self.set_max(2)
@@ -529,6 +548,32 @@ class AgendaAsks(Base):
         self.assertEqual(self.build()["asks"], [])
 
 
+class TellScope(Base):
+    """D-141：tell 只帶這一回合做了什麼（kb asks 用）時，整理狀態那些句子不帶；預設照舊全帶。"""
+
+    def setUp(self):
+        super().setUp()
+        self.t = turn.start(self.V, None, "")["turn"]
+        self.kw = dict(unreadable=[{"id": "f-1", "uri": "file://a/甲.pdf", "reason": "有密碼"}],
+                       skipped={"credential": 2, "placeholder": 1, "too_large": 0, "error": 0, "skipped": 3},
+                       missing_types={"廠商": 4}, pdf_restored=2)
+        put_agenda(self.V, agenda_item(text="交屋", date="2026-11-30", created_turn=self.t, origin={"card": "f", "fp": "a"}))
+
+    def test_default_keeps_everything(self):
+        got = self.build(**self.kw)["tell"]
+        self.assertEqual(len(got), 7)
+        self.assertEqual(got[-1], "加進日程：11/30 交屋")
+
+    def test_actions_only_has_just_this_turns_sentences(self):
+        out = plan.build(base(**self.kw), self.V, config, tell_all=False)
+        self.assertEqual(out["tell"], ["加進日程：11/30 交屋"])
+
+    def test_actions_only_keeps_plan_and_asks_the_same(self):
+        full = plan.build(base(**self.kw, agenda_unscanned=[{"id": "f-1"}]), self.V, config)
+        part = plan.build(base(**self.kw, agenda_unscanned=[{"id": "f-1"}]), self.V, config, tell_all=False)
+        self.assertEqual((part["plan"], part["asks"]), (full["plan"], full["asks"]))
+
+
 class AgendaTell(Base):
     def setUp(self):
         super().setUp()
@@ -592,7 +637,7 @@ class WithRealVault(unittest.TestCase):
 
     OLD_KEYS = {"new", "stale", "moved", "duplicates", "orphans", "unreadable", "missing", "skipped", "broken", "pdf_restored",
                 "unlinked", "missing_types", "profile_missing", "profile", "synthesis_new", "synthesis_stale",
-                "synthesis_broken", "entity_drift", "entities", "agenda_recheck", "agenda_counts"}
+                "synthesis_broken", "entity_drift", "entities", "agenda_recheck", "agenda_unscanned", "agenda_counts"}
 
     def setUp(self):
         self.tmp, self.V, self.raw = E.make_entity_vault(with_entities=True)

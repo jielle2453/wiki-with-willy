@@ -714,6 +714,7 @@ def merge(vault, src_ref, dst_ref, turn_id):
             changed += [{"path": rel, "action": "modify"}
                         for rel, _n in retarget_cards(vault, {key(src["name"]): dst["name"]}, turn_id, undo)]
             changed += _agenda_follow(vault, {key(src["name"]): dst["name"]}, turn_id)
+            changed += _drop_close_items(vault, src, f"實體已合併進「{dst['name']}」", turn_id, undo)
             _save(vault, data, turn_id, undo)
             changed.append({"path": ENTITIES_POSIX, "action": "modify"})
             changed += _agenda_md(vault, turn_id)
@@ -738,6 +739,7 @@ def remove(vault, ref, turn_id):
             if loc:
                 _delete_card(vault, loc, turn_id, undo)
                 changed.append({"path": loc, "action": "delete"})
+            changed += _drop_close_items(vault, entry, "實體已移除", turn_id, undo)
             _save(vault, data, turn_id, undo)
             changed.append({"path": ENTITIES_POSIX, "action": "modify"})
             return changed
@@ -780,6 +782,19 @@ def clean(vault, rel, turn_id):
 
 
 # ---------- 日程跟著走（日程第 3 點） ----------
+
+def _drop_close_items(vault, entry, how, turn_id, undo):
+    """實體移除或合併掉：它 open 的 close 待處理一起 dismiss（確認後裁定 7a），不然永遠留在待處理.md、asks 不問、客戶清不掉。
+    先把待處理兩檔記進 undo（動手出錯一起還原）；回給日誌的 changed。"""
+    from kb._lib import pending
+    if not (Path(vault) / pending.PENDING_POSIX).exists():
+        return []
+    undo.file(pending.PENDING_POSIX)
+    undo.file(pending.MD_POSIX)
+    if pending.dismiss_entity(vault, entry["id"], CLOSE_KIND, how, turn_id):
+        return [{"path": pending.PENDING_POSIX, "action": "modify"}, {"path": pending.MD_POSIX, "action": "modify"}]
+    return []
+
 
 def _agenda_snapshot(vault, undo):
     """日程檔與 md 在動手之前記進 undo：實體這一步出錯，日程也照樣還原（驗收 9）。沒有日程檔就什麼都不記。"""

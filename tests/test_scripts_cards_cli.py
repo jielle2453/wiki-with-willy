@@ -102,6 +102,7 @@ class Todo(Base):
     def test_all_done_says_up_to_date(self):
         for item in self.todo()["new"]:
             _cards.write_card(self.V, item, "卡" + item["id"][2:6])
+        _cards.mark_dates_scanned(self.V)
         (self.raw / "公司行政" / "薪資" / "網銀密碼.txt").unlink()
         self.scan()
         lines = self.kb("cards", "todo").stdout.splitlines()
@@ -111,6 +112,7 @@ class Todo(Base):
     def test_up_to_date_line(self):
         for item in self.todo()["new"]:
             _cards.write_card(self.V, item, "卡" + item["id"][2:6])
+        _cards.mark_dates_scanned(self.V)
         lines = self.kb("cards", "todo").stdout.splitlines()
         self.assertEqual(lines, ["卡都是最新的", "不製卡：檔名像密碼或金鑰 1"])
 
@@ -508,6 +510,7 @@ class EntityParts(unittest.TestCase):
         self.E.write_card(self.V, self.E.ESTIMATE, "順發請款", ["王宅"], pending=["廠商"])
         self.E.write_card(self.V, self.E.DRAFT, "王宅會議", ["王宅", "信義王"])
         (self.V / "案子" / "大安陳").rename(self.V / "案子" / "陳家")
+        _cards.mark_dates_scanned(self.V)
         lines = self.kb("cards", "todo").stdout.splitlines()
         self.assertTrue(lines[0].endswith("；待掛實體 1；綜合卡 待建 1（待確認 1）、待更新 1；實體夾有變 1"), lines[0])
         self.assertEqual(lines[1], "型別表沒有：廠商 1 張")

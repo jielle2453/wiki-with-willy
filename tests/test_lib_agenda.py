@@ -266,6 +266,22 @@ class Status(Base):
         with self.assertRaises(ValueError):
             agenda.set_status(self.V, got["id"], "weird", self.t)
 
+    def test_done_period_without_ended_fills_today_and_reopen_clears_it(self):
+        """確認後裁定 7(b)：期間條目 done 時 ended 是空的就填今天，甘特圖與過去區照 ended 畫。"""
+        got, _ = self.add(kind="期間", start="2026-09-01", date="2026-11-30", text="施工")
+        out = agenda.set_status(self.V, got["id"], "done", self.t)
+        self.assertEqual((out["status"], out["ended"]), ("done", TODAY))
+        agenda.render(self.V, today=TODAY)
+        md = (self.V / "系統" / "日程.md").read_text(encoding="utf-8")
+        self.assertIn(f"施工 :done, 2026-09-01, {TODAY}\n", md)
+        self.assertEqual(agenda.set_status(self.V, got["id"], "open", self.t)["ended"], None)
+
+    def test_done_period_keeps_an_ended_it_already_has_and_other_kinds_get_none(self):
+        put(self.V, [item(kind="period", start="2026-09-01", date="2026-11-30", ended="2026-10-15", entities=["信義王"])])
+        self.assertEqual(agenda.set_status(self.V, "a-00000001", "done", self.t)["ended"], "2026-10-15")
+        other, _ = self.add(text="付款")
+        self.assertIsNone(agenda.set_status(self.V, other["id"], "done", self.t)["ended"])
+
 
 class Recheck(Base):
     def setUp(self):
@@ -358,6 +374,88 @@ class Buckets(Base):
         d = [item(origin={"card": "f-12345678", "fp": "a"}, source="inferred")]
         put(self.V, d)
         self.assertEqual(agenda.buckets(self.V, agenda.load(self.V))["agenda_recheck"], [])
+
+
+class Unscanned(Base):
+    """確認後裁定 4（D-140）：清冊的 agenda_fp 記「日程抽過」時那張卡的指紋；agenda_unscanned 列還沒抽或卡重做過的。"""
+
+    def change_fp(self, cid):
+        p = self.V / self.card_rel
+        text = p.read_text(encoding="utf-8")
+        p.write_text(text.replace("指紋: ", "指紋: ffff", 1), encoding="utf-8", newline="\n")
+
+    def rows(self):
+        return agenda.unscanned(self.V, agenda.load(self.V))["agenda_unscanned"]
+
+    def test_new_card_is_listed_with_path_title_and_empty_existing(self):
+        cid, _fp = self.card()
+        self.assertEqual(self.rows(), [{"id": cid, "card_path": self.card_rel, "title": "信義王報價", "existing": []}])
+
+    def test_scanned_card_is_not_listed_until_it_is_redone(self):
+        cid, fp = self.card()
+        out = agenda.mark_scanned(self.V, cid, self.t)
+        self.assertEqual((out["id"], out["title"], out["fp"]), (cid, "信義王報價", fp))
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(_cards.entry_of(self.V, E.QUOTE)["agenda_fp"], fp)
+        self.change_fp(cid)
+        self.assertEqual([r["id"] for r in self.rows()], [cid])
+
+    def test_legacy_card_without_agenda_fp_is_listed(self):
+        cid, _fp = self.card()
+        self.assertNotIn("agenda_fp", _cards.entry_of(self.V, E.QUOTE))
+        self.assertEqual([r["id"] for r in self.rows()], [cid])
+
+    def test_existing_lists_open_items_from_this_card_only(self):
+        cid, _fp = self.card()
+        other, _ = self.card(E.ESTIMATE, "內湖李估價", ("信義王",))
+        a, _ = self.add(card=cid)
+        b, _ = self.add(card=cid, text="驗收", kind="承諾", date="2026-12-01")
+        done, _ = self.add(card=cid, text="已做完")
+        agenda.set_status(self.V, done["id"], "done", self.t)
+        self.add(card=other, text="別張卡的")
+        self.add(text="口述的")
+        rows = {r["id"]: r for r in self.rows()}
+        self.assertEqual(rows[cid]["existing"],
+                         [{"id": a["id"], "kind": "到期", "date": "2026-11-30", "text": "交屋"},
+                          {"id": b["id"], "kind": "承諾", "date": "2026-12-01", "text": "驗收"}])
+        self.assertEqual([x["text"] for x in rows[other]["existing"]], ["別張卡的"])
+
+    def test_card_of_an_inactive_entry_is_not_listed(self):
+        cid, _fp = self.card()
+        inventory.set_status(self.V, [cid], "missing")
+        self.assertEqual(self.rows(), [])
+
+    def test_skip_leaves_out_cards_waiting_to_be_rewritten(self):
+        cid, _fp = self.card()
+        data = agenda.load(self.V)
+        self.assertEqual(agenda.unscanned(self.V, data, skip={cid})["agenda_unscanned"], [])
+        self.assertEqual([r["id"] for r in agenda.unscanned(self.V, data)["agenda_unscanned"]], [cid])
+
+    def test_mark_scanned_twice_writes_and_backs_up_once(self):
+        cid, _fp = self.card()
+        agenda.mark_scanned(self.V, cid, self.t)
+        t2 = turn.start(self.V, None, "")["turn"]
+        stamp = (self.V / ".system" / "inventory.json").stat().st_mtime_ns
+        self.assertFalse(agenda.mark_scanned(self.V, cid, t2)["changed"])
+        self.assertEqual((self.V / ".system" / "inventory.json").stat().st_mtime_ns, stamp)
+        self.assertEqual(turn.entries(self.V, t2), [])
+
+    def test_mark_scanned_backs_up_inventory_into_the_turn(self):
+        cid, _fp = self.card()
+        self.assertTrue(agenda.mark_scanned(self.V, cid, self.t)["changed"])
+        self.assertIn(inventory.INVENTORY_POSIX, {r["path"] for r in turn.entries(self.V, self.t)})
+
+    def test_mark_scanned_refusals(self):
+        for cid, want in (("f-00000000", "清冊沒有 f-00000000"),
+                          (_cards.entry_of(self.V, E.QUOTE)["id"], "這份還沒有檔案卡，先寫卡再抽日期")):
+            with self.subTest(cid=cid), self.assertRaises(agenda.AgendaRefused) as cm:
+                agenda.mark_scanned(self.V, cid, self.t)
+            self.assertEqual(str(cm.exception), want)
+        cid, _fp = self.card(E.ESTIMATE, "內湖李估價", ())
+        inventory.set_status(self.V, [cid], "missing")
+        with self.assertRaises(agenda.AgendaRefused) as cm:
+            agenda.mark_scanned(self.V, cid, self.t)
+        self.assertEqual(str(cm.exception), "這張卡的原檔已不在")
 
 
 class CancelFromCard(Base):

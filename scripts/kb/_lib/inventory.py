@@ -272,6 +272,25 @@ def set_skip(vault, ids, kind, locked=False):
         change()
 
 
+def set_agenda_fp(vault, fid, fp, turn_id):
+    """選填欄 agenda_fp（D-140）：製卡者對這張卡抽完日期時，那張卡的指紋（前 12 碼，同日程條目的 origin.fp）。
+    卡重做指紋就變，記號自然不算。scan／apply／reconcile 對既有條目原樣保留它（同 skip_kind）。
+    鎖裡備份再寫，值沒變什麼都不做；回有沒有寫。清冊沒有這個編號丟 KeyError。"""
+    p = _path(vault)
+    with FileLock(p):
+        data = load(vault)
+        entry = next((e for e in data["entries"] if e.get("id") == fid), None)
+        if entry is None:
+            raise KeyError(fid)
+        if entry.get("agenda_fp") == fp:
+            return False
+        from kb._lib import turn
+        turn.backup(vault, INVENTORY_POSIX, turn_id)
+        entry["agenda_fp"] = fp
+        _write(vault, data["entries"])
+    return True
+
+
 def unskip_kinds(vault, kinds, turn_id=None):
     """skip_kind 是 kinds 之一的條目拿掉該欄，回動到的 id；有動到才在鎖裡備份（給了 turn_id）、寫。"""
     kinds = set(kinds)

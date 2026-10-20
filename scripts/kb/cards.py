@@ -5,7 +5,7 @@ sync：moved 的卡搬到現在該在的夾（檔名不變；同夾只改檔頭�
 drop <編號>：原檔不見（status missing）才做；先備清冊，卡備成 delete 後刪、條目改 deleted、對應 missing_file 待處理 done。
 index：手動重渲染總資料夾根的 總目錄.md。sync、drop、index 都把 總目錄.md 備進回合（實作疑義裁定 4）。
 skip <編號> --kind <種類>：客戶設定檔第三節說不整理的種類，清冊記 skip_kind、有卡的拿掉（客戶設定檔與型別第 6 點，D-113）。
-todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變、日程待重對；drop 拿掉卡也把從那張卡抽的推測日程改成取消（D-130）；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
+todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變、日程待重對、日程待抽；drop 拿掉卡也把從那張卡抽的推測日程改成取消（D-130）；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
 import argparse
@@ -108,6 +108,8 @@ def _entity_parts(data):
         parts.append(f"實體夾有變 {len(data['entity_drift'])}")
     if data.get("agenda_recheck"):
         parts.append(f"日程待重對 {len(data['agenda_recheck'])}")
+    if data.get("agenda_unscanned"):
+        parts.append(f"日程待抽 {len(data['agenda_unscanned'])}")
     return parts
 
 

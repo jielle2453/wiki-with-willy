@@ -18,6 +18,7 @@ FREE_TEXT_RULE = "一句白話，不含 \" $ ` \\ 這四種字元"  # 這四個�
 NAME_RULE = "一個名字，不含 \" $ ` \\ 這四種字元；有空白就加雙引號"  # 名字也會被貼進指令（entities.name_problem 同樣擋）
 DATE_RULE = "YYYY-MM-DD"
 AGENDA_RECHECK = "agenda_recheck"
+AGENDA_UNSCANNED = "agenda_unscanned"
 BATCH_SECONDS = 10  # 一份抓 10 秒（D-100）
 UNREADABLE_LISTED = 5
 PENDING_FILE = "記在 系統/待處理.md"
@@ -60,13 +61,14 @@ def cmd(*parts):
     return "kb " + " ".join(quote(p) for p in parts)
 
 
-def build(out, vault, config):
-    """回 {"plan","asks","tell"}；config 是 kb._lib.config（取 ingest_auto_max）。"""
+def build(out, vault, config, tell_all=True):
+    """回 {"plan","asks","tell"}；config 是 kb._lib.config（取 ingest_auto_max）。
+    tell_all 是 False 時 tell 只帶這一回合做了什麼（加進日程、照新版改了），整理狀態那些句子不帶（D-141，kb asks 用）。"""
     full = _plan(out)
     asks = _asks(out, vault, config, full)
     batch = bool(asks) and asks[0]["id"] == "batch"
     steps = [s for s in full if s["step"] == "sync"] if batch else full
-    return {"plan": steps, "asks": _number(asks), "tell": _tell(out, vault)}
+    return {"plan": steps, "asks": _number(asks), "tell": _tell(out, vault) if tell_all else agenda.tell_lines(vault)}
 
 
 # ---------- plan ----------
@@ -90,6 +92,8 @@ def _plan(out):
         steps.append(_step("cards", carding, "照清單寫卡（new、stale、broken）", f"{CARDING} 一～六節"))
     if out.get(AGENDA_RECHECK):
         steps.append(_step(AGENDA_RECHECK, len(out[AGENDA_RECHECK]), "照清單重對日程（agenda_recheck）", f"{CARDING} 第九節"))
+    if out.get(AGENDA_UNSCANNED):  # 先重對再抽，重做的卡不會多出重複的條目（D-140）
+        steps.append(_step(AGENDA_UNSCANNED, len(out[AGENDA_UNSCANNED]), "照清單抽日期（agenda_unscanned）", f"{CARDING} 第九節"))
     for key, read, text in (("unlinked", f"{CARDING} 第七節", "照清單補掛實體（unlinked）"),
                             ("synthesis_broken", f"{CARDING} 第八節", "照清單處理放錯位置的綜合卡（synthesis_broken）"),
                             ("synthesis_stale", _synthesis_rules(), "照清單改綜合卡（synthesis_stale）")):
@@ -117,7 +121,7 @@ def _ask(ask_id, kind, question, results):
 
 def _asks(out, vault, config, full_plan):
     asks = []
-    waiting = len(out.get("new") or []) + len(out.get("stale") or []) + len(out.get("unlinked") or [])
+    waiting = sum(len(out.get(k) or []) for k in ("new", "stale", "unlinked", AGENDA_UNSCANNED))
     if waiting > config.get(vault, "ingest_auto_max"):
         asks.append(_batch(waiting, full_plan))
     drifts = out.get("entity_drift") or []

@@ -9,7 +9,7 @@ from tests import _entities as E
 from tests.test_scripts_inventory_cli import run_kb
 from kb._lib import agenda, cards, journal, turn  # noqa: E402
 
-ID = r"a-[0-9a-f]{8}"
+ID = r"[af]-[0-9a-f]{8}"  # 內部編號：給人看的輸出一個都不能出現（確認後裁定 6）
 
 
 class Base(unittest.TestCase):
@@ -37,8 +37,9 @@ class Base(unittest.TestCase):
         args = ["add", "--kind", kind, "--date", date, "--text", text]
         if entity:
             args += ["--entity", entity]
-        lines = self.kb(*args, *extra)
-        return re.search(ID, lines[0]).group(0)
+        r = run_kb("agenda", *args, *extra, "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout)["item"]["id"]
 
     def card(self):
         path = E.write_card(self.V, E.QUOTE, "信義王報價", ["信義王"])
@@ -50,10 +51,9 @@ class Add(Base):
     def test_success_sentence_state_backup_and_md(self):
         t = self.new_turn()
         (line,) = self.kb("add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王")
-        self.assertRegex(line, rf"^已加進日程：2026-11-30（週一）交屋（到期，信義王）{ID}$")
+        self.assertEqual(line, "已加進日程：2026-11-30（週一）交屋（到期，信義王）")
         (it,) = self.items()
         self.assertEqual((it["source"], it["origin"], it["status"], it["entities"]), ("confirmed", None, "open", ["信義王"]))
-        self.assertIn(line.rsplit("）", 1)[1], it["id"])
         self.assertEqual({r["path"] for r in turn.entries(self.V, t)}, {agenda.AGENDA_POSIX, agenda.MD_POSIX})
         self.assertIn("交屋", (self.V / "系統" / "日程.md").read_text(encoding="utf-8"))
 
@@ -65,12 +65,12 @@ class Add(Base):
 
     def test_no_entity_and_time_in_sentence(self):
         (line,) = self.kb("add", "--kind", "會議", "--date", "2026-09-25", "--time", "14:00", "--text", "跟王先生看磁磚")
-        self.assertRegex(line, rf"^已加進日程：2026-09-25（週五）14:00 跟王先生看磁磚（會議）{ID}$")
+        self.assertEqual(line, "已加進日程：2026-09-25（週五）14:00 跟王先生看磁磚（會議）")
 
     def test_period_sentence(self):
         (line,) = self.kb("add", "--kind", "期間", "--start", "2026-09-01", "--date", "2026-11-30", "--text", "施工",
                           "--entity", "信義王")
-        self.assertRegex(line, rf"^已加進日程：2026-09-01（週二）～2026-11-30（週一）施工（期間，信義王）{ID}$")
+        self.assertEqual(line, "已加進日程：2026-09-01（週二）～2026-11-30（週一）施工（期間，信義王）")
 
     def test_refusals_exact(self):
         base = ["add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王"]
@@ -102,11 +102,11 @@ class Add(Base):
     def test_card_makes_it_inferred_and_repeat_returns_existing(self):
         cid, fp = self.card()
         (line,) = self.kb("add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王", "--card", cid)
-        self.assertRegex(line, rf"^已加進日程：2026-11-30（週一）交屋（到期，信義王）（推測，出處 {cid}）{ID}$")
+        self.assertEqual(line, "已加進日程：2026-11-30（週一）交屋（到期，信義王）（推測，出處：信義王報價）")
         (it,) = self.items()
         self.assertEqual((it["source"], it["origin"]), ("inferred", {"card": cid, "fp": fp}))
         (again,) = self.kb("add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王", "--card", cid)
-        self.assertRegex(again, rf"^日程裡已經有這條：2026-11-30（週一）交屋（到期，信義王）（推測，出處 {cid}）{ID}$")
+        self.assertEqual(again, "日程裡已經有這條：2026-11-30（週一）交屋（到期，信義王）（推測，出處：信義王報價）")
         self.assertEqual(len(self.items()), 1)
 
     def test_card_whose_file_is_gone(self):
@@ -223,21 +223,21 @@ class ListRender(Base):
         early = self.add("--card", cid, date="2026-10-31", text="前面")
         done = self.add(date="2026-11-15", text="做完了")
         self.kb("done", done)
-        self.assertEqual(self.kb("list"), [f"- {early} 2026-10-31 到期 前面（信義王）〔推測〕", f"- {late} 2026-12-31 到期 後面（信義王）"])
-        self.assertEqual(self.kb("list", "--all"), [f"- {early} 2026-10-31 到期 前面（信義王）〔推測〕",
-                                                     f"- {done} 2026-11-15 到期 做完了（信義王）完成",
-                                                     f"- {late} 2026-12-31 到期 後面（信義王）"])
+        self.assertEqual(self.kb("list"), ["- 2026-10-31（週六）到期 前面（信義王）〔推測〕", "- 2026-12-31（週四）到期 後面（信義王）"])
+        self.assertEqual(self.kb("list", "--all"), ["- 2026-10-31（週六）到期 前面（信義王）〔推測〕",
+                                                     "- 2026-11-15（週日）到期 做完了（信義王）完成",
+                                                     "- 2026-12-31（週四）到期 後面（信義王）"])
 
     def test_list_shows_time_and_period_span(self):
-        a = self.add("--time", "09:30", kind="會議", date="2026-11-30", text="開會", entity="")
-        b = self.add("--start", "2026-09-01", kind="期間", date="2026-12-01", text="施工")
-        self.assertEqual(self.kb("list"), [f"- {b} 2026-09-01～2026-12-01 期間 施工（信義王）",
-                                           f"- {a} 2026-11-30 09:30 會議 開會"])
+        self.add("--time", "09:30", kind="會議", date="2026-11-30", text="開會", entity="")
+        self.add("--start", "2026-09-01", kind="期間", date="2026-12-01", text="施工")
+        self.assertEqual(self.kb("list"), ["- 2026-09-01（週二）～2026-12-01（週二）期間 施工（信義王）",
+                                           "- 2026-11-30（週一）09:30 會議 開會"])
 
     def test_list_json(self):
-        self.add()
+        aid = self.add()
         out = json.loads(run_kb("agenda", "list", "--json", cwd=self.V).stdout)
-        self.assertEqual([i["kind"] for i in out["items"]], ["deadline"])
+        self.assertEqual([(i["kind"], i["id"]) for i in out["items"]], [("deadline", aid)])
 
     def test_render_rewrites_the_md(self):
         self.add()
@@ -282,6 +282,79 @@ class ProgramLines(Base):
         aid = self.add()
         self.kb("done", aid)
         self.assertEqual(self.items()[0]["history"][0]["by"], "program")
+
+
+class Scanned(Base):
+    """確認後裁定 4：kb agenda scanned <f-…> 記這張卡現在的指紋（日程抽過了）。"""
+
+    def test_success_sentence_state_and_program_line(self):
+        cid, fp = self.card()
+        t = self.new_turn()
+        self.assertEqual(self.kb("scanned", cid), ["已記下：「信義王報價」的日期抽過了"])
+        entry = next(e for e in json.loads((self.V / ".system" / "inventory.json").read_text(encoding="utf-8"))["entries"]
+                     if e["id"] == cid)
+        self.assertEqual(entry["agenda_fp"], fp)
+        self.assertIn(".system/inventory.json", {r["path"] for r in turn.entries(self.V, t)})
+        self.assertEqual([(p["note"], p["command"]) for p in self.programs()][-1], ("日程抽過：信義王報價", "agenda scanned"))
+        self.assertEqual(self.kb("scanned", cid), ["已記下：「信義王報價」的日期抽過了"])
+
+    def test_json(self):
+        cid, fp = self.card()
+        out = json.loads(run_kb("agenda", "scanned", cid, "--json", cwd=self.V).stdout)
+        self.assertEqual((out["id"], out["title"], out["fp"]), (cid, "信義王報價", fp))
+
+    def test_refusals_exit_3(self):
+        self.assertEqual(self.kb("scanned", "f-00000000", code=3), ["清冊沒有 f-00000000"])
+        from tests import _cards
+        cid = _cards.entry_of(self.V, E.QUOTE)["id"]
+        self.assertEqual(self.kb("scanned", cid, code=3), ["這份還沒有檔案卡，先寫卡再抽日期"])
+
+    def test_nothing_recorded_in_a_conversation(self):
+        cid, _fp = self.card()
+        (self.V / ".system" / "turns" / "current.json").write_text(json.dumps({
+            "schema_version": 1, "turn": "20261019-100000-test", "session_id": "test-sid", "started": "2026-10-19T10:00:00",
+            "prompt_head": "", "approved": False, "note": "", "done": False}), encoding="utf-8")
+        self.kb("scanned", cid)
+        self.assertEqual(self.programs(), [])
+
+    def test_revert_takes_the_mark_back(self):
+        cid, _fp = self.card()
+        self.new_turn()
+        self.kb("scanned", cid)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        inv = json.loads((self.V / ".system" / "inventory.json").read_text(encoding="utf-8"))["entries"]
+        self.assertNotIn("agenda_fp", next(e for e in inv if e["id"] == cid))
+
+
+class NoInternalIds(Base):
+    """確認後裁定 6（驗收 21）：add、edit、done、cancel、reopen、recheck、list、scanned 的人讀輸出一個 a-…、f-… 都沒有；--json 有。"""
+
+    def test_human_output_has_no_ids_but_json_has(self):
+        cid, _fp = self.card()
+        outputs = []
+        outputs += self.kb("add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王", "--card", cid)
+        outputs += self.kb("add", "--kind", "到期", "--date", "2026-11-30", "--text", "交屋", "--entity", "信義王", "--card", cid)
+        aid = self.items()[0]["id"]
+        outputs += self.kb("edit", aid, "--date", "2026-12-15")
+        outputs += self.kb("edit", aid, "--date", "2026-12-15")
+        outputs += self.kb("recheck", aid)
+        d = agenda.load(self.V)
+        d["items"][0]["source"] = "confirmed"
+        (self.V / ".system" / "agenda.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        outputs += self.kb("recheck", aid, "--propose-date", "2026-12-20")
+        outputs += self.kb("done", aid)
+        outputs += self.kb("reopen", aid)
+        outputs += self.kb("cancel", aid)
+        outputs += self.kb("list", "--all")
+        outputs += self.kb("render")
+        outputs += self.kb("scanned", cid)
+        self.assertGreater(len(outputs), 10)
+        for line in outputs:
+            self.assertIsNone(re.search(ID, line), line)
+        j = run_kb("agenda", "add", "--kind", "提醒", "--date", "2026-12-01", "--text", "x", "--json", cwd=self.V)
+        self.assertRegex(json.loads(j.stdout)["item"]["id"], ID)
+        self.assertRegex(json.loads(run_kb("agenda", "list", "--json", cwd=self.V).stdout)["items"][0]["id"], ID)
 
 
 class Revert(Base):

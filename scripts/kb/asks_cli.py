@@ -1,6 +1,7 @@
 """kb asks [--json]（日程第 2 點，D-134、D-135）：只讀，回要問客戶的事 asks 與回答末尾要說的 tell。
 
-跟 kb cards todo --json 裡的 asks、tell 同一支函式（plan.build，跑一次 cards.todo 再取這兩鍵），編號一樣從 1 連號；
+跟 kb cards todo --json 裡的 asks 同一支函式（plan.build，跑一次 cards.todo 再取這兩鍵），編號一樣從 1 連號；
+tell 只帶這一回合做了什麼（加進日程、照新版改了），讀不到、不製卡這些整理狀態留給 cards todo（D-141）。
 給沒有跑 ingest 的時候用：開場有逾期、note 回答末尾。人讀照編號印問題與選項，沒有就印「沒有要問的」。
 """
 import argparse
@@ -24,7 +25,7 @@ def run(args):
         print(NOT_IN_VAULT)
         return 3
     try:
-        data = cards.todo(vault, sources_lib.load(vault))
+        data = cards.todo(vault, sources_lib.load(vault), tell_all=False)
     except ValueError as e:
         print(f"狀態檔讀不到：{e}")
         return 3

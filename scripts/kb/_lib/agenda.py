@@ -170,8 +170,8 @@ def card_fp(front):
     return fp[:12] if isinstance(fp, str) else ""
 
 
-def _card(vault, card_id):
-    """回 {"path","front"}：卡要在清冊、原檔 active、檔案卡寫好了。"""
+def _card(vault, card_id, no_card="這份還沒有檔案卡，先寫卡再加日程"):
+    """回 {"path","front"}：卡要在清冊、原檔 active、檔案卡寫好了；no_card 是沒有卡時的拒絕句（加日程與記抽過各有各的說法）。"""
     from kb._lib import cards, inventory
     entry = next((e for e in inventory.load(vault)["entries"] if e.get("id") == card_id), None)
     if entry is None:
@@ -180,7 +180,7 @@ def _card(vault, card_id):
         raise AgendaRefused("這張卡的原檔已不在")
     group = cards._scan_groups(vault)[0].get(card_id)
     if not group:
-        raise AgendaRefused("這份還沒有檔案卡，先寫卡再加日程")
+        raise AgendaRefused(no_card)
     return group[0]
 
 
@@ -304,9 +304,14 @@ def set_status(vault, aid, status, turn_id, by="ai"):
         if old == status:
             return it, False
         it["status"] = status
-        if status == "open" and it.get("kind") == "period":
-            it["ended"] = None
-        _log(it, f"status {old} → {status}", by, turn_id)
+        change = f"status {old} → {status}"
+        if it.get("kind") == "period":
+            if status == "open":
+                it["ended"] = None
+            elif status == "done" and not it.get("ended"):  # 甘特圖與過去區照 ended 畫（確認後裁定 7b）
+                it["ended"] = _today()
+                change = f"ended {it['ended']}；{change}"
+        _log(it, change, by, turn_id)
         return it, True
     return _mutate(vault, turn_id, fn)
 
@@ -420,6 +425,39 @@ def buckets(vault, data):
                     "kind": KIND_TEXT.get(it.get("kind"), it.get("kind")), "date": it.get("date"), "text": it.get("text"),
                     "source": it.get("source")})
     return {"agenda_recheck": out}
+
+
+def unscanned(vault, data, groups=None, entries=None, skip=()):
+    """agenda_unscanned（D-140）：active 的檔案卡、清冊的 agenda_fp 不等於卡現在的指紋（沒有也算）。每項 {"id": 卡編號,
+    "card_path", "title", "existing"}，existing 是出處是這張卡、還 open 的條目 [{"id","kind","date","text"}]，
+    製卡者看得出哪些已經在、只加沒有的。cards.todo 把掃好的 groups 與清冊條目帶進來，沒給才自己讀；skip 是檔頭有問題、
+    等著重寫的卡編號（重寫前不抽）。"""
+    from kb._lib import cards, inventory
+    groups = cards._scan_groups(vault)[0] if groups is None else groups
+    entries = inventory.load(vault)["entries"] if entries is None else entries
+    by_id = {e.get("id"): e for e in entries}
+    out = []
+    for cid, group in sorted(groups.items(), key=lambda kv: kv[1][0]["path"]):
+        entry, card = by_id.get(cid), group[0]
+        fp = card_fp(card["front"])
+        if entry is None or entry.get("status") != "active" or not fp or entry.get("agenda_fp") == fp or cid in skip:
+            continue
+        existing = [{"id": i["id"], "kind": KIND_TEXT.get(i.get("kind"), i.get("kind")), "date": i.get("date"), "text": i.get("text")}
+                    for i in data["items"] if i.get("status") == "open" and (i.get("origin") or {}).get("card") == cid]
+        title = card["front"].get("標題")
+        out.append({"id": cid, "card_path": card["path"], "title": title if isinstance(title, str) else "", "existing": existing})
+    return {"agenda_unscanned": out}
+
+
+def mark_scanned(vault, card_id, turn_id):
+    """kb agenda scanned：製卡者對這張卡抽完日期（含沒抽到任何日期），清冊記這張卡現在的指紋。
+    回 {"id","title","fp","changed"}；清冊沒有、原檔不在、還沒有檔案卡丟 AgendaRefused。"""
+    from kb._lib import inventory
+    card = _card(vault, card_id, no_card="這份還沒有檔案卡，先寫卡再抽日期")
+    fp = card_fp(card["front"])
+    changed = inventory.set_agenda_fp(vault, card_id, fp, turn_id)
+    title = card["front"].get("標題")
+    return {"id": card_id, "title": title if isinstance(title, str) else "", "fp": fp, "changed": changed}
 
 
 def _window(vault, it):

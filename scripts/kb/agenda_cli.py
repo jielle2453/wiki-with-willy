@@ -1,15 +1,16 @@
-"""kb agenda add／edit／done／cancel／reopen／recheck／list／render（日程第 2 點，D-062、D-125～D-130）。
+"""kb agenda add／edit／done／cancel／reopen／recheck／scanned／list／render（日程第 2 點，D-062、D-125～D-130、D-140）。
 
 日程只准這裡寫（經 _lib/agenda）：每次在 agenda.json 的鎖裡讀改寫（CLI 等 30 秒，等不到「等不到鎖，沒有寫入」exit 3），
 寫前備進回合，寫完重渲染 系統/日程.md。拒絕的第一行就是原因、exit 3；成功句與拒絕句一字不差（驗收 1～3）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合；歷程的 by 在對話裡是 ai、終端機是 program。
+人讀輸出不印內部編號（a-…、f-…，確認後裁定 6）：客戶聽不懂，AI 還會唸出來；要編號的取 --json。
 """
 import argparse
 import copy
 import json
 
 from kb import journal_cli
-from kb._lib import agenda, turn
+from kb._lib import agenda, inventory, turn
 from kb._lib import io as kio
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
@@ -47,10 +48,13 @@ def add_arguments(sub):
     rc.add_argument("id", help="日程編號（a-…）")
     rc.add_argument("--propose-date", help="新版寫的日期 YYYY-MM-DD（只收客戶說過或改過的條目）")
     rc.add_argument("--propose-text", help="新版寫的一句話")
+    sc = subs.add_parser("scanned", help="這張卡的日期抽過了",
+                         description="製卡者對這張卡抽完日期（沒抽到任何日期也要跑）：清冊記這張卡現在的指紋，卡重做前不再列待抽。")
+    sc.add_argument("id", help="檔案卡編號（f-…）")
     ls = subs.add_parser("list", help="列出日程", description="預設列 open 的，照日期排；--all 含過去、完成、取消。")
     ls.add_argument("--all", action="store_true", help="全部列出")
     rd = subs.add_parser("render", help="重寫日程.md", description="手動重寫 系統/日程.md。")
-    for p in [ad, ed, *status_parsers, rc, ls, rd]:
+    for p in [ad, ed, *status_parsers, rc, sc, ls, rd]:
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -62,25 +66,34 @@ def _out(as_json, lines, payload):
         print("\n".join(lines))
 
 
-def _describe(it):
-    """「2026-11-30（週一）交屋（到期，信義王）」：日期後接程式算的星期；期間寫成 開始～結束，有時間接在星期後面。"""
+def _when(it):
+    """「2026-11-30（週一）」：日期後接程式算的星期；期間寫成 開始～結束，有時間接在星期後面。"""
     when = agenda.with_weekday(it["date"])
     if it.get("kind") == "period" and it.get("start"):
         when = f"{agenda.with_weekday(it['start'])}～{when}"
     if it.get("time"):
         when += f"{it['time']} "
+    return when
+
+
+def _describe(it):
+    """「2026-11-30（週一）交屋（到期，信義王）」。"""
     inside = [agenda.KIND_TEXT.get(it["kind"], it["kind"])] + list(it.get("entities") or [])
-    return f"{when}{it['text']}（{'，'.join(inside)}）"
+    return f"{_when(it)}{it['text']}（{'，'.join(inside)}）"
 
 
-def _origin(it):
-    return f"（推測，出處 {it['origin']['card']}）" if it.get("source") == "inferred" and it.get("origin") else ""
+def _origin(vault, it):
+    """推測的標「（推測，出處：<卡標題>）」；卡標題讀不到就只標「（推測）」。"""
+    if it.get("source") != "inferred" or not it.get("origin"):
+        return ""
+    title = agenda.card_titles(vault).get(it["origin"].get("card"))
+    return f"（推測，出處：{title}）" if title else "（推測）"
 
 
 def _add(vault, args, as_json, conversation, turn_id):
     it, created = agenda.add(vault, args.kind.strip(), args.date, args.text, args.entity or [], turn_id, start=args.start,
                              time=args.time, card=args.card, lead_days=args.lead_days)
-    line = f"{_describe(it)}{_origin(it)}{it['id']}"
+    line = f"{_describe(it)}{_origin(vault, it)}"
     if not created:
         _out(as_json, [f"日程裡已經有這條：{line}"], {"item": it, "created": False})
         return 0
@@ -154,6 +167,14 @@ def _recheck(vault, args, as_json, conversation, turn_id):
     return 0
 
 
+def _scanned(vault, args, as_json, conversation, turn_id):
+    out = agenda.mark_scanned(vault, args.id, turn_id)
+    journal_cli.record_program_or_warn(vault, f"日程抽過：{out['title']}", [{"path": inventory.INVENTORY_POSIX, "action": "modify"}],
+                                       "agenda scanned", conversation)
+    _out(as_json, [f"已記下：「{out['title']}」的日期抽過了"], out)
+    return 0
+
+
 def _suffix(it):
     label = agenda.STATUS_TEXT.get(it.get("status"), "")
     return (agenda.INFERRED_MARK if it.get("source") == "inferred" else "") + label
@@ -173,9 +194,7 @@ def _list(vault, args, as_json):
         return 0
     for it in items:
         names = it.get("entities") or []
-        when = f"{it['start']}～{it['date']}" if it.get("kind") == "period" and it.get("start") else it["date"]
-        when += f" {it['time']}" if it.get("time") else ""
-        print(f"- {it['id']} {when} {agenda.KIND_TEXT.get(it['kind'], it['kind'])} {it['text']}"
+        print(f"- {_when(it)}{agenda.KIND_TEXT.get(it['kind'], it['kind'])} {it['text']}"
               + (f"（{'、'.join(names)}）" if names else "") + _suffix(it))
     return 0
 
@@ -191,7 +210,8 @@ def _render(vault, as_json, conversation, turn_id):
     return 0
 
 
-WRITERS = {"add": _add, "edit": _edit, "done": _status, "cancel": _status, "reopen": _status, "recheck": _recheck}
+WRITERS = {"add": _add, "edit": _edit, "done": _status, "cancel": _status, "reopen": _status, "recheck": _recheck,
+           "scanned": _scanned}
 
 
 def run(args):

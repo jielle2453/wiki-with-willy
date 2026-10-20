@@ -175,6 +175,20 @@ def auto_done_entity(vault, entity_id, kind, how, turn_id):
     return _edit(vault, turn_id, change)
 
 
+def dismiss_entity(vault, entity_id, kind, how, turn_id):
+    """這個實體 open 的 kind 條目一律 dismissed（實體被移除或合併掉，問句沒有對象了）；回關掉幾條。"""
+    if not _path(vault).exists():
+        return 0
+
+    def change(items):
+        hits = [i for i in items if i.get("status") == "open" and i.get("kind") == kind
+                and entity_id in (i.get("entity_ids") or [])]
+        for item in hits:
+            _close(item, "dismissed", how)
+        return len(hits)
+    return _edit(vault, turn_id, change)
+
+
 def answered(items, entry):
     """這次不見之後客戶答過了嗎：有任何 missing_file 條目（open、done、dismissed 都算）是這份檔、
     且建立時間不早於 missing_since（測試後修正裁定 31）。"""

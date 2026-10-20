@@ -43,9 +43,13 @@ class Base(unittest.TestCase):
         _ooxml.docx(self.raw / _cards.MEETING, [("h", f"大安陳{word}會議"), ("p", f"{word}的內容")])
         self.kb("inventory", "scan")
 
+    def add_json(self, *args):
+        r = run_kb("agenda", "add", *args, "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout)["item"]["id"]
+
     def add(self, cid, text="交屋", date="2999-11-30", kind="到期"):
-        line = self.kb("agenda", "add", "--kind", kind, "--date", date, "--text", text, "--entity", "大安陳", "--card", cid)[0]
-        return line[-10:]
+        return self.add_json("--kind", kind, "--date", date, "--text", text, "--entity", "大安陳", "--card", cid)
 
     def item(self, aid):
         return next(i for i in agenda.load(self.V)["items"] if i["id"] == aid)
@@ -74,7 +78,7 @@ class Recheck(Base):
                          (aid, cid, "到期", "2999-11-30", "交屋", "inferred"))
         self.assertTrue(row["card_path"].startswith("檔案索引/") and row["card_path"].endswith(".md"))
         first = self.kb("cards", "todo")[0]
-        self.assertTrue(first.endswith("；日程待重對 1"), first)
+        self.assertIn("；日程待重對 1", first)
         steps = [s["step"] for s in self.todo()["plan"]]
         self.assertIn("agenda_recheck", steps)
         self.assertEqual(steps.index("agenda_recheck"), steps.index("cards") + 1)
@@ -161,6 +165,88 @@ class Recheck(Base):
         self.assertIn("agenda", (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8"))
 
 
+class Unscanned(Base):
+    """確認後裁定 4（D-140，驗收 19）：agenda_unscanned 列還沒抽日期的卡（新卡、舊卡沒有 agenda_fp、重做後指紋變了），
+    kb agenda scanned 後不列；existing 帶這張卡已有的 open 條目；plan 的順序；份數算進門檻。"""
+
+    def one(self):
+        return self.todo()["agenda_unscanned"]
+
+    def test_new_card_and_legacy_card_are_listed_scanned_is_not(self):
+        self.assertEqual(self.one(), [])
+        cid = self.card()
+        (row,) = self.one()
+        self.assertEqual((row["id"], row["title"], row["existing"]), (cid, self.title, []))
+        self.assertTrue(row["card_path"].startswith("檔案索引/") and row["card_path"].endswith(".md"), row["card_path"])
+        entry = _cards.entry_of(self.V, _cards.MEETING)
+        self.assertNotIn("agenda_fp", entry)
+        self.assertEqual(self.kb("agenda", "scanned", cid), [f"已記下：「{self.title}」的日期抽過了"])
+        self.assertEqual(self.one(), [])
+
+    def test_redone_card_is_listed_again(self):
+        cid = self.card()
+        self.kb("agenda", "scanned", cid)
+        self.redo("第二次")
+        self.assertEqual([r["id"] for r in self.one()], [cid])
+        self.kb("agenda", "scanned", cid)
+        self.assertEqual(self.one(), [])
+
+    def test_scanned_with_no_dates_found_still_counts(self):
+        """沒抽到任何日期也要跑 scanned；沒跑就一直列。"""
+        cid = self.card()
+        self.assertEqual([r["id"] for r in self.one()], [cid])
+        self.assertEqual([r["id"] for r in self.one()], [cid])
+        self.kb("agenda", "scanned", cid)
+        self.assertEqual(self.one(), [])
+
+    def test_existing_lists_the_open_items_of_that_card(self):
+        cid = self.card()
+        a = self.add(cid, "交屋")
+        b = self.add(cid, "驗收", "2999-12-01", "承諾")
+        done = self.add(cid, "做完了", "2999-10-01")
+        self.kb("agenda", "done", done)
+        (row,) = self.one()
+        self.assertEqual(row["existing"], [{"id": a, "kind": "到期", "date": "2999-11-30", "text": "交屋"},
+                                           {"id": b, "kind": "承諾", "date": "2999-12-01", "text": "驗收"}])
+
+    def test_first_line_says_how_many_and_plan_orders_the_steps(self):
+        cid = self.card()
+        aid = self.add(cid)
+        self.redo("第二次")
+        first = self.kb("cards", "todo")[0]
+        self.assertTrue(first.endswith("；日程待重對 1；日程待抽 1"), first)
+        steps = [(s["step"], s["items"], s["read"]) for s in self.todo()["plan"]]
+        self.assertEqual([s[0] for s in steps if s[0].startswith("agenda")], ["agenda_recheck", "agenda_unscanned"])
+        self.assertIn(("agenda_unscanned", 1, "references/carding.md 第九節"), steps)
+        self.kb("agenda", "recheck", aid)
+        self.kb("agenda", "scanned", cid)
+        self.assertNotIn("日程待", self.kb("cards", "todo")[0])
+
+    def test_first_line_is_not_all_clear_while_cards_wait_for_dates(self):
+        cid = self.card()
+        self.assertEqual(self.kb("cards", "todo")[0].split("；")[-1], "日程待抽 1")
+        self.kb("agenda", "scanned", cid)
+        self.assertNotIn("日程待抽", self.kb("cards", "todo")[0])
+
+    def test_counts_toward_the_ingest_auto_max_threshold(self):
+        for rel, title in ((E.QUOTE, "信義王報價"), (E.ESTIMATE, "內湖李估價")):
+            E.write_card(self.V, rel, title, [])
+        data = self.todo()
+        waiting = len(data["new"]) + len(data["stale"]) + len(data["unlinked"])
+        self.assertEqual(len(data["agenda_unscanned"]), 2)
+        for limit, batch in ((waiting + 1, True), (waiting + 2, False)):
+            (self.V / ".system" / "config.json").write_text(json.dumps({"ingest_auto_max": limit}), encoding="utf-8")
+            asks = self.todo()["asks"]
+            self.assertEqual(bool(asks) and asks[0]["kind"] == "batch", batch, limit)
+            if batch:
+                self.assertEqual(asks[0]["question"].split("，")[0], f"有 {waiting + 2} 份要整理")
+
+    def test_broken_agenda_gives_an_empty_bucket(self):
+        self.card()
+        (self.V / ".system" / "agenda.json").write_text("{bad", encoding="utf-8")
+        self.assertEqual(self.one(), [])
+
+
 class TellAdded(Base):
     def test_three_added_this_turn_then_not_next_turn(self):
         cid = self.card()
@@ -186,7 +272,7 @@ class Drop(Base):
         a = self.add(cid, "交屋")
         b = self.add(cid, "驗收")
         self.set_source(b, "confirmed")
-        c = self.kb("agenda", "add", "--kind", "提醒", "--date", "2999-01-01", "--text", "客戶說的")[0][-10:]
+        c = self.add_json("--kind", "提醒", "--date", "2999-01-01", "--text", "客戶說的")
         (self.raw / _cards.MEETING).unlink()
         self.kb("inventory", "scan")
         t = turn.start(self.V, None, "")["turn"]
@@ -237,7 +323,23 @@ class Asks(Base):
         todo = self.todo()
         got = json.loads(run_kb("asks", "--json", cwd=self.V).stdout)
         self.assertEqual(set(got), {"asks", "tell"})
-        self.assertEqual((got["asks"], got["tell"]), (todo["asks"], todo["tell"]))
+        self.assertEqual(got["asks"], todo["asks"])
+        self.assertEqual(got["tell"], [t for t in todo["tell"] if t.startswith(("加進日程", "照新版"))
+                                       or "改成" in t])
+
+    def test_kb_asks_tell_leaves_out_the_tidying_state_todo_tells(self):
+        """確認後裁定 5（D-141）：整理狀態（不製卡、讀不到…）只在 cards todo 的 tell，kb asks 不帶。"""
+        todo = self.todo()
+        self.assertTrue([t for t in todo["tell"] if t.startswith("不製卡")], todo["tell"])
+        got = json.loads(run_kb("asks", "--json", cwd=self.V).stdout)
+        self.assertEqual(got["tell"], [])
+        self.assertNotIn("不製卡", "\n".join(self.kb("asks")))
+
+    def test_kb_asks_tell_keeps_this_turns_action_sentences(self):
+        turn.start(self.V, None, "")
+        self.add(self.cid, "交屋", "2999-11-30")
+        got = json.loads(run_kb("asks", "--json", cwd=self.V).stdout)
+        self.assertEqual(got["tell"], ["加進日程：11/30 交屋"])
 
     def test_kb_asks_is_read_only(self):
         self.make_all()
@@ -275,7 +377,7 @@ class Asks(Base):
             with self.subTest(n=n):
                 self.tearDown()
                 self.setUp()
-                aid = self.kb("agenda", "add", "--kind", "承諾", "--date", PAST, "--text", "給報價", "--entity", "信義王")[0][-10:]
+                aid = self.add_json("--kind", "承諾", "--date", PAST, "--text", "給報價", "--entity", "信義王")
                 self.run_result("overdue", n, fills)
                 self.assertEqual(self.item(aid)["status"], status)
                 if n == 2:

@@ -246,7 +246,8 @@ def _list(vault, as_json):
         if entities.is_self(e):
             lines.append(f"- {e['name']}（你自己）掛 {e['mounted']} 張")
         else:
-            kind = f"{e['type']}，{_state(e)}" + (f"，{entities.PROGRESS_TEXT.get(e['progress'], e['progress'])}" if e.get("progress") else "")
+            kind = f"{e['type']}，{_state(e)}" + (f"，{entities.PROGRESS_TEXT.get(e['progress'], e['progress'])}"
+                                                    if e.get("progress") and entities.is_matter(vault, e) else "")  # D-143
             lines.append(f"- {e['name']}（{kind}）掛 {e['mounted']} 張" + ("，有綜合卡" if e["has_card"] else ""))
     print("\n".join(lines) if lines else "實體清單是空的")
     return 0

@@ -1,5 +1,6 @@
 """回合：每句話一個回合（D-074）。目前回合按 session 存 .system/turns/<sid>.json，另有 current.json 給 CLI。
-回合備份住 .system/versions/<turn>/：turn.json、manifest.jsonl（一行一檔）、files/<rel>（modify 與 delete 的舊版）。
+回合備份住 .system/versions/<turn>/：turn.json、manifest.jsonl（一行一檔）、files/<rel>（modify 與 delete 的舊版）、
+folders.jsonl（kb 程式改的資料夾，一行一個動作，D-142）。
 大改動攔截（D-075）：同回合用檔案工具修改既有綜合卡達 big_change_synthesis_max 張就擋，approve 後解除。
 相對路徑保留原始大小寫（I-027：paths.normalize 會小寫，備份與還原不能用它）。
 """
@@ -298,6 +299,52 @@ def backup(vault, rel, turn_id, action=None, by=None):
                     lead = "\n"  # 檔尾是半截行：先補換行，新的一行不被吃掉（第二輪 R2-L5）
         with open(manifest, "a", encoding="utf-8", newline="\n") as f:
             f.write(lead + json.dumps(row, ensure_ascii=False) + "\n")
+
+
+FOLDER_OPS = ("move", "make", "remove")
+
+
+def record_folder(vault, turn_id, op, src, dst=None):
+    """kb 程式改了資料夾（D-142）：versions/<turn>/folders.jsonl 追加一行 {"op","from","to","time"}，路徑是總資料夾相對的 POSIX。
+    op：move（整夾改名或搬，from → to）、make（建了 from）、remove（拿掉空夾 from）。跟 backup 同一把 manifest 鎖；
+    manifest 的既有讀者（list 計數、日誌、大改動門檻）不受影響。"""
+    if op not in FOLDER_OPS:
+        raise ValueError(f"資料夾動作只收 {'、'.join(FOLDER_OPS)}：{op!r}")
+    vdir = turn_dir(vault, turn_id)
+    path = vdir / "folders.jsonl"
+    row = {"op": op, "from": str(src).replace("\\", "/"), "to": str(dst).replace("\\", "/") if dst else None,
+           "time": _now().strftime("%Y-%m-%dT%H:%M:%S")}
+    with FileLock(vdir / "manifest.jsonl"):
+        lead = ""
+        if path.is_file() and path.stat().st_size > 0:
+            with open(path, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    lead = "\n"
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(lead + json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def folders(vault, turn_id):
+    """讀 folders.jsonl（照記的順序）；壞行跳過並寫一行 hook-errors.log（同 entries）。"""
+    path = Path(vault) / VERSIONS_REL / turn_id / "folders.jsonl"
+    if not path.is_file():
+        return []
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for lineno, ln in enumerate(f, 1):
+            if not ln.strip():
+                continue
+            try:
+                row = json.loads(ln)
+            except ValueError as e:
+                ledger.log_error(vault, f"folders 壞行跳過 {turn_id}:{lineno}: {type(e).__name__}: {e}")
+                continue
+            if isinstance(row, dict) and row.get("op") in FOLDER_OPS and row.get("from"):
+                rows.append(row)
+            else:
+                ledger.log_error(vault, f"folders 壞行跳過 {turn_id}:{lineno}: 不是資料夾動作")
+    return rows
 
 
 def zone_of(vault, rel, sources=None):

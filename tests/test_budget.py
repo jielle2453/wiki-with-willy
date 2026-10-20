@@ -197,6 +197,38 @@ class OpeningAllLines(unittest.TestCase):
                 self.assertLessEqual(len(status), OPENING_MAX_CHARS, (len(status), lines))
 
 
+PREFERENCE_MAX = 10
+PREFERENCE_MAX_CHARS = 400
+
+
+def opening_preferences_chars():
+    """設定檔第六節放滿（10 條、合計 400 字）時，開場在 core 之後多出來的字數。"""
+    texts = [f"{i:02d}" + "偏" * 38 for i in range(PREFERENCE_MAX)]
+    assert sum(len(t) for t in texts) == PREFERENCE_MAX_CHARS
+
+    def prepare(vault):
+        p = vault / ".system" / "profile.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data["preferences"] = [{"text": t, "source": "corrected", "date": "2026-10-20"} for t in texts]
+        data["schema_version"] = 3
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp = Path(tempfile.mkdtemp(prefix="kbbudget-"))
+    try:
+        vault = tmp / "vault"
+        shutil.copytree(FIXTURE_VAULT, vault)
+        prepare(vault)
+        data = {"session_id": "budget", "cwd": str(vault), "hook_event_name": "SessionStart", "source": "compact"}
+        r = subprocess.run([sys.executable, str(SESSION_HOOK)], input=json.dumps(data), capture_output=True,
+                           text=True, encoding="utf-8", cwd=str(vault), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT)))
+        ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    core = read(CORE)
+    block = ctx[ctx.index(core) + len(core):]
+    assert block.startswith("\n客戶偏好：\n") and block.count("\n- ") == PREFERENCE_MAX, block[:80]
+    return len(block)
+
+
 class ResidentTotal(unittest.TestCase):
     def test_resident_total(self):
         parts = [measure_skill(p)["desc_chars"] for p in skill_files()]
@@ -207,6 +239,8 @@ class ResidentTotal(unittest.TestCase):
             parts.append(len(opening_status("compact")) + len("\n\n"))  # 狀態行與 core 之間的空行也進常駐
         if not parts:
             self.skipTest("常駐檔尚未建立")
+        if SESSION_HOOK.exists():  # note 改規則驗收 13（D-137）：偏好最壞 10 條 400 字，開場段接在 core 之後
+            parts.append(opening_preferences_chars())
         self.assertLessEqual(sum(parts), RESIDENT_TOTAL_MAX_CHARS)
 
 

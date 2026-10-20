@@ -912,5 +912,101 @@ class VersionsJournal(Base):
         self.assertEqual(turn.current(self.V, SID)["turn"], t["turn"])  # turns/<sid>.json 不動
 
 
+SKIP_TREE = (".system/versions/", ".system/journal/", ".system/turns/", "系統/工作日誌/")
+
+
+def tree(V):
+    """全樹：檔（相對路徑 → 內容）與夾（相對路徑），回合備份、日誌、回合檔與 log 除外（note 改規則驗收 8）。"""
+    files, dirs = {}, set()
+    for p in sorted(V.rglob("*")):
+        rel = p.relative_to(V).as_posix()
+        if any((rel + "/").startswith(s) for s in SKIP_TREE) or rel.endswith((".lock", "hook-errors.log", "ledger.tsv")):
+            continue
+        if p.is_dir():
+            dirs.add(rel)
+        else:
+            files[rel] = p.read_bytes()
+    return files, dirs
+
+
+class FolderLedger(Base):
+    """note 改規則第 3 點（D-142）：退回先照 folders.jsonl 相反順序把夾改回去，再還原檔案；
+    先全部檢查，有一項不行整個不退、什麼都不動；make 的夾空就拿掉、不空留著；remove 的夾建回來。"""
+
+    def rename_type_in_turn(self):
+        """模擬型別改名：卡先備份改寫、夾 案子 → 工程 記 move、搬完再改一次新位置的卡（像綜合卡快取重渲染）。"""
+        t = turn.start(self.V, None, "工程改名")["turn"]
+        turn.backup(self.V, self.card_rel, t)
+        self.card.write_text("型別: 工程\n", encoding="utf-8")
+        os.rename(self.V / "案子", self.V / "工程")
+        turn.record_folder(self.V, t, "move", "案子", "工程")
+        moved = "工程/信義王/信義王.md"
+        turn.backup(self.V, moved, t, by="program")
+        (self.V / moved).write_text("型別: 工程\n快取\n", encoding="utf-8")
+        turn.backup(self.V, "工程/信義王/新檔.md", t)
+        (self.V / "工程/信義王/新檔.md").write_text("新的\n", encoding="utf-8")
+        return t
+
+    def test_move_back_then_files(self):
+        before = tree(self.V)
+        self.rename_type_in_turn()
+        r = run_kb("versions", "revert", "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["folders"], [{"op": "move", "from": "工程", "to": "案子"}])
+        self.assertEqual(tree(self.V), before)
+        self.assertFalse((self.V / "工程").exists())
+
+    def test_revert_of_revert_moves_again(self):
+        self.rename_type_in_turn()
+        self.assertEqual(run_kb("versions", "revert", cwd=self.V).returncode, 0)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.V / "工程" / "信義王" / "信義王.md").is_file())
+        self.assertFalse((self.V / "案子").exists())
+        self.assertEqual((self.V / "工程" / "信義王" / "信義王.md").read_text(encoding="utf-8"), "型別: 工程\n快取\n")
+
+    def test_check_fails_nothing_touched(self):
+        t = self.rename_type_in_turn()
+        (self.V / "案子").mkdir()
+        before = tree(self.V)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "退不回去：「工程」改回「案子」時「案子」已經有東西了，什麼都沒動"))
+        self.assertEqual(tree(self.V), before)
+        self.assertFalse((self.versions_dir(t) / "reverted.json").exists())
+
+    def test_check_fails_when_target_gone(self):
+        self.rename_type_in_turn()
+        shutil.rmtree(self.V / "工程")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "退不回去：「工程」不見了，改不回「案子」，什麼都沒動"))
+
+    def test_make_and_remove(self):
+        t = turn.start(self.V, None, "加型別")["turn"]
+        for name in ("設計師", "工地"):
+            (self.V / name).mkdir()
+            turn.record_folder(self.V, t, "make", name)
+        (self.V / "工地" / "a.txt").write_text("x", encoding="utf-8")
+        (self.V / "空的").mkdir()
+        before_remove = tree(self.V)[1] - {"設計師", "工地", "工地/a.txt"}
+        (self.V / "空的").rmdir()
+        turn.record_folder(self.V, t, "remove", "空的")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("建的資料夾「工地」裡有東西，留著", r.stdout.splitlines())
+        self.assertFalse((self.V / "設計師").exists())
+        self.assertTrue((self.V / "工地" / "a.txt").is_file())
+        self.assertTrue((self.V / "空的").is_dir())
+        self.assertTrue(before_remove <= tree(self.V)[1])
+
+    def test_make_check_fails_on_file(self):
+        t = turn.start(self.V, None, "加型別")["turn"]
+        (self.V / "設計師").mkdir()
+        turn.record_folder(self.V, t, "make", "設計師")
+        (self.V / "設計師").rmdir()
+        (self.V / "設計師").write_text("x", encoding="utf-8")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "退不回去：「設計師」現在是檔案，什麼都沒動"))
+
+
 if __name__ == "__main__":
     unittest.main()

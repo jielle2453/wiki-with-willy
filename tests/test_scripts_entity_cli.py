@@ -53,7 +53,8 @@ class Add(Base):
     def test_add_idempotent_and_refusals(self):
         md = self.V / "系統" / "客戶設定檔.md"
         text = md.read_text(encoding="utf-8")
-        md.write_text(text.rstrip("\n") + "\n| 林小姐室內設計 | 公司 | 林小姐 |\n", encoding="utf-8", newline="\n")
+        at = text.index("\n## 六、")  # 第五節的表接在第六節之前
+        md.write_text(text[:at] + "| 林小姐室內設計 | 公司 | 林小姐 |\n" + text[at:], encoding="utf-8", newline="\n")
         self.assertEqual(run_kb("profile", "apply", cwd=self.V).returncode, 0)
         t = self.new_turn()
         self.assertEqual(self.kb("add", "--type", "案子", "--name", "信義王"), ["已登記：信義王（案子，待確認）"])
@@ -181,9 +182,23 @@ class Rename(Base):
         self.assertEqual((self.V / ".system" / "entities.json").read_bytes(), before_entities)
         self.assertEqual(self.front(rel)["實體"], ["信義王"])
         self.assertEqual((self.V / XINYI_DIR / "信義王.md").read_bytes(), before_card)
-        self.assertFalse((self.V / "案子" / "信義王宅邸" / "信義王宅邸.md").exists())
-        # 夾名由程式改了會留著（versions.py 不改）：客戶原檔還在新夾
-        self.assertTrue((self.V / "案子" / "信義王宅邸" / "合約.docx").is_file())
+        self.assertFalse((self.V / "案子" / "信義王宅邸").exists())
+        # B-062（D-142）：程式改的夾名記在回合，退回時夾跟客戶原檔一起回去
+        self.assertTrue((self.V / XINYI_DIR / "合約.docx").is_file())
+
+    def test_revert_type_change_moves_folder_back(self):
+        """note 改規則驗收 9：entity rename 換型別之後 versions revert，夾與裡面的客戶原檔回到原型別。"""
+        t = self.new_turn()
+        self.kb("rename", "信義王", "--to", "信義王", "--type", "業主")
+        self.assertTrue((self.V / "業主" / "信義王" / "合約.docx").is_file())
+        self.assertEqual([(r["op"], r["from"], r["to"]) for r in turn.folders(self.V, t)],
+                         [("move", "案子/信義王", "業主/信義王")])
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.V / XINYI_DIR / "合約.docx").is_file())
+        self.assertTrue((self.V / XINYI_DIR / "信義王.md").is_file())
+        self.assertFalse((self.V / "業主" / "信義王").exists())
+        self.assertEqual(self.get(E.XINYI)["type"], "案子")
 
 
 def synthesis_ok(V, rel):

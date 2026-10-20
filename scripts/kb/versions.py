@@ -7,6 +7,9 @@
 刪成品前三道關：這一句話已經改過的不刪（R2-2）、指紋跟清冊不同的不刪（R2-3）、檔已不在只改 status（R2-L1）。
 CLI 的鎖等 30 秒（hook 維持 3，第二輪 R2-L3）。
 revert、delete-outputs 成功後記一段工作日誌程式段（D-085），note 是「已退回 …」「已刪 N 份成品（回合 …）」那句；刪 0 份不記。
+資料夾帳（D-142）：回合夾的 folders.jsonl 記了 kb 改過的夾，revert 先照相反順序全部檢查、有一項不行整個不退，
+可以就先把夾改回去（建的夾空就拿掉、不空留著並說一句；拿掉的建回來），每一步反著記進動作回合，再還原檔案；
+記在搬過的夾裡的檔，路徑換回舊位置再還原。
 """
 import argparse
 import json
@@ -27,6 +30,7 @@ NOT_IN_VAULT = "不在知識庫裡：這裡往上找不到 .system/sources.json"
 TOUCHED_THIS_TURN = "{rel} 這一句話已經改過，下一句再刪"
 CHANGED_SINCE = "{rel} 之後被改過，留著"
 ALREADY_GONE = "{rel} 已經不在"
+MADE_KEPT = "建的資料夾「{rel}」裡有東西，留著"
 
 
 def add_arguments(sub):
@@ -60,8 +64,79 @@ def turns(vault):
             "reverted": (d / "reverted.json").is_file(),
             "reverted_turn": info.get("reverted_turn"),
             "entries": turn.entries(vault, d.name),
+            "folders": turn.folders(vault, d.name),
         })
     return out
+
+
+def _fkey(rel):
+    return str(rel).casefold()
+
+
+def _folder_steps(vault, ops):
+    """D-142：照相反順序全部先檢查，回 (步驟, 拒絕句)；有一項不行步驟是 None、什麼都不動。
+    move 要 to 在、from 不在（只差大小寫的不算占用）；make 要那個夾在或已經不在；remove 要那個路徑不在或是夾。
+    前面的步驟做完後的樣子記在 state 裡，後面的檢查照它看（夾改名接著改名的鏈也算得對）。"""
+    state = {}
+
+    def exists(rel):
+        return state[_fkey(rel)] if _fkey(rel) in state else (Path(vault) / rel).exists()
+
+    def is_file(rel):
+        return _fkey(rel) not in state and (Path(vault) / rel).is_file()
+    for op in reversed(ops):
+        src, dst = op["from"], op.get("to")
+        if op["op"] == "move":
+            if not dst or not exists(dst):
+                return None, f"退不回去：「{dst}」不見了，改不回「{src}」，什麼都沒動"
+            if _fkey(src) != _fkey(dst) and exists(src):
+                return None, f"退不回去：「{dst}」改回「{src}」時「{src}」已經有東西了，什麼都沒動"
+            state[_fkey(dst)], state[_fkey(src)] = False, True
+        elif is_file(src):
+            return None, f"退不回去：「{src}」現在是檔案，什麼都沒動"
+        elif op["op"] == "remove":
+            state[_fkey(src)] = True
+    return list(reversed(ops)), None
+
+
+def _undo_folders(vault, steps, acting_turn):
+    """照檢查過的步驟把夾改回去，每一步反著記進動作回合（退掉這次退回時夾再改過去）。回 (做了的, 留著的句子)。"""
+    done, kept = [], []
+    v = Path(vault)
+    for op in steps:
+        src, dst = op["from"], op.get("to")
+        if op["op"] == "move":
+            (v / src).parent.mkdir(parents=True, exist_ok=True)
+            os.rename(v / dst, v / src)
+            turn.record_folder(vault, acting_turn, "move", dst, src)
+            done.append({"op": "move", "from": dst, "to": src})
+        elif op["op"] == "make":
+            if not (v / src).is_dir():
+                continue
+            if any((v / src).iterdir()):
+                kept.append(MADE_KEPT.format(rel=src))
+                continue
+            (v / src).rmdir()
+            turn.record_folder(vault, acting_turn, "remove", src)
+            done.append({"op": "remove", "from": src, "to": None})
+        else:
+            (v / src).mkdir(parents=True, exist_ok=True)
+            turn.record_folder(vault, acting_turn, "make", src)
+            done.append({"op": "make", "from": src, "to": None})
+    return done, kept
+
+
+def _translator(ops):
+    """夾改回去之後，回合裡記在新位置（move 的 to 底下）的檔案路徑換回舊位置（from 底下），照記的相反順序一層層換回。"""
+    moves = [(op["from"], op["to"]) for op in ops if op["op"] == "move" and op.get("to")]
+
+    def back(rel):
+        for src, dst in reversed(moves):
+            k, d = _fkey(rel), _fkey(dst)
+            if k == d or k.startswith(d + "/"):
+                rel = src + rel[len(dst):]
+        return rel
+    return back
 
 
 def _counts(vault, t):
@@ -221,7 +296,7 @@ def _undo_revert_marks(vault, original_turn):
 
 def _revert(vault, code, delete_outputs, as_json, conversation=False):
     all_turns = turns(vault)
-    cands = [t for t in all_turns if not t["reverted"] and (t["entries"] or t["reverted_turn"])]
+    cands = [t for t in all_turns if not t["reverted"] and (t["entries"] or t["reverted_turn"] or t["folders"])]
     if not cands:
         print("沒有可以退回的改動")
         return 3
@@ -229,7 +304,13 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
     if code and code != target["turn"]:
         print(f"只能從最近一次開始退：{target['turn']}")
         return 3
+    steps, refused = _folder_steps(vault, target["folders"])
+    if refused:  # D-142：夾改不回去就整個不退，回合、檔、夾都不動
+        print(refused)
+        return 3
     rt = _acting_turn(vault, target["turn"])
+    folders_done, folders_kept = _undo_folders(vault, steps, rt["turn"])
+    back = _translator(target["folders"])
     touched_before = _touched_paths(vault, rt["turn"])  # 這一句話在退回前就動過的路徑（R2-2）
     sources = sources_lib.load(vault)
     # 成品只算「清冊 created_turn 是這回合 且 這回合 manifest 記 create」的（第一輪 M4）
@@ -244,11 +325,12 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
 
     restored, removed, lost, touched_z3, kept_msgs, kept_ids = [], [], [], [], [], []
     for e in reversed(target["entries"]):
-        rel, action = e.get("path"), e.get("action")
+        recorded, action = e.get("path"), e.get("action")
+        rel = back(recorded)  # 記在搬過的夾裡的檔，夾改回去之後在舊位置
         dst = Path(vault) / rel
         is_z3 = turn.zone_of(vault, rel, sources) == "Z3"
         if action in ("modify", "delete"):
-            src = target["dir"] / "files" / rel
+            src = target["dir"] / "files" / recorded
             if not src.is_file():
                 lost.append(rel)
                 continue
@@ -312,6 +394,7 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
             "restored": restored, "removed": removed, "lost": lost,
             "outputs": out_rels, "outputs_deleted": bool(delete_outputs), "kept": kept_msgs,
             "undone_revert_of": target["reverted_turn"], "inventory_error": inv_error,
+            "folders": folders_done, "folders_kept": folders_kept,
         }, ensure_ascii=False))
         return 0
     if lost:
@@ -325,8 +408,8 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
         print(f"這 {len(outputs)} 份成品先留著；要刪跟我說，我用 delete-outputs 刪。")
     if target["reverted_turn"]:
         print(f"這一次退的是「退回 {target['reverted_turn']}」本身，{target['reverted_turn']} 不再算已退回。")
-    if any(e.get("path") == ".system/profile.json" for e in target["entries"]):  # 客戶設定檔與型別 實作疑義裁定 1
-        print("套用設定檔時建的資料夾還在，要拿掉請自己刪空夾")
+    for msg in folders_kept:  # 建的夾裡有東西（D-142，取代「套用設定檔時建的資料夾還在」）
+        print(msg)
     if inv_error is not None:
         print(f"清冊讀不到：{inv_error}")
     return 0

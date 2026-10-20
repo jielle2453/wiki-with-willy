@@ -55,8 +55,8 @@ def message(text, **kw):
 class Defaults(unittest.TestCase):
     def test_shape(self):
         d = profile.defaults(DAY)
-        self.assertEqual((d["schema_version"], d["applied"], d["md_sha256"], d["types"]), (2, None, None, []))
-        self.assertEqual((d["synthesis_sections"], d["about"]), ([], []))
+        self.assertEqual((d["schema_version"], d["applied"], d["md_sha256"], d["types"]), (3, None, None, []))
+        self.assertEqual((d["synthesis_sections"], d["about"], d["preferences"]), ([], [], []))
         self.assertEqual([c["name"] for c in d["card_types"]],
                          ["報價", "合約", "會議紀錄", "型錄", "進度表", "範本", "說明", "其他"])
         for c in d["card_types"]:
@@ -117,7 +117,8 @@ class Parse(unittest.TestCase):
 
     def test_three_sections_empty_is_ok(self):
         self.assertEqual(profile.parse_md(md_with(cards=[], exclusions=[])),
-                         {"types": [], "card_types": [], "exclusions": [], "synthesis_sections": [], "about": []})
+                         {"types": [], "card_types": [], "exclusions": [], "synthesis_sections": [], "about": [],
+                          "preferences": []})
 
     def test_missing_section(self):
         text = md_with().replace("## 二、卡型與段落", "## 卡型與段落")
@@ -512,10 +513,10 @@ class SchemaOneMigration(unittest.TestCase):
         p = self.V / ".system" / "profile.json"
         before = p.read_bytes()
         data = profile.load(self.V)
-        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["schema_version"], 3)
         self.assertEqual([(s["type"], [x["name"] for x in s["sections"]], s["source"]) for s in data["synthesis_sections"]],
                          [("案子", ["時程", "金額"], "inferred")])
-        self.assertEqual(data["about"], [])
+        self.assertEqual((data["about"], data["preferences"]), ([], []))
         self.assertEqual(p.read_bytes(), before)
         self.assertEqual(profile.stored_schema(self.V), 1)
 
@@ -544,6 +545,225 @@ class AboutListChars(unittest.TestCase):
                          "第 5 節第 1 列的名稱「Lee[Inc]」不能用（含不能用的字元）")
         self.assertEqual(message(with_rows(base, "五", ["| 林小姐室內設計 | 公司 | 林[小姐] |"])),
                          "第 5 節第 1 列的別名「林[小姐]」不能用（含不能用的字元）")
+
+
+
+SECTION6_PROMPT = ("怎麼回答你、怎麼做東西給你：例如回答先講結論、日期帶星期。一條一列；檔案裡的卡怎麼寫不受這節影響（那是第二節）。"
+                   "最多 10 條、合計 400 字。")
+
+
+def pref(text, source="corrected", date=DAY):
+    return {"text": text, "source": source, "date": date}
+
+
+class SchemaThree(unittest.TestCase):
+    """note 改規則第 1 點（D-137）：第六節偏好、schema 2 在記憶體遷移、上限 10 條 400 字。"""
+
+    def test_render_has_section_six(self):
+        d = profile.defaults(DAY)
+        d["preferences"] = [pref("回答先講結論")]
+        text = profile.render_text(d)
+        self.assertIn("\n## 六、偏好\n" + SECTION6_PROMPT + "\n\n| 偏好 | 來源 | 日期 |\n|---|---|---|\n"
+                      "| 回答先講結論 | 糾正 | 2026-10-19 |\n", text)
+        self.assertEqual(profile.parse_md(text)["preferences"], [pref("回答先講結論")])
+
+    def test_round_trip_six_sections(self):
+        d = profile.defaults(DAY)
+        d["preferences"] = [pref("回答先講結論"), pref("講日期都帶星期", "confirmed")]
+        self.assertEqual(profile.parse_md(profile.render_text(d)), {k: d[k] for k in profile.LISTS})
+
+    def test_schema2_md_without_section_six(self):
+        text = (PROFILE / "schema2.md").read_text(encoding="utf-8")
+        self.assertEqual(message(text), "少了第 6 節（## 六、…）")
+        got = profile.parse_md(text, legacy=2)
+        self.assertIsNone(got["preferences"])
+        self.assertEqual(got["about"], [])
+        self.assertEqual(message(text[:text.index("\n## 五、")] + "\n", legacy=2), "少了第 5 節（## 五、…）")
+
+    def test_preference_errors(self):
+        base = profile.render_text(profile.defaults(DAY))
+        cases = [
+            (["|  | 糾正 |  |"], "第 6 節第 1 列的偏好是空的"),
+            (["| 先講結論 |", "| 日期帶星期 |", "| 先講結論 |"], "第 6 節第 3 列跟第 1 列重複（先講結論）"),
+            ([f"| 第{i}條 |" for i in range(11)], "第 6 節第 11 列超過上限（偏好最多 10 條）"),
+            (["| " + "長" * 300 + " |", "| " + "短" * 101 + " |"], "第 6 節第 2 列超過上限（偏好合計最多 400 字）"),
+            (["| 先講結論 | 亂填 |  |"], "第 6 節第 1 列的來源要是 訪談、推測、確認、糾正 之一，或留空"),
+            (["| 先講結論 | 糾正 |"], "第 6 節第 1 列欄數不對（要 1 欄或 3 欄）"),
+        ]
+        for rows, want in cases:
+            with self.subTest(want=want):
+                self.assertEqual(message(with_rows(base, "六", rows)), want)
+        got = profile.parse_md(with_rows(base, "六", ["| 一 |", "| 二 |"]), preference_max=2, preference_max_chars=2)
+        self.assertEqual([p["text"] for p in got["preferences"]], ["一", "二"])
+
+    def test_diff_merge_summary(self):
+        old = profile.defaults(DAY)
+        old["preferences"] = [pref("回答先講結論")]
+        new = profile.parse_md(with_rows(profile.render_text(old), "六", ["| 講日期都帶星期 |"]))
+        d = profile.diff(old, new)
+        self.assertEqual(d["preferences"], {"added": ["講日期都帶星期"], "removed": [], "changed": []})
+        self.assertEqual(profile.summary_full(d), "偏好 +1 -0 ~0")
+        self.assertEqual(profile.summary_short(d), "偏好 +1")
+        merged = profile.merge(old, new, today="2026-10-20")
+        self.assertEqual(merged["preferences"], [pref("講日期都帶星期", "confirmed", "2026-10-20"), pref("回答先講結論")])
+
+
+class SchemaTwoLoad(unittest.TestCase):
+    def setUp(self):
+        self.tmp, self.V, _raw = make_inv_vault()
+        shutil.copy2(PROFILE / "schema2.json", self.V / ".system" / "profile.json")
+        shutil.copy2(PROFILE / "schema2.md", self.V / "系統" / "客戶設定檔.md")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_load_adds_preferences_in_memory(self):
+        before = (self.V / ".system" / "profile.json").read_bytes()
+        data = profile.load(self.V)
+        self.assertEqual((data["schema_version"], data["preferences"]), (3, []))
+        self.assertEqual((self.V / ".system" / "profile.json").read_bytes(), before)
+        self.assertEqual(profile.stored_schema(self.V), 2)
+        self.assertEqual(profile.status(self.V)["state"], "ok")
+
+    def test_changed_schema2_md_parses_without_section_six(self):
+        md = self.V / "系統" / "客戶設定檔.md"
+        text = md.read_text(encoding="utf-8")
+        md.write_text(text.replace("|---|---|---|---|---|\n", "|---|---|---|---|---|\n| 工地 | 事 | x |\n", 1),
+                      encoding="utf-8", newline="\n")
+        st = profile.status(self.V)
+        self.assertEqual(st["state"], "changed", st["error"])
+        self.assertEqual(st["diff"]["types"]["added"], ["工地"])
+        self.assertEqual((st["new"]["preferences"], st["diff"]["preferences"]["added"]), ([], []))
+
+
+def edit(data, section, op, today="2026-10-21", **fields):
+    return profile.edited(data, section, op, fields, today=today)
+
+
+class Edited(unittest.TestCase):
+    """note 改規則第 1 點：edited 在記憶體改六節，改到的列來源 corrected、日期今天，其他列不動。"""
+
+    def setUp(self):
+        self.d = profile.defaults(DAY)
+        self.d["types"] = [{"name": "案子", "category": "matter", "note": "裝修案", "source": "interview", "date": DAY}]
+        self.d["synthesis_sections"] = profile.default_sections(self.d["types"], DAY)
+
+    def err(self, *args, **kw):
+        with self.assertRaises(profile.ProfileError) as cm:
+            edit(self.d, *args, **kw)
+        return cm.exception.message
+
+    def test_add_preference(self):
+        got, res = edit(self.d, "偏好", "add", 偏好="回答先講結論")
+        self.assertEqual(got["preferences"], [pref("回答先講結論", date="2026-10-21")])
+        self.assertEqual((res["message"], res["changed"]), ("已加偏好：回答先講結論", True))
+        self.assertEqual(got["types"], self.d["types"], "其他節不動")
+        self.assertEqual(self.d["preferences"], [], "不改傳進來的那份")
+        again, res = edit(dict(self.d, preferences=got["preferences"]), "偏好", "add", 偏好="回答先講結論")
+        self.assertEqual((res["changed"], again["preferences"]), (False, got["preferences"]))
+
+    def test_preference_limits_and_remove(self):
+        d = dict(self.d, preferences=[pref(f"第{i}條") for i in range(10)])
+        with self.assertRaises(profile.ProfileError) as cm:
+            edit(d, "偏好", "add", 偏好="再一條")
+        self.assertEqual(cm.exception.message, "偏好最多 10 條（現在 10 條），先合併或拿掉一條")
+        d = dict(self.d, preferences=[pref("長" * 390)])
+        with self.assertRaises(profile.ProfileError) as cm:
+            edit(d, "偏好", "add", 偏好="短" * 33)
+        self.assertEqual(cm.exception.message, "偏好合計最多 400 字（加了會是 423 字），先合併或縮短")
+        d = dict(self.d, preferences=[pref("回答先講結論"), pref("講日期都帶星期")])
+        got, res = edit(d, "偏好", "remove", 序號="2")
+        self.assertEqual((got["preferences"], res["message"]), ([pref("回答先講結論")], "已拿掉偏好 2：講日期都帶星期"))
+        with self.assertRaises(profile.ProfileError) as cm:
+            edit(d, "偏好", "remove", 序號="3")
+        self.assertEqual(cm.exception.message, "沒有這一列：序號=3")
+
+    def test_add_type_new_gets_defaults_and_existing_changes_note(self):
+        got, res = edit(self.d, "型別", "add", 名稱="廠商", 大類="對象", 一句說明="水電木作")
+        self.assertEqual(got["types"][-1], {"name": "廠商", "category": "party", "note": "水電木作", "source": "corrected",
+                                            "date": "2026-10-21"})
+        self.assertEqual(res["message"], "已加型別「廠商」（對象）")
+        self.assertEqual([(s["type"], s["source"]) for s in got["synthesis_sections"]],
+                         [("案子", "inferred"), ("廠商", "inferred")])
+        got, res = edit(self.d, "型別", "add", 名稱="案子", 一句說明="住宅裝修")
+        self.assertEqual((got["types"][0]["note"], got["types"][0]["source"], res["message"]),
+                         ("住宅裝修", "corrected", "已改型別「案子」：一句說明"))
+        got, res = edit(self.d, "型別", "add", 名稱="案子", 大類="事")
+        self.assertEqual(res["changed"], False, "大類一樣當沒改")
+        self.assertEqual(self.err("型別", "add", 名稱="案子", 大類="對象"), "型別「案子」已經有了，大類不能這樣改")
+        self.assertEqual(self.err("型別", "add", 名稱="水電", 大類="人"), "第 1 節第 2 列的大類要是 對象、事、物、主題 之一")
+        self.assertEqual(self.err("型別", "remove", 名稱="案子"), "拿掉型別用 kb profile type remove")
+
+    def test_card_types(self):
+        got, res = edit(self.d, "卡型", "add", 卡型="會議紀錄", 段落="待辦", 必出現="✓", 提示="誰要做什麼")
+        meeting = next(c for c in got["card_types"] if c["name"] == "會議紀錄")
+        self.assertEqual(meeting["sections"][-1], {"name": "待辦", "required": True, "hint": "誰要做什麼"})
+        self.assertEqual((meeting["source"], meeting["date"]), ("corrected", "2026-10-21"))
+        self.assertEqual(res["message"], "已加卡型「會議紀錄」的段落「待辦」")
+        self.assertEqual(next(c for c in got["card_types"] if c["name"] == "報價")["source"], "inferred")
+        got, res = edit(self.d, "卡型", "add", 卡型="估價單", 段落="總價")
+        self.assertEqual((got["card_types"][-1]["name"], res["message"]), ("估價單", "已加卡型「估價單」的段落「總價」"))
+        got, res = edit(self.d, "卡型", "remove", 卡型="報價")
+        self.assertNotIn("報價", [c["name"] for c in got["card_types"]])
+        self.assertEqual(res["message"], "已拿掉卡型「報價」（4 段）；已寫好的卡照留")
+        got, res = edit(self.d, "卡型", "remove", 卡型="報價", 段落="重點")
+        self.assertEqual((len(got["card_types"][0]["sections"]), res["message"]), (3, "已拿掉卡型「報價」的段落「重點」"))
+        self.assertEqual(self.err("卡型", "remove", 卡型="估價單"), "沒有這一列：卡型=估價單")
+        self.assertEqual(self.err("卡型", "add", 卡型="報價", 段落="重點", 必出現="要"), "第 2 節第 1 列的必出現只能打 ✓ 或留空")
+
+    def test_exclusions_synthesis_about(self):
+        got, res = edit(self.d, "不整理與敏感", "add", 種類="請款單", 處理="不整理")
+        self.assertEqual((got["exclusions"][-1]["action"], res["message"]), ("no_card", "已加不整理：請款單（不整理）"))
+        got, res = edit(self.d, "不整理與敏感", "remove", 種類="電話")
+        self.assertEqual(res["message"], "已拿掉不整理：電話")
+        self.assertEqual(self.err("不整理與敏感", "add", 種類="x", 處理="跳過"), "第 3 節第 10 列的處理要是 不整理 或 只記種類")
+        got, res = edit(self.d, "每類段落", "add", 型別="案子", 段落="預算與實際花費")
+        self.assertEqual(res["message"], "已加每類段落「案子」的「預算與實際花費」")
+        self.assertEqual([x["name"] for x in got["synthesis_sections"][0]["sections"]], ["時程", "金額", "預算與實際花費"])
+        got, res = edit(self.d, "每類段落", "remove", 型別="案子")
+        self.assertEqual((got["synthesis_sections"], res["message"]), ([], "已拿掉每類段落「案子」（2 段）"))
+        got, res = edit(self.d, "關於你", "add", 名稱="林美華", 是什麼="本人", 別名="Amy、美華")
+        self.assertEqual(got["about"], [{"name": "林美華", "kind": "person", "aliases": ["Amy", "美華"], "source": "corrected",
+                                         "date": "2026-10-21"}])
+        self.assertEqual(res["message"], "已加關於你：林美華（本人）")
+        got2, res = edit(dict(self.d, about=got["about"]), "關於你", "add", 名稱="林美華", 別名="Amy")
+        self.assertEqual((got2["about"][0]["aliases"], res["message"]), (["Amy"], "已改關於你「林美華」：別名"))
+        got3, res = edit(dict(self.d, about=got["about"]), "關於你", "remove", 名稱="林美華")
+        self.assertEqual((got3["about"], res["message"]), ([], "已拿掉關於你：林美華"))
+
+    def test_bad_section_and_column(self):
+        self.assertEqual(self.err("偏好啦", "add", 偏好="x"), "沒有「偏好啦」這一節；節是 型別、卡型、不整理與敏感、每類段落、關於你、偏好")
+        self.assertEqual(self.err("偏好", "add", 名稱="x"), "「偏好」這一節沒有「名稱」欄；欄是 偏好")
+        self.assertEqual(self.err("卡型", "remove", 提示="x"), "「卡型」這一節沒有「提示」欄；欄是 卡型、段落")
+
+
+class SectionsSchema(unittest.TestCase):
+    def test_shape(self):
+        d = profile.defaults(DAY)
+        d["types"] = [{"name": "案子", "category": "matter", "note": "裝修案", "source": "interview", "date": DAY}]
+        d["preferences"] = [pref("回答先講結論")]
+        got = profile.sections_schema(d)
+        self.assertEqual([s["name"] for s in got], list(profile.SECTION_NAMES))
+        types, cards, ex, synth, about, prefs = got
+        self.assertEqual((types["number"], types["key"], types["remove"]), (1, ["名稱"], None))
+        self.assertEqual(types["columns"][1], {"name": "大類", "choices": ["對象", "事", "物", "主題"]})
+        self.assertTrue(types["columns"][0]["rule"].startswith("知識庫第一層的資料夾名"))
+        self.assertEqual(types["rows"], [{"名稱": "案子", "大類": "事", "一句說明": "裝修案", "來源": "訪談", "日期": DAY}])
+        self.assertEqual(types["add"], "kb profile add 型別 名稱={名稱} 大類={大類} 一句說明={一句說明}")
+        self.assertEqual(cards["key"], ["卡型", "段落"])
+        self.assertEqual(cards["columns"][2], {"name": "必出現", "choices": ["✓", ""]})
+        self.assertEqual(cards["rows"][0], {"卡型": "報價", "段落": "重點", "必出現": "", "提示": "這份檔要記住的事，一點一行",
+                                            "來源": "推測", "日期": DAY})
+        self.assertEqual(cards["remove"], "kb profile remove 卡型 卡型={卡型} 段落={段落}")
+        self.assertEqual(ex["columns"][1], {"name": "處理", "choices": ["不整理", "只記種類"]})
+        self.assertEqual(synth["key"], ["型別", "段落"])
+        self.assertEqual(about["columns"][1], {"name": "是什麼", "choices": ["公司", "本人"]})
+        self.assertIn("頓號分開", about["columns"][2]["rule"])
+        self.assertEqual(prefs, {"name": "偏好", "number": 6, "key": ["序號"],
+                                 "limits": {"count": 10, "chars": 400, "used_count": 1, "used_chars": 6},
+                                 "columns": [{"name": "偏好", "rule": "一句白話，不含 \" $ ` \\ 這四種字元"}],
+                                 "rows": [{"序號": 1, "偏好": "回答先講結論", "來源": "糾正", "日期": DAY}],
+                                 "add": "kb profile add 偏好 偏好={偏好}", "remove": "kb profile remove 偏好 序號={序號}"})
 
 
 if __name__ == "__main__":

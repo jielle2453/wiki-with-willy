@@ -1,10 +1,12 @@
-"""客戶設定檔 .system/profile.json（schema 2，D-109～D-113、D-119、D-120）與渲染視圖 系統/客戶設定檔.md（D-052 一份三用、D-067）。
+"""客戶設定檔 .system/profile.json（schema 3，D-109～D-113、D-119、D-120、D-137）與渲染視圖 系統/客戶設定檔.md（D-052 一份三用、D-067）。
 
 JSON 為真；md 由 render 從 JSON 寫出，提示句住這裡（D-067）。人改了 md 用 parse_md 讀回同形的 dict（同一支解析器，D-111），
 diff 對 JSON 比、merge 補來源與日期、write 備進回合後寫 JSON 與 md。「md 有改」看內容指紋（md_sha256），不看 mtime。
 status 給開場與 kb profile check 共用，只讀不寫。型別夾的對帳（folder_check）照 D-112：只建不刪、刪列只准空夾。
 schema 2 多第四節每類段落（synthesis_sections，D-119）與第五節關於你（about，D-120）；schema 1 由 load 在記憶體遷移，
 大類預設段落（CATEGORY_SECTIONS）只在遷移與套用新型別時寫進 JSON，製卡者只讀 JSON。
+schema 3 多第六節偏好（preferences，D-137）：怎麼回答客戶，開場整段帶進來，上限 preference_max 條、preference_max_chars 字；
+schema 2 由 load 在記憶體補空清單。note 改規則（D-144）：edited 在記憶體改一節的一列、sections_schema 給 kb profile show --json。
 """
 import copy
 import hashlib
@@ -19,20 +21,24 @@ from kb._lib.io import FileLock, read_json, write_json_atomic, write_text_atomic
 
 PROFILE_POSIX = ".system/profile.json"
 MD_POSIX = "系統/客戶設定檔.md"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CATEGORIES = {"對象": "party", "事": "matter", "物": "asset", "主題": "topic"}
 SOURCES = {"訪談": "interview", "推測": "inferred", "確認": "confirmed", "糾正": "corrected"}
 ACTIONS = {"不整理": "no_card", "只記種類": "kind_only"}
 KINDS = {"公司": "company", "本人": "person"}
 RESERVED_TYPE_NAMES = ("AI 產出", "收件匣", "檔案索引", "系統", "CLAUDE.md")
 REQUIRED_MARKS = ("✓", "是", "v", "V", "Y")
-LISTS = ("types", "card_types", "exclusions", "synthesis_sections", "about")
+LISTS = ("types", "card_types", "exclusions", "synthesis_sections", "about", "preferences")
 LISTS_V1 = LISTS[:3]
-NEW_LISTS = LISTS[3:]  # schema 2 多的兩節；legacy 解析缺節時取 JSON 遷移補的值
-SECTION_NAMES = ("型別", "卡型", "不整理與敏感", "每類段落", "關於你")  # diff 摘要用的節名，順序同 LISTS
-NUMERALS = ("一", "二", "三", "四", "五")
+LISTS_V2 = LISTS[:5]
+NEW_LISTS = LISTS[3:]  # schema 2、3 多的節；legacy 解析缺節時取 JSON 遷移補的值
+SECTIONS_OF = {1: 3, 2: 5}  # 磁碟上的 schema → 那版 md 有幾節（legacy 解析缺後面的節不算錯）
+SECTION_NAMES = ("型別", "卡型", "不整理與敏感", "每類段落", "關於你", "偏好")  # diff 摘要與 kb profile add 的節名，順序同 LISTS
+NUMERALS = ("一", "二", "三", "四", "五", "六")
 # 每節的基本欄數；後面可再加來源、日期兩欄
-BASE_COLUMNS = (3, 4, 2, 4, 3)
+BASE_COLUMNS = (3, 4, 2, 4, 3, 1)
+PREFERENCE_MAX = 10  # config 的預設；parse_md 由呼叫端傳 config 的值
+PREFERENCE_MAX_CHARS = 400
 HIDDEN_OR_SYSTEM = 0x2 | 0x4
 # 四大類的預設段落（D-119）：load 遷移 schema 1、merge 遇到第一次加入的型別時寫進 JSON
 CATEGORY_SECTIONS = {
@@ -64,13 +70,16 @@ PROMPTS = (
     "每類的綜合卡除了現況、紀事、推算，還要固定寫哪些段？一段一列；「必出現」打 ✓ 的段沒內容時寫「未知」。"
     "新加的型別我會先填一組預設，你再改。",
     "你的公司與你本人叫什麼？檔案裡出現這些名字時我知道是你，不會替你自己寫一張。別名用頓號分開。",
+    "怎麼回答你、怎麼做東西給你：例如回答先講結論、日期帶星期。一條一列；檔案裡的卡怎麼寫不受這節影響（那是第二節）。"
+    "最多 10 條、合計 400 字。",
 )
-TITLES = ("型別", "卡型與段落", "不整理與敏感", "每類最想知道什麼", "關於你")
+TITLES = ("型別", "卡型與段落", "不整理與敏感", "每類最想知道什麼", "關於你", "偏好")
 TABLE_HEADS = (("名稱", "大類", "一句說明", "來源", "日期"),
                ("卡型", "段落", "必出現", "提示", "來源", "日期"),
                ("種類", "處理", "來源", "日期"),
                ("型別", "段落", "必出現", "提示", "來源", "日期"),
-               ("名稱", "是什麼", "別名", "來源", "日期"))
+               ("名稱", "是什麼", "別名", "來源", "日期"),
+               ("偏好", "來源", "日期"))
 
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 # 實體名稱、第五節名稱與別名另擋卡檔頭清單的分隔與括號（測試後修正裁定 10）
@@ -86,7 +95,8 @@ _KINDS_REVERSED = {v: k for k, v in KINDS.items()}
 
 
 class ProfileError(ValueError):
-    """解析錯誤：section 是 1～5、row 是那節表格的第幾列資料（表頭與分隔列不算）；缺節時 row 是 None。"""
+    """解析錯誤：section 是 1～6、row 是那節表格的第幾列資料（表頭與分隔列不算）；缺節時 row 是 None。
+    edited 的拒絕（節名、欄名不對、找不到那一列、偏好上限）也用它，section 可以是 None、message 是給人看的整句。"""
 
     def __init__(self, section, row, message):
         super().__init__(message)
@@ -121,6 +131,7 @@ def defaults(today=None):
         "exclusions": [{"kind": k, "action": "kind_only", "source": "inferred", "date": today} for k in DEFAULT_EXCLUSIONS],
         "synthesis_sections": [],
         "about": [],
+        "preferences": [],
     }
 
 
@@ -149,7 +160,8 @@ def stored_schema(vault):
 
 def load(vault):
     """沒檔回 None；壞 JSON、不是物件、清單缺一、清單裡有非物件、版本比這版新丟 ValueError。
-    schema 1 在記憶體遷移成 2（不寫檔）：第四節照每個型別的大類補預設（來源推測、日期今天），第五節空。"""
+    schema 1 在記憶體遷移（不寫檔）：第四節照每個型別的大類補預設（來源推測、日期今天），第五節空；
+    schema 1、2 都補第六節空的偏好，寫的時候寫 3。"""
     data = read_json(_path(vault))
     if data is None:
         return None
@@ -158,11 +170,13 @@ def load(vault):
     version = data.get("schema_version", SCHEMA_VERSION)
     if not isinstance(version, int) or version > SCHEMA_VERSION:
         raise ValueError(f"設定檔版本 {version!r} 比這版 plugin 新")
-    for key in (LISTS if version >= 2 else LISTS_V1):
+    for key in (LISTS if version >= 3 else LISTS_V2 if version == 2 else LISTS_V1):
         if not isinstance(data.get(key), list) or any(not isinstance(x, dict) for x in data[key]):
             raise ValueError(f"設定檔沒有 {key} 清單")
     if version < 2:
-        data = dict(data, schema_version=SCHEMA_VERSION, synthesis_sections=default_sections(data["types"]), about=[])
+        data = dict(data, synthesis_sections=default_sections(data["types"]), about=[])
+    if version < 3:
+        data = dict(data, schema_version=SCHEMA_VERSION, preferences=[])
     return data
 
 
@@ -377,22 +391,47 @@ def _parse_about(rows, types, max_chars):
     return out
 
 
-def parse_md(text, max_type_chars=TYPE_NAME_MAX, legacy=False, known_types=()):
-    """md → {"types", "card_types", "exclusions", "synthesis_sections", "about"}（跟 JSON 同形，source／date 沒填是 None）；
-    讀不懂丟 ProfileError。各節都在但沒有任何列算成功；少任何一節就是錯（I-097：命中 0 節不回空）。型別名長度上限是 max_type_chars。
-    legacy（JSON 還是 schema 1，舊 md 只有三節）：缺第四、五節不算錯，那兩節回 None，呼叫端取 JSON 遷移補的值。
+def _parse_preferences(rows, max_count, max_chars):
+    """第六節（D-137）：一條一列，不能空、不能重複；超過 max_count 條或合計超過 max_chars 字在超過的那列報錯（手改同一條上限）。"""
+    out, seen, total = [], {}, 0
+    for m, cells in enumerate(rows, 1):
+        (text,), extra = _columns(6, m, cells)
+        if not text:
+            _err(6, m, "的偏好是空的")
+        source, when = _source_date(6, m, extra)
+        if text in seen:
+            _err(6, m, f"跟第 {seen[text]} 列重複（{text}）")
+        seen[text] = m
+        total += len(text)
+        if m > max_count:
+            _err(6, m, f"超過上限（偏好最多 {max_count} 條）")
+        if total > max_chars:
+            _err(6, m, f"超過上限（偏好合計最多 {max_chars} 字）")
+        out.append({"text": text, "source": source, "date": when})
+    return out
+
+
+def parse_md(text, max_type_chars=TYPE_NAME_MAX, legacy=False, known_types=(), preference_max=PREFERENCE_MAX,
+             preference_max_chars=PREFERENCE_MAX_CHARS):
+    """md → {"types", "card_types", "exclusions", "synthesis_sections", "about", "preferences"}（跟 JSON 同形，source／date
+    沒填是 None）；讀不懂丟 ProfileError。各節都在但沒有任何列算成功；少任何一節就是錯（I-097：命中 0 節不回空）。
+    型別名長度上限是 max_type_chars。legacy 是磁碟上 JSON 的舊 schema（True 或 1：舊 md 只有三節；2：只有五節）：
+    那版沒有的節缺了不算錯、回 None，呼叫端取 JSON 遷移補的值。
     known_types：舊 JSON 第一節的型別名，第一節拿掉的型別在第四節的列丟掉不報錯（status 傳）。"""
     lines = str(text).lstrip("﻿").splitlines()
     found = _sections(lines)
+    have = SECTIONS_OF.get(int(legacy), len(NUMERALS))
     for i, num in enumerate(NUMERALS, 1):
-        if i not in found and not (legacy and i > len(LISTS_V1)):
+        if i not in found and i <= have:
             raise ProfileError(i, None, f"少了第 {i} 節（## {num}、…）")
     types = _parse_types(_table_rows(1, found[1]), max_type_chars)
     return {"types": types,
             "card_types": _parse_card_types(_table_rows(2, found[2])),
             "exclusions": _parse_exclusions(_table_rows(3, found[3])),
             "synthesis_sections": _parse_synthesis(_table_rows(4, found[4]), types, known_types) if 4 in found else None,
-            "about": _parse_about(_table_rows(5, found[5]), types, max_type_chars) if 5 in found else None}
+            "about": _parse_about(_table_rows(5, found[5]), types, max_type_chars) if 5 in found else None,
+            "preferences": (_parse_preferences(_table_rows(6, found[6]), preference_max, preference_max_chars)
+                            if 6 in found else None)}
 
 
 # ---------- 比對與合併 ----------
@@ -417,6 +456,10 @@ def _about_rows(data):
     return {a["name"]: a for a in data.get("about") or []}
 
 
+def _preference_rows(data):
+    return {p["text"]: p for p in data.get("preferences") or []}
+
+
 def _compare(old, new, fields):
     added = [k for k in new if k not in old]
     removed = [k for k in old if k not in new]
@@ -425,15 +468,16 @@ def _compare(old, new, fields):
 
 
 def diff(old, new):
-    """以鍵比：型別＝名稱、卡型＝[卡型名, 段落名]、排除＝種類、每類段落＝[型別, 段落名]、關於你＝名稱；
-    changed 是同鍵其他欄不同（來源與日期不算）。"""
+    """以鍵比：型別＝名稱、卡型＝[卡型名, 段落名]、排除＝種類、每類段落＝[型別, 段落名]、關於你＝名稱、偏好＝那句話；
+    changed 是同鍵其他欄不同（來源與日期不算；偏好只有一欄，沒有 changed）。"""
     cards = _compare(_section_rows(old), _section_rows(new), ("required", "hint"))
     synthesis = _compare(_synthesis_rows(old), _synthesis_rows(new), ("required", "hint"))
     return {"types": _compare(_type_rows(old), _type_rows(new), ("category", "note")),
             "card_types": {k: [list(x) for x in v] for k, v in cards.items()},
             "exclusions": _compare(_exclusion_rows(old), _exclusion_rows(new), ("action",)),
             "synthesis_sections": {k: [list(x) for x in v] for k, v in synthesis.items()},
-            "about": _compare(_about_rows(old), _about_rows(new), ("kind", "aliases"))}
+            "about": _compare(_about_rows(old), _about_rows(new), ("kind", "aliases")),
+            "preferences": _compare(_preference_rows(old), _preference_rows(new), ())}
 
 
 def has_diff(d):
@@ -508,8 +552,13 @@ def merge(old, new, today=None, first=False):
     for a in new.get("about") or []:
         source, when = _stamp(a, old_about.get(a["name"]), a["name"] in d["about"]["changed"], today, first)
         about.append({"name": a["name"], "kind": a["kind"], "aliases": list(a["aliases"]), "source": source, "date": when})
+    old_prefs = _preference_rows(old)
+    preferences = []
+    for p in new.get("preferences") or []:
+        source, when = _stamp(p, old_prefs.get(p["text"]), False, today, first)
+        preferences.append({"text": p["text"], "source": source, "date": when})
     return {"types": types, "card_types": card_types, "exclusions": exclusions, "synthesis_sections": synthesis,
-            "about": about}
+            "about": about, "preferences": preferences}
 
 
 def unskipped_kinds(old, new):
@@ -598,6 +647,7 @@ def render_text(data):
           s.get("date")] for s in data.get("synthesis_sections") or [] for x in s.get("sections") or []],
         [[a["name"], _KINDS_REVERSED.get(a.get("kind"), ""), "、".join(a.get("aliases") or []),
           srcs.get(a.get("source"), ""), a.get("date")] for a in data.get("about") or []],
+        [[p["text"], srcs.get(p.get("source"), ""), p.get("date")] for p in data.get("preferences") or []],
     )
     parts = [HEADER]
     for num, title, prompt, head, rows in zip(NUMERALS, TITLES, PROMPTS, TABLE_HEADS, tables):
@@ -656,6 +706,277 @@ def lock(vault):
     return FileLock(_path(vault))
 
 
+# ---------- note 改設定檔（D-144） ----------
+
+# (節名, 欄, 主鍵)；欄名同 md 表頭，偏好的主鍵是序號（第幾條，從 1 數）
+SECTION_SPECS = (
+    ("型別", ("名稱", "大類", "一句說明"), ("名稱",)),
+    ("卡型", ("卡型", "段落", "必出現", "提示"), ("卡型", "段落")),
+    ("不整理與敏感", ("種類", "處理"), ("種類",)),
+    ("每類段落", ("型別", "段落", "必出現", "提示"), ("型別", "段落")),
+    ("關於你", ("名稱", "是什麼", "別名"), ("名稱",)),
+    ("偏好", ("偏好",), ("序號",)),
+)
+FREE_TEXT_RULE = "一句白話，不含 \" $ ` \\ 這四種字元"  # 值會被貼進雙引號的指令（同 plan.FREE_TEXT_RULE）
+_HINT_RULE = {"rule": "一句白話告訴製卡者這段寫什麼，可以空"}
+COLUMN_RULES = {
+    (1, "名稱"): {"rule": "知識庫第一層的資料夾名；不能用 AI 產出、收件匣、檔案索引、系統，不含 \\ / : * ? \" < > |"},
+    (1, "大類"): {"choices": list(CATEGORIES)},
+    (1, "一句說明"): {"rule": "一句白話，可以空"},
+    (2, "卡型"): {"rule": "文件種類的名字，例：報價、會議紀錄"},
+    (2, "段落"): {"rule": "卡上要記的一段，例：待辦"},
+    (2, "必出現"): {"choices": ["✓", ""]},
+    (2, "提示"): _HINT_RULE,
+    (3, "種類"): {"rule": "文件或資料的種類，例：請款單、LINE ID"},
+    (3, "處理"): {"choices": list(ACTIONS)},
+    (4, "型別"): {"rule": "第一節有的型別名"},
+    (4, "段落"): {"rule": "綜合卡上要固定寫的一段，例：預算與實際花費"},
+    (4, "必出現"): {"choices": ["✓", ""]},
+    (4, "提示"): _HINT_RULE,
+    (5, "名稱"): {"rule": "公司或你本人的名字"},
+    (5, "是什麼"): {"choices": list(KINDS)},
+    (5, "別名"): {"rule": "其他叫法，頓號分開，可以空"},
+    (6, "偏好"): {"rule": FREE_TEXT_RULE},
+}
+
+
+def _spec(section):
+    for number, (name, columns, key) in enumerate(SECTION_SPECS, 1):
+        if name == section:
+            return number, columns, key
+    raise ProfileError(None, None, f"沒有「{section}」這一節；節是 {'、'.join(SECTION_NAMES)}")
+
+
+def _stamped(row, today):
+    return dict(row, source="corrected", date=today)
+
+
+def flat_rows(data, number):
+    """第 number 節照 md 的樣子攤成一列一個 dict（欄名同表頭，值是 md 上的字），偏好多一欄序號。"""
+    cats, srcs, acts = _REVERSED
+
+    def tail(row):
+        return {"來源": srcs.get(row.get("source"), ""), "日期": row.get("date") or ""}
+    if number == 1:
+        return [dict({"名稱": t["name"], "大類": cats.get(t.get("category"), ""), "一句說明": t.get("note") or ""}, **tail(t))
+                for t in data.get("types") or []]
+    if number in (2, 4):
+        items, head = (data.get("card_types"), "卡型") if number == 2 else (data.get("synthesis_sections"), "型別")
+        return [dict({head: c["name" if number == 2 else "type"], "段落": s["name"], "必出現": "✓" if s.get("required") else "",
+                      "提示": s.get("hint") or ""}, **tail(c)) for c in items or [] for s in c.get("sections") or []]
+    if number == 3:
+        return [dict({"種類": e["kind"], "處理": acts.get(e.get("action"), "")}, **tail(e)) for e in data.get("exclusions") or []]
+    if number == 5:
+        return [dict({"名稱": a["name"], "是什麼": _KINDS_REVERSED.get(a.get("kind"), ""), "別名": "、".join(a.get("aliases") or [])},
+                     **tail(a)) for a in data.get("about") or []]
+    return [dict({"序號": i, "偏好": p["text"]}, **tail(p)) for i, p in enumerate(data.get("preferences") or [], 1)]
+
+
+def _row_no(out, number, match):
+    """改好的那一列在 md 表格裡是第幾列（給選項錯的句子，跟 parse_md 同一種說法）。"""
+    rows = flat_rows(out, number)
+    return next((i for i, r in enumerate(rows, 1) if match(r)), len(rows) + 1)
+
+
+def sections_schema(data, preference_max=PREFERENCE_MAX, preference_max_chars=PREFERENCE_MAX_CHARS):
+    """kb profile show --json 的 sections：每節的欄（能填什麼）、主鍵、現有的列、add／remove 指令範本（{欄} 是空格）。"""
+    out = []
+    for number, (name, columns, key) in enumerate(SECTION_SPECS, 1):
+        item = {"name": name, "number": number, "key": list(key),
+                "columns": [dict({"name": c}, **COLUMN_RULES[(number, c)]) for c in columns],
+                "rows": flat_rows(data, number),
+                "add": f"kb profile add {name} " + " ".join(f"{c}={{{c}}}" for c in columns),
+                "remove": None if number == 1 else f"kb profile remove {name} " + " ".join(f"{c}={{{c}}}" for c in key)}
+        if number == 6:
+            prefs = data.get("preferences") or []
+            item["limits"] = {"count": preference_max, "chars": preference_max_chars, "used_count": len(prefs),
+                              "used_chars": sum(len(p["text"]) for p in prefs)}
+        out.append(item)
+    return out
+
+
+def edited(data, section, op, fields, today=None, preference_max=PREFERENCE_MAX,
+           preference_max_chars=PREFERENCE_MAX_CHARS):
+    """kb profile add／remove 的核心（D-144），只在記憶體改：回 (六節的新 dict, {"message", "changed", "row"})。
+    op 是 add（主鍵已有就改那一列，沒有就加）或 remove（給主鍵）；改到的列來源 corrected、日期 today，其他列不動。
+    節名、欄名不對、找不到那一列、選項欄的值不對、偏好超過上限丟 ProfileError（message 是給人看的整句）。
+    其餘格式（名稱字元、保留字、第四節的型別要在第一節…）由呼叫端 render_text 後 parse_md 驗，跟 apply 同一支。"""
+    today = today or _today()
+    number, columns, key = _spec(section)
+    allowed = columns if op == "add" else key
+    for k in fields:
+        if k not in allowed:
+            raise ProfileError(number, None, f"「{section}」這一節沒有「{k}」欄；欄是 {'、'.join(allowed)}")
+    if number == 1 and op == "remove":
+        raise ProfileError(1, None, "拿掉型別用 kb profile type remove")
+    need = {("add", 6): ("偏好",), ("remove", 2): ("卡型",), ("remove", 4): ("型別",)}.get((op, number), key)
+    missing = [k for k in need if not str(fields.get(k) or "").strip()]
+    if missing:
+        raise ProfileError(number, None, f"少了「{missing[0]}」；這一節要給 {'、'.join(need)}")
+    f = {k: str(v).strip() for k, v in fields.items()}
+    out = {k: copy.deepcopy(data.get(k) or []) for k in LISTS}
+    absent = "沒有這一列：" + "、".join(f"{k}={f[k]}" for k in key if k in f)
+    handler = (_edit_types, _edit_cards, _edit_exclusions, _edit_synthesis, _edit_about, _edit_preferences)[number - 1]
+    message, changed = handler(out, op, f, today, absent, preference_max, preference_max_chars)
+    return out, {"message": message, "changed": changed, "row": f}
+
+
+def _same(section, label):
+    return f"沒有要改的：{section}「{label}」已經是這樣", False
+
+
+def _edit_types(out, op, f, today, absent, *_limits):
+    name = f["名稱"]
+    rows = out["types"]
+    row = next((t for t in rows if _key(t["name"]) == _key(name)), None)
+    if row is not None:
+        if "大類" in f and f["大類"] != _REVERSED[0].get(row.get("category")):
+            raise ProfileError(1, None, f"型別「{row['name']}」已經有了，大類不能這樣改")
+        if "一句說明" not in f or f["一句說明"] == (row.get("note") or ""):
+            return _same("型別", row["name"])
+        rows[rows.index(row)] = _stamped(dict(row, note=f["一句說明"]), today)
+        return f"已改型別「{row['name']}」：一句說明", True
+    if f.get("大類") not in CATEGORIES:
+        _err(1, len(rows) + 1, "的大類要是 對象、事、物、主題 之一")
+    new = {"name": name, "category": CATEGORIES[f["大類"]], "note": f.get("一句說明", ""), "source": "corrected",
+           "date": today}
+    rows.append(new)
+    if all(_key(s["type"]) != _key(name) for s in out["synthesis_sections"]):  # 新型別補大類預設（D-119，同 merge）
+        out["synthesis_sections"] += default_sections([new], today)
+    return f"已加型別「{name}」（{f['大類']}）", True
+
+
+def _required(number, out, match, raw):
+    if raw not in REQUIRED_MARKS and raw != "":
+        _err(number, _row_no(out, number, match), "的必出現只能打 ✓ 或留空")
+    return raw in REQUIRED_MARKS
+
+
+def _edit_sections(out, op, f, today, absent, number, list_key, name_key, head, label):
+    """第二節（卡型）與第四節（每類段落）共用：一個項目底下多個段落，來源日期記在項目上。"""
+    items = out[list_key]
+    name, sec = f[head], f.get("段落")
+    item = next((c for c in items if _key(c[name_key]) == _key(name)), None)
+    if op == "remove":
+        if item is None:
+            raise ProfileError(number, None, absent)
+        if sec is None:
+            items.remove(item)
+            n = len(item["sections"])
+            tail = "；已寫好的卡照留" if number == 2 else ""
+            return f"已拿掉{label}「{item[name_key]}」（{n} 段）{tail}", True
+        target = next((s for s in item["sections"] if s["name"] == sec), None)
+        if target is None:
+            raise ProfileError(number, None, absent)
+        item["sections"].remove(target)
+        if item["sections"]:
+            items[items.index(item)] = _stamped(item, today)
+        else:
+            items.remove(item)
+        return f"已拿掉{label}「{item[name_key]}」的段落「{sec}」" if number == 2 else \
+            f"已拿掉{label}「{item[name_key]}」的「{sec}」", True
+    shown = item[name_key] if item is not None else name
+    phrase = f"{label}「{shown}」的段落「{sec}」" if number == 2 else f"{label}「{shown}」的「{sec}」"
+    target = next((s for s in item["sections"] if s["name"] == sec), None) if item is not None else None
+    match = lambda r: r[head] == shown and r["段落"] == sec  # noqa: E731
+    if target is not None:
+        new = dict(target)
+        if "提示" in f:
+            new["hint"] = f["提示"]
+        if "必出現" in f:
+            new["required"] = _required(number, out, match, f["必出現"])
+        if new == target:
+            return _same(label, f"{shown}／{sec}")
+        item["sections"][item["sections"].index(target)] = new
+        items[items.index(item)] = _stamped(item, today)
+        return f"已改{phrase}", True
+    section = {"name": sec, "required": False, "hint": f.get("提示", "")}
+    if item is None:
+        item = {name_key: name, "sections": [section], "source": "corrected", "date": today}
+        items.append(item)
+    else:
+        item["sections"].append(section)
+        items[items.index(item)] = _stamped(item, today)
+    section["required"] = _required(number, out, match, f.get("必出現", ""))
+    return f"已加{phrase}", True
+
+
+def _edit_cards(out, op, f, today, absent, *_limits):
+    return _edit_sections(out, op, f, today, absent, 2, "card_types", "name", "卡型", "卡型")
+
+
+def _edit_synthesis(out, op, f, today, absent, *_limits):
+    return _edit_sections(out, op, f, today, absent, 4, "synthesis_sections", "type", "型別", "每類段落")
+
+
+def _edit_exclusions(out, op, f, today, absent, *_limits):
+    rows, kind = out["exclusions"], f["種類"]
+    row = next((e for e in rows if e["kind"] == kind), None)
+    if op == "remove":
+        if row is None:
+            raise ProfileError(3, None, absent)
+        rows.remove(row)
+        return f"已拿掉不整理：{kind}", True
+    action = f.get("處理")
+    if action not in ACTIONS:
+        _err(3, rows.index(row) + 1 if row is not None else len(rows) + 1, "的處理要是 不整理 或 只記種類")
+    if row is not None:
+        if row.get("action") == ACTIONS[action]:
+            return _same("不整理與敏感", kind)
+        rows[rows.index(row)] = _stamped(dict(row, action=ACTIONS[action]), today)
+        return f"已改不整理：{kind}（{action}）", True
+    rows.append({"kind": kind, "action": ACTIONS[action], "source": "corrected", "date": today})
+    return f"已加不整理：{kind}（{action}）", True
+
+
+def _edit_about(out, op, f, today, absent, *_limits):
+    rows, name = out["about"], f["名稱"]
+    row = next((a for a in rows if _key(a["name"]) == _key(name)), None)
+    if op == "remove":
+        if row is None:
+            raise ProfileError(5, None, absent)
+        rows.remove(row)
+        return f"已拿掉關於你：{row['name']}", True
+    kind = f.get("是什麼", _KINDS_REVERSED.get(row.get("kind")) if row is not None else None)
+    if kind not in KINDS:
+        _err(5, rows.index(row) + 1 if row is not None else len(rows) + 1, "的是什麼要是 公司 或 本人")
+    aliases = split_aliases(f["別名"]) if "別名" in f else None
+    if row is not None:
+        new = dict(row, kind=KINDS[kind])
+        if aliases is not None:
+            new["aliases"] = aliases
+        changed = [c for c, k in (("是什麼", "kind"), ("別名", "aliases")) if new.get(k) != row.get(k)]
+        if not changed:
+            return _same("關於你", row["name"])
+        rows[rows.index(row)] = _stamped(new, today)
+        return f"已改關於你「{row['name']}」：{'、'.join(changed)}", True
+    rows.append({"name": name, "kind": KINDS[kind], "aliases": aliases or [], "source": "corrected", "date": today})
+    return f"已加關於你：{name}（{kind}）", True
+
+
+def _edit_preferences(out, op, f, today, absent, max_count, max_chars):
+    rows = out["preferences"]
+    if op == "remove":
+        try:
+            n = int(f["序號"])
+        except ValueError:
+            n = 0
+        if not 1 <= n <= len(rows):
+            raise ProfileError(6, None, absent)
+        gone = rows.pop(n - 1)
+        return f"已拿掉偏好 {n}：{gone['text']}", True
+    text = f["偏好"]
+    if any(p["text"] == text for p in rows):
+        return f"偏好已經有了：{text}", False
+    if len(rows) >= max_count:
+        raise ProfileError(6, None, f"偏好最多 {max_count} 條（現在 {len(rows)} 條），先合併或拿掉一條")
+    total = sum(len(p["text"]) for p in rows) + len(text)
+    if total > max_chars:
+        raise ProfileError(6, None, f"偏好合計最多 {max_chars} 字（加了會是 {total} 字），先合併或縮短")
+    rows.append({"text": text, "source": "corrected", "date": today})
+    return f"已加偏好：{text}", True
+
+
 # ---------- 狀態 ----------
 
 def status(vault):
@@ -674,10 +995,11 @@ def status(vault):
     else:
         try:
             from kb._lib import config
-            legacy = stored_schema(vault) == 1
-            new = parse_md(md.read_text(encoding="utf-8"), config.get(vault, "card_title_max_chars"), legacy=legacy,
-                           known_types=[t["name"] for t in data["types"]])
-            for key in NEW_LISTS:  # 舊 md 沒有第四、五節：取 JSON 遷移補的值
+            stored = stored_schema(vault)
+            new = parse_md(md.read_text(encoding="utf-8"), config.get(vault, "card_title_max_chars"),
+                           legacy=stored if stored in SECTIONS_OF else False,
+                           known_types=[t["name"] for t in data["types"]], **preference_limits(vault))
+            for key in NEW_LISTS:  # 舊 md 沒有第四、五、六節：取 JSON 遷移補的值
                 if new[key] is None:
                     new[key] = copy.deepcopy(data[key])
         except ProfileError as e:
@@ -693,6 +1015,13 @@ def status(vault):
     if out["state"] == "error":  # 表讀不了，第一層夾的對帳沒意義（測試後修正裁定 14）
         out["unlisted"], out["to_create"] = [], []
     return out
+
+
+def preference_limits(vault):
+    """parse_md 的偏好上限兩個參數，從 config 讀（D-137）。"""
+    from kb._lib import config
+    return {"preference_max": config.get(vault, "preference_max"),
+            "preference_max_chars": config.get(vault, "preference_max_chars")}
 
 
 def _plain_sections(sections):

@@ -189,9 +189,42 @@ class Batch(Base):
         self.assertEqual(self.build(new=work(7))["asks"][0]["question"], "有 7 份要整理，現在做嗎？大約 2 分鐘")
         self.assertEqual(self.build(new=work(6))["asks"][0]["question"], "有 6 份要整理，現在做嗎？大約 1 分鐘")
 
-    def test_default_max_is_five(self):
-        self.assertEqual(self.build(new=work(5))["asks"], [])
-        self.assertEqual(self.build(new=work(6))["asks"][0]["id"], "batch")
+    def test_default_max_is_twenty(self):
+        """D-100 2026-10-20 修訂：門檻 5 → 20。"""
+        self.assertEqual(self.build(new=work(20))["asks"], [])
+        self.assertEqual(self.build(new=work(21))["asks"][0]["id"], "batch")
+
+
+class Announce(Base):
+    """note 改規則第 5 點（D-100 修訂）：門檻內有要整理的份數時，開始前先說的一句；0 份、超過門檻是 null；kb asks 不帶。"""
+
+    def test_zero_is_null(self):
+        self.assertIsNone(self.build()["announce"])
+
+    def test_within_threshold_has_sentence(self):
+        self.assertEqual(self.build(new=work(3))["announce"], "有 3 份要整理，大約一兩分鐘；要停的話按停止")
+        rows = [{"id": f"f-{i}", "card_path": "p", "title": "t", "existing": []} for i in range(4)]
+        got = self.build(new=work(3), stale=work(2), unlinked=[{"id": "f-9"}] * 3, agenda_unscanned=rows)
+        self.assertEqual(got["announce"], "有 12 份要整理，大約 2 分鐘；要停的話按停止")
+        self.assertIsNone(self.build(moved=[{"id": "f-1"}])["announce"], "只有搬卡不算要整理的份數")
+
+    def test_over_threshold_is_null_and_batch(self):
+        got = self.build(new=work(21))
+        self.assertIsNone(got["announce"])
+        self.assertEqual(got["asks"][0]["id"], "batch")
+
+    def test_asks_only_has_no_announce(self):
+        self.assertNotIn("announce", plan.build(base(new=work(3)), self.V, config, tell_all=False))
+
+    def test_cards_todo_json_has_it_and_kb_asks_not(self):
+        tmp, V, _raw = _cards.make_card_vault()
+        try:
+            todo = json.loads(run_kb("cards", "todo", "--json", cwd=V).stdout)
+            n = len(todo["new"]) + len(todo["stale"]) + len(todo["unlinked"]) + len(todo["agenda_unscanned"])
+            self.assertEqual(todo["announce"], f"有 {n} 份要整理，大約 {-(-n * 10 // 60)} 分鐘；要停的話按停止")
+            self.assertNotIn("announce", json.loads(run_kb("asks", "--json", cwd=V).stdout))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class Asks(Base):
@@ -671,8 +704,8 @@ class WithRealVault(unittest.TestCase):
 
     def test_three_keys_and_old_keys_unchanged(self):
         data = self.todo()
-        self.assertEqual(set(data), self.OLD_KEYS | {"plan", "asks", "tell"})
-        self.assertEqual(set(data) - {"plan", "asks", "tell"}, self.OLD_KEYS)
+        self.assertEqual(set(data), self.OLD_KEYS | {"plan", "asks", "tell", "announce"})
+        self.assertEqual(set(data) - {"plan", "asks", "tell", "announce"}, self.OLD_KEYS)
 
     def test_skipped_by_setting_names_the_kind(self):
         ids = [i["id"] for i in self.todo()["new"]][:4]

@@ -103,6 +103,53 @@ class Body(unittest.TestCase):
         self.assertLessEqual(len(REF.read_text(encoding="utf-8").splitlines()), REFERENCE_MAX_LINES)
 
 
+class RuleChange(unittest.TestCase):
+    """note 改規則第 7 點、驗收 15：分辨有改規則、「記不起來」只剩四種、原則含 D-137 與 D-139、本文沒有 欄=值 參數對照；
+    references/preference.md 在、≤150 行、有 20 句例句表。"""
+
+    def setUp(self):
+        self.body = split(SKILL.read_text(encoding="utf-8"))[1]
+
+    def section(self, head, nxt):
+        return self.body[self.body.index(head):self.body.index(nxt)]
+
+    def test_discriminates_rule_changes(self):
+        part = self.section("## 分辨", "## 原則")
+        self.assertIn("**改規則的話**", part)
+        self.assertIn("偏好", part)
+        self.assertIn("references/preference.md", self.body)
+        self.assertIn("kb profile show --json", self.body)
+        self.assertIn("--check --json", self.section("## 骨架", "## 共通"))
+
+    def test_unsupported_left_with_four_kinds(self):
+        line = next(ln for ln in self.body.splitlines() if ln.startswith("- **這版記不起來的話**"))
+        for want in ("糾正已記的知識", "決定與裁示", "別名", "把剛才的答案記下來"):
+            with self.subTest(want=want):
+                self.assertIn(want, line)
+        for gone in ("加型別", "改型別名", "以後報價一律附日期"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, line)
+
+    def test_principles_have_new_codes(self):
+        part = self.section("## 原則", "## 骨架")
+        for code in ("D-137", "D-139"):
+            self.assertIn(code, part)
+
+    def test_no_field_value_map(self):
+        self.assertIsNone(re.search(r"[^\s`=]+=[^\s`=]", self.body), re.search(r"[^\s`=]+=[^\s`=]", self.body))
+
+    def test_preference_reference(self):
+        ref = SKILL_DIR / "references" / "preference.md"
+        text = ref.read_text(encoding="utf-8")
+        self.assertLessEqual(len(text.splitlines()), REFERENCE_MAX_LINES)
+        rows = [ln for ln in text.splitlines() if re.match(r"^\| \d+ \|", ln)]
+        self.assertEqual([int(ln.split("|")[1]) for ln in rows], list(range(1, 21)))
+        for want in ("萬元", "兩種意思", "20 份以內", "按停止"):
+            with self.subTest(want=want):
+                self.assertIn(want, text)
+        self.assertIsNone(ABS_PATH.search(text))
+
+
 class Evals(unittest.TestCase):
     def setUp(self):
         self.items = json.loads(EVALS.read_text(encoding="utf-8"))

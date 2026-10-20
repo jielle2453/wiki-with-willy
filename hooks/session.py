@@ -100,7 +100,7 @@ def line_changes(vault):
 
 
 def line_ingest_hint(vault):
-    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先答再照 ingest skill 整理；n 讀 ingest_auto_max。"""
+    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先照 ingest skill 整理、整理完再回答（D-156）；n 讀 ingest_auto_max。"""
     if line_changes(vault) is None:
         return None
     from kb._lib import config

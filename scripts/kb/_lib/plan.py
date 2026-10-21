@@ -4,7 +4,7 @@ plan：照順序要做的事，每步 {"step","items","do","read"}；多量先�
 asks：排好序、編好號的問題，每題 {"id","kind","question","results":[{"n","label","do","strict","fill"}]}；
       順序：實體夾或綜合卡不見 → 原檔不見 → 裁示遇到原檔改版（ruling_recheck）→ 逾期、日程有出入、結案 → 名字確認；
       號碼從 1 一路編下去不管挑哪幾題，do 的指令以 kb 開頭，要客戶給的值寫成 {新名字} 這種空格，fill 列有哪些。
-tell：回答末尾要講的現成句子。
+tell：回答末尾要講的現成句子；kb asks（tell_all 是 False）多一句還有幾件兩份寫法不同的（待處理 conflict，不進 asks，answer 第 6 點）。
 announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先說的一句（份數、大約多久、要停按停止，D-100 修訂），否則 None；
       kb asks（tell_all 是 False）不帶這鍵。
 只讀：不寫任何檔，不開原檔。
@@ -74,7 +74,7 @@ def build(out, vault, config, tell_all=True):
     batch = bool(asks) and asks[0]["id"] == "batch"
     steps = [s for s in full if s["step"] == "sync"] if batch else full
     if not tell_all:
-        return {"plan": steps, "asks": _number(asks), "tell": agenda.tell_lines(vault)}
+        return {"plan": steps, "asks": _number(asks), "tell": agenda.tell_lines(vault) + _conflict_tell(vault)}
     waiting = _waiting(out)
     announce = ANNOUNCE.format(n=waiting, how_long=_how_long(waiting)) if waiting and not batch else None
     return {"plan": steps, "asks": _number(asks), "tell": _tell(out, vault), "announce": announce}
@@ -348,6 +348,18 @@ def _tell(out, vault):
         lines.append(f"PDF 元件裝好了，{out['pdf_restored']} 份 PDF 回到待製卡")
     lines.extend(agenda.tell_lines(vault))
     return lines
+
+
+CONFLICT_TELL = "還有 {n} 件兩份寫法不同的，在待處理"
+
+
+def _conflict_tell(vault):
+    """待處理裡 open 的「兩份寫法不同」：只講件數，不問（客戶說哪個對之後交 note）；pending.json 讀不到就不講。"""
+    try:
+        n = sum(1 for i in pending.load(vault)["items"] if i.get("kind") == "conflict" and i.get("status") == "open")
+    except ValueError:
+        return []
+    return [CONFLICT_TELL.format(n=n)] if n else []
 
 
 def _unreadable_line(name, reason):

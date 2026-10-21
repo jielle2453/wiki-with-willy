@@ -126,13 +126,13 @@ class RuleChange(unittest.TestCase):
         line = next(ln for ln in self.body.splitlines() if ln.startswith("- **這版記不起來的話**"))
         self.assertIn("明說沒寫任何檔，提醒不要把檔名改掉來讓程式讀（守門只看檔名，D-145）", line)
 
-    def test_unsupported_left_with_two_kinds(self):
-        """note 改知識驗收 15：「記不起來」只剩憑證例外與存答案兩種。"""
+    def test_unsupported_left_with_credentials_only(self):
+        """note 改知識驗收 15、answer 第 11 點：「記不起來」只剩憑證例外（存答案這版記得起來了，D-151）。"""
         line = next(ln for ln in self.body.splitlines() if ln.startswith("- **這版記不起來的話**"))
-        for want in ("密碼檔可以讀", "密碼記下來", "把剛才的答案記下來"):
+        for want in ("密碼檔可以讀", "密碼記下來"):
             with self.subTest(want=want):
                 self.assertIn(want, line)
-        for gone in ("加型別", "改型別名", "以後報價一律附日期", "糾正", "裁示", "別名", "決定"):
+        for gone in ("加型別", "改型別名", "以後報價一律附日期", "糾正", "裁示", "別名", "決定", "剛才的答案"):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, line)
 
@@ -228,6 +228,35 @@ class Knowledge(unittest.TestCase):
         self.assertNotIn("不要為了掛日程替客戶登記新實體", refs["agenda.md"])
         self.assertIn("這版只能一件一件記", refs["ruling.md"])
         self.assertNotIn("走改規則", refs["ruling.md"])
+
+
+class RecordAnswer(unittest.TestCase):
+    """answer 第 11 點、驗收 16：分辨多一條「記的是剛才的回答」指到 record-answer.md；record-answer.md 在、≤60 行；描述沒改（D-151）。"""
+
+    def setUp(self):
+        self.text = SKILL.read_text(encoding="utf-8")
+        self.body = split(self.text)[1]
+
+    def test_discriminates_recorded_answer(self):
+        part = self.body[self.body.index("## 分辨"):self.body.index("## 原則")]
+        line = next(ln for ln in part.splitlines() if ln.startswith("- **記的是剛才的回答**"))
+        for want in ("references/record-answer.md", "D-151"):
+            with self.subTest(want=want):
+                self.assertIn(want, line)
+
+    def test_reference(self):
+        text = (SKILL_DIR / "references" / "record-answer.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(text.splitlines()), 60)
+        for want in ("kb finding add", "--basis", "--how", "--replaces", "已記下推算", "依據至少要一張卡（--basis）", "D-154"):
+            with self.subTest(want=want):
+                self.assertIn(want, text)
+        self.assertIsNone(ABS_PATH.search(text))
+
+    def test_description_unchanged(self):
+        desc = split(self.text)[0]
+        self.assertIn("description: 客戶口述要記的日程與事：「9/25 下午有個會」「答應王先生 10/10 前給報價」「交屋改 12/10」"
+                      "「提醒我寄發票」「第二期款付了」「信義王結案了」，偏好、糾正舊資料、決定、「把這個記下來」、加型別或改型別名、"
+                      "開場有「日程：逾期」時都用這個；問現況、整理檔案、加資料夾不用。", desc)
 
 
 class Evals(unittest.TestCase):

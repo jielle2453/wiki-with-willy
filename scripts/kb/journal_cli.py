@@ -1,4 +1,7 @@
-"""kb journal recent／render：印最近幾段工作日誌（回答「最近改了什麼」，D-065）；從 jsonl 重渲染 md（D-067，給 lint 與排除題用）。
+"""kb journal recent／render：印最近幾段工作日誌（回答「最近改了什麼」「上次聊過什麼」，D-065、D-158）；
+從 jsonl 重渲染 md（D-067，給 lint 與排除題用）。
+recent 每段兩到三行：時間｜你說（前 30 字）、結果（前 30 字）｜做了、有改動才有「改了」（照路徑分類）；程式段寫「你在終端機跑的」。
+--changed、--find <詞>、--since <日期> 可疊加；--json 照舊給全部欄位。
 record_program_or_warn 給 init、folders、versions 寫程式段（D-085）：對話裡叫的（有 sid 且還沒答完）不寫，
 代號一律用現在時間組（L2）；寫失敗印一行到 stderr，不改 exit code。CLI 鎖等 30 秒，等不到印一句 exit 3（M4）。
 """
@@ -14,6 +17,9 @@ from kb._lib import io as kio
 
 NOT_IN_VAULT = "不在知識庫裡：這裡往上找不到 .system/sources.json"
 EMPTY = "還沒有工作日誌"
+NO_MATCH = "沒有符合的段"
+HEAD_CHARS = 30
+INDENT = "　"
 CLI_LOCK_TIMEOUT = 30
 LOCK_BUSY = "等不到工作日誌的鎖（別的指令正在寫），沒有寫入；請稍後再試"
 
@@ -34,34 +40,58 @@ def _month(text):
     return text
 
 
+def _date(text):
+    from datetime import datetime
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"日期要寫成 YYYY-MM-DD：{text}") from None
+    return text
+
+
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="journal_command", metavar="<子子命令>", required=True)
-    rc = subs.add_parser("recent", help="由新到舊印最近幾段：時間｜做了", description="由新到舊印最近幾段工作日誌。")
+    rc = subs.add_parser("recent", help="由新到舊印最近幾段：你說、結果、做了、改了",
+                         description="由新到舊印最近幾段工作日誌；篩法可疊加。")
     rc.add_argument("--n", type=_positive, default=5, help="印幾段（1 以上），預設 5")
+    rc.add_argument("--changed", action="store_true", help="只列有改動的段")
+    rc.add_argument("--find", help="只列問、結果、做了裡有這個詞的段")
+    rc.add_argument("--since", type=_date, help="只列這天（YYYY-MM-DD）以後的段")
     rc.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
     rd = subs.add_parser("render", help="從 .system/journal 重寫 系統/工作日誌 的月檔", description="重寫工作日誌月檔。")
     rd.add_argument("month", nargs="?", type=_month, help="YYYY-MM；沒給就全部有紀錄的月")
     rd.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
 
-def _line(row):
-    when = str(row.get("time", "")).replace("T", " ")
+def _head(text):
+    text = journal._flat(text)
+    return text[:HEAD_CHARS] + "…" if len(text) > HEAD_CHARS else text
+
+
+def _lines(row):
+    when = str(row.get("time", "")).replace("T", " ")[:16]
+    changed = journal.changed_text(row.get("changed"))
+    tail = [f"{INDENT}改了：{changed}"] if changed else []
     if row.get("kind") == "program":
-        return f"{when}｜程式｜做了：{journal._flat(row.get('note'))}"
-    note = journal._flat(row.get("note")) if row.get("done") else journal.IN_PROGRESS
-    return f"{when}｜做了：{note}"
+        return [f"{when}｜你在終端機跑的：kb {row.get('command', '')}".rstrip(),
+                f"{INDENT}做了：{journal._flat(row.get('note'))}"] + tail
+    head = f"{when}｜你說：{_head(row.get('prompt'))}"
+    if not row.get("done"):
+        return [head, f"{INDENT}結果：{journal.IN_PROGRESS}"]
+    return [head, f"{INDENT}結果：{_head(row.get('result'))}｜做了：{journal._flat(row.get('note'))}"] + tail
 
 
-def _recent(vault, n, as_json):
-    rows = journal.recent(vault, n)
+def _recent(vault, args, as_json):
+    filtered = args.changed or args.find or args.since
+    rows = journal.recent(vault, args.n, changed=args.changed, find=args.find, since=args.since)
     if as_json:
         print(json.dumps(rows, ensure_ascii=False))
         return 0
     if not rows:
-        print(EMPTY)
+        print(NO_MATCH if filtered and journal.recent(vault, 1) else EMPTY)
         return 0
     for row in rows:
-        print(_line(row))
+        print("\n".join(_lines(row)))
     return 0
 
 
@@ -86,7 +116,7 @@ def run(args):
     as_json = getattr(args, "json", False)
     try:
         if args.journal_command == "recent":
-            return _recent(vault, args.n, as_json)
+            return _recent(vault, args, as_json)
         return _render(vault, args.month, as_json)
     except TimeoutError:
         print(LOCK_BUSY)

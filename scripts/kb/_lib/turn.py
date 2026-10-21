@@ -187,6 +187,20 @@ def set_prompt_head(vault, session_id, text):
     return _set(vault, session_id, prompt_head=text)
 
 
+def mark(vault, key):
+    """目前回合檔設一個旗標（回合狀態，不是知識；answer 第 9 點）：只在對話裡的回合（current.json 有 session_id 且還沒答完），
+    終端機跑的不記。已經是 true 不寫。回這個回合現在有沒有這個旗標。"""
+    data = _read_turn(_current_file(vault))
+    if not data or not data.get("session_id") or data.get("done"):
+        return False
+    if data.get(key) is True:
+        return True
+    sess = _read_turn(_session_file(vault, data["session_id"]))
+    if not sess or sess.get("turn") != data["turn"]:  # session 檔已經是別的回合：不記到錯的那句
+        return False
+    return _set(vault, data["session_id"], **{key: True}) is not None
+
+
 def _realcase(p):
     """存在的部分以 realpath 為準（磁碟上的大小寫、junction），不存在的尾段原樣接回。"""
     cur, tail = p, []

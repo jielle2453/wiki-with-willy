@@ -4,6 +4,8 @@
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
 唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
 客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）；日程行只讀 agenda.json。
+沒有新變動、但清冊還有沒做成卡的（cards.unsorted，跟 kb cards todo 第一行同一個數，只讀）：變動行改印「還有 N 份沒整理完」，
+後面一樣接整理指示（answer 第 9b 點，D-161）；算超過開場時限就這行不印、寫 log。
 core.md 之後接設定檔第六節的「客戶偏好（…照核心規則）：」一條一行（D-137，沒有不印；讀不到這段不印、寫 log；框住，測試後修正裁定 15）。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
@@ -12,6 +14,7 @@ hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一
 import json
 import os
 import sys
+import time
 
 sys.dont_write_bytecode = True
 for _stream in (sys.stdout, sys.stderr):
@@ -19,6 +22,7 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
+_START = time.monotonic()  # 開場 hook 的時限從這裡算
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
@@ -83,9 +87,29 @@ def _drift_count(vault):
     return _DRIFT[key]
 
 
+UNSORTED_LINE = "還有 {n} 份沒整理完"
+UNSORTED_BUDGET = 6  # 秒，從 hook 開始算；SessionStart 逾時 10 秒，留給讀 core.md 與其他行
+_UNSORTED = {}  # vault → 還沒整理的份數或 None（出錯、超時）；line_changes 被叫兩次，log 只記一行
+
+
+def _unsorted_count(vault, sources):
+    """D-161：清冊還有沒做成卡的份數（cards.unsorted，只讀）；超過時限丟 TimeoutError，跟其他錯一樣記一行 log、回 None。"""
+    key = str(vault)
+    if key not in _UNSORTED:
+        try:
+            from kb._lib import cards
+
+            _UNSORTED[key] = cards.unsorted(vault, sources, deadline=_START + UNSORTED_BUDGET)
+        except Exception as e:  # noqa: BLE001
+            _UNSORTED[key] = None
+            _log_vault(vault, e)
+    return _UNSORTED[key]
+
+
 def line_changes(vault):
     """清冊題：新增、修改、不見三個數都 0 且比完 → None；走訪時間到 → 還沒比完。搬動、重複、之前就不見的不印。
-    實體夾有變 N（D-057，客戶改了實體夾名、卡名、刪夾）接在後面；清冊沒變動但 N > 0 自己成一行。"""
+    實體夾有變 N（D-057，客戶改了實體夾名、卡名、刪夾）接在後面；清冊沒變動但 N > 0 自己成一行。
+    清冊沒變動、實體夾也沒變，但還有沒整理完的 → 「還有 N 份沒整理完」（D-161）。"""
     got = _quick_scan(vault)
     drift = _drift_count(vault) or 0
     if got is None:
@@ -96,7 +120,10 @@ def line_changes(vault):
     counts = {k: len(report[k]) for k in ("added", "modified", "missing")}
     if any(counts.values()):
         return CHANGES_LINE.format(**counts) + (DRIFT_PART.format(n=drift) if drift else "")
-    return DRIFT_LINE.format(n=drift) if drift else None
+    if drift:
+        return DRIFT_LINE.format(n=drift)
+    left = _unsorted_count(vault, got[0])
+    return UNSORTED_LINE.format(n=left) if left else None
 
 
 def line_ingest_hint(vault):

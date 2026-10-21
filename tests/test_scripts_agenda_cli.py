@@ -239,6 +239,27 @@ class ListRender(Base):
         out = json.loads(run_kb("agenda", "list", "--json", cwd=self.V).stdout)
         self.assertEqual([(i["kind"], i["id"]) for i in out["items"]], [("deadline", aid)])
 
+    def test_from_to_entity(self):
+        """answer 第 8 點、驗收 11：--from／--to 照 parse_date，期間跟那段有重疊就列；--entity 可重複、別名也認。"""
+        self.add(date="2026-11-02", text="交平面圖")
+        self.add(date="2026-11-09", text="交立面圖")
+        self.add(date="2026-11-03", text="大安陳的", entity="大安陳")
+        self.add("--start", "2026-10-01", kind="期間", date="2026-11-04", text="設計期")
+        done = self.add(date="2026-11-05", text="做完了")
+        self.kb("done", done)
+        self.assertEqual(self.kb("list", "--from", "2026-11-02", "--to", "2026-11-08", "--entity", "信義王宅"),
+                         ["- 2026-10-01（週四）～2026-11-04（週三）期間 設計期（信義王）",
+                          "- 2026-11-02（週一）到期 交平面圖（信義王）"])
+        self.assertEqual(len(self.kb("list", "--from", "2026-11-02", "--to", "2026-11-08")), 3)
+        self.assertEqual(len(self.kb("list", "--from", "2026-11-02", "--to", "2026-11-08", "--entity", "信義王",
+                                     "--entity", "大安陳")), 3)
+        self.assertEqual(self.kb("list", "--to", "2026-11-02", "--entity", "大安陳"), ["日程是空的"])
+        self.assertEqual(len(self.kb("list", "--all", "--from", "2026-11-05", "--to", "2026-11-05")), 1)
+        self.assertEqual(self.kb("list", "--from", "下週", code=3), [agenda.DATE_MSG])
+        self.assertEqual(self.kb("list", "--entity", "沒登記", code=3), ["實體清單沒有「沒登記」，先 kb entity add"])
+        out = json.loads(run_kb("agenda", "list", "--from", "2026-11-09", "--json", cwd=self.V).stdout)
+        self.assertEqual([i["text"] for i in out["items"]], ["交立面圖"])
+
     def test_render_rewrites_the_md(self):
         self.add()
         (self.V / "系統" / "日程.md").write_text("手改的", encoding="utf-8")

@@ -4,6 +4,8 @@
 寫前備進回合，寫完重渲染 系統/日程.md。拒絕的第一行就是原因、exit 3；成功句與拒絕句一字不差（驗收 1～3）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合；歷程的 by 在對話裡是 ai、終端機是 program。
 人讀輸出不印內部編號（a-…、f-…，確認後裁定 6）：客戶聽不懂，AI 還會唸出來；要編號的取 --json。
+list 可篩（answer 第 8 點）：--from／--to 照 parse_date（YYYY-MM-DD），期間條目跟那段有重疊就列；--entity 可重複，別名與合併過的
+照登記的名稱認。
 """
 import argparse
 import copy
@@ -53,6 +55,9 @@ def add_arguments(sub):
     sc.add_argument("id", help="檔案卡編號（f-…）")
     ls = subs.add_parser("list", help="列出日程", description="預設列 open 的，照日期排；--all 含過去、完成、取消。")
     ls.add_argument("--all", action="store_true", help="全部列出")
+    ls.add_argument("--from", dest="date_from", help="只列這天（YYYY-MM-DD）以後的")
+    ls.add_argument("--to", dest="date_to", help="只列這天（YYYY-MM-DD）以前的")
+    ls.add_argument("--entity", action="append", default=[], help="只列掛著這個實體的，可以重複")
     rd = subs.add_parser("render", help="重寫日程.md", description="手動重寫 系統/日程.md。")
     for p in [ad, ed, *status_parsers, rc, sc, ls, rd]:
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
@@ -180,10 +185,35 @@ def _suffix(it):
     return (agenda.INFERRED_MARK if it.get("source") == "inferred" else "") + label
 
 
+def _keys(vault, names):
+    """--entity 的名稱 → 登記名稱的 key 集合；沒登記的丟 AgendaRefused（同其他指令的說法）。"""
+    from kb._lib import entities
+    data = entities.load(vault)
+    keys = set()
+    for name in names:
+        e, _hit = entities.find(data, name.strip())
+        if e is None or e.get("status") != "active":
+            raise agenda.AgendaRefused(f"實體清單沒有「{name.strip()}」，先 kb entity add")
+        keys.add(entities.key(e["name"]))
+    return keys
+
+
+def _in_range(it, start, end):
+    first, last = it.get("start") or it.get("date", ""), it.get("date", "")
+    return (start is None or last >= start) and (end is None or first <= end)
+
+
 def _list(vault, args, as_json):
+    from kb._lib import entities
+    start = agenda.parse_date(args.date_from).isoformat() if args.date_from else None
+    end = agenda.parse_date(args.date_to).isoformat() if args.date_to else None
+    keys = _keys(vault, args.entity) if args.entity else None
     items = agenda.load(vault)["items"]
     if not args.all:
         items = [i for i in items if i.get("status") == "open"]
+    items = [i for i in items if _in_range(i, start, end)]
+    if keys is not None:
+        items = [i for i in items if any(entities.key(n) in keys for n in i.get("entities") or [])]
     items = sorted(items, key=lambda i: (i.get("start") or i.get("date", ""), i.get("date", ""), i.get("time") or "",
                                          i.get("id", "")))
     if as_json:

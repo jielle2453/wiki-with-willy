@@ -30,6 +30,15 @@ class SynthesisRules(unittest.TestCase):
         self.assertIn("不採用", self.rules["S-31"])
         self.assertIn("兩個都標", self.rules["S-32"])
 
+    def test_findings(self):
+        """answer 第 12 點、驗收 15：開頭句說 answer 不寫綜合卡；S-11 出處多〔c-…〕；S-17 寫 findings 每筆照寫、stale 的寫待重算。"""
+        head = self.text.splitlines()[1]
+        self.assertIn("note、lint 也讀；answer 不寫綜合卡", head)
+        self.assertIn("〔c-", self.rules["S-11"])
+        self.assertIn("findings", self.rules["S-17"])
+        self.assertIn("〔c-…〕", self.rules["S-17"])
+        self.assertIn("依據有變，待重算", self.rules["S-17"])
+
     def test_no_reasons_or_decision_codes(self):
         """conventions 二：rules/ 不寫理由，決策編號不出現。"""
         self.assertIsNone(re.search(r"\b[DI]-\d{3}\b", self.text))

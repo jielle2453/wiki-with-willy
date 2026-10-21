@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "findings": [
+    {"id": "c-1a2b3c4d", "text": "大安陳尾款 32 萬還沒收", "how": "合約尾款對三張請款單",
+     "entities": ["大安陳"], "basis": [{"id": "f-3f9a1b2c", "fp": "9f2c1e0a7b3d"}], "mounts_fp": "000000000000",
+     "date": "2026-10-21", "turn": "20261021-100000-1234", "status": "active", "replaced_by": null},
+    {"id": "c-5e6f7a8b", "text": "信義王報價合計 182 萬", "how": "兩份報價相加",
+     "entities": ["信義王"], "basis": [{"id": "f-5d0e2a77", "fp": "aaaaaaaaaaaa"}], "mounts_fp": "000000000000",
+     "date": "2026-10-20", "turn": "20261020-100000-1234", "status": "superseded", "replaced_by": "c-9c0d1e2f"},
+    {"id": "c-9c0d1e2f", "text": "信義王報價合計 180 萬", "how": "兩份報價相加，扣掉重複的一項",
+     "entities": ["信義王"], "basis": [{"id": "f-5d0e2a77", "fp": "aaaaaaaaaaaa"}], "mounts_fp": "000000000000",
+     "date": "2026-10-21", "turn": "20261021-100000-1234", "status": "active", "replaced_by": null}
+  ]
+}

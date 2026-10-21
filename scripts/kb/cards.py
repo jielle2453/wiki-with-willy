@@ -7,6 +7,8 @@ index：手動重渲染總資料夾根的 總目錄.md。sync、drop、index 都
 skip <編號> --kind <種類>：客戶設定檔第三節說不整理的種類，清冊記 skip_kind、有卡的拿掉（客戶設定檔與型別第 6 點，D-113）。
 redo <編號>：客戶說卡讀錯了（D-147 第一種），清冊記 redo，下次 todo 把它列進 stale、帶 reason；
 mount <編號> --entity <名>…：卡掛錯實體，重設檔頭的 實體 欄，重寫總目錄與兩邊綜合卡的快取（note 改知識第 5 點）。
+list：列卡（answer 第 2 點，D-153、D-157），按卡型、年、實體、來源篩，窮舉不挑；另回庫裡實際有的卡型與份數，只讀、不開回合。
+todo 在對話裡跑時在目前回合記 ingest（turn.mark，回合狀態不是知識）：客戶按了停止，下一句的 UserPromptSubmit 才認得出來（D-156）。
 todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變、日程待重對、日程待抽；drop 拿掉卡也把從那張卡抽的推測日程改成取消（D-130）；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
@@ -37,6 +39,12 @@ def _limit(text):
     return n
 
 
+def _year(text):
+    if not (len(text) == 4 and text.isdigit()):
+        raise argparse.ArgumentTypeError(f"年份要寫成 YYYY：{text}")
+    return text
+
+
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="cards_command", metavar="<子子命令>", required=True)
     td = subs.add_parser("todo", help="列出該做的卡", description="列出還沒有卡、該重做、該搬的卡；不寫檔。")
@@ -53,7 +61,12 @@ def add_arguments(sub):
     mt = subs.add_parser("mount", help="卡掛錯實體，改掛", description="重設這張卡掛的實體；原本與新掛的實體的綜合卡下次整理會更新。")
     mt.add_argument("id", help="清冊編號（f-…）")
     mt.add_argument("--entity", action="append", required=True, help="改掛的實體名稱，可以重複")
-    for p in (td, sy, dr, ix, sk, rd, mt):
+    ls = subs.add_parser("list", help="列卡（只讀）", description="按卡型、年、實體、來源列卡，窮舉不挑；另列庫裡實際有的卡型與份數。")
+    ls.add_argument("--type", action="append", default=[], help="卡型（照字面），可以重複")
+    ls.add_argument("--year", type=_year, help="文件日期的年 YYYY；沒寫日期的另外講份數")
+    ls.add_argument("--entity", action="append", default=[], help="掛的實體名稱，可以重複")
+    ls.add_argument("--source", help="原檔的來源別名")
+    for p in (td, sy, dr, ix, sk, rd, mt, ls):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -121,12 +134,42 @@ def _entity_parts(data):
 
 def _todo(vault, args, as_json):
     data = cards.todo(vault, sources_lib.load(vault))
+    try:  # 回合狀態：記了才認得出「整理中被按停止」（D-156）；記不到不擋 todo
+        turn.mark(vault, "ingest")
+    except OSError:
+        pass
     if as_json:
         print(json.dumps(data, ensure_ascii=False))
         return 0
     limit = args.limit if args.limit is not None else config.get(vault, "ingest_auto_max")
     print("\n".join(_todo_lines(vault, data, limit)))
     return 0
+
+
+# ---------- list ----------
+
+def _list(vault, args, as_json):
+    got = cards.listing(vault, types=[t.strip() for t in args.type], year=args.year,
+                        names=[n.strip() for n in args.entity], source=args.source.strip() if args.source else None)
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+        return 0
+    print("\n".join(_list_lines(got, args.year)))
+    return 0
+
+
+def _list_lines(got, year):
+    rows = got["cards"]
+    kinds = "、".join(f"{t['card_type'] or '（沒寫卡型）'} {t['count']}" + ("" if t["in_profile"] else "（設定檔沒有）")
+                     for t in got["types"])
+    lines = [f"共 {len(rows)} 張卡" + (f"；庫裡的卡型：{kinds}" if kinds else "")]
+    if got["undated"]:
+        lines.append(f"沒寫日期的 {got['undated']} 張" + ("，沒算進這一年" if year else ""))
+    for c in rows:
+        detail = "，".join(x for x in [c["card_type"]] + c["entities"] if x)
+        mark = ("〔要重做〕" if c["redo"] else "〔原檔改過〕" if c["stale"] else "") + ("〔你說別信〕" if c["ruled_out"] else "")
+        lines.append(f"- {c['date']} {c['title']}" + (f"（{detail}）" if detail else "") + mark)
+    return lines
 
 
 # ---------- sync ----------
@@ -312,6 +355,8 @@ def run(args):
     try:
         if command == "todo":
             return _todo(vault, args, as_json)
+        if command == "list":
+            return _list(vault, args, as_json)
         conversation = journal_cli.in_conversation(vault)
         if command == "sync":
             return _sync(vault, as_json, conversation)

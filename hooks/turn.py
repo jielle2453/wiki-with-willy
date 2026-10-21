@@ -4,7 +4,9 @@
 payload 有 source 且不是 user／sdk。
 工作日誌（D-083）：開新回合時替這個 session 上一句沒等到 Stop 的回合補記「中斷」，並寫這一句的第一次；
 同月一把鎖（hook 整支要在 5 秒內），失敗只寫 log，回合照開。
-任何例外寫 .system/hook-errors.log，永遠 exit 0、不輸出，不能擋住客戶提問。
+按停止後不再自動整理（answer 第 9 點，D-156）：上一句是中斷補記的、且那句的回合檔記了 ingest（kb cards todo 跑過）→
+這一句的回合檔記 ingest_stopped，印一次 additionalContext；之後每句把 ingest_stopped 帶下去，同一個 session 不再印。
+其餘不輸出。任何例外寫 .system/hook-errors.log，永遠 exit 0，不能擋住客戶提問。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
 """
 import json
@@ -23,6 +25,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 USER_SOURCES = ("user", "sdk")
 # 不是客戶說的話：背景代理通知（I-035）、跨 session 訊息與系統提醒（確認後裁定 L-3），都不開回合
 NOT_A_PROMPT = ("<task-notification", "<cross-session-message", "<system-reminder")
+STOPPED = "上一句的整理被你停了：這個對話不再自動整理，你說整理才做；回答用現有的資料，末尾一句還有幾份沒整理。"
 
 
 def main():
@@ -59,8 +62,27 @@ def main():
             journal.begin_turn(vault, previous, data)  # 補記上一句的中斷與這一句開口，同月一把鎖（L1）
         except BaseException as e:  # noqa: BLE001  日誌失敗不影響開回合
             _log(e, payload)
+        if sid and previous:
+            try:
+                _ingest_stopped(vault, previous)
+            except BaseException as e:  # noqa: BLE001  沒提醒到只是多整理一次，回合照開
+                _log(e, payload)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
         _log(e, payload)
+
+
+def _ingest_stopped(vault, previous):
+    """上一句已記過 ingest_stopped：帶到這一句、不印。上一句沒等到 Stop 且跑過 cards todo：記下並印一次。"""
+    from kb._lib import turn
+    if previous.get("ingest_stopped"):
+        turn.mark(vault, "ingest_stopped")
+        return
+    if previous.get("done", True) or not previous.get("ingest"):
+        return
+    turn.mark(vault, "ingest_stopped")
+    out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": STOPPED}}
+    sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")
+    sys.stdout.flush()
 
 
 def _log(e, payload):

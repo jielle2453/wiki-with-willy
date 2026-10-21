@@ -318,8 +318,48 @@ class OpeningIngestHint(unittest.TestCase):
     def hint_lines(self, lines):
         return [ln for ln in lines if ln.startswith("有變動：")]
 
+    def skip_all(self):
+        """清冊每份都記成依設定不整理：沒有還沒整理的（D-161 之前「沒變動」的樣子）。"""
+        p = self.V / ".system" / "inventory.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        for e in data["entries"]:
+            e["skip_kind"] = "請款"
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
     def test_no_change_no_hint(self):
-        self.assertEqual(self.hint_lines(self.status()), [])
+        self.skip_all()
+        lines = self.status()
+        self.assertEqual(self.hint_lines(lines), [])
+        self.assertEqual([ln for ln in lines if ln.startswith("還有 ")], [])
+
+    def test_unsorted_without_change_then_hint(self):
+        """answer 第 9b 點、驗收 12（D-161）：沒有新變動、清冊還有沒做成卡的 → 「還有 N 份沒整理完」接整理指示。"""
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from kb._lib import cards
+        n = cards.unsorted(self.V)
+        self.assertGreater(n, 0)
+        before = {p.relative_to(self.V).as_posix(): p.stat().st_mtime_ns
+                  for p in (self.V / ".system").rglob("*") if p.is_file()}
+        lines = self.status()
+        i = lines.index(f"還有 {n} 份沒整理完")
+        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=20))
+        after = {p.relative_to(self.V).as_posix(): p.stat().st_mtime_ns
+                 for p in (self.V / ".system").rglob("*") if p.is_file()}
+        self.assertLessEqual({k for k in after if before.get(k) != after[k]}, {".system/env.json"})
+        (self.V / ".system" / "config.json").write_text(json.dumps({"ingest_auto_max": 1}), encoding="utf-8")
+        self.assertEqual(self.hint_lines(self.status()), [INGEST_HINT.format(n=1)])
+
+    def test_unsorted_over_time_limit_not_printed_and_logged(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("session_hook", HOOK)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod._START = time.monotonic() - 1000
+        lines = mod.status_lines(self.V, "startup")
+        self.assertEqual([ln for ln in lines if ln.startswith(("還有 ", "有變動："))], [])
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("TimeoutError", log[0])
 
     def test_hint_right_after_change_line(self):
         (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")

@@ -161,3 +161,55 @@
 2. N-6 與 F-6 同一個信任根（I-111）：`manifest.jsonl` 與保護區也要驗，才算封住。
 3. N-3b（SKILL.md 補一句）最便宜；N-3a 偏好檢查要不要改成白名單／NFKC，請裁。
 4. N-4、N-5 與讀碼未驗的 #6～#9 可記 backlog。
+
+---
+
+# 第三輪（最後一輪）
+
+日期：2026-10-21
+測試對象：分支 `spec/note改規則` HEAD d6b357a（第四輪實作，裁定 24～28、31 追認）
+依據：main 上 spec「測試第二輪後裁定」24～31。範圍照裁定 30 的停止規則：24～28 各一個實跑證據、無退步；新發現除非資料外洩或資料損毀等級，一律列「低項」、不算不過。
+
+## 結論
+
+- **24～28 與 31 追認全部「過」，無退步。** `python -m unittest discover tests` exit 0（Ran 1540 tests，OK，skipped=1）；驗收 8、9 與 F-1、F-2 重跑全過。
+- 範圍內沒有不過的條目。
+- **損毀等級的新發現 3 項（實跑確認）**：S-1、S-2、S-3，前提都是攻擊者／壞資料能寫 `.system/versions/<回合>/{manifest,folders}.jsonl` 或 `.system/inventory.json`（與 F-6、I-111 同一個信任根）；S-3 是舊程式既有的洞、不在這個 diff。依停止規則它們是資料損毀等級，所以列在這裡請設計 session 裁（修、或明說這個信任模型不收）。
+- 更正第二輪一處：N-1 的「兩個退回同時跑，第二個把第一個退回再退掉」，我用兩個 subprocess 起、其實是先後各跑完（單次 revert 不到 1 秒），不能證明並發。第二輪能證明的是「持鎖時第二個等滿 30 秒才回忙碌」；第三輪下面 24 的證據是持鎖時 0.3 秒就回。
+
+## 裁定 24～28 逐條（各一個實跑證據）
+
+| 裁定 | 結果 | 實跑證據 |
+|---|---|---|
+| 24 N-1 | 過 | 手動持 `.system/revert` 鎖，`kb versions revert`：**0.3 秒**回 exit 3「另一個退回正在跑，等它做完再說一次」（第二輪是 30 秒）；放鎖後正常退回。 |
+| 25 N-7 | 過 | 重現：夾 `案子`→`客戶` 的夾帳加 `案子/說明.txt` modify 備份，目標檔 `客戶/說明.txt`：(a) 唯讀屬性 → exit 3「退不回去：「客戶/說明.txt」正開著（檔案總管、Office 或記事本），什麼都沒動；關掉再說一次退回」；(b) 程式持有檔案 handle → exit 3「退不回去：「客戶」裡有檔案正開著（檔案總管或 Office），什麼都沒動；關掉再說一次退回」。兩者都：無 traceback、輸出沒有絕對路徑、全樹雜湊不變、夾沒改回去；放開後再退一次 exit 0、內容回「舊內容」、夾改回案子。事前檢查之後才發生的例外（注入 `shutil.copy2` 丟 OSError）：exit 3「退不回去：磁碟錯誤（「案子/x.txt」）；可能只退了一部分，先別再說退回，請服務人員看一下」，無絕對路徑（裁定 31-2）。 |
+| 26 N-6 | 過 | 第二輪那組偽造列全部 exit 3、全樹雜湊不變、vault 外兩個 victim 檔不動：manifest `../victim.txt`（create）、`../victim2.txt`（modify，含放好的 PLANTED 備份）、絕對路徑、`..\victim.txt`，句子「回合紀錄的檔案路徑不對，沒有退回」；folders `move stolen→收件匣／系統／.system／檔案索引／AI 產出`、`make 系統`、`remove ai 產出`（小寫）、`remove .`，句子「回合紀錄的資料夾路徑不對，沒有退回」；manifest 的保留區根（`收件匣`、`.system`、`系統`、`檔案索引`、`AI 產出`）同樣拒。保留區底下的合法子夾（`AI 產出/廠商`）exit 0 正常退。 |
+| 27 N-3b | 過 | `SKILL.md:47`：「型別改名、合併、刪除：合併先只問一句為什麼要併、確認不是誤會（D-143）；再帶 `--check --json` 跑…」。本文 2759→（≤ 3000 由 `test_skill_note` 守，全測試綠）。 |
+| 28 N-4 | 過 | 注入 `entities.sync_self` 丟 TimeoutError：`add 偏好 … --json` → exit 3 `{"applied": true, "message": "設定檔已改好，但後面沒做完（等不到鎖）；跑 kb profile apply 會補上", "incomplete": true}`；`profile apply --json`（手改 md 加物料型別）同樣 `applied: true, incomplete: true`，`created_dirs: ["物料"]`；人讀版句子相同。 |
+| 31 追認 | 過 | 見 24（0.2 秒試鎖，實測 0.3 秒回）、25（其他例外那句）、26（manifest 句）。 |
+
+## 無退步
+
+- 全部測試 exit 0（1540 tests）。
+- 驗收 8：改名後 `versions revert`，全樹（排除 versions／journal／turns）雜湊與改名前相同；退回這次退回 → 夾回師傅、與改名後雜湊相同；退之前手動建 `工班` → exit 3「退不回去：「師傅」改回「工班」時「工班」已經有東西了，什麼都沒動」且全樹不變。驗收 9：`entity rename 陳師傅 --to 陳師傅 --type 廠商` 後 revert，夾與客戶原檔回到工班、全樹雜湊相同，revert 輸出多一行「資料夾：廠商/陳師傅 → 工班/陳師傅」。
+- F-1：持有 `B1/f.txt` handle，revert exit 3「退不回去：「B1」裡有檔案正開著…」，`D1` 沒被動、全樹雜湊不變、無 traceback；F-2：同回合加型別設計師＋登記實體＋寫綜合卡，revert 不留空夾、不印「裡有東西」，`設計師/` 不在；型別夾裡有客戶放的檔時仍留著並說一句。
+
+## 審查紀錄（只看 `git diff 5cdd9b7 d6b357a -- scripts skills`）
+
+- code-review（high，子代理讀碼並跑 `test_scripts_versions_cli`／`test_scripts_profile_cli` 120 項 OK）：照停止規則只找外洩／損毀等級，回報**無**。
+- security-review（子代理讀碼並實跑）：新路徑檢查擋得住 vault 外與保留區根；`_writable` 用 `r+b` 開不截斷、不改 mtime、不建檔；`_plain` 與 log 沒有絕對路徑洩漏到輸出。它另外找到 S-1、S-2、S-3，我逐條自己重跑確認（下節）。
+- plugin-dev：這輪沒動 manifest、hooks，沒再跑 plugin-validator。
+
+## 損毀等級的新發現（實跑確認；前提：能寫 `.system` 底下的狀態檔）
+
+| 編號 | 內容與實跑結果 |
+|---|---|
+| S-1 | **保留區檢查只擋「根本身」，底下的檔不擋**（`versions.py:119-128` `_path_ok`）。偽造 manifest `{"path":"收件匣/客戶.pdf","action":"create"}` 加 `{"path":"系統/客戶設定檔.md","action":"modify"}`（備份放 `FORGED PROFILE`）→ `versions revert` exit 0「還原 3、移除 1」，**客戶原檔 `收件匣/客戶.pdf` 被刪、`系統/客戶設定檔.md` 被覆寫**（`.system/inventory.json`、`sources.json` 同理可被覆寫）。另 folders 的 `move` 不檢查 `to` 是不是資料夾：`{"op":"move","from":"案子/zz","to":".system/inventory.json"}` → exit 0 印「資料夾：.system/inventory.json → 案子/zz」，`inventory.json` 被搬走。影響只在 vault 內（客戶原檔、設定檔、清冊），不出 vault。合法的 manifest 本來就會含 `.system/inventory.json`、`系統/待處理.md`、`檔案索引/…`，所以修法不能一刀封，要白名單：manifest 只准碰這幾類路徑，folders 的 `to` 要是資料夾。 |
+| S-2 | 保留根比對在根不存在時可繞過：`resolve()` 對不存在的名字不會去掉尾端點或空白，`檔案索引.` 通過檢查而 `檔案索引` 被拒；vault 沒有 `檔案索引/` 時，`{"op":"move","from":"檔案索引.","to":"案子/信義王"}` revert exit 0，把使用者的資料夾改名成保留區名字（Win32 去掉尾端點）。子代理實跑，我未另跑。 |
+| S-3 | **`versions delete-outputs` 會刪 vault 外的檔**（舊程式、不在這個 diff：`versions.py:638-657`，`rel` 沒過 `_path_ok`）。清冊裡一筆 `origin: ai_output`、`status: turn_reverted`、`created_turn` 是已退回回合、`fingerprints: []`、uri `file://../OUTSIDE.txt` 的條目 → `kb versions delete-outputs` exit 0、印「已刪 1 份成品…`../OUTSIDE.txt`」，`vault/../OUTSIDE.txt` 真的被刪（實跑，我自己重現）。`revert --delete-outputs` 路徑不受影響（只動 manifest 裡、已過 `_bad_entry` 的路徑）。 |
+
+## 低項（不算不過；多數是第二輪已知或已記 B-079）
+
+- 偽造狀態檔類以外：`lock.__enter__()` 在 `try` 外，`.system/revert.lock` 建不起來時是帶絕對路徑的 traceback；`_plain` 的 `resolve()` 遇符號連結迴圈會丟 RuntimeError；`_writable` 只接 PermissionError，唯讀屬性也會印「正開著」（措辭，與第二輪 #9 同類）；`_translator.back()` 用 casefold 比對、用原長切片，`ß` 這類字元長度會變的字會算錯偏移（未端到端實測）。
+- 已在 B-079 的：revert 鎖 30 秒過期可被搶、`_move` 回滾後上層空夾沒記帳、N-2、N-3a、N-5、第二輪讀碼四項。
+- 第三輪確認的行為：失敗發生在事前檢查之後時，`reverted.json` 沒寫、訊息叫客戶別再說退回（子代理指出：重試會挑到還沒封的動作回合把半退退掉，還原的是先前內容，不算損毀）。

@@ -70,7 +70,8 @@ def _list(vault, args, as_json):
         if found is not None:
             k = entities.key(found["name"])
         items = [s for s in items if any(entities.key(n) == k for n in s.get("entities") or [])]
-    items = sorted(items, key=lambda s: (s.get("date") or "", s.get("id") or ""), reverse=True)
+    order = {id(s): i for i, s in enumerate(data["statements"])}  # 同一天照記的先後，新的在上
+    items = sorted(items, key=lambda s: (s.get("date") or "", order[id(s)]), reverse=True)
     if as_json:
         print(json.dumps({"statements": items}, ensure_ascii=False))
         return 0

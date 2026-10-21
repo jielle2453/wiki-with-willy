@@ -121,12 +121,13 @@ class RuleChange(unittest.TestCase):
         self.assertIn("kb profile show --json", self.body)
         self.assertIn("--check --json", self.section("## 骨架", "## 共通"))
 
-    def test_unsupported_left_with_four_kinds(self):
+    def test_unsupported_left_with_two_kinds(self):
+        """note 改知識驗收 15：「記不起來」只剩憑證例外與存答案兩種。"""
         line = next(ln for ln in self.body.splitlines() if ln.startswith("- **這版記不起來的話**"))
-        for want in ("糾正已記的知識", "決定與裁示", "別名", "把剛才的答案記下來"):
+        for want in ("密碼檔可以讀", "密碼記下來", "把剛才的答案記下來"):
             with self.subTest(want=want):
                 self.assertIn(want, line)
-        for gone in ("加型別", "改型別名", "以後報價一律附日期"):
+        for gone in ("加型別", "改型別名", "以後報價一律附日期", "糾正", "裁示", "別名", "決定"):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, line)
 
@@ -154,6 +155,55 @@ class RuleChange(unittest.TestCase):
             with self.subTest(want=want):
                 self.assertIn(want, text)
         self.assertIsNone(ABS_PATH.search(text))
+
+
+class Knowledge(unittest.TestCase):
+    """note 改知識第 9 點、驗收 15：分辨有改知識、原則含 D-147、D-146、D-041 與理由、骨架有四條路；
+    references/correction.md、references/ruling.md 在、各 ≤150 行、沒有絕對路徑；憑證那句只住 ruling.md。"""
+
+    def setUp(self):
+        self.body = split(SKILL.read_text(encoding="utf-8"))[1]
+
+    def section(self, head, nxt):
+        return self.body[self.body.index(head):self.body.index(nxt)]
+
+    def test_discriminates_knowledge(self):
+        part = self.section("## 分辨", "## 原則")
+        line = next(ln for ln in part.splitlines() if ln.startswith("- **改知識的話**"))
+        for want in ("事實", "決定", "糾正", "別名", "裁示"):
+            with self.subTest(want=want):
+                self.assertIn(want, line)
+
+    def test_principles_have_knowledge_codes(self):
+        part = self.section("## 原則", "## 骨架")
+        for code in ("D-147", "D-146", "D-041"):
+            self.assertIn(code, part)
+        self.assertIn("糾正先查錯在哪", part)
+        self.assertIn("不寫進檔案卡", part)
+
+    def test_skeleton_has_the_knowledge_paths(self):
+        part = self.section("## 骨架", "## 共通")
+        for want in ("kb statement add", "kb convert", "references/correction.md", "kb entity alias", "kb ruling add",
+                     "references/ruling.md"):
+            with self.subTest(want=want):
+                self.assertIn(want, part)
+
+    def test_references(self):
+        for name in ("correction.md", "ruling.md"):
+            with self.subTest(name=name):
+                text = (SKILL_DIR / "references" / name).read_text(encoding="utf-8")
+                self.assertLessEqual(len(text.splitlines()), REFERENCE_MAX_LINES)
+                self.assertIsNone(ABS_PATH.search(text))
+        correction = (SKILL_DIR / "references" / "correction.md").read_text(encoding="utf-8")
+        for want in ("--replaces", "withdraw", "kb cards redo", "kb cards mount", "suspect_cards", "是同一個，合併"):
+            with self.subTest(want=want):
+                self.assertIn(want, correction)
+        ruling = (SKILL_DIR / "references" / "ruling.md").read_text(encoding="utf-8")
+        for want in ("口述為準", "不採用", "D-041", "D-149", "D-145", "改了名整份連密碼都會被讀進去"):
+            with self.subTest(want=want):
+                self.assertIn(want, ruling)
+        pref = (SKILL_DIR / "references" / "preference.md").read_text(encoding="utf-8")
+        self.assertNotIn("改了名整份連密碼都會被讀進去", pref)
 
 
 class Evals(unittest.TestCase):

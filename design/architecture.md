@@ -204,7 +204,7 @@ llm-wiki-j/
 ├─ config/defaults.json
 ├─ skills/
 │  ├─ ingest/SKILL.md + references/{local,external,formats,changes,carding,versioning}.md
-│  ├─ answer/SKILL.md + references/{scope,verify,listing}.md
+│  ├─ answer/SKILL.md + references/{find,verify}.md
 │  ├─ note/SKILL.md + references/{preference,agenda,correction,ruling}.md
 │  ├─ produce/SKILL.md + references/{draft,office,placement,export}.md
 │  ├─ lint/SKILL.md + references/{content,system,questions}.md

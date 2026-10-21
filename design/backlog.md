@@ -84,6 +84,8 @@
 | B-072 | 2026-10-20 | open | `系統/日程.md` 甘特圖在 Obsidian 顯示得出來但不好看（日程確認，使用者截圖）：milestone 標籤在菱形左邊斜體、跟別的標籤擠在一起；結案的 bar 灰色、截在今天；沒掛實體的落在「其他」；時間軸只有週刻度。日程第二題或 B-050 spike 時一起看樣式（Mermaid gantt 能調的有限，Obsidian CSS 片段另議） | 日程確認人眼 |
 | B-073 | 2026-10-20 | deferred | 日程第一題測試 code-review 低項：條目有自己的 `lead_days` 時開場「7 天內」與日程.md「接下來 7 天」標籤仍寫全域天數；`agenda edit` 清不掉 `entities`、`lead_days`（取消再加）；`kb asks` 註解寫只讀但跑整個 `cards.todo`（可能 auto_done、寫 log）；只差大小寫或全半形的改名日程不跟、卡跟；`_fill_progress` 每次 load 重讀設定檔；`cards.todo` 為日程多掃檔案索引；`close` 待處理去重只比第一個 file_ids；`_line` 沒用到的變數；確認後修正的 skill-reviewer 低項：commands.md 第 49 行過長、`agenda scanned` 的說明散在 carding 第九節與 note agenda.md 兩處、`suggest-close` 拒絕句沒列、`agenda_unscanned` 算進門檻沒寫進 commands.md；測試第二輪：期間在開始日之前被 done 時 `ended` 早於 `start`，甘特圖畫壞（取今天與開始日較晚的）、`pending.json` 壞檔時 `entity remove` 被擋、`agenda_unscanned` 沒排除 stale／moved 的卡（plan 先重寫卡，無害） | 日程測試 |
 | B-074 | 2026-10-20 | open | `versions revert`／`versions list` 的人讀輸出帶回合編號（20261020-…），AI 照念給客戶（日程確認重跑第 8 步）；照日程確認後裁定 6 的做法，人讀輸出改用時間與那句話描述回合、編號只留 `--json` | 日程確認重跑 |
+| B-075 | 2026-10-21 | deferred | note 改規則測試低項：型別操作失敗在最後一步 `render_index` 時 `檔案索引/…` 留兩層空夾（F-8）；`profile add` 成功句回顯輸入原文而不是存入值（`a|b  c` vs `a｜b c`，F-10）；md 表格外的文字與來源／日期欄的手改（沒有內容差異）在 `add` 時被整份重渲染洗掉、回合備份裡也不是客戶原文（F-11） | note 改規則測試 |
+| B-076 | 2026-10-21 | open | 門檻 5→20 之後（D-100 修訂），已入冊、待製卡 6～20 份、開場沒有變動的狀態（客戶按停止、整理中途失敗）沒有任何一步提醒或整理；舊版 `kb asks` 會問 batch。交 answer 題的 D-156「之後的回答說還有幾份沒整理」一起看 | note 改規則測試觀察 B |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

@@ -24,7 +24,7 @@ SCHEMA_VERSION = 2
 PROGRESS = ("ongoing", "closed", "paused")
 PROGRESS_TEXT = {"ongoing": "進行中", "closed": "結案", "paused": "擱置"}
 CLOSE_KIND = "close"
-SHELL_CHARS = '$`'  # 名字會被貼進雙引號的指令：" 與 \ 型別名規則已擋，這兩個另擋（日程釐清，整理 ingest 測試第二輪）
+SHELL_CHARS = profile.SHELL_CHARS  # 名字會被貼進雙引號的指令（日程釐清）；型別名規則也擋了，同一套（note 改規則測試後修正裁定 16）
 SELF_KINDS = {"公司": "company", "本人": "person"}
 HEAD_BYTES = 4096
 NOT_FOUND = "實體清單沒有「{}」"
@@ -450,11 +450,22 @@ class PartialWrite(EntityRefused):
 
 class _Undo:
     """這個指令動過的檔與夾，照發生順序記（測試後修正裁定 8）：改、建、刪檔之前記舊內容（沒有是 None），
-    搬夾或改檔名之後記 (來源, 目的)，拿掉空夾之後記夾。中途出錯就倒著做回去。回合備份照記，不還原（帳本）。"""
+    搬夾或改檔名之後記 (來源, 目的)，拿掉空夾之後記夾。中途出錯就倒著做回去。回合備份照記，不還原（帳本）。
+    資料夾帳（D-142）先記在 folder_log，整段做完才 flush 進回合的 folders.jsonl：還原了的搬動不會留下退回時對不上的帳。"""
 
     def __init__(self, vault):
         self.v = Path(vault)
         self.steps = []
+        self.folder_log = []
+
+    def folder(self, turn_id, op, src, dst=None):
+        self.folder_log.append((turn_id, op, src, dst))
+
+    def flush(self):
+        from kb._lib import turn
+        while self.folder_log:
+            turn_id, op, src, dst = self.folder_log.pop(0)
+            turn.record_folder(self.v, turn_id, op, src, dst)
 
     def file(self, rel):
         p = self.v / rel
@@ -487,7 +498,9 @@ def _guarded(vault, act):
     還原本身也失敗才丟 PartialWrite：檔可能留一半，請客戶說「退回上一版」。"""
     undo = _Undo(vault)
     try:
-        return act(undo)
+        got = act(undo)
+        undo.flush()
+        return got
     except Exception as e:  # noqa: BLE001
         try:
             undo.rollback()
@@ -572,10 +585,11 @@ def _occupied(vault, loc, target):
         raise EntityRefused(f"「{target}」已經有檔，沒有改名；先把它搬走")
 
 
-def rename(vault, ref, new_name, new_type, turn_id):
+def rename(vault, ref, new_name, new_type, turn_id, undo=None):
     """kb entity rename：名稱（舊名進別名）、型別；有綜合卡就搬到 <新型別>/<新名>/<新名>.md（目標夾不在就整個夾改名，在就只搬卡）、
     檔頭的名稱／別名／型別／大類與正文標題改寫；全部檔案卡的 實體 欄換新名。整段在鎖裡。
     會擋的條件先驗完才動手；動手順序：搬夾與卡 → 檔案卡 → entities.json，中途出錯照 _Undo 還原（測試後修正裁定 8）。
+    undo 給了（kb profile type merge 一次換很多個）：步驟記進呼叫端的 undo，出錯與資料夾帳都由呼叫端收。
     回 {"entity", "old_name", "via_alias", "cards"（改到的檔案卡）, "changed"（日誌用）, "moved_files", "card"}。"""
     from kb._lib import synthesis
     prof = _profile(vault)
@@ -617,15 +631,15 @@ def rename(vault, ref, new_name, new_type, turn_id):
             changed += _agenda_md(vault, turn_id)
             return touched, changed, moved
 
-        touched, changed, moved_files = _guarded(vault, act)
+        touched, changed, moved_files = act(undo) if undo is not None else _guarded(vault, act)
     return {"entity": entry, "old_name": old_name, "via_alias": hit == "alias", "cards": [r for r, _n in touched],
             "changed": changed, "moved_files": moved_files, "card": target if loc else None}
 
 
 def _move_card(vault, loc, target, text, turn_id, changed, undo=None):
     """綜合卡從 loc 搬到 target 並寫成 text。夾不同、目標夾不在 → 整個夾改名（os.rename）；目標夾在 → 只搬卡，舊夾空了拿掉。
-    備份：卡沒換位置是 modify；換了位置舊路徑 delete、新路徑 create（都在動手之前，退回才回得去）。每一步記進 undo。
-    回跟著夾搬的其他檔數。"""
+    備份：卡沒換位置是 modify；換了位置舊路徑 delete、新路徑 create（都在動手之前，退回才回得去）。每一步記進 undo；
+    整夾 os.rename 的兩處記進 undo 的資料夾帳（D-142，修 B-062），做完由 _guarded 或呼叫端寫進回合。回跟著夾搬的其他檔數。"""
     from kb._lib import turn
     v = Path(vault)
     undo = undo if undo is not None else _Undo(vault)
@@ -635,6 +649,7 @@ def _move_card(vault, loc, target, text, turn_id, changed, undo=None):
         if cur_folder != tgt_folder:
             os.rename(v / cur_folder, v / tgt_folder)
             undo.moved(cur_folder, tgt_folder)
+            undo.folder(turn_id, "move", cur_folder, tgt_folder)
         interim = f"{tgt_folder}/{loc.rpartition('/')[2]}"
         if interim != target:
             os.replace(v / interim, v / target)
@@ -652,6 +667,7 @@ def _move_card(vault, loc, target, text, turn_id, changed, undo=None):
         (v / tgt_folder).parent.mkdir(parents=True, exist_ok=True)
         os.rename(v / cur_folder, v / tgt_folder)
         undo.moved(cur_folder, tgt_folder)
+        undo.folder(turn_id, "move", cur_folder, tgt_folder)
         interim = f"{tgt_folder}/{loc.rpartition('/')[2]}"
         if not same_folder:
             moved = len(_files_under(v / tgt_folder, skip=v / interim))
@@ -669,6 +685,25 @@ def _move_card(vault, loc, target, text, turn_id, changed, undo=None):
     _write(vault, target, text, undo)
     changed += [{"path": loc, "action": "delete"}, {"path": target, "action": "create"}]
     return moved
+
+
+def retype(vault, old_type, new_type, turn_id, undo):
+    """kb profile type rename（note 改規則第 2 點）：型別是 old_type 的每一筆（任何狀態）改成 new_type，備份後寫；
+    active、有綜合卡的把檔頭型別與大類跟著改（by program）。夾已經由呼叫端改好名、設定檔已寫好新型別。回給日誌的 changed。"""
+    prof = _profile(vault)
+    changed = []
+    with lock(vault):
+        data = load(vault)
+        hits = [e for e in data["entities"] if e.get("type") and key(e["type"]) == key(old_type)]
+        if not hits:
+            return changed
+        for e in hits:
+            e["type"] = new_type
+        for e in hits:
+            if e.get("status") == "active" and e.get("card"):
+                _refresh_fields(vault, e, prof, turn_id, changed, undo)
+        _save(vault, data, turn_id, undo)
+    return changed + [{"path": ENTITIES_POSIX, "action": "modify"}]
 
 
 def merge(vault, src_ref, dst_ref, turn_id):

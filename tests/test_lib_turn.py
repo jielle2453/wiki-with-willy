@@ -572,5 +572,42 @@ class ProgramBackup(unittest.TestCase):
             turn.backup(self.V, self.cards[2], self.t, by="ai")
 
 
+class Folders(unittest.TestCase):
+    """note 改規則第 3 點（D-142）：回合夾的 folders.jsonl 一行一個資料夾動作，讀回壞行跳過寫 log。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        self.t = turn.start(self.V, None, "")["turn"]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_record_and_read_back(self):
+        self.assertEqual(turn.folders(self.V, self.t), [])
+        turn.record_folder(self.V, self.t, "move", "工班", "師傅")
+        turn.record_folder(self.V, self.t, "make", "設計師")
+        turn.record_folder(self.V, self.t, "remove", "工班/陳師傅")
+        got = turn.folders(self.V, self.t)
+        self.assertEqual([(r["op"], r["from"], r["to"]) for r in got],
+                         [("move", "工班", "師傅"), ("make", "設計師", None), ("remove", "工班/陳師傅", None)])
+        self.assertTrue(all(len(r["time"]) == 19 for r in got))
+        self.assertEqual(manifest_lines(self.V, self.t), [], "manifest 不動")
+        path = self.V / ".system" / "versions" / self.t / "folders.jsonl"
+        self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 3)
+
+    def test_bad_line_skipped_and_logged(self):
+        turn.record_folder(self.V, self.t, "make", "設計師")
+        path = self.V / ".system" / "versions" / self.t / "folders.jsonl"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write('{"op": "mo\n[1]\n')
+        turn.record_folder(self.V, self.t, "remove", "設計師")
+        self.assertEqual([r["op"] for r in turn.folders(self.V, self.t)], ["make", "remove"])
+        self.assertIn("folders 壞行跳過", (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8"))
+
+    def test_bad_op_refused(self):
+        with self.assertRaises(ValueError):
+            turn.record_folder(self.V, self.t, "rename", "a", "b")
+
+
 if __name__ == "__main__":
     unittest.main()

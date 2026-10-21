@@ -17,8 +17,8 @@
   "_why_changes_quick_hash_budget_bytes": "快速比對（開場）一次最多讀多少位元組算指紋，超過的當修改或新增（I-081）",
   "changes_quick_seconds": 5,
   "_why_changes_quick_seconds": "快速比對走訪的時間上限，超過停下、開場改印還沒比完；SessionStart hook 逾時 10 秒，留一半給讀 core.md 與其他行",
-  "ingest_auto_max": 5,
-  "_why_ingest_auto_max": "開場有變動時 AI 自己整理成卡的份數上限，超過先問客戶（D-100）；開場指示行與 kb cards todo 的 --limit 預設都讀它",
+  "ingest_auto_max": 20,
+  "_why_ingest_auto_max": "開場有變動時 AI 不問就整理成卡的份數上限：門檻內開始前先說一聲份數、大約多久、要停按停止再直接做，超過先問客戶（D-100 2026-10-20 修訂）；一份約 8 秒，20 份客戶等得起；開場指示行與 kb cards todo 的 --limit 預設都讀它",
   "pdf_read_pages_max": 20,
   "_why_pdf_read_pages_max": "PDF 掃描頁轉圖最多幾頁，超過只轉前面、卡的讀取標「部分」（I-029、裁定 36）",
   "pdf_page_min_chars": 10,
@@ -35,6 +35,10 @@
   "_why_temp_keep_hours": "kb convert 寫在 .system/temp/ 的暫存檔保留幾小時，每次 convert 先清掉更舊的；再長的體積由 lint 題管（D-018）",
   "agenda_window_days": 7,
   "_why_agenda_window_days": "開場日程行與 系統/日程.md「接下來」往後看幾天（D-060）；條目自己有 lead_days 就用它；一週夠客戶週一開對話時排這週的事",
+  "preference_max": 10,
+  "_why_preference_max": "客戶設定檔第六節偏好最多幾條（D-137）：開場整段帶進每個對話，條數多了互相打架也占常駐",
+  "preference_max_chars": 400,
+  "_why_preference_max_chars": "第六節偏好合計最多幾字（D-137）：常駐合計上限 5000 字，六個 skill 做完約 2650，留 400 給偏好",
   "agenda_past_days": 30,
   "_why_agenda_past_days": "系統/日程.md 過去區與甘特圖往回看幾天（D-105）：再久的已過去、完成、取消都在 agenda.json 裡，不佔清單"
 }

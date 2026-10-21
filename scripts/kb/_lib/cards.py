@@ -4,6 +4,8 @@
 檔頭機器欄位（編號、出處、原檔、指紋、內容指紋、製卡日期、範本版本、開原檔）由 header_for 印給製卡者照抄；
 validate 給 PostToolUse 與測試用，只報第一個錯；todo 讀清冊與卡現算該做的事（D-104），不寫任何檔。
 render_index 只讀 檔案索引/ 的卡檔頭寫根的 總目錄.md（D-105），不讀清冊，孤兒卡也列。
+todo 的結果併進 plan.build 的 plan、asks、tell、announce（門檻內開始整理前先說的一句，D-100 修訂）；
+sync 是 kb cards sync 的本體，型別改名與合併（kb profile type）也叫它讓卡當場跟著原檔搬。
 """
 import os
 import re
@@ -526,10 +528,12 @@ def todo(vault, sources, tell_all=True):
         if entry.get("read") == "ok" and eid not in carded and eid not in unreadable_skip:
             out["new"].append(work_item(entry, None))
     out.update(synthesis.buckets(vault, ent_data, entities.mounts(vault, ent_data), data))
+    matters = {entities.key(t["name"]) for t in data.get("types") or [] if t.get("category") == "matter"}
+    # 狀態只在事類顯示：事類併進別的大類後 progress 留在實體清單、不再顯示（D-143）
     out["entities"] = [dict({"name": e["name"], "type": e.get("type"), "aliases": list(e.get("aliases") or []),
                              "self": e.get("self") or False},
                             **({"progress": e["progress"], "asked_evidence": entities.asked_evidence(vault, e)}
-                               if e.get("progress") else {}))
+                               if e.get("progress") and entities.key(e.get("type")) in matters else {}))
                        for e in ent_data["entities"] if e.get("status") in ("active", "removed")]
     try:  # 日程壞了不能擋整理的主流程：兩塊給空的，開場那行與 kb agenda 自己會報
         ag = agenda.load(vault)
@@ -623,6 +627,70 @@ def refresh_synthesis(vault, names, turn_id):
 
 
 # ---------- 搬卡 ----------
+
+def sync(vault, sources, turn_id, undo=None):
+    """kb cards sync 的本體（note 改規則第 2 點開放給型別操作呼叫）：同編號多張留正本、其餘備進回合後刪；moved 的卡搬到原檔
+    現在該在的夾（檔名不變；同夾只改檔頭），原檔清單與開原檔重算；舊路徑備成 delete、新路徑備成 create。
+    undo（entities._Undo）給了就在每次寫、刪之前記舊內容，呼叫端出錯時還原。總目錄、綜合卡快取、日誌由呼叫端做。
+    回 {"moved","updated","dropped","skipped","changed","touched"（動到的卡掛的實體名稱）}。"""
+    from kb._lib import inventory, turn
+    data = todo(vault, sources)
+    by_id = {e["id"]: e for e in inventory.load(vault)["entries"]}
+    moved, updated, skipped, changed, dropped = [], [], [], [], []
+    groups, _broken = _scan_groups(vault)
+    touched = entity_names_of([c for g in groups.values() for c in g
+                               if c["path"] in {i["from"] for i in data["moved"]}
+                               | {r for d in data["duplicates"] for r in d["drop"]}])
+
+    def drop(rel):
+        if undo is not None:
+            undo.file(rel)
+        remove_card(vault, rel, turn_id)
+        changed.append({"path": rel, "action": "delete"})
+        dropped.append(rel)
+
+    def write(rel, text):
+        if undo is not None:
+            undo.file(rel)
+        (Path(vault) / rel).parent.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(Path(vault) / rel, text)
+    for dup in data["duplicates"]:  # 同編號多張：留正本，其餘備進回合後刪（測試後修正裁定 20）
+        for rel in dup["drop"]:
+            drop(rel)
+    for item in data["moved"]:
+        entry = by_id[item["id"]]
+        old = item["from"]
+        new = f"{item['to']}/{old.rpartition('/')[2]}"
+        text = rewrite_locations(_read(vault, old), [loc["uri"] for loc in entry["locations"]],
+                                 entry_link(vault, sources, entry))
+        if new.casefold() == old.casefold():
+            turn.backup(vault, old, turn_id)
+            write(old, text)
+            updated.append(old)
+            changed.append({"path": old, "action": "modify"})
+            continue
+        if (Path(vault) / new).exists():
+            try:
+                same = parse_front(_read(vault, new)).get("編號") == item["id"]
+            except (ValueError, OSError, UnicodeDecodeError):
+                same = False
+            if same:  # 目的地是同編號的卡：收斂成那張（裁定 20）
+                drop(old)
+            else:
+                skipped.append(f"「{new}」已經有同名的卡，沒搬：{old}")
+            continue
+        turn.backup(vault, old, turn_id, action="delete")
+        turn.backup(vault, new, turn_id)
+        write(new, text)
+        if undo is not None:
+            undo.file(old)
+        os.remove(Path(vault) / old)
+        prune_dirs(vault, old)
+        moved.append({"from": old, "to": new})
+        changed += [{"path": old, "action": "delete"}, {"path": new, "action": "create"}]
+    return {"moved": moved, "updated": updated, "dropped": dropped, "skipped": skipped, "changed": changed,
+            "touched": touched}
+
 
 def rewrite_locations(text, uris, link):
     """只換檔頭的 原檔 清單與 開原檔 一行，其他行原樣（kb cards sync）。"""

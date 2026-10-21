@@ -5,7 +5,7 @@
 目標的上層已是知識庫就拒絕（I-054，用 guard.find_vault 找）。CLAUDE.md、.claude/、.system/ 在 Windows 設隱藏屬性，設不成只印一句。
 不開回合、不備份、不寫 ledger：init 之前還沒有知識庫。
 有建東西就寫一段工作日誌程式段（D-085），代號用現在時間、不碰 turns/；日誌自己的檔不在骨架計畫裡，不算項數。
-既有知識庫的 profile.json 是 schema 1（實體與綜合卡第 11 點）：md 沒改過就寫遷移後的 schema 2、重渲染 md（補第四、五節）；
+既有知識庫的 profile.json 是 schema 1 或 2（實體與綜合卡第 11 點、note 改規則第 1 點）：md 沒改過就寫遷移後的 schema 3、重渲染 md（補缺的節）；
 md 改過就不動，請客戶先 kb profile apply。缺 entities.json、agenda.json 不建（第一次寫時才建）；
 缺 系統/日程.md 渲染一份空的（日程第 11 點）。
 """
@@ -28,7 +28,7 @@ HIDDEN_ITEMS = ("CLAUDE.md", ".claude", ".system")
 EMPTY_SOURCES = {"schema_version": 1, "sources": []}
 FILE_ATTRIBUTE_HIDDEN = 0x2
 INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
-UPGRADE_LINE = "設定檔升級：補第四、五節"
+UPGRADE_LINES = {1: "設定檔升級：補第四、五、六節", 2: "設定檔升級：補第六節"}  # 磁碟上的舊 schema → 補哪幾節
 UPGRADE_BLOCKED = "設定檔有沒套用的改動，先 kb profile apply 再跑 kb init 升級"
 
 
@@ -85,10 +85,10 @@ def _fill_profile(p, have_json, have_md, notes):
 
 
 def _profile_upgrade(p):
-    """兩份設定檔都在、JSON 是 schema 1：md 沒改過回 upgrade，改過回 blocked；其他回 None。"""
+    """兩份設定檔都在、JSON 是 schema 1 或 2：md 沒改過回 upgrade，改過回 blocked；其他回 None。"""
     if not ((p / profile.PROFILE_POSIX).is_file() and (p / profile.MD_POSIX).is_file()):
         return None
-    if profile.stored_schema(p) != 1:
+    if profile.stored_schema(p) not in UPGRADE_LINES:
         return None
     try:
         data = profile.load(p)
@@ -98,7 +98,7 @@ def _profile_upgrade(p):
 
 
 def _upgrade_profile(p):
-    """寫遷移後的 schema 2 JSON、重渲染 md、回填 sha（不開回合、不備份：md 沒改過，內容照 JSON 重寫）。"""
+    """寫遷移後的 schema 3 JSON、重渲染 md、回填 sha（不開回合、不備份：md 沒改過，內容照 JSON 重寫）。"""
     data = profile.load(p)
     data["md_sha256"] = profile.sha256_text(profile.render(p, data))
     write_json_atomic(p / profile.PROFILE_POSIX, data)
@@ -145,7 +145,8 @@ def run(args):
     existed = (p / sources_lib.SOURCES_REL).is_file()
     status = [(rel, kind, (p / rel).exists()) for rel, kind in plan_items()]
     upgrade = _profile_upgrade(p)
-    upgrade_line = {"upgrade": UPGRADE_LINE, "blocked": UPGRADE_BLOCKED}.get(upgrade)
+    upgrade_note = UPGRADE_LINES.get(profile.stored_schema(p)) if upgrade else None
+    upgrade_line = {"upgrade": upgrade_note, "blocked": UPGRADE_BLOCKED}.get(upgrade)
     if args.check:
         if as_json:  # L8
             print(json.dumps({"vault": str(p), "would_create": [rel for rel, _k, have in status if not have],
@@ -198,9 +199,9 @@ def run(args):
     if created or upgrade == "upgrade":  # 程式段（D-085）：只數骨架項目；沒有缺的、也沒升級不寫；不開回合
         note = f"建立知識庫：建了 {len(created)} 項" if not existed else f"補齊了 {len(created)} 項"
         if not created:
-            note = UPGRADE_LINE
+            note = upgrade_note
         elif upgrade == "upgrade":
-            note += "；" + UPGRADE_LINE
+            note += "；" + upgrade_note
         changed = [{"path": rel, "action": "create"} for rel in created] + [{"path": rel, "action": "modify"}
                                                                              for rel in touched]
         journal_cli.record_program_or_warn(p, note, changed, "init", journal_cli.in_conversation(p))

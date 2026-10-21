@@ -4,6 +4,8 @@ plan：照順序要做的事，每步 {"step","items","do","read"}；多量先�
 asks：排好序、編好號的問題，每題 {"id","kind","question","results":[{"n","label","do","strict","fill"}]}；
       號碼從 1 一路編下去不管挑哪幾題，do 的指令以 kb 開頭，要客戶給的值寫成 {新名字} 這種空格，fill 列有哪些。
 tell：回答末尾要講的現成句子。
+announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先說的一句（份數、大約多久、要停按停止，D-100 修訂），否則 None；
+      kb asks（tell_all 是 False）不帶這鍵。
 只讀：不寫任何檔，不開原檔。
 """
 import math
@@ -20,6 +22,7 @@ DATE_RULE = "YYYY-MM-DD"
 AGENDA_RECHECK = "agenda_recheck"
 AGENDA_UNSCANNED = "agenda_unscanned"
 BATCH_SECONDS = 10  # 一份抓 10 秒（D-100）
+ANNOUNCE = "有 {n} 份要整理，大約{how_long}；要停的話按停止"  # 門檻內開始前先說（D-100 修訂）：整理中打字要等回合結束，停止鈕才停得下來
 UNREADABLE_LISTED = 5
 PENDING_FILE = "記在 系統/待處理.md"
 # 讀不到的原因（convert 會記進待處理的那幾種）→ 客戶怎麼辦；這是講法的唯一來源，commands.md 只指向 tell
@@ -62,13 +65,28 @@ def cmd(*parts):
 
 
 def build(out, vault, config, tell_all=True):
-    """回 {"plan","asks","tell"}；config 是 kb._lib.config（取 ingest_auto_max）。
-    tell_all 是 False 時 tell 只帶這一回合做了什麼（加進日程、照新版改了），整理狀態那些句子不帶（D-141，kb asks 用）。"""
+    """回 {"plan","asks","tell","announce"}；config 是 kb._lib.config（取 ingest_auto_max）。
+    tell_all 是 False 時 tell 只帶這一回合做了什麼（加進日程、照新版改了），整理狀態那些句子不帶（D-141，kb asks 用），
+    也不帶 announce。"""
     full = _plan(out)
     asks = _asks(out, vault, config, full)
     batch = bool(asks) and asks[0]["id"] == "batch"
     steps = [s for s in full if s["step"] == "sync"] if batch else full
-    return {"plan": steps, "asks": _number(asks), "tell": _tell(out, vault) if tell_all else agenda.tell_lines(vault)}
+    if not tell_all:
+        return {"plan": steps, "asks": _number(asks), "tell": agenda.tell_lines(vault)}
+    waiting = _waiting(out)
+    announce = ANNOUNCE.format(n=waiting, how_long=_how_long(waiting)) if waiting and not batch else None
+    return {"plan": steps, "asks": _number(asks), "tell": _tell(out, vault), "announce": announce}
+
+
+def _waiting(out):
+    """要整理的份數（門檻與 announce 共用）：new＋stale＋unlinked＋agenda_unscanned。"""
+    return sum(len(out.get(k) or []) for k in ("new", "stale", "unlinked", AGENDA_UNSCANNED))
+
+
+def _how_long(waiting):
+    seconds = waiting * BATCH_SECONDS
+    return "一兩分鐘" if seconds < 60 else f" {math.ceil(seconds / 60)} 分鐘"
 
 
 # ---------- plan ----------
@@ -121,7 +139,7 @@ def _ask(ask_id, kind, question, results):
 
 def _asks(out, vault, config, full_plan):
     asks = []
-    waiting = sum(len(out.get(k) or []) for k in ("new", "stale", "unlinked", AGENDA_UNSCANNED))
+    waiting = _waiting(out)
     if waiting > config.get(vault, "ingest_auto_max"):
         asks.append(_batch(waiting, full_plan))
     drifts = out.get("entity_drift") or []
@@ -134,9 +152,7 @@ def _asks(out, vault, config, full_plan):
 
 
 def _batch(waiting, full_plan):
-    seconds = waiting * BATCH_SECONDS
-    how_long = "一兩分鐘" if seconds < 60 else f" {math.ceil(seconds / 60)} 分鐘"
-    return _ask("batch", "batch", f"有 {waiting} 份要整理，現在做嗎？大約{how_long}", [
+    return _ask("batch", "batch", f"有 {waiting} 份要整理，現在做嗎？大約{_how_long(waiting)}", [
         _result("現在做", note="客戶說做就照 then 的步驟做，做的過程這題不再問", then=full_plan),
         _result("之後再說", note="這個對話不再問")])
 

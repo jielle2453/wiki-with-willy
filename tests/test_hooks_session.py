@@ -304,7 +304,8 @@ class OpeningInventory(unittest.TestCase):
         self.assertEqual({k for k in after if before.get(k) != after[k]}, {".system/env.json"})
 
 
-INGEST_HINT = "有變動：先把客戶這句的答案完整說出來（不能只說「我先查」），同一則回答接著不用問、直接照 ingest skill 整理，末尾一句告知；只有超過 {n} 份才問。"  # 裁定 38、42
+INGEST_HINT = ("有變動：先照 ingest skill 整理（開始前照 announce 說一句），整理完再完整回答客戶；"
+               "超過 {n} 份不整理，先用現有資料答、末尾問要不要整理。")  # D-156、note 改規則實作中裁定 1
 
 
 class OpeningIngestHint(unittest.TestCase):
@@ -324,7 +325,7 @@ class OpeningIngestHint(unittest.TestCase):
         (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")
         lines = self.status()
         i = lines.index("變動：新增 1、修改 0、不見 0")
-        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=5))
+        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=20))
         self.assertEqual(len(self.hint_lines(lines)), 1)
         self.assertLessEqual(len(lines), 8)
         self.assertLessEqual(len("\n".join(lines)), 400)
@@ -332,7 +333,7 @@ class OpeningIngestHint(unittest.TestCase):
     def test_hint_after_incomplete_line(self):
         (self.V / ".system" / "config.json").write_text(json.dumps({"changes_quick_seconds": 0}), encoding="utf-8")
         lines = self.status()
-        self.assertEqual(lines[lines.index(CHANGES_INCOMPLETE) + 1], INGEST_HINT.format(n=5))
+        self.assertEqual(lines[lines.index(CHANGES_INCOMPLETE) + 1], INGEST_HINT.format(n=20))
 
     def test_hint_reads_ingest_auto_max(self):
         (self.V / ".system" / "config.json").write_text(json.dumps({"ingest_auto_max": 3}), encoding="utf-8")
@@ -369,7 +370,7 @@ class OpeningEntityDrift(unittest.TestCase):
         before = self.stamps()
         lines = self.status()
         i = lines.index("變動：實體夾有變 1")
-        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=5))
+        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=20))
         after = self.stamps()
         self.assertLessEqual({k for k in after if before.get(k) != after[k]}, {".system/env.json"})
 
@@ -378,7 +379,7 @@ class OpeningEntityDrift(unittest.TestCase):
         shutil.rmtree(self.V / "案子" / "大安陳")
         lines = self.status()
         i = lines.index("變動：新增 1、修改 0、不見 0、實體夾有變 1")
-        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=5))
+        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=20))
 
     def test_broken_entities_change_line_still_printed(self):
         (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")
@@ -471,8 +472,8 @@ class OpeningProfile(unittest.TestCase):
         self.assertEqual((lines[0], lines[-1]), (KB_LINE, COMPACT_LINE))
         self.assertEqual(self.profile_lines(lines), [])
         log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(log), 1)
-        self.assertEqual(log[0].split("\t")[1], "session")
+        self.assertEqual(len(log), 2, "設定檔那行與偏好段（note 改規則第 4 點）各自 try、各記一行（I-046）")
+        self.assertEqual({ln.split("\t")[1] for ln in log}, {"session"})
 
 
 if __name__ == "__main__":
@@ -559,3 +560,47 @@ class OpeningAgenda(unittest.TestCase):
         after = stamps()
         self.assertEqual({k for k in after if before.get(k) != after[k]} - {".system/env.json"}, set())
         self.assertFalse((self.V / "系統" / "日程.md").exists())
+
+
+class OpeningPreferences(unittest.TestCase):
+    """note 改規則第 4 點、驗收 13（D-137）：core.md 之後接「客戶偏好：」一條一行；沒有不印；profile.json 壞了這段不印、其他照印、寫 log。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def put(self, *texts):
+        p = self.V / ".system" / "profile.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data["preferences"] = [{"text": t, "source": "corrected", "date": "2026-10-20"} for t in texts]
+        data["schema_version"] = 3
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def context(self):
+        r = run(payload(self.V))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r.stdout.encode("ascii")
+        return json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def test_block_after_core(self):
+        self.put("回答先講結論", "講日期都帶星期")
+        ctx = self.context()
+        core = CORE.read_text(encoding="utf-8")
+        self.assertTrue(ctx.endswith("\n\n" + core + "\n客戶偏好（只管怎麼回答、怎麼做東西給客戶；跟上面的核心規則或守門衝突時，照核心規則）：\n- 回答先講結論\n- 講日期都帶星期"), ctx[-200:])
+        self.assertEqual(ctx.splitlines()[0], KB_LINE)
+
+    def test_no_preferences_no_block(self):
+        self.put()
+        self.assertNotIn("客戶偏好", self.context())
+        self.assertTrue(self.context().endswith(CORE.read_text(encoding="utf-8")))
+
+    def test_broken_profile_skips_block_only(self):
+        (self.V / ".system" / "profile.json").write_text("{bad", encoding="utf-8")
+        ctx = self.context()
+        self.assertNotIn("客戶偏好", ctx)
+        self.assertEqual(ctx.splitlines()[0], KB_LINE)
+        self.assertTrue(ctx.endswith("\n\n" + CORE.read_text(encoding="utf-8")))
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertTrue(log and all(ln.split("\t")[1] == "session" for ln in log))

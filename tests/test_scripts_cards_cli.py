@@ -96,8 +96,13 @@ class Todo(Base):
         self.assertEqual(lines[-1], f"……還有 {n - 2} 份")
 
     def test_default_limit_is_ingest_auto_max(self):
-        items = [ln for ln in self.kb("cards", "todo").stdout.splitlines() if ln.startswith("- ")]
-        self.assertEqual(len(items), 5)
+        lines = self.kb("cards", "todo").stdout.splitlines()
+        items = [ln for ln in lines if ln.startswith("- ")]
+        data = self.todo()
+        self.assertEqual(len(items), min(20, len(data["new"]) + len(data["stale"])), "ingest_auto_max 預設 20")
+        (self.V / ".system" / "config.json").write_text('{"ingest_auto_max": 5}', encoding="utf-8")
+        lines = self.kb("cards", "todo").stdout.splitlines()
+        self.assertEqual(len([ln for ln in lines if ln.startswith("- ")]), 5)
 
     def test_all_done_says_up_to_date(self):
         for item in self.todo()["new"]:

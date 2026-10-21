@@ -10,7 +10,6 @@ todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題�
 """
 import argparse
 import json
-import os
 from datetime import date
 from pathlib import Path
 
@@ -125,64 +124,16 @@ def _todo(vault, args, as_json):
 
 # ---------- sync ----------
 
-_prune = cards.prune_dirs
-
-
 def _remove_card(vault, rel, turn_id, changed):
     cards.remove_card(vault, rel, turn_id)
     changed.append({"path": rel, "action": "delete"})
 
 
-def _card_id(vault, rel):
-    try:
-        return cards.parse_front((Path(vault) / rel).read_text(encoding="utf-8")).get("編號")
-    except (ValueError, OSError, UnicodeDecodeError):
-        return None
-
-
 def _sync(vault, as_json, conversation):
-    sources = sources_lib.load(vault)
-    data = cards.todo(vault, sources)
-    by_id = {e["id"]: e for e in inventory.load(vault)["entries"]}
     turn_id = turn.current(vault)["turn"]
-    moved, updated, skipped, changed, dropped = [], [], [], [], []
-    groups, _broken = cards._scan_groups(vault)
-    touched = cards.entity_names_of([c for g in groups.values() for c in g
-                                     if c["path"] in {i["from"] for i in data["moved"]}
-                                     | {r for d in data["duplicates"] for r in d["drop"]}])
-    for dup in data["duplicates"]:  # 同編號多張：留正本，其餘備進回合後刪（測試後修正裁定 20）
-        for rel in dup["drop"]:
-            _remove_card(vault, rel, turn_id, changed)
-            dropped.append(rel)
-    for item in data["moved"]:
-        entry = by_id[item["id"]]
-        old = item["from"]
-        name = old.rpartition("/")[2]
-        new = f"{item['to']}/{name}"
-        text = (Path(vault) / old).read_text(encoding="utf-8")
-        text = cards.rewrite_locations(text, [loc["uri"] for loc in entry["locations"]],
-                                       cards.entry_link(vault, sources, entry))
-        if new.casefold() == old.casefold():
-            turn.backup(vault, old, turn_id)
-            kio.write_text_atomic(Path(vault) / old, text)
-            updated.append(old)
-            changed.append({"path": old, "action": "modify"})
-            continue
-        if (Path(vault) / new).exists():
-            if _card_id(vault, new) == item["id"]:  # 目的地是同編號的卡：收斂成那張（裁定 20）
-                _remove_card(vault, old, turn_id, changed)
-                dropped.append(old)
-            else:
-                skipped.append(f"「{new}」已經有同名的卡，沒搬：{old}")
-            continue
-        turn.backup(vault, old, turn_id, action="delete")
-        turn.backup(vault, new, turn_id)
-        (Path(vault) / new).parent.mkdir(parents=True, exist_ok=True)
-        kio.write_text_atomic(Path(vault) / new, text)
-        os.remove(Path(vault) / old)
-        _prune(vault, old)
-        moved.append({"from": old, "to": new})
-        changed += [{"path": old, "action": "delete"}, {"path": new, "action": "create"}]
+    got = cards.sync(vault, sources_lib.load(vault), turn_id)  # 本體在 _lib（型別改名與合併也叫它）
+    moved, updated, skipped, dropped = got["moved"], got["updated"], got["skipped"], got["dropped"]
+    changed, touched = got["changed"], got["touched"]
     if moved or updated or dropped:
         cards.render_index(vault, turn_id)
         changed.append({"path": cards.INDEX_POSIX, "action": "modify"})

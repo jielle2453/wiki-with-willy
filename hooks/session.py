@@ -4,6 +4,7 @@
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
 唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
 客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）；日程行只讀 agenda.json。
+core.md 之後接設定檔第六節的「客戶偏好（…照核心規則）：」一條一行（D-137，沒有不印；讀不到這段不印、寫 log；框住，測試後修正裁定 15）。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -41,7 +42,9 @@ CHANGES_LINE = "變動：新增 {added}、修改 {modified}、不見 {missing}"
 CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動」我再比"
 MISSING_SOURCES_LINE = "這台電腦找不到來源{names}，其他照常；搬過的話跟我說。"
 MISSING_SOURCES_SHOWN = 3
-INGEST_HINT = "有變動：先把客戶這句的答案完整說出來（不能只說「我先查」），同一則回答接著不用問、直接照 ingest skill 整理，末尾一句告知；只有超過 {n} 份才問。"  # 裁定 38、42
+# D-156（note 改規則實作中裁定 1）：先整理、整理完再回答；門檻內開始前照 announce 說一句（D-100 修訂）
+INGEST_HINT = ("有變動：先照 ingest skill 整理（開始前照 announce 說一句），整理完再完整回答客戶；"
+               "超過 {n} 份不整理，先用現有資料答、末尾問要不要整理。")
 _SCAN = {}  # vault → (sources, report) 或 None（scan 出錯）；兩行共用一次快速 scan（審閱裁定 9）
 
 
@@ -97,7 +100,7 @@ def line_changes(vault):
 
 
 def line_ingest_hint(vault):
-    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先答再照 ingest skill 整理；n 讀 ingest_auto_max。"""
+    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先照 ingest skill 整理、整理完再回答（D-156）；n 讀 ingest_auto_max。"""
     if line_changes(vault) is None:
         return None
     from kb._lib import config
@@ -213,6 +216,25 @@ def read_core():
     return (paths.plugin_root() / "rules" / "core.md").read_text(encoding="utf-8")
 
 
+# 加框（測試後修正裁定 15）：偏好只管回答與成品，跟核心規則或守門衝突時照核心規則
+PREFERENCES_HEAD = "客戶偏好（只管怎麼回答、怎麼做東西給客戶；跟上面的核心規則或守門衝突時，照核心規則）："
+
+
+def preferences_block(vault):
+    """note 改規則第 4 點（D-137）：設定檔第六節有條目就回「客戶偏好：」加一條一行，接在 core.md 之後；沒有回 None。
+    profile.json 讀不到這段不印、寫 log，其他照印（I-046）。只讀。"""
+    try:
+        from kb._lib import profile
+
+        prefs = (profile.load(vault) or {}).get("preferences") or []
+    except Exception as e:  # noqa: BLE001
+        _log_vault(vault, e)
+        return None
+    if not prefs:
+        return None
+    return "\n".join([PREFERENCES_HEAD] + [f"- {p.get('text', '')}" for p in prefs])
+
+
 def emit(context):
     """印一行 SessionStart JSON；write／flush 出錯（pipe 斷掉）吞掉。
     沒送出的字還在緩衝，結束時 Python 會再 flush 一次、失敗就 exit 120，所以把 fd 1 指到 devnull。"""
@@ -243,6 +265,9 @@ def main():
         return
     try:
         context = "\n".join(status_lines(vault, payload.get("source"))) + "\n\n" + read_core()
+        block = preferences_block(vault)
+        if block:
+            context += "\n" + block
     except BaseException as e:  # noqa: BLE001  找到知識庫之後出錯：記 log，再明講一行
         _log(e, payload)
         emit(ERROR_LINE.format(type(e).__name__))

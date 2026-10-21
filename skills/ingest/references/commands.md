@@ -63,11 +63,12 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - `unlinked`：`{"id","path","reason","types","prefill"}`，要補掛實體的卡（carding.md 第七節）。`missing_types`：`{型別名: 張數}`，`待補型別` 裡型別表沒有的。
 - `synthesis_new`：`{"entity_id","name","type","category","confirmed","path","cards":[{"id","path","title"}],"sections","header","question"}`，`path` 相對總資料夾，`sections` 是 `[{"name","required","hint"}]`、已含現況、紀事、推算，`question` 只有沒確認的有。`synthesis_stale`：`{"entity_id","name","path","header","added","changed","removed"}`。`synthesis_broken`：`{"path","reason"}`。`entity_drift`：`{"entity_id","name","type","kind","found","question"}`（`found` 是找到的卡，相對總資料夾，`missing` 是 null），`kind` 是 folder_renamed｜card_renamed｜both_renamed｜moved_type｜missing，怎麼問怎麼答在 `asks`。寫法看 `rules/synthesis.md`。
 
-`--json` 另有 `plan`、`asks`、`tell` 三樣程式算好的，照著做（`new`、`stale` 等是做事的材料，這三樣才是順序與問法；第一條是日程的指引）：
+`--json` 另有 `plan`、`asks`、`tell`、`announce` 四樣程式算好的，照著做（`new`、`stale` 等是做事的材料，這四樣才是順序與問法；第一條是日程的指引）：
 - 日程（`kb agenda`、`kb entity progress`、`kb asks`）的指令與逾期題的答法看 note skill 的 `references/agenda.md`；日程有出入、結案兩種題照 `asks` 的結果做；`plan` 的 `agenda_recheck`、`agenda_unscanned` 兩步照 carding.md 第九節做（`kb agenda scanned` 的說明在 note 的 `references/agenda.md`）。
 - `plan`：照順序要做的事，每步 `{"step","items","do","read"}`；`read` 是先讀的那份（null 不用讀；`references/…` 相對本 skill 資料夾，`rules/synthesis.md` 是實際路徑）。全空是 `[]`；份數超過 `ingest_auto_max` 時只剩 sync，其餘在 `asks` 第一題「現在做」的 `then` 裡。例：`{"step":"cards","items":2,"do":"照清單寫卡（new、stale、broken）","read":"references/carding.md 一～六節"}`。
 - `asks`：要問客戶的題，已排好序（份數多先問、實體夾或綜合卡不見、其他實體夾有變、原檔不見、逾期、日程有出入、結案、名字確認），每題 `{"id","kind","question","results":[{"n","label","do","strict","fill"}]}`。`n` 從 1 一路編下去，是程式用來對結果的內部編號，不必給客戶看；`do` 是選了這個結果要依序執行的指令（`kb ` 開頭，空是不跑指令），`fill` 列 `do` 裡 `{新名字}` 這類空格，每個空格都是 `{"name","rule"}`，照 `rule` 寫（自由文字寫成一句白話，名字有空白就加雙引號）；`strict` 是會刪東西的；結果可帶 `note`（給你的一句話）或 `then`（接著要做的 `plan` 步驟）。例：`{"n":2,"label":"沒刪，先留著","do":["kb pending resolve p-1a2b3c4d --how \"{客戶的話}\""],"strict":false,"fill":[{"name":"客戶的話","rule":"一句白話，不含 \" $ ` \\ 這四種字元"}]}`。
 - `tell`：回答末尾要講的句子（讀不到，每份帶原因與怎麼辦、不製卡的份數、依設定不整理、型別表沒有、PDF 元件裝好、加進日程、照新版改了日期），順序排好、0 的不列，照講。例：`["合約_加密.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過；記在 系統/待處理.md","請款類 4 份依你的設定不整理"]`。
+- `announce`：要整理的份數（新、重做、待掛實體、待抽日期）大於 0、不超過 `ingest_auto_max`（預設 20）時，開始整理前照貼的一句，例：`"有 12 份要整理，大約 2 分鐘；要停的話按停止"`；0 份或超過門檻是 null（超過時 `asks` 第一題是「現在做嗎」，0 份就照 `plan` 剩下的做）。
 
 ## cards sync [--json]
 
@@ -98,20 +99,22 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - 拒絕（exit 3）：`沒有這條待處理：p-…`、`這條已經處理過了：p-…` → 重跑 `pending list` 看現在的。
 
 ## profile check|apply [--json]
+另有 `show`、`add`、`remove`、`type rename|merge|remove`：客戶在對話裡說要改設定檔時用，怎麼問、怎麼說看 note skill 的 `references/preference.md`。
 開場有「設定檔有改（…）」那行、或客戶說設定檔改好了要套用時用；同時有「有變動」就先處理設定檔再整理，卡型才會是新的。先跑 `profile check`：
 
 - `客戶設定檔有改：…` 底下每行一項差異 → 逐條複述（「多了 工班（對象）」），問「要套用嗎？」，客戶說好才跑 `profile apply`。
 - `客戶設定檔有改，但沒有內容上的差異` → 不自動 apply，說「設定檔只有空白或提示句變了，沒有要套用的；要我重寫成標準格式再說」，客戶明說才 `apply`。
 - `客戶設定檔沒有改` → 告訴客戶設定檔跟上次一樣，可能還沒存檔。`還沒有客戶設定檔，跑 kb init 補`（`check` 是 exit 0，`apply` 是 exit 3）→ 「設定檔還沒建，請服務人員跑一次 kb init。」
-- 最後一行 `第一層夾不在型別表：X（…）` → 請客戶在設定檔第一節補一列，這版不代改。
+- 最後一行 `第一層夾不在型別表：X（…）` → 問客戶 X 是不是新的一類；是就照 note skill 用 `kb profile add 型別` 加（大類推一個），不是就留著。
 - 開場是「設定檔有改但讀不懂：…；改好下次再問」→ 照冒號後那句告訴客戶哪一列要改；不用跑 `check`。
 
-`apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`（拿掉的型別夾是空的會一起拿掉，印在「型別 -1（拿掉了空夾 X）」），第五節有改多一行 `關於你：登記了 X`（或「「X」改記成你自己；…」），照著講；有「回到待製卡」就照 ingest 骨架，從 `cards todo --json` 起做。設定檔只讓客戶自己改，你不改 `系統/客戶設定檔.md`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`removed_dirs`、`unskipped`。拒絕（exit 3）：
+`apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`（拿掉的型別夾是空的會一起拿掉，印在「型別 -1（拿掉了空夾 X）」），第五節有改多一行 `關於你：登記了 X`（或「「X」改記成你自己；…」），照著講；有「回到待製卡」就照 ingest 骨架，從 `cards todo --json` 起做。你不直接改 `系統/客戶設定檔.md`，要改就用上面的 `add`／`remove`／`type`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`removed_dirs`、`unskipped`。拒絕（exit 3）：
 
 - `客戶設定檔讀不懂：第 N 節第 M 列…`（`check` 也是 exit 3）→ 照句子告訴客戶哪一列要改，改好再說一次。
 - `型別「X」底下還有 N 項，先搬走再拿掉這列` → 照講；夾裡的東西不幫客戶搬。
 - `「X」已經有同名的檔，不能建成型別夾；先改名或搬走` → 照講。
 - `等不到鎖，沒有寫入` → 等一下再跑一次。
+- `設定檔已改好，但後面沒做完（…）；跑 kb profile apply 會補上` → 設定檔已經改了，再跑一次 `profile apply` 補完。
 - `建不了資料夾「X」：…；設定檔沒有套用`（下一行列已建的夾）→ 「資料夾建不起來，設定檔先沒套用；說「檢查」我看原因。」
 - `apply` 印 `客戶設定檔沒有改，沒有套用` 是 exit 0，不是拒絕 → 告訴客戶設定檔跟上次一樣，可能還沒存檔。
 

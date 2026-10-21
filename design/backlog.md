@@ -104,7 +104,9 @@
 | B-092 | 2026-10-21 | deferred | answer 測試第一輪讀碼低項（未重現）：多視窗共用 `current.json` 時 A 的 `cards todo` 可能把 `ingest` 標到 B 的回合；`lookup` 的 `mentions` 讀卡正文沒有大小上限、不帶 ruled_out／stale；`findings.stale` 不看清冊狀態（依據卡被排除時不判過期）；`journal.changed_text` 遇壞行 AttributeError；`check_text` 不擋控制字元與 markdown（口述同）；`turn.mark` 有鎖但 Stop 的 `set_done`（`_set`）沒拿同一把，同時寫仍可能互蓋 | answer 測試 F-9、F-10、第二輪疑義 1；第二輪 G-7：按停止後沒新句就 compact 指示照印（ingest_stopped 要等下一句才寫）、寫入失敗也印讀不到、tally 前導零 16 位誤判太大、很小的平均顯示 0、回顯沒濾控制字元 |
 | B-093 | 2026-10-22 | open | spike：桌面版用網址加 marketplace 裝假 plugin（archive zip，D-171、D-172），看有新版怎麼顯示、自動更新開關；真 plugin 用本機 marketplace 在桌面版跑全部 hook（開場、回合、守門、驗卡、工作日誌、摺疊）；移除再裝回知識庫照留。任務檔 llm-wiki-test 的 install-spike 夾 B-093-任務.md；公開測試 repo jielle2453/wiki-with-willy-spike 驗完由設計 session 刪 | 桌面版安裝與發行 |
 | B-094 | 2026-10-22 | open | 低：repo `CLAUDE.md` 地圖第 27、35、59 列（entity.py、profile_cli.py、_lib/profile.py）說明裡有沒跳脫的直線 `|`，會把表格切壞（answer 測試第三輪 H-3，早就存在）；下一個動 CLAUDE.md 的題順手改 | answer 測試 H-3 |
-| B-095 | 2026-10-22 | open | spike：OneDrive「只在雲端」的檔：開場快速比對與 `inventory scan` 算指紋會不會把檔下載下來；同一個 OneDrive 裡搬夾、改檔名會不會下載；丟資源回收筒進哪個回收筒、會不會連別台一起刪（D-173、D-175、D-176）。用使用者個人 OneDrive 的測試夾、亂數假檔，做完刪 | manage 第二版 |
+| B-095 | 2026-10-22 | done（報告 reports/B-095-spike.md） | spike：OneDrive「只在雲端」的檔：開場快速比對與 `inventory scan` 算指紋會不會把檔下載下來；同一個 OneDrive 裡搬夾、改檔名會不會下載；丟資源回收筒進哪個回收筒、會不會連別台一起刪（D-173、D-175、D-176）。用使用者個人 OneDrive 的測試夾、亂數假檔，做完刪 | manage 第二版 |
+| B-096 | 2026-10-22 | open | 客戶在檔案總管搬 OneDrive「只在雲端」的檔（沒有指紋），`kb changes` 報成「新增＋不見」，卡會被問「是不是刪了」再重做；候選：檔名＋大小＋修改時間配對、或在開場把同時出現的新增與不見同名同大小的配成搬動 | B-095 spike |
+| B-097 | 2026-10-22 | open | 低：Python 看到的 OneDrive 占位檔屬性是偽裝過的（預設模式 1）；模式變成露出時 `inventory.walk` 遇到 REPARSE 的夾不往下走、檔跳過，會把整個 OneDrive 來源當成不見（`convert._is_reparse` 同樣假設）；候選：kb 啟動時固定設偽裝模式，或 walk 分辨雲端重解析點與連結 | B-095 spike |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

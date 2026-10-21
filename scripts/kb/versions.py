@@ -38,6 +38,7 @@ FOLDER_OPEN = "退不回去：「{rel}」裡有檔案正開著（檔案總管或
 FOLDER_FAILED = "退不回去：{why}，什麼都沒動"
 BAD_LEDGER = "回合紀錄的資料夾路徑不對，沒有退回"
 BAD_MANIFEST = "回合紀錄的檔案路徑不對，沒有退回"
+NOT_AN_OUTPUT = "這份不在 AI 產出裡，沒有刪"
 REVERT_BUSY = "另一個退回正在跑，等它做完再說一次"
 FILE_OPEN = "退不回去：「{rel}」正開著（檔案總管、Office 或記事本），什麼都沒動；關掉再說一次退回"
 UNEXPECTED = "退不回去：{why}；可能只退了一部分，先別再說退回，請服務人員看一下"
@@ -123,6 +124,14 @@ def _path_ok(root, rel):
     except (ValueError, OSError):
         return False
     return bool(parts) and not (len(parts) == 1 and parts[0].casefold() in RESERVED_ROOTS)
+
+
+def _output_path_ok(root, rel):
+    """delete-outputs 要刪的路徑（測試第三輪後裁定 32）：過 _path_ok，而且解析後在 AI 產出/ 底下（成品只會在那裡）。"""
+    if not _path_ok(root, rel):
+        return False
+    parts = (root / rel).resolve().relative_to(root).parts
+    return len(parts) > 1 and parts[0].casefold() == "ai 產出"
 
 
 def _bad_path(vault, ops):
@@ -635,9 +644,14 @@ def _delete_outputs(vault, code, as_json, conversation=False):
     target, outs = cands[0]
     rt = _acting_turn(vault, target["turn"])
     deleted, missing, kept_msgs, gone_ids = [], [], [], []
+    root = Path(vault).resolve()
     for o in outs:
         rel = _rel_of(o)
         if rel is None:
+            continue
+        if not _output_path_ok(root, rel):  # S-3：清冊的路徑不信，跟 revert 同一套檢查，而且只刪 AI 產出底下的
+            ledger.log_error(vault, f"delete-outputs 路徑不對：{o.get('id')}", source="versions")
+            kept_msgs.append(NOT_AN_OUTPUT)
             continue
         if rel in touched:
             kept_msgs.append(TOUCHED_THIS_TURN.format(rel=rel))

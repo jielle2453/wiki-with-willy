@@ -413,6 +413,45 @@ class DeleteOutputs(Base):
         self.assertEqual([(e["path"], e["action"]) for e in rows], [(rel, "delete")])
         self.assertEqual((self.versions_dir(dt["turn"]) / "files" / "AI 產出" / "x.md").read_text(encoding="utf-8"), "草稿\n")
 
+    def test_forged_paths_outside_ai_output_are_not_deleted(self):
+        """測試第三輪後裁定 32（S-3）：清冊偽造的成品路徑（知識庫外、知識庫裡但不在 AI 產出）不刪、記 log、那一筆說一句；
+        合法的照刪。"""
+        t, rel, entry = self.make_output()
+        self.new_turn()
+        run_kb("versions", "revert", cwd=self.V)
+        outside = self.tmp / "OUTSIDE.txt"
+        outside.write_text("知識庫外的檔\n", encoding="utf-8")
+        data = inventory.load(self.V)
+        for n, uri in enumerate(("file://../OUTSIDE.txt", "file://" + self.card_rel, "file://AI 產出/../../OUTSIDE.txt")):
+            data["entries"].append(dict(entry, id=f"{entry['id']}-forged{n}", status="turn_reverted", fingerprints=[],
+                                        locations=[{"uri": uri}], created_turn=t["turn"]))
+        inventory._write(self.V, data["entries"])
+        self.new_turn("刪掉")
+        r = run_kb("versions", "delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(outside.is_file(), "知識庫外的檔還在")
+        self.assertEqual(self.card.read_bytes(), self.original, "知識庫裡、AI 產出外的檔不刪")
+        self.assertFalse((self.V / rel).exists(), "合法的成品照刪")
+        self.assertEqual(r.stdout.splitlines().count("這份不在 AI 產出裡，沒有刪"), 3)
+        self.assertNotIn("OUTSIDE", r.stdout)
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8")
+        self.assertEqual(sum("delete-outputs 路徑不對" in ln for ln in log.splitlines()), 3)
+
+    def test_revert_delete_outputs_only_touches_manifest_paths(self):
+        """S-3 的另一條路：revert --delete-outputs 只刪 manifest 記 create（已過 _bad_entry）的檔，清冊偽造的路徑不碰。"""
+        t, rel, entry = self.make_output()
+        outside = self.tmp / "OUTSIDE.txt"
+        outside.write_text("知識庫外的檔\n", encoding="utf-8")
+        data = inventory.load(self.V)
+        data["entries"].append(dict(entry, id=entry["id"] + "-forged", fingerprints=[],
+                                    locations=[{"uri": "file://../OUTSIDE.txt"}], created_turn=t["turn"]))
+        inventory._write(self.V, data["entries"])
+        r = run_kb("versions", "revert", "--delete-outputs", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(outside.is_file())
+        self.assertFalse((self.V / rel).exists())
+        self.assertNotIn("OUTSIDE", r.stdout)
+
     def test_then_revert_brings_output_back_active(self):
         """驗收 14 的尾段：delete-outputs 之後 revert 退掉刪除，檔回來、status 回 active。"""
         t, rel, entry = self.make_output()

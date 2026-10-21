@@ -1262,6 +1262,13 @@
 - 重談條件：客戶電腦常裝不起來套件；或確認時 AI 常被「直接寫 AI 產出」的新規則擋住又不會改走 `kb office`。
 - **2026-10-21 補**（使用者定）：分兩組：`kb office` 管工具與原檔副本（查、裝、跑腳本、轉 PDF、重算、轉圖、給副本），`kb output save` 管成品放進知識庫、不限檔案種類（PDF、圖片、Docs 匯出、網頁下載的 Excel 都走它）；三件事各自單獨用得到（新做的不用副本、只看版面的不用放成品）。守門細節寫 spec 時查程式後定：AI 產出本來就擋指令寫入，但判不出 `node x.js "AI 產出/…"` 是寫，改成指令裡看得到 AI 產出的路徑、又不是單一 kb 呼叫就擋（讀也擋），腳本寫死路徑的由掃描補登記（見 produce spec 釐清）。
 
+## D-171 發行管道：公開 GitHub repo 放清單與 zip，客戶的 Claude 用網址加 marketplace（修訂 D-072 的安裝那一半）
+- 日期：2026-10-21
+- 選了：另開一個公開 repo 只放發行版：一份 `marketplace.json`（清單：plugin 名、版本、下載網址、sha256），每一版的 zip 放在 Releases；plugin 來源用 archive（https 的 zip 帶 sha256）。客戶的 Claude 用清單的 https 網址加 marketplace（url 來源），不用 `owner/repo`。開發用的 repo 照舊私有，zip 照 D-072 從 tag 打、排除 `design/` 與 `tests/`。服務人員第一次安裝時把清單網址與「啟用 wiki-with-willy」寫進客戶的 Claude 使用者設定（`extraKnownMarketplaces`、`enabledPlugins`），或在桌面版畫面貼網址；怎麼寫、自動更新開不開（marketplace 的 `autoUpdate`）分別在本題 spec 與升級那題定。這題的 spike 在桌面版實際走一次。
+- 為什麼：官方文件（2026-10-21 查）：網址上的 `marketplace.json` 與 archive 來源都不用 Git，客戶不用裝 Git、不用 GitHub 帳號（D-023）；`owner/repo` 與 git 網址要 Git，私有 repo 還要在客戶電腦設認證；桌面版畫面收 https 網址、不收本機路徑（B-008）。免費，D-072 已接受程式碼公開下載。
+- 放棄了：自己的網站放清單與 zip（機制相同，要網域與維護主機，客戶多了再搬，只換網址）；服務人員帶 zip 用本機路徑加 marketplace（客戶要另裝 CLI、每版都要人到場）；私有 repo 加認證（D-072 已放棄）；`owner/repo` 的公開 repo（客戶要裝 Git）。
+- 重談條件：spike 在桌面版走不通（畫面不收這個網址、archive 裝不起來）；客戶的公司網路擋 GitHub；archive 要求的 Claude Code 版本（2.1.224 以上）客戶達不到。
+
 ## 未決
 
 目前沒有未決（2026-10-16，U-2 收進 D-097）。新的未決照舊用表：編號、事、要什麼才能決。

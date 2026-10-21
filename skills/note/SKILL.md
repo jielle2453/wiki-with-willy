@@ -44,13 +44,13 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 
 - 先分辨是哪一類。整句都記不起來的，照上面說完就收尾。
 - 日程：照 `references/agenda.md` 判種類與日期；要改、完成、取消的先用 `list --json` 找到那一條，找不到就問要不要當新的記。掛哪個案子或人，以已登記的實體為準，掛不上就不掛、回答裡說一聲。
-- 狀態：用 `kb entity progress`。
+- 狀態：用 `kb entity progress`（`references/agenda.md` 第四節）。
 - 改規則：跑 `kb profile show --json`，判斷放哪一節、照範本填。型別合併先只問一句為什麼要併（D-143），再帶 `--check --json` 跑 `kb profile type`，照它的問題與結果清單問。
-- 事實與決定：先 `kb statement list --json` 找有沒有要改的舊條，再 `kb statement add`（寫法看 `references/correction.md`）。
+- 事實與決定：照 `references/correction.md` 第一節記成口述（`kb statement add`）。
 - 糾正：讀那張卡，需要時 `kb convert` 對原檔，照 `references/correction.md` 的四種走。
 - 別名用 `kb entity alias`；裁示用 `kb ruling add`（看 `references/ruling.md`）。
 - 程式拒絕時帶了問題與結果清單（設定檔有手改、別名撞到已登記的實體）：照它問，客戶選了才照 `do` 做。
-- 回答：講做了什麼、照成功句複述（日期帶星期），改規則與改知識加一句「不對說一聲可以退回」；再跑 `kb asks --json`，照 `asks` 問，`tell` 原樣貼。
+- 回答：講做了什麼、照成功句複述（日期帶星期），改規則與改知識加一句「不對說一聲可以退回」；再跑 `kb asks --json`，照 `asks` 問（欄位怎麼讀看 `references/agenda.md` 第五節），`tell` 原樣貼。
 - 客戶回上一則的問題：對到唯一一個結果才照它的 `do` 做；標 `strict` 的只認編號或明確說出那個結果。
 - 這句話改了知識庫，送出最終回答前最後跑 `turn note "<白話一句>"`（D-084）。
 

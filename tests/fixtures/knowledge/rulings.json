@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "rulings": [
+    {"id": "r-1a2b3c4d", "kind": "ruled_out", "entities": [], "cards": [{"id": "f-07df81a8", "fp": "9f2c1e0a7b3d"}],
+     "text": "合約.docx 是舊的，別信", "date": "2026-10-21", "turn": "20261021-100000-ab12", "status": "active", "revoked": null},
+    {"id": "r-5e6f7a8b", "kind": "spoken_wins", "entities": ["信義王"], "cards": [],
+     "text": "信義王的報價以口述為準", "date": "2026-10-21", "turn": "20261021-100000-ab12", "status": "active", "revoked": null},
+    {"id": "r-9c0d1e2f", "kind": "ruled_out", "entities": [], "cards": [{"id": "f-11111111", "fp": "aaaaaaaaaaaa"}],
+     "text": "舊報價別信", "date": "2026-10-11", "turn": "20261011-100000-ab12", "status": "revoked", "revoked": "2026-10-20"}
+  ]
+}

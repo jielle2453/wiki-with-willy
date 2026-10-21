@@ -4,7 +4,8 @@
 locations（[{uri, size, mtime}]，uri 是 file://<來源別名>/<相對路徑>，正斜線、原始大小寫；同指紋多位置一筆，第一個是主位置）、
 fingerprints（[{sha256, text_sha256?, time, turn}]，最後一筆是現行；text_sha256 只有 OOXML 算得出來才有，D-096）、
 read（ok｜placeholder｜credential｜too_large｜error）、status（active｜missing｜excluded｜turn_reverted｜deleted｜superseded）、
-first_seen、created_turn、missing_since。
+first_seen、created_turn、missing_since。選填欄 skip_kind、agenda_fp、redo 由各自的 set_ 寫，scan／apply／reconcile 原樣保留；
+redo（note 改知識第 5 點）記的是標記當時卡檔的 sha256 前 12 碼，卡重寫過就不算，下一次寫清冊時拿掉（_drop_stale_redo）。
 load 時把 schema 1 在記憶體遷移成 2（I-049），形狀不對一律丟 ValueError（I-046）；寫一律寫 2。
 
 scan 是純函式（不寫檔、不碰回合）：走訪來源與總資料夾三區，跟清冊比出新增、修改、搬動、重複、不見；
@@ -136,7 +137,29 @@ def _migrate(vault, entry):
 
 def _write(vault, entries):
     """呼叫端持有清冊的鎖。"""
+    _drop_stale_redo(vault, entries)
     write_json_atomic(_path(vault), {"schema_version": SCHEMA_VERSION, "entries": entries})
+
+
+def card_sha(vault, rel):
+    """檔案卡檔的 sha256 前 12 碼（redo 記號比對用）；讀不了回 None。"""
+    try:
+        return hashlib.sha256((Path(vault) / rel).read_bytes()).hexdigest()[:12]
+    except OSError:
+        return None
+
+
+def _drop_stale_redo(vault, entries):
+    """有 redo 的條目：卡不見了、或卡檔現在的 sha256 前 12 碼跟記號不同（重寫過）就拿掉這欄。沒有記號的時候不掃卡。"""
+    marked = [e for e in entries if e.get("redo")]
+    if not marked:
+        return
+    from kb._lib import cards
+    groups = cards._scan_groups(vault)[0]
+    for e in marked:
+        group = groups.get(e.get("id"))
+        if not group or card_sha(vault, group[0]["path"]) != e["redo"]:
+            e.pop("redo", None)
 
 
 def sha256_of(path, should_stop=None):
@@ -287,6 +310,46 @@ def set_agenda_fp(vault, fid, fp, turn_id):
         from kb._lib import turn
         turn.backup(vault, INVENTORY_POSIX, turn_id)
         entry["agenda_fp"] = fp
+        _write(vault, data["entries"])
+    return True
+
+
+def set_redo(vault, fid, value, turn_id):
+    """選填欄 redo（kb cards redo，D-147 第一種）：value 是那張卡檔現在的 sha256 前 12 碼。鎖裡備份再寫，值沒變什麼都不做；
+    回有沒有寫。清冊沒有這個編號丟 KeyError。"""
+    p = _path(vault)
+    with FileLock(p):
+        data = load(vault)
+        entry = next((e for e in data["entries"] if e.get("id") == fid), None)
+        if entry is None:
+            raise KeyError(fid)
+        if entry.get("redo") == value:
+            return False
+        from kb._lib import turn
+        turn.backup(vault, INVENTORY_POSIX, turn_id)
+        entry["redo"] = value
+        _write(vault, data["entries"])
+    return True
+
+
+def follow_redo(vault, changes, turn_id, undo=None):
+    """程式自己改寫了卡檔（改掛、改名、搬卡；測試第一輪後裁定 6）：changes 是 {卡編號: (改寫前 sha, 改寫後 sha)}，
+    redo 記號等於改寫前的就換成改寫後的，記號照樣有效。有動到才在鎖裡備份、寫；undo（entities._Undo）給了先記舊內容。回有沒有寫。"""
+    changes = {k: v for k, v in changes.items() if v[0] and v[1] and v[0] != v[1]}
+    p = _path(vault)
+    if not changes or not p.exists():
+        return False
+    with FileLock(p):
+        data = load(vault)
+        hits = [e for e in data["entries"] if e.get("id") in changes and e.get("redo") == changes[e["id"]][0]]
+        if not hits:
+            return False
+        from kb._lib import turn
+        turn.backup(vault, INVENTORY_POSIX, turn_id)
+        if undo is not None:
+            undo.file(INVENTORY_POSIX)
+        for e in hits:
+            e["redo"] = changes[e["id"]][1]
         _write(vault, data["entries"])
     return True
 

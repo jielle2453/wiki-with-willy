@@ -2,6 +2,7 @@
 
 plan：照順序要做的事，每步 {"step","items","do","read"}；多量先問時只留 sync。
 asks：排好序、編好號的問題，每題 {"id","kind","question","results":[{"n","label","do","strict","fill"}]}；
+      順序：實體夾或綜合卡不見 → 原檔不見 → 裁示遇到原檔改版（ruling_recheck）→ 逾期、日程有出入、結案 → 名字確認；
       號碼從 1 一路編下去不管挑哪幾題，do 的指令以 kb 開頭，要客戶給的值寫成 {新名字} 這種空格，fill 列有哪些。
 tell：回答末尾要講的現成句子。
 announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先說的一句（份數、大約多久、要停按停止，D-100 修訂），否則 None；
@@ -11,7 +12,7 @@ announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先�
 import math
 import re
 
-from kb._lib import agenda, cards, entities, inventory, pending
+from kb._lib import agenda, cards, entities, inventory, pending, rulings
 from kb._lib.paths import plugin_root
 
 SYNC = "kb cards sync"
@@ -146,6 +147,7 @@ def _asks(out, vault, config, full_plan):
     asks.extend(_drift(d, out) for d in drifts if d["kind"] == "missing")
     asks.extend(_drift(d, out) for d in drifts if d["kind"] != "missing")
     asks.extend(_missing(m) for m in out.get("missing") or [])
+    asks.extend(_ruling_asks(vault))  # 「別信」蓋在新版上會讓綜合卡漏掉新內容，排在逾期之前（note 改知識釐清）
     asks.extend(_agenda_asks(vault))
     asks.extend(_name(i) for i in out.get("synthesis_new") or [] if not i.get("confirmed"))
     return asks
@@ -209,6 +211,30 @@ def _name(item):
                 fill=[_fill("同一個", NAME_RULE)]),
         _result("名字改成別的", [_rename(name, Slot("新名字")), cmd("entity", "confirm", Slot("新名字"))],
                 fill=[_fill("新名字", NAME_RULE)])])
+
+
+# ---------- 裁示遇到原檔改版（note 改知識第 7 點，D-150） ----------
+
+RULING_QUESTIONS = {
+    "ruled_out": ("「{files}」改過了，你之前說別信，現在可以信了嗎？", "可以了", "還是別信"),
+    "spoken_wins": ("「{files}」改過了，你之前說以你說的為準，現在還是嗎？", "改用新版", "還是以我說的為準"),
+}
+
+
+def _ruling_asks(vault):
+    """掛卡的有效裁示、卡指紋變了：收回或改記新指紋。rulings.json 讀不到就不問。"""
+    try:
+        data = rulings.load(vault)
+    except ValueError:
+        return []
+    out = []
+    for hit in rulings.drifted(vault, data):
+        r = hit["ruling"]
+        question, yes, no = RULING_QUESTIONS[r["kind"]]
+        files = "」「".join(c["file"] for c in hit["cards"])
+        out.append(_ask(f"ruling:{r['id']}", "ruling_recheck", question.format(files=files), [
+            _result(yes, [cmd("ruling", "remove", r["id"])]), _result(no, [cmd("ruling", "recheck", r["id"])])]))
+    return out
 
 
 # ---------- 日程的三種題（日程第 5 點：逾期、日程有出入、結案） ----------

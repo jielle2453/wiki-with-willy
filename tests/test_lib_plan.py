@@ -780,5 +780,67 @@ class WithRealVault(unittest.TestCase):
                 self.assertEqual([a for a in self.todo()["asks"] if a["id"].startswith("name:")], [])
 
 
+def put_card(V, cid="f-07df81a8", fp="b" * 64, title="合約", uri="file://報價與合約/合約.docx"):
+    d = Path(V) / "檔案索引" / "報價與合約"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{title}-{cid[2:]}.md").write_text(
+        f"---\n編號: {cid}\n原檔:\n  - {uri}\n指紋: {fp}\n標題: {title}\n---\n# {title}\n", encoding="utf-8")
+
+
+def ruling(**kw):
+    base = {"id": "r-1a2b3c4d", "kind": "ruled_out", "entities": [], "cards": [{"id": "f-07df81a8", "fp": "a" * 12}],
+            "text": "合約.docx 是舊的，別信", "date": "2026-10-21", "turn": "t", "status": "active", "revoked": None}
+    base.update(kw)
+    return base
+
+
+def put_rulings(V, *items):
+    (Path(V) / ".system" / "rulings.json").write_text(
+        json.dumps({"schema_version": 1, "rulings": list(items)}, ensure_ascii=False), encoding="utf-8")
+
+
+class RulingAsks(Base):
+    """note 改知識第 7 點、驗收 11：掛卡的裁示遇到卡指紋變了問「現在可以信了嗎」；排在原檔不見之後、逾期之前。"""
+
+    def results(self, ask):
+        return [(r["n"], r["label"], r["do"], r["strict"], r["fill"]) for r in ask["results"]]
+
+    def test_ruled_out(self):
+        put_card(self.V)
+        put_rulings(self.V, ruling())
+        (ask,) = self.build()["asks"]
+        self.assertEqual((ask["id"], ask["kind"], ask["question"]),
+                         ("ruling:r-1a2b3c4d", "ruling_recheck", "「合約.docx」改過了，你之前說別信，現在可以信了嗎？"))
+        self.assertEqual(self.results(ask), [(1, "可以了", ["kb ruling remove r-1a2b3c4d"], False, []),
+                                             (2, "還是別信", ["kb ruling recheck r-1a2b3c4d"], False, [])])
+
+    def test_spoken_wins_on_a_card(self):
+        put_card(self.V, title="報價", uri="file://客戶案件/信義王/報價.pdf")
+        put_rulings(self.V, ruling(kind="spoken_wins", text="這份報價以口述為準"))
+        (ask,) = self.build()["asks"]
+        self.assertEqual(ask["question"], "「報價.pdf」改過了，你之前說以你說的為準，現在還是嗎？")
+        self.assertEqual([(r["label"], r["do"]) for r in ask["results"]],
+                         [("改用新版", ["kb ruling remove r-1a2b3c4d"]), ("還是以我說的為準", ["kb ruling recheck r-1a2b3c4d"])])
+
+    def test_no_ask_when_unchanged_revoked_or_card_gone(self):
+        put_card(self.V)
+        put_rulings(self.V, ruling(cards=[{"id": "f-07df81a8", "fp": "b" * 12}]),
+                    ruling(id="r-2", status="revoked"), ruling(id="r-3", cards=[{"id": "f-99999999", "fp": "a" * 12}]))
+        self.assertEqual(self.build()["asks"], [])
+
+    def test_broken_rulings_file_gives_no_ask(self):
+        (self.V / ".system" / "rulings.json").write_text("{bad", encoding="utf-8")
+        self.assertEqual(self.build()["asks"], [])
+
+    def test_order_after_missing_before_overdue(self):
+        put_card(self.V)
+        put_rulings(self.V, ruling())
+        put_agenda(self.V, agenda_item())
+        missing = {"id": "f-98c66aa7", "uri": "file://a/b.docx", "pending_id": "p-1a2b3c4d", "question": "Q-file"}
+        got = self.build(missing=[missing])["asks"]
+        self.assertEqual([a["id"] for a in got], ["missing:p-1a2b3c4d", "ruling:r-1a2b3c4d", "overdue:a-5e6f7a8b"])
+        self.assertEqual([r["n"] for a in got for r in a["results"]], list(range(1, 1 + sum(len(a["results"]) for a in got))))
+
+
 if __name__ == "__main__":
     unittest.main()

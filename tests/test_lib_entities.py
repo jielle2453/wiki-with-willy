@@ -187,5 +187,106 @@ class SyncSelf(Base):
         self.assertEqual((e["self"], e["status"]), (False, "removed"))
 
 
+class Alias(Base):
+    """note 改知識第 4 點、D-148：加別名的撞名檢查、撞到已登記實體回 merge_with、拿掉回 suspect_cards、綜合卡別名欄跟著改。"""
+    with_entities = True
+
+    def alias(self, ref, **kw):
+        return entities.alias(self.V, ref, turn_id=self.t, **kw)
+
+    def refused(self, want, ref, **kw):
+        with self.assertRaises(entities.EntityRefused) as cm:
+            self.alias(ref, **kw)
+        self.assertEqual(str(cm.exception), want)
+
+    def test_add_writes_entities_and_synthesis_alias_field(self):
+        from kb._lib import cards, synthesis
+        got = self.alias("信義王", add="王宅邸")
+        self.assertEqual((got["added"], got["merge_with"]), (True, None))
+        self.assertEqual(self.by_name("信義王")["aliases"], ["信義王宅", "王宅邸"])
+        front = cards.parse_front((self.V / "案子" / "信義王" / "信義王.md").read_text(encoding="utf-8"))
+        self.assertEqual(front["別名"], ["信義王宅", "王宅邸"])
+        self.assertEqual(synthesis.validate(self.V, "案子/信義王/信義王.md"), (True, ""))
+        rows = {r["path"]: r for r in turn.entries(self.V, self.t)}
+        self.assertIn(entities.ENTITIES_POSIX, rows)
+        self.assertEqual(rows["案子/信義王/信義王.md"]["by"], "program")
+        self.assertEqual(entities.find(self.data(), "王宅邸")[0]["name"], "信義王")
+
+    def test_add_existing_alias_is_a_no_op(self):
+        before = (self.V / ".system" / "entities.json").read_bytes()
+        got = self.alias("信義王", add="信義王宅")
+        self.assertFalse(got["added"])
+        self.assertEqual((self.V / ".system" / "entities.json").read_bytes(), before)
+
+    def test_add_refusals(self):
+        self.alias("大安陳", add="陳宅")
+        self.refused("「陳宅」跟「大安陳」的別名撞了", "信義王", add="陳宅")
+        self.refused("「林小姐」是你自己（關於你）", "信義王", add="林小姐")
+        self.refused("名稱「王$董」不能用（含不能用的字元）", "信義王", add="王$董")
+        self.refused("實體清單沒有「誰」", "誰", add="王董")
+        self.refused("「林小姐室內設計」是你自己（關於你），要改在客戶設定檔第五節改", "林小姐室內設計", add="林設計")
+
+    def test_add_registered_entity_asks_merge_and_writes_nothing(self):
+        before = (self.V / ".system" / "entities.json").read_bytes()
+        got = self.alias("信義王", add="王宅")
+        self.assertEqual((got["added"], got["merge_with"]["name"]), (False, "王宅"))
+        self.assertEqual((self.V / ".system" / "entities.json").read_bytes(), before)
+
+    def test_remove_lists_suspect_cards(self):
+        hit = E.write_card(self.V, E.QUOTE, "信義王報價", ["信義王"])
+        p = self.V / hit
+        p.write_text(p.read_text(encoding="utf-8") + "業主說信義王宅要改廚房。\n", encoding="utf-8")
+        E.write_card(self.V, E.ESTIMATE, "信義王估價", ["信義王"])
+        other = E.write_card(self.V, E.DRAFT, "大安陳會議", ["大安陳"])
+        q = self.V / other
+        q.write_text(q.read_text(encoding="utf-8") + "提到信義王宅。\n", encoding="utf-8")
+        got = self.alias("信義王", remove="信義王宅")
+        self.assertEqual(self.by_name("信義王")["aliases"], [])
+        self.assertEqual([(c["path"], c["title"]) for c in got["suspect_cards"]], [(hit, "信義王報價")])
+        self.assertRegex(got["suspect_cards"][0]["id"], r"^f-[0-9a-f]{8}$")
+        from kb._lib import cards
+        front = cards.parse_front((self.V / "案子" / "信義王" / "信義王.md").read_text(encoding="utf-8"))
+        self.assertEqual(front["別名"], [])
+
+    def test_remove_refusal(self):
+        self.refused("「信義王」沒有「王董」這個別名", "信義王", remove="王董")
+
+
+class KnowledgeFollows(Base):
+    """note 改知識第 4 點、驗收 8：rename／merge 時口述與裁示的實體名稱跟著換；remove 照留。"""
+    with_entities = True
+
+    def setUp(self):
+        super().setUp()
+        from kb._lib import rulings, statements
+        self.statements, self.rulings = statements, rulings
+        self.s, _r = statements.add(self.V, "信義王改用系統櫃", ["信義王"], self.t)
+        self.w, _r = statements.add(self.V, "王宅改成兩房", ["王宅"], self.t)
+        self.r = rulings.add(self.V, "口述為準", ["信義王"], [], "信義王的報價以口述為準", turn_id=self.t)
+
+    def names(self):
+        st = {s["id"]: s["entities"] for s in self.statements.load(self.V)["statements"]}
+        ru = {r["id"]: r["entities"] for r in self.rulings.load(self.V)["rulings"]}
+        return st, ru
+
+    def test_rename(self):
+        got = entities.rename(self.V, "信義王", "王宅邸", None, self.t)
+        st, ru = self.names()
+        self.assertEqual((st[self.s["id"]], ru[self.r["id"]]), (["王宅邸"], ["王宅邸"]))
+        self.assertIn("- 王宅邸：", (self.V / "系統" / "裁示.md").read_text(encoding="utf-8"))
+        paths = {c["path"] for c in got["changed"]}
+        self.assertTrue({self.statements.STATEMENTS_POSIX, self.rulings.RULINGS_POSIX, self.rulings.MD_POSIX} <= paths)
+
+    def test_merge(self):
+        entities.merge(self.V, "王宅", "信義王", self.t)
+        st, _ru = self.names()
+        self.assertEqual(st[self.w["id"]], ["信義王"])
+
+    def test_remove_keeps_them(self):
+        before = self.names()
+        entities.remove(self.V, "信義王", self.t)
+        self.assertEqual(self.names(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

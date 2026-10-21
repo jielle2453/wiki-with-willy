@@ -8,6 +8,7 @@ schema 2（日程第 3 點）：大類是「事」的實體多 progress（ongoin
 schema 1 讀進來在記憶體補上，寫的時候寫 2。實體本身在不在是 status，事類進行到哪是 progress，兩件事。
 只准程式寫、讀改寫整段在 FileLock 裡（I-080），寫前備進回合（D-074）。綜合卡的搬、刪也在這裡（在同一把鎖裡），
 檔頭格式與驗證住 synthesis.py。drift 只讀：認出客戶在檔案總管改了實體夾名、卡名、刪夾（D-057）。
+note 改知識：alias 加與拿掉別名（D-148）；rename／merge 連口述與裁示的實體名稱一起換（同日程，同一套 _Undo），remove 照留。
 """
 import os
 import posixpath
@@ -617,6 +618,7 @@ def rename(vault, ref, new_name, new_type, turn_id, undo=None):
         def act(undo):
             changed, moved = [], 0
             _agenda_snapshot(vault, undo)
+            _knowledge_snapshot(vault, undo)
             if loc:
                 text = (Path(vault) / loc).read_text(encoding="utf-8")
                 text = synthesis.replace_title(synthesis.replace_front(text, _card_fields(prof, entry)), old_name,
@@ -626,6 +628,7 @@ def rename(vault, ref, new_name, new_type, turn_id, undo=None):
             changed += [{"path": rel, "action": "modify"} for rel, _names in touched]
             if key(old_name) != key(new_name):
                 changed += _agenda_follow(vault, {key(old_name): new_name}, turn_id)
+                changed += _knowledge_follow(vault, {key(old_name): new_name}, turn_id)
             _save(vault, data, turn_id, undo)
             changed.append({"path": ENTITIES_POSIX, "action": "modify"})
             changed += _agenda_md(vault, turn_id)
@@ -740,6 +743,7 @@ def merge(vault, src_ref, dst_ref, turn_id):
         def act(undo):
             changed = []
             _agenda_snapshot(vault, undo)
+            _knowledge_snapshot(vault, undo)
             if loc:
                 _delete_card(vault, loc, turn_id, undo)
                 changed.append({"path": loc, "action": "delete"})
@@ -749,6 +753,7 @@ def merge(vault, src_ref, dst_ref, turn_id):
             changed += [{"path": rel, "action": "modify"}
                         for rel, _n in retarget_cards(vault, {key(src["name"]): dst["name"]}, turn_id, undo)]
             changed += _agenda_follow(vault, {key(src["name"]): dst["name"]}, turn_id)
+            changed += _knowledge_follow(vault, {key(src["name"]): dst["name"]}, turn_id)
             changed += _drop_close_items(vault, src, f"實體已合併進「{dst['name']}」", turn_id, undo)
             _save(vault, data, turn_id, undo)
             changed.append({"path": ENTITIES_POSIX, "action": "modify"})
@@ -814,6 +819,121 @@ def clean(vault, rel, turn_id):
             raise EntityRefused("這張綜合卡位置是對的，不用清")
         left = _delete_card(vault, rel, turn_id)
     return {"path": rel, "left": left}
+
+
+# ---------- 別名（note 改知識第 4 點，D-148） ----------
+
+def _about_hit(prof, word):
+    """設定檔第五節（關於你）的名稱或別名撞到 word：回那一列的名稱，沒有回 None（還沒同步進實體清單的也擋）。"""
+    for row in prof.get("about") or []:
+        if any(key(w) == key(word) for w in [row.get("name")] + list(row.get("aliases") or [])):
+            return row.get("name")
+    return None
+
+
+def _alias_refusal(vault, data, entry, word, prof):
+    """加別名的撞名檢查：回 (拒絕句, 該合併的實體)，都沒有回 (None, None)。撞到另一個 active 一般實體的名稱 → 改問合併。"""
+    why = _char_problem(vault, word)
+    if why:
+        return f"名稱「{word}」不能用（{why}）", None
+    if _about_hit(prof, word):
+        return f"「{word}」是你自己（關於你）", None
+    hit = _collision(data, word, ignore=entry)
+    if hit is None:
+        return None, None
+    if is_self(hit):
+        return f"「{word}」是你自己（關於你）", None
+    named = next((e for e in data["entities"] if key(e.get("name")) == key(word)), None)
+    if named is not None and named.get("status") == "active":
+        return None, named
+    if named is not None:
+        return name_problem(vault, data, word, ignore=entry), None
+    return f"「{word}」跟「{hit.get('name')}」的別名撞了", None
+
+
+def _body_of(text):
+    lines = str(text).lstrip("\ufeff").splitlines()
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() == "---":
+            return "\n".join(lines[i + 1:])
+    return ""
+
+
+def _suspect_cards(vault, data, entry, word):
+    """掛在這個實體、正文出現 word 的檔案卡 [{"id","path","title"}]（拿掉別名後逐張看是不是掛錯了）。"""
+    out = []
+    for m in mounts(vault, data).get(entry["name"], []):
+        try:
+            body = _body_of((Path(vault) / m["path"]).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        if key(word) in key(body):
+            out.append({"id": m["id"], "path": m["path"], "title": m.get("title") or ""})
+    return out
+
+
+def alias(vault, ref, add=None, remove=None, turn_id=None):
+    """kb entity alias：加或拿掉一般實體的別名（客戶自己的在設定檔第五節改）。加：字元規則同名稱、撞到第五節、別的實體名稱或別名
+    就拒絕；撞到的是另一個 active 實體的名稱 → 不寫、回 merge_with（客戶說同一個就合併）；已經是它的名稱或別名 → 不寫。
+    拿掉：只收它現有的別名，回 suspect_cards。寫前備份；有綜合卡就重寫檔頭的別名欄（by program）。整段在鎖裡、出錯還原。
+    回 {"entity","added","removed","merge_with","suspect_cards","changed"}。"""
+    if (add is None) == (remove is None):
+        raise ValueError("alias 要給 add 或 remove 其中一個")
+    prof = _profile(vault)
+    with lock(vault):
+        data = load(vault)
+        entry, _hit = _need(data, ref)
+        _need_plain(entry, "加別名" if add is not None else "拿掉別名")
+        out = {"entity": entry, "added": False, "removed": False, "merge_with": None, "suspect_cards": [], "changed": []}
+        if add is not None:
+            word = str(add).strip()
+            if any(key(w) == key(word) for w in words(entry)):
+                return out
+            why, merge_with = _alias_refusal(vault, data, entry, word, prof)
+            if why:
+                raise EntityRefused(why)
+            if merge_with is not None:
+                return dict(out, merge_with=merge_with)
+            entry.setdefault("aliases", []).append(word)
+            out["added"] = True
+        else:
+            word = str(remove).strip()
+            if all(key(a) != key(word) for a in entry.get("aliases") or []):
+                raise EntityRefused(f"「{entry['name']}」沒有「{word}」這個別名")
+            entry["aliases"] = [a for a in entry["aliases"] if key(a) != key(word)]
+            out["removed"] = True
+            out["suspect_cards"] = _suspect_cards(vault, data, entry, word)
+
+        def act(undo):
+            changed = []
+            _save(vault, data, turn_id, undo)
+            changed.append({"path": ENTITIES_POSIX, "action": "modify"})
+            _refresh_fields(vault, entry, prof, turn_id, changed, undo)
+            return changed
+
+        out["changed"] = _guarded(vault, act)
+    return out
+
+
+# ---------- 口述與裁示跟著走（note 改知識第 4 點） ----------
+
+def _knowledge_snapshot(vault, undo):
+    """口述清單、裁示與裁示.md 在動手之前記進 undo（同 _agenda_snapshot）；沒有的檔不記。"""
+    from kb._lib import rulings, statements
+    for rel in (statements.STATEMENTS_POSIX, rulings.RULINGS_POSIX, rulings.MD_POSIX):
+        if (Path(vault) / rel).exists():
+            undo.file(rel)
+
+
+def _knowledge_follow(vault, mapping, turn_id):
+    """口述與裁示掛的實體名稱跟著換；回給日誌的 changed。"""
+    from kb._lib import rulings, statements
+    changed = []
+    if statements.rename_entity(vault, mapping, turn_id):
+        changed.append({"path": statements.STATEMENTS_POSIX, "action": "modify"})
+    if rulings.rename_entity(vault, mapping, turn_id):
+        changed += [{"path": rulings.RULINGS_POSIX, "action": "modify"}, {"path": rulings.MD_POSIX, "action": "modify"}]
+    return changed
 
 
 # ---------- 日程跟著走（日程第 3 點） ----------

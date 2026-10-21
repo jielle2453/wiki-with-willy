@@ -1,9 +1,11 @@
-"""kb entity add／confirm／rename／merge／remove／rebuild／clean／list／render／progress／suggest-close
-（實體與綜合卡第 3 點，D-115～D-117、D-057；日程第 4 點，D-126、D-127）。
+"""kb entity add／confirm／rename／merge／remove／rebuild／clean／list／render／progress／suggest-close／alias
+（實體與綜合卡第 3 點，D-115～D-117、D-057；日程第 4 點，D-126、D-127；note 改知識第 4 點，D-148）。
 
 實體清單只准這裡寫（I-080）：寫入的子子命令在 entities.json 的鎖裡讀改寫（等 30 秒，等不到「等不到鎖，沒有寫入」exit 3），
 寫前備進回合；改到檔案卡就重寫 總目錄.md，最後重渲染受影響實體的綜合卡快取（synthesis.render_cache，備份帶 by program）。
 progress 改事類實體的進行中／結案／擱置（結案連帶結束它的期間條目），suggest-close 記一條待處理等客戶答。
+alias 加或拿掉別名：別名撞到另一個已登記的實體就不寫、exit 3，--json 帶問題與結果清單（同 asks 的形狀）改問合併；
+拿掉時列出內文提到那個別名的檔案卡（suspect_cards）。
 rename 搬了夾、夾裡有客戶原檔時，鎖外接著 inventory.scan（只掃知識庫）加 apply，讓原檔的新位置入冊（同 folders add）。
 終端機跑的記一段工作日誌程式段（D-085），command 是 entity <子子命令>；對話裡叫的併進回合。
 """
@@ -12,7 +14,7 @@ import json
 from pathlib import Path
 
 from kb import journal_cli
-from kb._lib import agenda, cards, entities, inventory, pending, synthesis, turn
+from kb._lib import agenda, cards, entities, inventory, pending, plan, synthesis, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
@@ -51,7 +53,12 @@ def add_arguments(sub):
     sc = subs.add_parser("suggest-close", help="看起來結案了，記一條待問", description="製卡者讀到結束證據：記一條待處理，由程式問客戶。")
     sc.add_argument("ref", help="名稱或編號（e-…）")
     sc.add_argument("--evidence", action="append", required=True, help="依據的檔案卡編號（f-…），可以重複")
-    for p in (ad, cf, rn, mg, rm, rb, cl, ls, rd, pg, sc):
+    al = subs.add_parser("alias", help="加或拿掉別名", description="給實體加一個別名，或拿掉一個別名（綜合卡檔頭跟著改）。")
+    al.add_argument("ref", help="名稱或編號（e-…）")
+    which = al.add_mutually_exclusive_group(required=True)
+    which.add_argument("--add", help="要加的別名")
+    which.add_argument("--remove", help="要拿掉的別名")
+    for p in (ad, cf, rn, mg, rm, rb, cl, ls, rd, pg, sc, al):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -228,6 +235,36 @@ def _suggest_close(vault, args, as_json, conversation, turn_id):
     return 0
 
 
+def _alias(vault, args, as_json, conversation, turn_id):
+    word = (args.add if args.add is not None else args.remove).strip()
+    got = entities.alias(vault, args.ref, add=word if args.add is not None else None,
+                         remove=word if args.remove is not None else None, turn_id=turn_id)
+    name = got["entity"]["name"]
+    if got["merge_with"] is not None:
+        other = got["merge_with"]["name"]
+        refused = f"「{other}」已經登記成一個實體了，是同一個就合併"
+        payload = {"refused": refused, "question": f"「{other}」已經登記成一個實體，跟{name}是同一個嗎？",
+                   "results": plan._number([{"results": [
+                       plan._result("是同一個，合併", [plan.cmd("entity", "merge", other, "--into", name)]),
+                       plan._result("不是，先不加")]}])[0]["results"]}
+        _out(as_json, [refused], payload)
+        return 3
+    if args.add is not None:
+        line = f"已加別名：{name} 也叫 {word}" if got["added"] else f"{name} 本來就叫 {word}"
+        note = f"加別名：{name} 也叫 {word}"
+    else:
+        n = len(got["suspect_cards"])
+        line = f"已拿掉別名：{name} 不再叫 {word}" + (f"；有 {n} 張卡內文提到{word}，要看是不是掛錯了" if n else "")
+        note = f"拿掉別名：{name} 不再叫 {word}"
+    changed = list(got["changed"])
+    if changed:
+        changed += [{"path": rel, "action": "modify"} for rel in _refresh(vault, [name], turn_id)]
+        journal_cli.record_program_or_warn(vault, note, changed, "entity alias", conversation)
+    _out(as_json, [line], {"entity": got["entity"], "added": got["added"], "removed": got["removed"],
+                           "suspect_cards": got["suspect_cards"]})
+    return 0
+
+
 def _list(vault, as_json):
     data = entities.load(vault)
     mounts = entities.mounts(vault, data)
@@ -264,7 +301,7 @@ def _render(vault, as_json, conversation, turn_id):
 
 
 WRITERS = {"add": _add, "confirm": _confirm, "rename": _rename, "merge": _merge, "remove": _remove,
-           "rebuild": _rebuild, "clean": _clean, "progress": _progress, "suggest-close": _suggest_close}
+           "rebuild": _rebuild, "clean": _clean, "progress": _progress, "suggest-close": _suggest_close, "alias": _alias}
 
 
 def run(args):

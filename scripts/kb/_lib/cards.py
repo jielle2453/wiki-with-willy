@@ -6,6 +6,8 @@ validate 給 PostToolUse 與測試用，只報第一個錯；todo 讀清冊與�
 render_index 只讀 檔案索引/ 的卡檔頭寫根的 總目錄.md（D-105），不讀清冊，孤兒卡也列。
 todo 的結果併進 plan.build 的 plan、asks、tell、announce（門檻內開始整理前先說的一句，D-100 修訂）；
 sync 是 kb cards sync 的本體，型別改名與合併（kb profile type）也叫它讓卡當場跟著原檔搬。
+note 改知識第 5 點（D-147）：mark_redo 是 kb cards redo 的本體（清冊記 redo，todo 把它列進 stale、帶 reason），
+mount 是 kb cards mount 的本體（重設一張卡掛的實體）。
 """
 import os
 import re
@@ -33,6 +35,7 @@ READ_VALUES = ("完整", "部分")
 TEMPLATE_VERSION = "2"
 OLD_TEMPLATE_VERSION = "1"  # 第一版的卡只補掛載（D-116），不算檔頭有問題
 SKIPPED_READS = ("credential", "placeholder", "too_large", "error")  # error 也列份數（裁定 29）
+REDO_REASON = "客戶說卡讀錯了"
 INDEX_HEAD = ("# 總目錄\n"
               "這是什麼：你的檔案都在這裡，點進去是那份檔的卡，卡裡有開原檔的連結。\n"
               "怎麼用：可以摺疊；找不到的就問我。\n"
@@ -488,12 +491,13 @@ def todo(vault, sources, tell_all=True):
             for t in dict.fromkeys(keep["front"]["待補型別"]):
                 if isinstance(t, str) and t and entities.key(t) not in have_types:
                     out["missing_types"][t] = out["missing_types"].get(t, 0) + 1
+        redo = bool(entry.get("redo")) and inventory.card_sha(vault, keep["path"]) == entry["redo"]
         if names.keys() & {"missing_key", "format", "crash"}:
             out["broken"].append(broken_item(entry, keep, codes[0][1]))
         elif "dir" in names or keep["front"].get("原檔") != _uris(entry):
             out["moved"].append({"id": cid, "from": keep["path"], "to": card_dir(entry)})
-        elif "fingerprint" in names:
-            out["stale"].append(work_item(entry, keep))
+        elif "fingerprint" in names or redo:  # 客戶說卡讀錯了（kb cards redo）：重寫前一直列著
+            out["stale"].append(dict(work_item(entry, keep), **({"reason": REDO_REASON} if redo else {})))
         elif {c[0] for c in others} == {"v1"}:  # 第一版、其他都過：只補掛載（D-116）
             out["unlinked"].append(unlinked_item(entry, keep, "v1"))
         elif {c[0] for c in others} == {"missing_type"}:  # 待補型別後來進了型別表（D-124）
@@ -546,6 +550,65 @@ def todo(vault, sources, tell_all=True):
         out["agenda_counts"] = {"overdue": 0, "today": 0, "upcoming": 0}
     out.update(plan.build(out, vault, config, tell_all=tell_all))
     return out
+
+
+# ---------- 重做與改掛（note 改知識第 5 點） ----------
+
+class CardRefused(ValueError):
+    """kb cards redo／mount 的拒絕：訊息就是給人看的那句。"""
+
+
+def card_of(vault, fid):
+    """回 {"path","front"}：要在清冊、原檔 active、檔案卡寫好了（同 agenda._card），不行丟 CardRefused。"""
+    from kb._lib import inventory
+    entry = next((e for e in inventory.load(vault)["entries"] if e.get("id") == fid), None)
+    if entry is None:
+        raise CardRefused(f"清冊沒有 {fid}")
+    if entry.get("status") != "active":
+        raise CardRefused("這張卡的原檔已不在")
+    group = _scan_groups(vault)[0].get(fid)
+    if not group:
+        raise CardRefused("這份還沒有檔案卡")
+    return group[0]
+
+
+def _title(card):
+    t = card["front"].get("標題")
+    return t if _filled(t) else card["path"].rpartition("/")[2][:-3]
+
+
+def mark_redo(vault, fid, turn_id):
+    """kb cards redo：清冊條目記 redo（卡檔現在的 sha256 前 12 碼）；回 {"id","title","path","redo","changed"}。"""
+    from kb._lib import inventory
+    card = card_of(vault, fid)
+    sha = inventory.card_sha(vault, card["path"])
+    changed = inventory.set_redo(vault, fid, sha, turn_id)
+    return {"id": fid, "title": _title(card), "path": card["path"], "redo": sha, "changed": changed}
+
+
+def mount(vault, fid, names, turn_id):
+    """kb cards mount：這張卡掛的實體換成 names（登記且 active 的名稱，客戶自己可以；別名轉成登記的名稱、去重）。
+    在實體清單的鎖裡改檔頭（rewrite_entities，備份 by program），內容沒變不寫。總目錄、綜合卡快取、日誌由呼叫端做。
+    回 {"id","title","path","entities","was","changed"}。"""
+    from kb._lib import entities, turn
+    with entities.lock(vault):
+        data = entities.load(vault)
+        new = []
+        for name in names:
+            e, _hit = entities.find(data, name)
+            if e is None or e.get("status") != "active":
+                raise CardRefused(f"實體清單沒有「{name}」，先 kb entity add")
+            if e["name"] not in new:
+                new.append(e["name"])
+        card = card_of(vault, fid)
+        was = card["front"].get("實體") if isinstance(card["front"].get("實體"), list) else []
+        text = _read(vault, card["path"])
+        updated = rewrite_entities(text, new)
+        if updated != text:
+            turn.backup(vault, card["path"], turn_id, by="program")
+            write_text_atomic(Path(vault) / card["path"], updated)
+    return {"id": fid, "title": _title(card), "path": card["path"], "entities": new, "was": was,
+            "changed": updated != text}
 
 
 # ---------- 不整理 ----------

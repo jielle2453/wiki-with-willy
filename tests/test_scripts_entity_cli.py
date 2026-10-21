@@ -413,5 +413,83 @@ class AfterTest(Base):
         self.assertEqual(self.kb("clean", "案子/王宅/./王宅.md"), ["已清掉放錯的綜合卡：案子/王宅/王宅.md"])
 
 
+class Alias(Base):
+    """note 改知識第 4 點、驗收 7、8、12、13：entity alias 加與拿掉、撞到已登記實體回合併的結果清單、suspect_cards；
+    rename 連口述與裁示一起換、remove 照留。"""
+
+    def setUp(self):
+        super().setUp()
+        self.kb("add", "--type", "業主", "--name", "王先生")
+
+    def test_add_success_and_synthesis_alias_field(self):
+        t = self.new_turn()
+        self.assertEqual(self.kb("alias", "王先生", "--add", "王董"), ["已加別名：王先生 也叫 王董"])
+        self.assertEqual(next(e for e in self.data()["entities"] if e["name"] == "王先生")["aliases"], ["王董"])
+        self.assertIn(entities.ENTITIES_POSIX, {r["path"] for r in turn.entries(self.V, t)})
+        self.assertEqual([(p["note"], p["command"]) for p in self.programs()][-1], ("加別名：王先生 也叫 王董", "entity alias"))
+        self.kb("alias", "信義王", "--add", "王宅邸")
+        self.assertEqual(self.front("案子/信義王/信義王.md")["別名"], ["信義王宅", "王宅邸"])
+
+    def test_add_refusals(self):
+        self.assertEqual(self.kb("alias", "王先生", "--add", "信義王宅", code=3), ["「信義王宅」跟「信義王」的別名撞了"])
+        self.assertEqual(self.kb("alias", "王先生", "--add", "林小姐", code=3), ["「林小姐」是你自己（關於你）"])
+
+    def test_add_registered_entity_offers_merge(self):
+        self.kb("add", "--type", "業主", "--name", "王董")
+        before = (self.V / ".system" / "entities.json").read_bytes()
+        self.assertEqual(self.kb("alias", "王先生", "--add", "王董", code=3), ["「王董」已經登記成一個實體了，是同一個就合併"])
+        r = run_kb("entity", "alias", "王先生", "--add", "王董", "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 3)
+        out = json.loads(r.stdout)
+        self.assertEqual(out["refused"], "「王董」已經登記成一個實體了，是同一個就合併")
+        self.assertEqual(out["question"], "「王董」已經登記成一個實體，跟王先生是同一個嗎？")
+        self.assertEqual([(x["n"], x["label"], x["do"], x["strict"]) for x in out["results"]],
+                         [(1, "是同一個，合併", ["kb entity merge 王董 --into 王先生"], False), (2, "不是，先不加", [], False)])
+        self.assertEqual((self.V / ".system" / "entities.json").read_bytes(), before)
+
+    def test_remove_with_suspect_cards(self):
+        self.kb("alias", "王先生", "--add", "王董")
+        rel = E.write_card(self.V, E.QUOTE, "王先生報價", ["王先生"])
+        p = self.V / rel
+        p.write_text(p.read_text(encoding="utf-8") + "王董說要改廚房。\n", encoding="utf-8")
+        E.write_card(self.V, E.ESTIMATE, "王先生估價", ["王先生"])
+        self.assertEqual(self.kb("alias", "王先生", "--remove", "王董"),
+                         ["已拿掉別名：王先生 不再叫 王董；有 1 張卡內文提到王董，要看是不是掛錯了"])
+        self.kb("alias", "王先生", "--add", "王董")
+        out = json.loads(run_kb("entity", "alias", "王先生", "--remove", "王董", "--json", cwd=self.V).stdout)
+        self.assertEqual([(c["path"], c["title"]) for c in out["suspect_cards"]], [(rel, "王先生報價")])
+        self.assertEqual(self.kb("alias", "王先生", "--remove", "王董", code=3), ["「王先生」沒有「王董」這個別名"])
+
+    def test_remove_without_suspects(self):
+        self.kb("alias", "王先生", "--add", "王董")
+        self.assertEqual(self.kb("alias", "王先生", "--remove", "王董"), ["已拿掉別名：王先生 不再叫 王董"])
+
+    def test_human_output_has_no_ids(self):
+        import re
+        out = self.kb("alias", "王先生", "--add", "王董") + self.kb("alias", "王先生", "--remove", "王董")
+        for line in out:
+            self.assertIsNone(re.search(r"[afsre]-[0-9a-f]{8}", line), line)
+
+    def test_revert_alias(self):
+        before = (self.V / ".system" / "entities.json").read_bytes()
+        self.new_turn()
+        self.kb("alias", "王先生", "--add", "王董")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.V / ".system" / "entities.json").read_bytes(), before)
+
+    def test_rename_follows_knowledge_and_remove_keeps_it(self):
+        from kb._lib import rulings, statements
+        self.assertEqual(run_kb("statement", "add", "--entity", "信義王", "--text", "改用系統櫃", cwd=self.V).returncode, 0)
+        self.assertEqual(run_kb("ruling", "add", "--kind", "口述為準", "--entity", "信義王", "--text", "以口述為準",
+                                cwd=self.V).returncode, 0)
+        self.kb("rename", "信義王", "--to", "王宅邸")
+        self.assertEqual(statements.load(self.V)["statements"][0]["entities"], ["王宅邸"])
+        self.assertEqual(rulings.load(self.V)["rulings"][0]["entities"], ["王宅邸"])
+        self.kb("remove", "王宅邸")
+        self.assertEqual(statements.load(self.V)["statements"][0]["status"], "active")
+        self.assertEqual(rulings.load(self.V)["rulings"][0]["status"], "active")
+
+
 if __name__ == "__main__":
     unittest.main()

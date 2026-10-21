@@ -5,6 +5,8 @@ sync：moved 的卡搬到現在該在的夾（檔名不變；同夾只改檔頭�
 drop <編號>：原檔不見（status missing）才做；先備清冊，卡備成 delete 後刪、條目改 deleted、對應 missing_file 待處理 done。
 index：手動重渲染總資料夾根的 總目錄.md。sync、drop、index 都把 總目錄.md 備進回合（實作疑義裁定 4）。
 skip <編號> --kind <種類>：客戶設定檔第三節說不整理的種類，清冊記 skip_kind、有卡的拿掉（客戶設定檔與型別第 6 點，D-113）。
+redo <編號>：客戶說卡讀錯了（D-147 第一種），清冊記 redo，下次 todo 把它列進 stale、帶 reason；
+mount <編號> --entity <名>…：卡掛錯實體，重設檔頭的 實體 欄，重寫總目錄與兩邊綜合卡的快取（note 改知識第 5 點）。
 todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變、日程待重對、日程待抽；drop 拿掉卡也把從那張卡抽的推測日程改成取消（D-130）；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
@@ -46,7 +48,12 @@ def add_arguments(sub):
     sk = subs.add_parser("skip", help="記成依設定不整理", description="客戶設定檔說不整理的種類：這份不做卡，有卡的拿掉。")
     sk.add_argument("id", help="清冊編號（f-…）")
     sk.add_argument("--kind", required=True, help="客戶設定檔第三節「不整理」的種類")
-    for p in (td, sy, dr, ix, sk):
+    rd = subs.add_parser("redo", help="卡讀錯了，標成要重做", description="客戶說卡讀錯原檔：標成要重做，下次整理時照原檔重寫。")
+    rd.add_argument("id", help="清冊編號（f-…）")
+    mt = subs.add_parser("mount", help="卡掛錯實體，改掛", description="重設這張卡掛的實體；原本與新掛的實體的綜合卡下次整理會更新。")
+    mt.add_argument("id", help="清冊編號（f-…）")
+    mt.add_argument("--entity", action="append", required=True, help="改掛的實體名稱，可以重複")
+    for p in (td, sy, dr, ix, sk, rd, mt):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -255,6 +262,41 @@ def _skip(vault, fid, kind, as_json, conversation):
     return 0
 
 
+# ---------- redo、mount ----------
+
+def _redo(vault, fid, as_json, conversation):
+    got = cards.mark_redo(vault, fid, turn.current(vault)["turn"])
+    if got["changed"]:
+        journal_cli.record_program_or_warn(vault, f"標成要重做：{got['title']}",
+                                           [{"path": inventory.INVENTORY_POSIX, "action": "modify"}], "cards redo", conversation)
+    if as_json:
+        print(json.dumps({"id": fid, "title": got["title"], "redo": got["redo"]}, ensure_ascii=False))
+    else:
+        print(f"已標成要重做：「{got['title']}」，下次整理時重寫")
+    return 0
+
+
+def _mount(vault, fid, names, as_json, conversation):
+    turn_id = turn.current(vault)["turn"]
+    got = cards.mount(vault, fid, names, turn_id)
+    now, was = "、".join(got["entities"]), "、".join(got["was"])
+    if got["changed"]:
+        changed = [{"path": got["path"], "action": "modify"}]
+        cards.render_index(vault, turn_id)
+        changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
+        changed += [{"path": rel, "action": "modify"}
+                    for rel in cards.refresh_synthesis(vault, list(got["was"]) + list(got["entities"]), turn_id)]
+        journal_cli.record_program_or_warn(vault, f"改掛實體：{got['title']} → {now}", changed, "cards mount", conversation)
+    if as_json:
+        print(json.dumps({"id": fid, "title": got["title"], "entities": got["entities"], "was": got["was"]},
+                         ensure_ascii=False))
+    elif not got["changed"]:
+        print(f"「{got['title']}」本來就掛在 {now}")
+    else:
+        print(f"已改：「{got['title']}」掛在 {now}（{'原本是 ' + was if was else '原本沒有掛實體'}）")
+    return 0
+
+
 def run(args):
     vault = find_vault(args)
     if vault is None:
@@ -273,7 +315,14 @@ def run(args):
             return _drop(vault, args.id, as_json, conversation)
         if command == "skip":
             return _skip(vault, args.id, args.kind.strip(), as_json, conversation)
+        if command == "redo":
+            return _redo(vault, args.id, as_json, conversation)
+        if command == "mount":
+            return _mount(vault, args.id, [n.strip() for n in args.entity], as_json, conversation)
         return _index(vault, as_json, conversation)
+    except cards.CardRefused as e:
+        print(str(e))
+        return 3
     except ValueError as e:
         print(f"狀態檔讀不到：{e}")
         return 3

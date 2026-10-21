@@ -554,5 +554,111 @@ class EntityParts(unittest.TestCase):
                          ["信義王報價"])
 
 
+class RedoMount(unittest.TestCase):
+    """note 改知識第 5 點、驗收 5、6、12、13：cards redo 記清冊 redo、todo 的 stale 帶 reason、重寫後記號不算、下次寫清冊拿掉；
+    cards mount 改檔頭、總目錄重寫、兩邊綜合卡都待更新；人讀不印編號；revert 回去。"""
+
+    def setUp(self):
+        from tests import _entities
+        self.E = _entities
+        self.tmp, self.V, self.raw = _entities.make_entity_vault(with_entities=True)
+        self.rel = _entities.write_card(self.V, _entities.QUOTE, "信義王報價", ["大安陳"])
+        self.fid = cards.parse_front((self.V / self.rel).read_text(encoding="utf-8"))["編號"]
+        _cards.mark_dates_scanned(self.V)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def kb(self, *args, code=0):
+        r = run_kb(*args, cwd=self.V)
+        self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+        return r.stdout.splitlines()
+
+    def todo(self):
+        return json.loads(run_kb("cards", "todo", "--json", cwd=self.V).stdout)
+
+    def entry(self):
+        return next(e for e in inventory.load(self.V)["entries"] if e["id"] == self.fid)
+
+    def programs(self):
+        return [r for m in journal.months(self.V) for r in journal.read_lines(self.V, m) if r.get("kind") == "program"]
+
+    def test_redo_marks_lists_and_clears_after_rewrite(self):
+        import hashlib
+        t = turn.start(self.V, None, "")["turn"]
+        self.assertEqual(self.kb("cards", "redo", self.fid), ["已標成要重做：「信義王報價」，下次整理時重寫"])
+        sha = hashlib.sha256((self.V / self.rel).read_bytes()).hexdigest()[:12]
+        self.assertEqual(self.entry()["redo"], sha)
+        self.assertIn(inventory.INVENTORY_POSIX, {e["path"] for e in turn.entries(self.V, t)})
+        self.assertEqual([(p["note"], p["command"]) for p in self.programs()][-1], ("標成要重做：信義王報價", "cards redo"))
+        (item,) = [i for i in self.todo()["stale"] if i["id"] == self.fid]
+        self.assertEqual((item["reason"], item["existing_card"]), ("客戶說卡讀錯了", self.rel))
+        self.assertRegex(self.kb("cards", "todo")[0], r"^待製卡 \d+ 份（新 \d+、重做 1）", "人讀第一行照舊")
+        _cards.scan_apply(self.V)
+        self.assertEqual(self.entry()["redo"], sha, "卡沒重寫，掃描保留記號")
+        p = self.V / self.rel
+        p.write_text(p.read_text(encoding="utf-8") + "重寫過：磁磚每坪 8500。\n", encoding="utf-8")
+        self.assertEqual([i for i in self.todo()["stale"] if i["id"] == self.fid], [])
+        _cards.scan_apply(self.V)
+        self.assertNotIn("redo", self.entry())
+
+    def test_redo_refusals(self):
+        self.assertEqual(self.kb("cards", "redo", "f-00000000", code=3), ["清冊沒有 f-00000000"])
+        nocard = _cards.entry_of(self.V, self.E.ESTIMATE)["id"]
+        self.assertEqual(self.kb("cards", "redo", nocard, code=3), ["這份還沒有檔案卡"])
+
+    def synthesis(self, eid, name):
+        from kb._lib import entities, synthesis
+        data = entities.load(self.V)
+        e = next(x for x in data["entities"] if x["id"] == eid)
+        header = synthesis.header_for(self.V, e, entities.mounts(self.V, data).get(name, []), "2026-10-20")
+        (self.V / "案子" / name / f"{name}.md").write_text(self.E.synthesis_text(header, name), encoding="utf-8")
+
+    def test_mount_moves_the_card_and_both_syntheses_go_stale(self):
+        self.synthesis(self.E.XINYI, "信義王")
+        self.synthesis(self.E.DAAN, "大安陳")
+        self.assertEqual(self.todo()["synthesis_stale"], [])
+        t = turn.start(self.V, None, "")["turn"]
+        self.assertEqual(self.kb("cards", "mount", self.fid, "--entity", "信義王宅"),
+                         ["已改：「信義王報價」掛在 信義王（原本是 大安陳）"])
+        self.assertEqual(cards.parse_front((self.V / self.rel).read_text(encoding="utf-8"))["實體"], ["信義王"])
+        rows = {e["path"]: e for e in turn.entries(self.V, t)}
+        self.assertEqual(rows[self.rel]["by"], "program")
+        self.assertIn(cards.INDEX_POSIX, rows)
+        stale = {i["name"]: i for i in self.todo()["synthesis_stale"]}
+        self.assertEqual([x["id"] for x in stale["大安陳"]["removed"]], [self.fid])
+        self.assertEqual([x["id"] for x in stale["信義王"]["added"]], [self.fid])
+        self.assertEqual([(p["note"], p["command"]) for p in self.programs()][-1],
+                         ("改掛實體：信義王報價 → 信義王", "cards mount"))
+
+    def test_mount_refusals(self):
+        self.assertEqual(self.kb("cards", "mount", self.fid, "--entity", "內湖李", code=3),
+                         ["實體清單沒有「內湖李」，先 kb entity add"])
+        self.assertEqual(self.kb("cards", "mount", "f-00000000", "--entity", "信義王", code=3), ["清冊沒有 f-00000000"])
+
+    def test_mount_and_redo_revert(self):
+        before_card = (self.V / self.rel).read_bytes()
+        turn.start(self.V, None, "")
+        self.kb("cards", "mount", self.fid, "--entity", "信義王")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.V / self.rel).read_bytes(), before_card)
+        turn.start(self.V, None, "")
+        self.kb("cards", "redo", self.fid)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("redo", self.entry())
+
+    def test_human_output_has_no_ids_but_json_has(self):
+        import re
+        lines = self.kb("cards", "redo", self.fid) + self.kb("cards", "mount", self.fid, "--entity", "信義王")
+        for line in lines:
+            self.assertIsNone(re.search(r"[afsr]-[0-9a-f]{8}", line), line)
+        out = json.loads(run_kb("cards", "redo", self.fid, "--json", cwd=self.V).stdout)
+        self.assertEqual(out["id"], self.fid)
+        out = json.loads(run_kb("cards", "mount", self.fid, "--entity", "大安陳", "--json", cwd=self.V).stdout)
+        self.assertEqual((out["id"], out["entities"], out["was"]), (self.fid, ["大安陳"], ["信義王"]))
+
+
 if __name__ == "__main__":
     unittest.main()

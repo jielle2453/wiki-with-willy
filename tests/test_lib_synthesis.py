@@ -230,5 +230,101 @@ class Buckets(Base):
         self.assertEqual(config.get(self.V, "synthesis_min_cards"), 2)
 
 
+class Knowledge(Base):
+    """note 改知識第 6 點、驗收 1～4、9、10：依據 = 檔案卡＋有效口述＋有效裁示；整理到收 s-、r- 行（指紋 -）；門檻數口述。"""
+
+    def setUp(self):
+        super().setUp()
+        from kb._lib import rulings, statements
+        self.statements, self.rulings = statements, rulings
+        self.card_rel = E.write_card(self.V, E.QUOTE, "信義王報價", ["信義王"])
+        self.cid = cards.parse_front((self.V / self.card_rel).read_text(encoding="utf-8"))["編號"]
+        self.write_synthesis()
+
+    def write_synthesis(self, header=None):
+        (self.V / XINYI_REL).write_text(E.synthesis_text(header or self.header(E.XINYI), "信義王"), encoding="utf-8")
+        self.assertEqual(self.buckets()["synthesis_stale"], [])
+
+    def stale(self):
+        (item,) = self.buckets()["synthesis_stale"]
+        return item
+
+    def test_new_statement_is_added_with_source_and_item_carries_statements(self):
+        s, _r = self.statements.add(self.V, "信義王改用系統櫃", ["信義王"], self.t)
+        item = self.stale()
+        self.assertEqual(item["added"], [{"id": s["id"], "text": "信義王改用系統櫃", "date": s["date"], "source": "statement"}])
+        self.assertEqual((item["changed"], item["removed"]), ([], []))
+        self.assertEqual(item["statements"], [{"id": s["id"], "text": "信義王改用系統櫃", "date": s["date"]}])
+        self.assertEqual(item["rulings"], [])
+        front = cards.parse_front(item["header"])
+        self.assertIn(f"{s['id']} -", front["整理到"])
+        self.assertEqual(front["整理到"], sorted(front["整理到"]))
+
+    def test_header_lines_order(self):
+        s, _r = self.statements.add(self.V, "信義王改用系統櫃", ["信義王"], self.t)
+        r = self.rulings.add(self.V, "口述為準", ["信義王"], [], "信義王的報價以口述為準", turn_id=self.t)
+        lines = cards.parse_front(self.header(E.XINYI))["整理到"]
+        self.assertEqual([x.split(" ")[0][:2] for x in lines], ["f-", "r-", "s-"])
+        self.assertEqual(lines[1:], [f"{r['id']} -", f"{s['id']} -"])
+
+    def test_card_items_carry_source(self):
+        E.write_card(self.V, E.ESTIMATE, "信義王估價", ["信義王"])
+        (added,) = self.stale()["added"]
+        self.assertEqual((added["title"], added["source"]), ("信義王估價", "card"))
+
+    def test_superseded_is_removed_and_new_is_added(self):
+        old, _r = self.statements.add(self.V, "王宅的聯絡人是王先生", ["信義王"], self.t)
+        self.write_synthesis(self.stale()["header"])
+        new, _r = self.statements.add(self.V, "聯絡人改成王太太", ["信義王"], self.t, replaces=old["id"])
+        item = self.stale()
+        self.assertEqual([(x["id"], x["source"]) for x in item["added"]], [(new["id"], "statement")])
+        self.assertEqual(item["removed"], [{"id": old["id"], "text": "王宅的聯絡人是王先生", "date": old["date"],
+                                            "source": "statement"}])
+        self.write_synthesis(item["header"])
+        self.statements.withdraw(self.V, new["id"], self.t)
+        self.assertEqual([x["id"] for x in self.stale()["removed"]], [new["id"]])
+
+    def test_ruling_on_card_makes_its_entity_stale_and_revoke_removes(self):
+        r = self.rulings.add(self.V, "不採用", [], [self.cid], "這份報價是舊的，別信", turn_id=self.t)
+        item = self.stale()
+        self.assertEqual(item["added"], [{"id": r["id"], "kind": "ruled_out", "text": "這份報價是舊的，別信", "source": "ruling"}])
+        self.assertEqual(item["rulings"], [{"id": r["id"], "kind": "ruled_out", "text": "這份報價是舊的，別信",
+                                            "cards": [{"id": self.cid, "title": "信義王報價"}]}])
+        self.write_synthesis(item["header"])
+        self.rulings.remove(self.V, r["id"], self.t)
+        self.assertEqual([(x["id"], x["source"]) for x in self.stale()["removed"]], [(r["id"], "ruling")])
+
+    def test_ruling_recheck_does_not_make_it_stale(self):
+        r = self.rulings.add(self.V, "不採用", [], [self.cid], "別信", turn_id=self.t)
+        self.write_synthesis(self.stale()["header"])
+        self.rulings.recheck(self.V, r["id"], self.t)
+        self.assertEqual(self.buckets()["synthesis_stale"], [])
+
+    def test_validate_with_statement_lines(self):
+        self.statements.add(self.V, "信義王改用系統櫃", ["信義王"], self.t)
+        header = self.header(E.XINYI)
+        (self.V / XINYI_REL).write_text(E.synthesis_text(header, "信義王"), encoding="utf-8")
+        self.assertEqual(synthesis.validate(self.V, XINYI_REL), (True, ""))
+        stripped = "\n".join(ln for ln in header.splitlines() if not ln.startswith("  - s-")) + "\n"
+        (self.V / XINYI_REL).write_text(E.synthesis_text(stripped, "信義王"), encoding="utf-8")
+        self.assertEqual(synthesis.validate(self.V, XINYI_REL), (False, "整理到不是現行的，重跑 kb cards todo 拿新檔頭"))
+
+    def test_threshold_counts_statements_but_not_rulings_or_self(self):
+        self.update(E.WANG, source="confirmed")
+        E.write_card(self.V, E.ESTIMATE, "王宅估價", ["王宅"])
+        self.assertEqual(self.buckets()["synthesis_new"], [])
+        self.rulings.add(self.V, "口述為準", ["王宅"], [], "王宅以口述為準", turn_id=self.t)
+        self.assertEqual(self.buckets()["synthesis_new"], [])
+        s, _r = self.statements.add(self.V, "王宅改成兩房", ["王宅"], self.t)
+        (item,) = self.buckets()["synthesis_new"]
+        self.assertEqual(item["name"], "王宅")
+        self.assertEqual([x["id"] for x in item["statements"]], [s["id"]])
+        self.assertEqual(len(item["rulings"]), 1)
+        self.assertIn(f"  - {s['id']} -\n", item["header"])
+        self.statements.add(self.V, "公司下個月搬家", ["林小姐室內設計"], self.t)
+        self.statements.add(self.V, "公司要換電話", ["林小姐室內設計"], self.t)
+        self.assertEqual([i["name"] for i in self.buckets()["synthesis_new"]], ["王宅"])
+
+
 if __name__ == "__main__":
     unittest.main()

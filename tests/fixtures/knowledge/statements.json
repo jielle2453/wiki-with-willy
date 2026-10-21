@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "statements": [
+    {"id": "s-1a2b3c4d", "text": "信義王改用系統櫃，不做木工", "entities": ["信義王"], "date": "2026-10-21",
+     "turn": "20261021-100000-ab12", "status": "active", "replaced_by": null},
+    {"id": "s-5e6f7a8b", "text": "王宅的聯絡人是王先生", "entities": ["王宅"], "date": "2026-10-10",
+     "turn": "20261010-100000-ab12", "status": "superseded", "replaced_by": "s-9c0d1e2f"},
+    {"id": "s-9c0d1e2f", "text": "王宅的聯絡人改成王太太", "entities": ["王宅"], "date": "2026-10-21",
+     "turn": "20261021-100000-ab12", "status": "active", "replaced_by": null},
+    {"id": "s-0a0b0c0d", "text": "公司下個月搬家", "entities": ["林小姐室內設計"], "date": "2026-10-21",
+     "turn": "20261021-100000-ab12", "status": "withdrawn", "replaced_by": null}
+  ]
+}

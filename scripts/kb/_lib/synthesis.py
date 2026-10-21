@@ -1,9 +1,11 @@
 """綜合卡（D-036、D-038、D-114～D-121；實體與綜合卡第 2 點）：檔頭、驗證、快取渲染、待辦清單。
 
 綜合卡住 <型別>/<名稱>/<名稱>.md（D-046 的 Z1），一個實體一張。檔頭由 header_for 印給製卡者照抄；
-「整理到」是寫卡時讀過的檔案卡與各自指紋前 12 碼，PostToolUse 用 validate 驗它等於目前掛著的那組；
+「整理到」是寫卡時的依據：讀過的檔案卡與各自指紋前 12 碼，加上它有效的口述（s-）與掛在它或它的卡上的有效裁示（r-），
+這兩種的指紋欄寫 -（note 改知識釐清第一點）；PostToolUse 用 validate 驗它等於現行的依據；
 「檔案卡」「相關實體」兩欄是快取（D-118），render_cache 只重寫這兩欄、備份帶 by program（D-075 不數）。
-buckets 給 cards todo：synthesis_new（D-114 門檻）、synthesis_stale（D-121）、synthesis_broken、entity_drift（D-057）。
+buckets 給 cards todo：synthesis_new（D-114 門檻數檔案卡加有效口述，裁示不算）、synthesis_stale（D-121）、synthesis_broken、
+entity_drift（D-057）；前兩桶每項帶這個實體的口述與裁示（statements、rulings），added／changed／removed 每項帶 source。
 檔頭用 cards.parse_front 解析（同一套 YAML 子集）。
 """
 import re
@@ -61,9 +63,41 @@ def card_lines(mounts_of_it):
     return [f"{m['id']} {m.get('date') or '未載'} {m.get('title') or ''}".rstrip() for m in ordered]
 
 
-def synced_lines(mounts_of_it):
-    """整理到 欄：每行「<檔案卡編號> <fp>」照編號排。"""
-    return [f"{m['id']} {m.get('fp') or ''}".rstrip() for m in sorted(mounts_of_it, key=lambda m: m["id"])]
+def synced_lines(mounts_of_it, stmts=(), ruls=()):
+    """整理到 欄：檔案卡每行「<編號> <fp>」，口述與裁示每行「<編號> -」，全部照編號排（f-、r-、s-）。"""
+    lines = {m["id"]: f"{m['id']} {m.get('fp') or ''}".rstrip() for m in mounts_of_it}
+    lines.update({x["id"]: f"{x['id']} -" for x in list(stmts) + list(ruls)})
+    return [lines[k] for k in sorted(lines)]
+
+
+def knowledge(vault):
+    """口述清單與裁示（讀一次給整批用）；titles 是檔案卡標題，要用時才掃（_titles）。讀不到丟 ValueError（帶檔名）。"""
+    from kb._lib import rulings, statements
+    return {"statements": statements.load(vault), "rulings": rulings.load(vault), "titles": None}
+
+
+def basis(know, name, mounts):
+    """一個實體除了檔案卡以外的依據：(有效口述, 掛在它或它的卡上的有效裁示)。"""
+    from kb._lib import rulings, statements
+    return statements.active_for(know["statements"], name), rulings.for_entity(know["rulings"], name, mounts)
+
+
+def _titles(vault, know):
+    if know["titles"] is None:
+        from kb._lib import agenda
+        know["titles"] = agenda.card_titles(vault)
+    return know["titles"]
+
+
+def statement_brief(s):
+    return {"id": s["id"], "text": s.get("text"), "date": s.get("date")}
+
+
+def ruling_brief(vault, know, r):
+    from kb._lib import rulings
+    titles = _titles(vault, know)
+    return {"id": r["id"], "kind": r.get("kind"), "text": r.get("text"),
+            "cards": [{"id": cid, "title": titles.get(cid)} for cid in rulings.card_ids(r)]}
 
 
 def related(data, mounts, entity):
@@ -100,15 +134,17 @@ def _front_text(front):
     return "\n".join(out) + "\n"
 
 
-def header_for(vault, entity, mounts_of_it, today=None, data=None, mounts=None, prof=None):
-    """印給製卡者照抄的綜合卡檔頭（資料與介面格式那個樣子）。data、mounts、prof 沒給自己讀。"""
+def header_for(vault, entity, mounts_of_it, today=None, data=None, mounts=None, prof=None, know=None):
+    """印給製卡者照抄的綜合卡檔頭（資料與介面格式那個樣子）。data、mounts、prof、know 沒給自己讀。"""
     data = data if data is not None else entities.load(vault)
     mounts = mounts if mounts is not None else entities.mounts(vault, data)
     prof = prof if prof is not None else entities._profile(vault)
+    know = know if know is not None else knowledge(vault)
+    stmts, ruls = basis(know, entity["name"], mounts)
     return _front_text({
         "編號": entity["id"], "型別": entity.get("type"), "大類": category_text(prof, entity.get("type")),
         "名稱": entity["name"], "別名": list(entity.get("aliases") or []), "範本版本": TEMPLATE_VERSION,
-        "整理到": synced_lines(mounts_of_it), "更新日": today or date.today().isoformat(),
+        "整理到": synced_lines(mounts_of_it, stmts, ruls), "更新日": today or date.today().isoformat(),
         "檔案卡": card_lines(mounts_of_it), "相關實體": related(data, mounts, entity)})
 
 
@@ -166,8 +202,8 @@ def _body_lines(text):
 
 # ---------- 驗證 ----------
 
-def problems(vault, rel, text, data, mounts, prof):
-    """綜合卡的問題 [(代號, 原因)]，照 validate 的順序；GATING 的一出就只回它一個。"""
+def problems(vault, rel, text, data, mounts, prof, know=None):
+    """綜合卡的問題 [(代號, 原因)]，照 validate 的順序；GATING 的一出就只回它一個。know 沒給自己讀。"""
     from kb._lib import cards
     try:
         front = cards.parse_front(text)
@@ -199,7 +235,9 @@ def problems(vault, rel, text, data, mounts, prof):
     if front["範本版本"] != TEMPLATE_VERSION:
         out.append(("version", f"範本版本該是 {TEMPLATE_VERSION}"))
     have = front["整理到"]
-    if not isinstance(have, list) or sorted(have) != sorted(synced_lines(mounts.get(entry["name"], []))):
+    know = know if know is not None else knowledge(vault)
+    stmts, ruls = basis(know, entry["name"], mounts)
+    if not isinstance(have, list) or sorted(have) != sorted(synced_lines(mounts.get(entry["name"], []), stmts, ruls)):
         out.append((STALE_CODE, "整理到不是現行的，重跑 kb cards todo 拿新檔頭"))
     day = front["更新日"]
     ok = isinstance(day, str) and bool(_DATE.match(day))
@@ -216,15 +254,15 @@ def problems(vault, rel, text, data, mounts, prof):
     return out
 
 
-def safe_problems(vault, rel, text, data, mounts, prof):
+def safe_problems(vault, rel, text, data, mounts, prof, know=None):
     """problems 整段包住：任何例外都當成解析不了（同 cards.safe_problems）。"""
     try:
-        return problems(vault, rel, text, data, mounts, prof)
+        return problems(vault, rel, text, data, mounts, prof, know)
     except Exception as e:  # noqa: BLE001
         return [("parse", f"檔頭解析不了：{type(e).__name__}")]
 
 
-def validate(vault, rel, data=None, mounts=None, prof=None):
+def validate(vault, rel, data=None, mounts=None, prof=None, know=None):
     """PostToolUse 與測試用：回 (ok, reason)，只報第一個錯。"""
     try:
         text = (Path(vault) / rel).read_text(encoding="utf-8")
@@ -234,9 +272,10 @@ def validate(vault, rel, data=None, mounts=None, prof=None):
         data = data if data is not None else entities.load(vault)
         mounts = mounts if mounts is not None else entities.mounts(vault, data)
         prof = prof if prof is not None else entities._profile(vault)
+        know = know if know is not None else knowledge(vault)
     except Exception as e:  # noqa: BLE001
         return False, f"檔頭解析不了：{type(e).__name__}"
-    found = safe_problems(vault, rel, text, data, mounts, prof)
+    found = safe_problems(vault, rel, text, data, mounts, prof, know)
     return (False, found[0][1]) if found else (True, "")
 
 
@@ -254,6 +293,7 @@ def render_cache(vault, entity_names, turn_id):
     data = entities.load(vault)
     mounts = entities.mounts(vault, data)
     prof = entities._profile(vault)
+    know = knowledge(vault)
     if entity_names is None:
         targets = [e for e in data["entities"] if e.get("status") == "active"]
     else:
@@ -275,7 +315,7 @@ def render_cache(vault, entity_names, turn_id):
             text = p.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if not _cache_ok(safe_problems(vault, rel, text, data, mounts, prof)):
+        if not _cache_ok(safe_problems(vault, rel, text, data, mounts, prof, know)):
             continue
         new = replace_front(text, {"檔案卡": card_lines(mounts.get(e["name"], [])),
                                    "相關實體": related(data, mounts, e)})
@@ -321,6 +361,7 @@ def _brief(m):
 def buckets(vault, data, mounts, prof):
     """給 cards todo：回 synthesis_new、synthesis_stale、synthesis_broken、entity_drift 四桶（資料與介面格式）。只讀。"""
     min_cards = config.get(vault, "synthesis_min_cards")
+    know = knowledge(vault)
     types = {entities.key(t["name"]) for t in prof.get("types") or []}
     drift_list = entities.drift(vault, data)
     drift_ids = {d["entity_id"] for d in drift_list}
@@ -341,23 +382,26 @@ def buckets(vault, data, mounts, prof):
                 broken.append({"path": rel, "reason": f"檔頭解析不了：{type(err).__name__}"})
                 listed.add(rel.casefold())
                 continue
-            found = safe_problems(vault, rel, text, data, mounts, prof)
+            found = safe_problems(vault, rel, text, data, mounts, prof, know)
             if not found:
                 continue
             if [c for c, _r in found] == [STALE_CODE]:
-                stale.append(_stale_item(vault, e, rel, text, ms, data, mounts, prof, today))
+                stale.append(_stale_item(vault, e, rel, text, ms, data, mounts, prof, today, know))
             else:
                 broken.append({"path": rel, "reason": found[0][1]})
                 listed.add(rel.casefold())
             continue
         if e.get("status") != "active" or e.get("id") in drift_ids or entities.key(e["type"]) not in types:
             continue
-        if len(ms) < min_cards:
+        stmts, ruls = basis(know, e["name"], mounts)
+        if len(ms) + len(stmts) < min_cards:
             continue
         item = {"entity_id": e["id"], "name": e["name"], "type": e["type"], "category": category_text(prof, e["type"]),
                 "confirmed": e.get("source") != "inferred", "path": rel, "cards": [_brief(m) for m in ms],
+                "statements": [statement_brief(s) for s in stmts],
+                "rulings": [ruling_brief(vault, know, r) for r in ruls],
                 "sections": sections_for(prof, e["type"]),
-                "header": header_for(vault, e, ms, today, data, mounts, prof)}
+                "header": header_for(vault, e, ms, today, data, mounts, prof, know)}
         if not item["confirmed"]:
             item["question"] = (f"我要幫「{e['name']}」（{e['type']}，掛了 {len(ms)} 份檔）整理一頁現況："
                                 f"名字這樣叫對嗎？它跟其他{e['type']}是同一件嗎？")
@@ -370,15 +414,15 @@ def buckets(vault, data, mounts, prof):
             owner = by_id.get(eid)
             if owner is not None and owner.get("type") and rel.casefold() == card_rel(owner).casefold():
                 continue
-            ok, reason = validate(vault, rel, data, mounts, prof)
+            ok, reason = validate(vault, rel, data, mounts, prof, know)
             broken.append({"path": rel, "reason": reason if not ok else f"綜合卡該放在 {card_rel(owner)}"})
             listed.add(rel.casefold())
     drift_items = [dict(d, question=_question(d)) for d in drift_list]
     return {"synthesis_new": new, "synthesis_stale": stale, "synthesis_broken": broken, "entity_drift": drift_items}
 
 
-def _stale_item(vault, e, rel, text, ms, data, mounts, prof, today):
-    from kb._lib import cards
+def _stale_item(vault, e, rel, text, ms, data, mounts, prof, today, know):
+    from kb._lib import cards, rulings, statements
     front = cards.parse_front(text)
     have = {}
     for line in front.get("整理到") or []:
@@ -389,11 +433,28 @@ def _stale_item(vault, e, rel, text, ms, data, mounts, prof, today):
         parts = str(line).split(" ", 2)
         if len(parts) == 3:
             titles[parts[0]] = parts[2]
-    now = {m["id"]: m for m in ms}
-    added = [_brief(now[c]) for c in sorted(now) if c not in have]
-    changed = [_brief(now[c]) for c in sorted(now) if c in have and have[c] != (now[c].get("fp") or "")]
+    stmts, ruls = basis(know, e["name"], mounts)
+    now = {m["id"]: (m.get("fp") or "", dict(_brief(m), source="card")) for m in ms}
+    now.update({s["id"]: ("-", dict(statement_brief(s), source="statement")) for s in stmts})
+    now.update({r["id"]: ("-", _ruling_source(r)) for r in ruls})
+    added = [now[c][1] for c in sorted(now) if c not in have]
+    changed = [now[c][1] for c in sorted(now) if c in have and have[c] != now[c][0]]
     gone = [c for c in sorted(have) if c not in now]
-    groups = cards._scan_groups(vault)[0] if gone else {}
-    removed = [{"id": c, "path": groups[c][0]["path"] if c in groups else None, "title": titles.get(c)} for c in gone]
-    return {"entity_id": e["id"], "name": e["name"], "path": rel, "header": header_for(vault, e, ms, today, data, mounts, prof),
+    groups = cards._scan_groups(vault)[0] if any(c.startswith("f-") for c in gone) else {}
+    removed = []
+    for c in gone:
+        if c.startswith("s-"):
+            removed.append(dict(statement_brief(statements.find(know["statements"], c) or {"id": c}), source="statement"))
+        elif c.startswith("r-"):
+            removed.append(_ruling_source(rulings.find(know["rulings"], c) or {"id": c}))
+        else:
+            removed.append({"id": c, "path": groups[c][0]["path"] if c in groups else None, "title": titles.get(c),
+                            "source": "card"})
+    return {"entity_id": e["id"], "name": e["name"], "path": rel,
+            "header": header_for(vault, e, ms, today, data, mounts, prof, know),
+            "statements": [statement_brief(s) for s in stmts], "rulings": [ruling_brief(vault, know, r) for r in ruls],
             "added": added, "changed": changed, "removed": removed}
+
+
+def _ruling_source(r):
+    return {"id": r["id"], "kind": r.get("kind"), "text": r.get("text"), "source": "ruling"}

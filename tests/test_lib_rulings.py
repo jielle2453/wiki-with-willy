@@ -74,6 +74,14 @@ class Add(Base):
         self.refused("口述為準要掛實體或卡", "口述為準", [], [], "以口述為準")
         self.refused("實體清單沒有「內湖李」，先 kb entity add", "口述為準", ["內湖李"], [], "以口述為準")
         self.refused("清冊沒有 f-00000000", "不採用", [], ["f-00000000"], "別信")
+        self.refused("裁示裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版", "口述為準", ["信義王"], [],
+                     "Wi-Fi 密碼 password: Abc12345678")
+        self.refused("裁示要一句話，最多 200 字", "口述為準", ["信義王"], [], "字" * 201)
+        self.refused("裁示要一句話，最多 200 字", "口述為準", ["信義王"], [], "   ")
+        self.refused("裁示要一句話，最多 200 字", "口述為準", ["信義王"], [], "第一句\n第二句")
+        for ch in ('"', "$", "`", "\\"):
+            with self.subTest(ch=ch):
+                self.refused("裁示裡不能有 \" $ ` \\ 這四種字元", "口述為準", ["信義王"], [], f"以口述為準{ch}")
         nocard = _cards.entry_of(self.V, E.QUOTE)["id"]
         self.refused("這份還沒有檔案卡", "不採用", [], [nocard], "別信")
         self.assertFalse((self.V / ".system" / "rulings.json").exists())

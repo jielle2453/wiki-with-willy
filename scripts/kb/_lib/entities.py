@@ -557,13 +557,14 @@ def _refresh_fields(vault, entry, prof, turn_id, changed, undo):
 def retarget_cards(vault, mapping, turn_id, undo=None):
     """檔案索引/ 每張卡的 實體 欄，名稱 key 在 mapping 裡的換成 mapping 的值（去重，順序照原樣）；改到的卡先備進回合。
     回 [(相對路徑, 換之前的名稱清單)]。"""
-    from kb._lib import cards, turn
-    changed = []
+    from kb._lib import cards, inventory, turn
+    changed, shas = [], {}
     for rel in cards._walk_cards(vault):
         p = Path(vault) / rel
         try:
             text = p.read_text(encoding="utf-8")
-            names = cards.parse_front(text).get("實體")
+            front = cards.parse_front(text)
+            names = front.get("實體")
         except (ValueError, OSError, UnicodeDecodeError):
             continue
         if not isinstance(names, list) or not any(key(n) in mapping for n in names):
@@ -573,9 +574,13 @@ def retarget_cards(vault, mapping, turn_id, undo=None):
             n = mapping.get(key(n), n)
             if all(key(x) != key(n) for x in new):
                 new.append(n)
+        before = inventory.card_sha(vault, rel)
         turn.backup(vault, rel, turn_id, by="program")
         _write(vault, rel, cards.rewrite_entities(text, new), undo)
+        if isinstance(front.get("編號"), str):
+            shas[front["編號"]] = (before, inventory.card_sha(vault, rel))
         changed.append((rel, names))
+    inventory.follow_redo(vault, shas, turn_id, undo)  # 重做記號跟著換（測試第一輪後裁定 6）
     return changed
 
 

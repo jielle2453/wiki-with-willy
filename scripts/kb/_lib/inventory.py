@@ -332,6 +332,28 @@ def set_redo(vault, fid, value, turn_id):
     return True
 
 
+def follow_redo(vault, changes, turn_id, undo=None):
+    """程式自己改寫了卡檔（改掛、改名、搬卡；測試第一輪後裁定 6）：changes 是 {卡編號: (改寫前 sha, 改寫後 sha)}，
+    redo 記號等於改寫前的就換成改寫後的，記號照樣有效。有動到才在鎖裡備份、寫；undo（entities._Undo）給了先記舊內容。回有沒有寫。"""
+    changes = {k: v for k, v in changes.items() if v[0] and v[1] and v[0] != v[1]}
+    p = _path(vault)
+    if not changes or not p.exists():
+        return False
+    with FileLock(p):
+        data = load(vault)
+        hits = [e for e in data["entries"] if e.get("id") in changes and e.get("redo") == changes[e["id"]][0]]
+        if not hits:
+            return False
+        from kb._lib import turn
+        turn.backup(vault, INVENTORY_POSIX, turn_id)
+        if undo is not None:
+            undo.file(INVENTORY_POSIX)
+        for e in hits:
+            e["redo"] = changes[e["id"]][1]
+        _write(vault, data["entries"])
+    return True
+
+
 def unskip_kinds(vault, kinds, turn_id=None):
     """skip_kind 是 kinds 之一的條目拿掉該欄，回動到的 id；有動到才在鎖裡備份（給了 turn_id）、寫。"""
     kinds = set(kinds)

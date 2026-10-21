@@ -25,7 +25,6 @@ CREDENTIAL_MSG = "「可以讀」「可以記」這兩種要等密碼與守門�
 RULED_OUT_NEEDS_CARD = "不採用要指定是哪幾張卡（--card）"
 RULED_OUT_NO_ENTITY = "不採用只掛卡，不掛實體（拿掉 --entity）"
 SPOKEN_NEEDS_TARGET = "口述為準要掛實體或卡"
-TEXT_MSG = "裁示要帶客戶的原話（--text）"
 NOT_FOUND = "沒有這條裁示：{}"
 REVOKED_MSG = "這條裁示已經收回了"
 NO_CARDS_MSG = "這條裁示沒有掛卡，不用對新版"
@@ -159,7 +158,7 @@ def card_of(vault, card_id):
 
 
 def add(vault, kind, entities, cards, text, turn_id):
-    """驗完才寫：種類（憑證兩種拒絕）、口述為準至少掛一個實體或卡、不採用只收卡且至少一張、實體登記且 active、
+    """驗完才寫：種類（憑證兩種拒絕）、口述為準至少掛一個實體或卡、不採用只收卡且至少一張、實體登記且 active、原話同口述的檢查、
     卡在清冊 active 且有檔案卡（記下它現在的指紋前 12 碼）。回條目。"""
     from kb._lib import agenda
     kind = kind_of(kind)
@@ -171,9 +170,8 @@ def add(vault, kind, entities, cards, text, turn_id):
     if kind == "spoken_wins" and not entities and not cards:
         raise RulingRefused(SPOKEN_NEEDS_TARGET)
     names = _names(vault, entities)
-    text = " ".join(str(text or "").split())
-    if not text:
-        raise RulingRefused(TEXT_MSG)
+    from kb._lib import statements
+    text = statements.check_text(text, "裁示", RulingRefused)  # 同口述：一句、200 字、不收密碼與四種字元
     hooked = [{"id": cid, "fp": agenda.card_fp(card_of(vault, cid)["front"])} for cid in cards]
 
     def fn(data):

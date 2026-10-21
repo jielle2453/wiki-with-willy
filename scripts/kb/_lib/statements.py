@@ -11,6 +11,7 @@ import secrets
 from datetime import date
 from pathlib import Path
 
+from kb._lib import profile
 from kb._lib.io import FileLock, read_json, write_json_atomic
 
 STATEMENTS_POSIX = ".system/statements.json"
@@ -18,8 +19,9 @@ SCHEMA_VERSION = 1
 STATUSES = ("active", "superseded", "withdrawn")
 TEXT_MAX = 200
 BAD_CHARS = '"$`\\'  # 一句口述會被貼進雙引號的指令（同 plan.FREE_TEXT_RULE）
-TEXT_MSG = f"口述要一句話，最多 {TEXT_MAX} 字"
-CHARS_MSG = "口述裡不能有 \" $ ` \\ 這四種字元"
+TEXT_MSG = f"{{}}要一句話，最多 {TEXT_MAX} 字"
+CHARS_MSG = "{}裡不能有 \" $ ` \\ 這四種字元"
+SECRET_MSG = "{}裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版"  # D-145：密碼要等那一版，偏好也是同一套（測試第一輪後裁定 3）
 NOT_FOUND = "沒有這條口述：{}"
 SUPERSEDED_MSG = "這條已經被取代了，改最新的那條"
 WITHDRAWN_MSG = "這條已經收回了"
@@ -99,16 +101,20 @@ def _new_id(data):
             return new
 
 
-def check_text(text):
-    """一句（不換行、不空）、最多 TEXT_MAX 字、不含 BAD_CHARS；回壓過空白的字串，不行丟 StatementRefused。"""
+def check_text(text, label="口述", refused=StatementRefused):
+    """一句（不換行、不空）、最多 TEXT_MAX 字、不含密碼（profile.preference_problem 同一套）與 BAD_CHARS；回壓過空白的字串，
+    不行丟 refused（拒絕句的開頭是 label；裁示原話也走這裡，測試第一輪後裁定 3、4）。"""
     raw = str(text or "")
     if "\n" in raw or "\r" in raw:
-        raise StatementRefused(TEXT_MSG)
+        raise refused(TEXT_MSG.format(label))
     text = " ".join(raw.split())
     if not text or len(text) > TEXT_MAX:
-        raise StatementRefused(TEXT_MSG)
-    if any(c in text for c in BAD_CHARS):
-        raise StatementRefused(CHARS_MSG)
+        raise refused(TEXT_MSG.format(label))
+    why = profile.preference_problem(text)
+    if why == profile.PREFERENCE_SECRET:
+        raise refused(SECRET_MSG.format(label))
+    if why or any(c in text for c in BAD_CHARS):
+        raise refused(CHARS_MSG.format(label))
     return text
 
 

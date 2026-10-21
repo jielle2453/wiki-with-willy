@@ -71,6 +71,12 @@ class Add(Base):
         self.refused("沒有這條口述：s-00000000", "王宅的聯絡人改成王太太", ["王宅"], replaces="s-00000000")
         self.assertFalse((self.V / ".system" / "statements.json").exists())
 
+    def test_password_is_refused(self):
+        """測試第一輪後裁定 3（F-1）：走 profile.preference_problem 同一套。"""
+        self.refused("口述裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版", "門禁密碼 password: Abc12345678", ["信義王"])
+        self.refused("口述裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版", "Wi-Fi 密碼是 Abc12345678", ["信義王"])
+        self.assertFalse((self.V / ".system" / "statements.json").exists())
+
     def test_two_hundred_is_fine(self):
         item, _r = statements.add(self.V, "字" * 200, ["信義王"], self.t)
         self.assertEqual(len(item["text"]), 200)

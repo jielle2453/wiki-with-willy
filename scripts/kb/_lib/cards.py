@@ -617,7 +617,7 @@ def mount(vault, fid, names, turn_id):
     """kb cards mount：這張卡掛的實體換成 names（登記且 active 的名稱，客戶自己可以；別名轉成登記的名稱、去重）。
     在實體清單的鎖裡改檔頭（rewrite_entities，備份 by program），內容沒變不寫。總目錄、綜合卡快取、日誌由呼叫端做。
     回 {"id","title","path","entities","was","changed"}。"""
-    from kb._lib import entities, turn
+    from kb._lib import entities, inventory, turn
     with entities.lock(vault):
         data = entities.load(vault)
         new = []
@@ -628,12 +628,16 @@ def mount(vault, fid, names, turn_id):
             if e["name"] not in new:
                 new.append(e["name"])
         card = card_of(vault, fid)
+        if "實體" not in card["front"]:  # 範本第一版：沒有實體欄可改（測試第一輪後裁定 5）
+            raise CardRefused(f"「{_title(card)}」是舊版的卡，還沒有實體欄；先整理一次補好再改掛")
         was = card["front"].get("實體") if isinstance(card["front"].get("實體"), list) else []
         text = _read(vault, card["path"])
         updated = rewrite_entities(text, new)
         if updated != text:
+            before = inventory.card_sha(vault, card["path"])
             turn.backup(vault, card["path"], turn_id, by="program")
             write_text_atomic(Path(vault) / card["path"], updated)
+            inventory.follow_redo(vault, {fid: (before, inventory.card_sha(vault, card["path"]))}, turn_id)
     return {"id": fid, "title": _title(card), "path": card["path"], "entities": new, "was": was,
             "changed": updated != text}
 
@@ -727,6 +731,7 @@ def sync(vault, sources, turn_id, undo=None):
     data = todo(vault, sources)
     by_id = {e["id"]: e for e in inventory.load(vault)["entries"]}
     moved, updated, skipped, changed, dropped = [], [], [], [], []
+    shas = {}  # 卡編號 → (改寫前 sha, 改寫後 sha)：redo 記號跟著換（測試第一輪後裁定 6）
     groups, _broken = _scan_groups(vault)
     touched = entity_names_of([c for g in groups.values() for c in g
                                if c["path"] in {i["from"] for i in data["moved"]}
@@ -753,9 +758,11 @@ def sync(vault, sources, turn_id, undo=None):
         new = f"{item['to']}/{old.rpartition('/')[2]}"
         text = rewrite_locations(_read(vault, old), [loc["uri"] for loc in entry["locations"]],
                                  entry_link(vault, sources, entry))
+        before = inventory.card_sha(vault, old)
         if new.casefold() == old.casefold():
             turn.backup(vault, old, turn_id)
             write(old, text)
+            shas[item["id"]] = (before, inventory.card_sha(vault, old))
             updated.append(old)
             changed.append({"path": old, "action": "modify"})
             continue
@@ -772,12 +779,15 @@ def sync(vault, sources, turn_id, undo=None):
         turn.backup(vault, old, turn_id, action="delete")
         turn.backup(vault, new, turn_id)
         write(new, text)
+        shas[item["id"]] = (before, inventory.card_sha(vault, new))
         if undo is not None:
             undo.file(old)
         os.remove(Path(vault) / old)
         prune_dirs(vault, old)
         moved.append({"from": old, "to": new})
         changed += [{"path": old, "action": "delete"}, {"path": new, "action": "create"}]
+    if inventory.follow_redo(vault, shas, turn_id, undo):
+        changed.append({"path": inventory.INVENTORY_POSIX, "action": "modify"})
     return {"moved": moved, "updated": updated, "dropped": dropped, "skipped": skipped, "changed": changed,
             "touched": touched}
 

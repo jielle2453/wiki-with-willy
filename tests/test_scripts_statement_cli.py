@@ -12,6 +12,19 @@ from kb._lib import journal, statements, turn  # noqa: E402
 ID = r"[afsr]-[0-9a-f]{8}"
 
 
+def leaks(V, secret):
+    """總資料夾裡（含 .system/、系統/）內容出現 secret 的檔，相對路徑清單。"""
+    out = []
+    for p in sorted(V.rglob("*")):
+        if p.is_file():
+            try:
+                if secret in p.read_text(encoding="utf-8", errors="ignore"):
+                    out.append(p.relative_to(V).as_posix())
+            except OSError:
+                pass
+    return out
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp, self.V, self.raw = E.make_entity_vault(with_entities=True)
@@ -64,6 +77,12 @@ class Add(Base):
             with self.subTest(want=want):
                 self.assertEqual(self.kb("add", *args, code=3), [want])
         self.assertFalse((self.V / ".system" / "statements.json").exists())
+
+    def test_password_refused_and_left_nowhere(self):
+        """測試第一輪後裁定 3（F-1）：被拒的那次，狀態檔、工作日誌 jsonl 與月檔、ledger.tsv 都沒有那串密碼。"""
+        self.assertEqual(self.kb("add", "--entity", "信義王", "--text", "門禁密碼 password: Abc12345678", code=3),
+                         ["口述裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版"])
+        self.assertEqual(leaks(self.V, "Abc12345678"), [])
 
     def test_two_entities(self):
         self.assertEqual(self.kb("add", "--entity", "信義王", "--entity", "大安陳", "--text", "兩案共用同一個木工"),

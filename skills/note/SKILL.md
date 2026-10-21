@@ -43,7 +43,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 ## 骨架
 
 - 先分辨是哪一類。整句都記不起來的，照上面說完就收尾。
-- 日程：照 `references/agenda.md` 判種類與日期；要改、完成、取消的先用 `list --json` 找到那一條，找不到就問要不要當新的記。掛哪個案子或人，以已登記的實體為準，掛不上就不掛、回答裡說一聲。
+- 日程：照 `references/agenda.md` 判種類與日期；要改、完成、取消的先用 `list --json` 找到那一條，找不到就問要不要當新的記。掛哪個案子或人以已登記的實體為準，沒登記的先問（`references/agenda.md` 第三節）。
 - 狀態：用 `kb entity progress`（`references/agenda.md` 第四節）。
 - 改規則：跑 `kb profile show --json`，判斷放哪一節、照範本填。型別合併先只問一句為什麼要併（D-143），再帶 `--check --json` 跑 `kb profile type`，照它的問題與結果清單問。
 - 事實與決定：照 `references/correction.md` 第一節記成口述（`kb statement add`）。

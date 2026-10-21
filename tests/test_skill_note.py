@@ -205,6 +205,25 @@ class Knowledge(unittest.TestCase):
         pref = (SKILL_DIR / "references" / "preference.md").read_text(encoding="utf-8")
         self.assertNotIn("改了名整份連密碼都會被讀進去", pref)
 
+    def test_round_one_text_rulings(self):
+        """測試第一輪後裁定 7～10：例句 7 走完、綜合卡寫錯改記口述、沒登記的實體先問（三份同一句）、「以後都以口述為準」不導去改規則。"""
+        refs = {n: (SKILL_DIR / "references" / n).read_text(encoding="utf-8")
+                for n in ("correction.md", "ruling.md", "agenda.md")}
+        part = refs["correction.md"][refs["correction.md"].index("業主是陳先生"):]
+        for want in ("kb cards mount", "kb cards redo", "記一條口述"):
+            with self.subTest(want=want):
+                self.assertIn(want, part)
+        row = next(ln for ln in refs["correction.md"].splitlines() if ln.startswith("| 綜合卡寫錯 |"))
+        self.assertIn("記一條口述", row)
+        self.assertIn("記下了，下次整理時綜合卡會改", row)
+        ask = "客戶說的名稱實體清單沒有，先問「<名稱> 是新的案子／對象嗎？」，客戶說是才 `kb entity add`；說是別的名字就照那個名字"
+        for name, text in refs.items():
+            with self.subTest(name=name):
+                self.assertIn(ask, text)
+        self.assertNotIn("不要為了掛日程替客戶登記新實體", refs["agenda.md"])
+        self.assertIn("這版只能一件一件記", refs["ruling.md"])
+        self.assertNotIn("走改規則", refs["ruling.md"])
+
 
 class Evals(unittest.TestCase):
     def setUp(self):

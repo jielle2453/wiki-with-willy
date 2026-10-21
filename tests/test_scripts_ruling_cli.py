@@ -81,11 +81,22 @@ class Add(Base):
             (["--kind", "以後都這樣", "--card", self.cid, "--text", "x"], "裁示種類要是 口述為準、不採用 之一"),
             (["--kind", "不採用", "--card", "f-00000000", "--text", "別信"], "清冊沒有 f-00000000"),
             (["--kind", "口述為準", "--entity", "內湖李", "--text", "以口述為準"], "實體清單沒有「內湖李」，先 kb entity add"),
+            (["--kind", "口述為準", "--entity", "信義王", "--text", "字" * 201], "裁示要一句話，最多 200 字"),
+            (["--kind", "口述為準", "--entity", "信義王", "--text", "報價以 $(echo hi) 為準"], "裁示裡不能有 \" $ ` \\ 這四種字元"),
         ]
         for args, want in cases:
             with self.subTest(want=want):
                 self.assertEqual(self.kb("add", *args, code=3), [want])
         self.assertFalse((self.V / ".system" / "rulings.json").exists())
+
+
+class Secrets(Base):
+    def test_password_refused_and_left_nowhere(self):
+        """測試第一輪後裁定 3（F-1）：裁示原話也不收密碼；rulings.json、裁示.md、工作日誌、ledger 都沒有那串。"""
+        from tests.test_scripts_statement_cli import leaks
+        self.assertEqual(self.kb("add", "--kind", "口述為準", "--entity", "信義王", "--text", "Wi-Fi 密碼 password: Abc12345678",
+                                 code=3), ["裁示裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版"])
+        self.assertEqual(leaks(self.V, "Abc12345678"), [])
 
 
 class RecheckList(Base):

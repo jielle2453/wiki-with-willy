@@ -633,6 +633,43 @@ class RedoMount(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(card.read_bytes(), before)
 
+    def redo_listed(self):
+        return [(i["id"], i.get("reason")) for i in self.todo()["stale"] if i["id"] == self.fid]
+
+    def test_redo_survives_mount(self):
+        """測試第一輪後裁定 6（F-4）：redo 後 mount 那張卡 → stale 仍列它帶 reason、綜合卡那行仍是 redo。"""
+        self.synthesis(self.E.DAAN, "大安陳")
+        self.kb("cards", "redo", self.fid)
+        self.kb("cards", "mount", self.fid, "--entity", "大安陳", "--entity", "信義王")
+        self.assertEqual(self.redo_listed(), [(self.fid, "客戶說卡讀錯了")])
+        front = cards.parse_front((self.V / "案子" / "大安陳" / "大安陳.md").read_text(encoding="utf-8"))
+        self.assertIn(f"{self.fid} redo", front["整理到"])
+        self.assertNotIn(self.fid, [s["id"] for i in self.todo()["synthesis_stale"] if i["name"] == "大安陳"
+                                    for s in i["changed"]])
+
+    def test_redo_survives_entity_rename(self):
+        self.kb("cards", "redo", self.fid)
+        self.kb("entity", "rename", "大安陳", "--to", "陳宅")
+        self.assertEqual(self.redo_listed(), [(self.fid, "客戶說卡讀錯了")])
+
+    def test_redo_survives_sync(self):
+        self.kb("cards", "redo", self.fid)
+        src = self.raw / self.E.QUOTE
+        dst = self.raw / "客戶案件" / "信義王" / "舊" / src.name
+        dst.parent.mkdir()
+        src.rename(dst)
+        self.kb("inventory", "scan")
+        self.kb("cards", "sync")
+        self.assertEqual(self.redo_listed(), [(self.fid, "客戶說卡讀錯了")])
+
+    def test_mount_refuses_a_first_version_card(self):
+        """測試第一輪後裁定 5（F-3）：檔頭沒有實體欄的舊版卡不寫、exit 3。"""
+        self.E.to_v1(self.V, self.rel)
+        before = (self.V / self.rel).read_bytes()
+        self.assertEqual(self.kb("cards", "mount", self.fid, "--entity", "信義王", code=3),
+                         ["「信義王報價」是舊版的卡，還沒有實體欄；先整理一次補好再改掛"])
+        self.assertEqual((self.V / self.rel).read_bytes(), before)
+
     def test_redo_refusals(self):
         self.assertEqual(self.kb("cards", "redo", "f-00000000", code=3), ["清冊沒有 f-00000000"])
         nocard = _cards.entry_of(self.V, self.E.ESTIMATE)["id"]

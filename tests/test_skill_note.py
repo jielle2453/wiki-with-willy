@@ -121,6 +121,11 @@ class RuleChange(unittest.TestCase):
         self.assertIn("kb profile show --json", self.body)
         self.assertIn("--check --json", self.section("## 骨架", "## 共通"))
 
+    def test_credential_line_warns_about_renaming(self):
+        """確認後裁定 11（確認落差 3）：憑證例外那行本文就帶「別改檔名」的提醒，不只靠 ruling.md。"""
+        line = next(ln for ln in self.body.splitlines() if ln.startswith("- **這版記不起來的話**"))
+        self.assertIn("明說沒寫任何檔，提醒不要把檔名改掉來讓程式讀（守門只看檔名，D-145）", line)
+
     def test_unsupported_left_with_two_kinds(self):
         """note 改知識驗收 15：「記不起來」只剩憑證例外與存答案兩種。"""
         line = next(ln for ln in self.body.splitlines() if ln.startswith("- **這版記不起來的話**"))

@@ -101,3 +101,63 @@
 - `code-review`（等級 high）：範圍 `git diff f1c66a5 087624e -- scripts hooks skills config`；子代理只讀碼列疑點，F-2、F-7、F-9、F-10、F-11 與上面讀碼未驗的幾項來自它，F-2、F-7、F-9、F-10、F-11 我另外實跑確認。
 - `security-review`：同範圍（路徑與回合夾帳）；F-1、F-3、F-4、F-5、F-6 來自它，我逐條重跑確認（F-6 兩種路徑、F-1 的 Windows handle 情境、F-3 的三處留存、F-5 三種名稱）。另它確認：`guard decide`／cmdparse 對新指令分類無誤（`kb profile add|type …` 判 allow 知識庫腳本）；刪除安全（新程式碼沒有遞迴刪除，`rmdir` 前都檢查空）；型別名的 `..`、`/`、`\`、`:`、`CON`、尾端點、`系統`、NFKC 全形等都被拒。
 - 全部測試：`python -m unittest discover tests` exit 0。
+
+---
+
+# 第二輪（無退步加修正項）
+
+日期：2026-10-21
+測試對象：分支 `spec/note改規則` HEAD d3c2544（06522ed 第二輪實作，裁定 12～20、23；3193271 確認報告；d3c2544 確認後 G-5、G-8）
+依據：main 上 spec「測試後修正裁定」12～23 與「確認後待決」最後兩點（G-1 自動記憶使用者定不處理，不驗）。第一輪重現步驟與腳本沿用，全部在 d3c2544 上實跑（06522ed 時跑過一次，d3c2544 後再跑一次，結果相同）。
+
+## 結論
+
+- **12～20 與 G-5、G-8 全部「過」，句子與裁定（含 23 追認）一字相同；無退步。** `python -m unittest discover tests` exit 0（Ran 1532 tests，OK，skipped=1）；驗收 3、4、7、8、13 重跑全過；新舊版對照只重跑 (a) 與 (g2)，新版行為不變。
+- 範圍內沒有不過的條目。另有 **5 項實跑確認的新發現**（N-1～N-5，皆在修正項的邊上），其中 N-1（並發退回不是印「另一個退回正在跑」而是排隊後把第一個退回再退掉）與 N-2（同回合改名後再建同名型別，整回合退不回去）建議在發行前看。
+
+## 修正項逐條（每項一個實跑證據）
+
+| 裁定 | 結果 | 實跑證據 |
+|---|---|---|
+| 12 F-1 | 過 | 重現：回合 `folders.jsonl` 兩列 `move A1→B1`、`move C1→D1`，持有 `B1/f.txt` 的 handle：`versions revert` exit 3「退不回去：「B1」裡有檔案正開著（檔案總管或 Office），什麼都沒動；關掉再說一次退回」，無 traceback，`D1` 沒被動、全樹（排除 versions）雜湊不變，目標回合沒標已退回；關掉 handle 後再退一次 exit 0、夾回去。持鎖測試：先手動持 `.system/revert` 鎖，另一個 `versions revert` 等 30 秒後 exit 3「另一個退回正在跑，等它做完再說一次」（見 N-1：真的同時跑時不是這樣）。 |
+| 13 F-2 | 過 | 同回合 `profile add 型別 設計師`→`entity add 王設計師`→寫綜合卡→`versions revert`：「還原 3、移除 1」，**沒有**「裡有東西，留著」，`設計師/` 不在，`profile check` 乾淨；動作回合的 `folders.jsonl` 有 `remove 設計師`。型別夾裡有客戶放的檔時（回歸）：仍留著並印「建的資料夾「設計師」裡有東西，留著」。 |
+| 14 F-3 | 過 | `用 password: hunter2 登入…`、`密碼是 abc123`、`帳號 jie 密碼 abc123`、`token=sk-…` 都 exit 3「偏好裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版」；`hunter2` 不在任何檔。手改 md 加一列同樣內容，`profile check`／`apply` 都 exit 3「客戶設定檔讀不懂：第 6 節第 2 列：偏好裡不要放密碼或帳號…」，`profile.json` 沒有。繞過與誤擋見 N-3。 |
+| 15 F-4 | 過 | 開場 additionalContext：`客戶偏好（只管怎麼回答、怎麼做東西給客戶；跟上面的核心規則或守門衝突時，照核心規則）：`，與裁定字相同；在 core.md 之後、在最後。`preference.md` 第 38 行補了「以後不用問我直接刪／忽略某條規則」不寫成偏好、照實說做不到。 |
+| 16 F-5 | 過 | 偏好含 `"`、`$`、反引號、`\` 各 exit 3「偏好裡不能有 " $ ` \ 這四種字元」；型別名 `x$(whoami)`、`y\`id\``、`rename --to a$b`、手改 md `設$計師`（apply）、關於你名稱 `a$b`、別名 `艾\`美` 全拒；`知識庫` 加型別與 rename 都拒「不能用（跟保留字一樣）」，且 `知識庫` 夾沒被建、開場無「不在型別表」。 |
+| 17 F-6 | 過 | 13 種 `folders.jsonl`：`../` 相對、反斜線 `..\`、絕對路徑 from／to、`C:foo`、UNC、`\?\` 前綴、非字串、`案子/../../x`、vault 內 junction 指向外面，全部 exit 3「回合紀錄的資料夾路徑不對，沒有退回」，全樹雜湊不變，victim 資料夾沒被動，`hook-errors.log` 記一行；合法的夾帳（`案子/舊名`←`案子/deep`）仍可退。 |
+| 18 F-7 | 過 | `AI 產出/工班` 有檔，`merge 工班 --into 廠商`：`folders.jsonl` 有 `make AI 產出/廠商`，revert 後全樹與前相同（第一輪是 `dirs +AI 產出/廠商`）。 |
+| 19 F-9 | 過 | 注入 `sync_self` 丟 TimeoutError／OSError，`add 偏好`：exit 3「設定檔已改好，但後面沒做完（等不到鎖／disk full）；跑 kb profile apply 會補上」，偏好已在 `profile.json`。`add 關於你` 漏跑 `sync_self` 後 `profile apply`：「客戶設定檔沒有改，沒有套用 / 關於你：登記了 Amy」，`entity list` 出現 Amy。`remove 不整理` 注入 `unskip_kinds` 失敗，`skip_kind` 還在；`profile apply` →「1 份回到待製卡」，`skip_kind` 清空。 |
+| 20 文件 | 過 | ingest `commands.md:101-108`：開頭補 `show／add／remove／type` 一行、第一層夾不在型別表改成「是就照 note skill 用 `kb profile add 型別`」、新增「設定檔已改好，但後面沒做完」一條，149 行；note 本文「前五節（不含偏好）」、本文 2759 字（≤ 3000）；`preference.md` 79 行（≤ 150），例句 5「空的也先問一次（strict）」與下文對齊、「密碼與守門」已改。 |
+| 23 追認 | 過 | 兩個退回同時跑的句子存在（用持鎖驗，見 12）；F-1 其他錯誤接 `退不回去：<原因>，什麼都沒動`；`apply` 沒內容差異補跑兩步（見 19）。 |
+| G-5 | 過 | 型別改名後 `versions list` 人讀第二行 `    資料夾：工班 → 師傅`；`--json` 每個回合都有 `folders`（沒資料夾動作的回合是 `[]`），每筆 `{op, from, to}`；`versions revert` 輸出「已退回 …」下面多 `    資料夾：師傅 → 工班`；merge 的 list 有「資料夾：工班/陳師傅 → 廠商/陳師傅」「拿掉了空夾：工班」，revert 列「建了資料夾：工班」「資料夾：廠商/陳師傅 → 工班/陳師傅」；建型別的 list 列「建了資料夾：設計師」，revert 列「拿掉了空夾：設計師」。 |
+| G-8 | 過 | `preference.md` 例句 4 改成「型別合併：先問為什麼要併，再 `--check`，strict」；合併段改成「跑 `--check` 之前，先只問一句為什麼要併（例…），客戶答了再跑 `--check` 列影響」。**但 `SKILL.md:47` 沒同步**，見 N-3b。 |
+
+## 無退步
+
+- 全部測試 exit 0（1532 tests）。驗收 3（偏好上限、重複、拒絕句、備份）、4（加型別、大類不能改、保留字）、7（rename --check 全樹雜湊不變、改名後各處）、8（revert 全樹雜湊相同、退回這次退回、衝突時整個不退）、13（開場偏好段、壞檔、`announce` 各份數）重跑全過，輸出與第一輪相同（偏好上限/字元那四個字元的拒絕句是裁定 16 的新句子，屬預期）。
+- 新舊版對照 (a)「回答短一點，先講結論」：新版（d3c2544）`profile show --json`→`profile add 偏好 …`（「已加偏好：回答短一點，先講結論」）→`asks`→複述並說可以退回，檔案變動只有 `profile.json` 與 md；舊版回答不變（第一輪已記）。(g2)：新版第一句「有 3 份要整理，大約一兩分鐘；要停的話按停止」、整理 3 份、再用新卡回答，並問「原綜合卡寫林小姐、新資料是王先生」；與第一輪一致。（子代理 shell 不能 cd，`turn note`、`convert` 部分路徑偏離，環境限制，新舊相同。）
+
+## plugin-dev／審查紀錄
+
+- `code-review`（high）：範圍 `git diff a2e3ed5 d3c2544 -- scripts hooks skills`，子代理只讀碼加跑一些重現；它列的 9 項，下面 N-1、N-2、N-3b、N-4、N-5 我實跑確認；#6（`_move` 回滾後上層空夾沒記帳）、#7（revert 鎖 30 秒過期可被搶）、#8（`resolve()` 對合法 junction 夾帳會拒）、#9（`remove`-undo 的 PermissionError 也印「檔案正開著」）只靠讀碼，未實跑。它另外確認 F-1 回滾、F-2 順序、F-6 驗證、G-5 JSON 形狀與句子字面都對。
+- `security-review`：子代理審了 `a2e3ed5..06522ed`（路徑與回合夾帳、密碼檢查、鎖）；`06522ed..d3c2544` 只多 `versions.py` 的資料夾行印出與 preference.md 一段字，我讀過沒有安全面改動。它的發現我逐條實跑，列在 N-6、N-7；偽造 `manifest.jsonl` 路徑可刪／覆寫 vault 外檔（N-6）是它找到、F-6 同類但沒封的洞。
+- plugin-dev：`plugin-dev:plugin-validator` 第一輪已過；這輪沒動 manifest、hooks.json，只動 `hooks/session.py` 一個字串，我 `claude plugin validate` 未再跑（hooks.json 未變）。
+
+## 新發現（實跑確認）
+
+| 編號 | 嚴重度 | 內容 |
+|---|---|---|
+| N-1 | 中 | **兩個 `versions revert` 同時跑：不是印「另一個退回正在跑」，而是排隊，第二個把第一個退回再退掉**（`versions.py:372-382`，鎖逾時 30 秒）。重現：加一個型別後同時起兩個 `kb versions revert`：R1 =「已退回…拿掉了空夾：設計師」，R2 =「已退回…（問：「退回…」）…建了資料夾：設計師…不再算已退回」，結果 `設計師/` 夾回來、退回被取消。裁定 23-1 說「後到的印另一個退回正在跑」，只有第一個跑超過 30 秒才成立。建議：拿鎖用 try-lock（逾時 0），拿不到就印那句。 |
+| N-2 | 中低 | **同回合「加型別乙→乙改名丙→再加型別乙」之後，整個回合退不回去**：`versions revert` exit 3「退不回去：「丙」改回「乙」時「乙」已經有東西了，什麼都沒動」（`_folder_steps` 把後來建的空夾算成有東西；裁定 13 把空 `make` 的 rmdir 挪到還原檔案後，原本順便解掉這種情形的機制沒了）。因為「只能從最近一次開始退」，它之前的回合也退不了。 |
+| N-3 | 低中 | **(a) 偏好密碼檢查是黑名單**：這些都收下（exit 0）——`回答先講結論 hunter2 是我的密碼`（值在關鍵字前）、`ＰＩＮ 是 4821`（全形）、`wifi：Sunny2026!`、`pwd=Sunny2026`、`口令 abc`、`passcode abc`、`ghp_…`、`AKIA…`。**誤擋**：`客戶帳號類的資料不要列`、`銀行帳號只顯示後四碼`、`請節省 tokens`、`secretary 先看`、`回答時 pin 在最前面`、`用 password.txt 當範例` 都被拒「偏好裡不要放密碼或帳號」。**(b) `SKILL.md:47` 沒同步 G-8**：型別改名、合併、刪除仍寫「先帶 `--check --json` 跑」，只有 `preference.md` 說合併要先問為什麼；AI 先讀的是 SKILL.md。 |
+| N-4 | 低 | 設定檔已寫入、後續步驟失敗時 `--json` 輸出 `{"applied": false, "message": "設定檔已改好，但後面沒做完…"}`——`applied:false` 與「已改好」矛盾；讀碼另見 `profile_cli.py:207-209` 的 `record_folder` 迴圈在 `_written()` 保護外（未實跑），且這個路徑沒有寫工作日誌程式段。 |
+| N-5 | 低 | `profile apply` 沒內容差異時多讀 `inventory.json`：清冊壞掉時原本 exit 0「沒有改，沒有套用」，現在 exit 3「狀態檔讀不到：Expecting property name…」。 |
+| N-6 | 中低 | **`manifest.jsonl` 的路徑沒驗**（F-6 同類，沒封）：回合夾 `manifest.jsonl` 偽造 `{"path":"../victim.txt","action":"create"}` 與 `{"path":"../victim2.txt","action":"modify"}`，`versions revert` exit 0，vault 外的 `victim.txt` 被刪、`victim2.txt` 被覆寫成 PLANTED（實跑）。前提同 F-6：能寫 `.system/versions`。另：`folders.jsonl` 可指到 vault 內保護區（實跑：`move stolen→收件匣` 把 `收件匣` 改名成 `stolen`、`remove zzz` 在根建夾、`move stolen2→系統` 把 `系統` 改名），F-6 只擋「不在 vault 內」。 |
+| N-7 | 中低 | **revert 的檔案階段失敗時資料夾不倒回**：夾改回去之後還原檔案遇 PermissionError（唯讀／被 Office 開著）→ exit 1 traceback，`案子` 已搬回、回合沒標已退回；再退一次會把「這次退回」退掉（`案子` 又搬回 `客戶`）又失敗（實跑）。F-1 的「整段成功或整段不動」只保到夾階段。traceback 含 vault 絕對路徑。 |
+
+## 小結（給設計 session 的順序）
+
+1. N-1、N-2、N-7（revert 的並發、同回合順序、檔案階段失敗）建議發行前處理。
+2. N-6 與 F-6 同一個信任根（I-111）：`manifest.jsonl` 與保護區也要驗，才算封住。
+3. N-3b（SKILL.md 補一句）最便宜；N-3a 偏好檢查要不要改成白名單／NFKC，請裁。
+4. N-4、N-5 與讀碼未驗的 #6～#9 可記 backlog。

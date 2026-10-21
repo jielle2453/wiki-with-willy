@@ -602,6 +602,37 @@ class RedoMount(unittest.TestCase):
         _cards.scan_apply(self.V)
         self.assertNotIn("redo", self.entry())
 
+    def test_redo_marks_the_synthesis_line_until_the_card_is_rewritten(self):
+        """實作回報裁定 1：redo 時掛它的綜合卡整理到那行改 redo、todo 不列綜合卡；卡重寫後 stale、changed 帶 reason；
+        照 header 重寫綜合卡後不再列。"""
+        self.synthesis(self.E.DAAN, "大安陳")
+        card = self.V / "案子" / "大安陳" / "大安陳.md"
+        t = turn.start(self.V, None, "")["turn"]
+        self.assertEqual(self.kb("cards", "redo", self.fid),
+                         ["已標成要重做：「信義王報價」，下次整理時重寫", "連帶要更新的綜合卡：大安陳"])
+        self.assertIn(f"{self.fid} redo", cards.parse_front(card.read_text(encoding="utf-8"))["整理到"])
+        rows = {e["path"]: e for e in turn.entries(self.V, t)}
+        self.assertEqual(rows["案子/大安陳/大安陳.md"]["by"], "program")
+        self.assertEqual(self.todo()["synthesis_stale"], [])
+        p = self.V / self.rel
+        p.write_text(p.read_text(encoding="utf-8") + "重寫過。\n", encoding="utf-8")
+        (item,) = self.todo()["synthesis_stale"]
+        self.assertEqual(item["name"], "大安陳")
+        self.assertEqual([(x["id"], x.get("reason")) for x in item["changed"]], [(self.fid, "客戶說卡讀錯了")])
+        card.write_text(self.E.synthesis_text(item["header"], "大安陳"), encoding="utf-8")
+        self.assertEqual(self.todo()["synthesis_stale"], [])
+
+    def test_redo_json_synthesis_and_revert_restores_it(self):
+        self.synthesis(self.E.DAAN, "大安陳")
+        card = self.V / "案子" / "大安陳" / "大安陳.md"
+        before = card.read_bytes()
+        turn.start(self.V, None, "")
+        out = json.loads(run_kb("cards", "redo", self.fid, "--json", cwd=self.V).stdout)
+        self.assertEqual(out["synthesis"], ["大安陳"])
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(card.read_bytes(), before)
+
     def test_redo_refusals(self):
         self.assertEqual(self.kb("cards", "redo", "f-00000000", code=3), ["清冊沒有 f-00000000"])
         nocard = _cards.entry_of(self.V, self.E.ESTIMATE)["id"]

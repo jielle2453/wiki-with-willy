@@ -266,13 +266,17 @@ def _skip(vault, fid, kind, as_json, conversation):
 
 def _redo(vault, fid, as_json, conversation):
     got = cards.mark_redo(vault, fid, turn.current(vault)["turn"])
-    if got["changed"]:
-        journal_cli.record_program_or_warn(vault, f"標成要重做：{got['title']}",
-                                           [{"path": inventory.INVENTORY_POSIX, "action": "modify"}], "cards redo", conversation)
+    if got["changed"] or got["synthesis_paths"]:
+        changed = ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if got["changed"] else []) + [
+            {"path": rel, "action": "modify"} for rel in got["synthesis_paths"]]
+        journal_cli.record_program_or_warn(vault, f"標成要重做：{got['title']}", changed, "cards redo", conversation)
     if as_json:
-        print(json.dumps({"id": fid, "title": got["title"], "redo": got["redo"]}, ensure_ascii=False))
+        print(json.dumps({"id": fid, "title": got["title"], "redo": got["redo"], "synthesis": got["synthesis"]},
+                         ensure_ascii=False))
     else:
         print(f"已標成要重做：「{got['title']}」，下次整理時重寫")
+        if got["synthesis"]:
+            print("連帶要更新的綜合卡：" + "、".join(got["synthesis"]))
     return 0
 
 

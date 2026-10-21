@@ -25,6 +25,7 @@ BASE_HINTS = {"現況": "這件事現在怎樣：一點一行、事實變了就�
               "紀事": "日期倒序、只增不改：決定、改版、關鍵事件",
               "推算": "從多張卡算出來的：結果、算法、依據、算的日期；沒有就整段不寫"}
 STALE_CODE = "synced"
+REDO = "redo"  # 整理到 那行的指紋欄：客戶說卡讀錯了，等卡重寫（實作回報裁定 1）
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # validate 的問題代號：這些一出就不再往下驗（後面的比對沒有意義）
 GATING = ("parse", "missing_key", "unknown", "self", "removed", "inferred")
@@ -63,17 +64,27 @@ def card_lines(mounts_of_it):
     return [f"{m['id']} {m.get('date') or '未載'} {m.get('title') or ''}".rstrip() for m in ordered]
 
 
-def synced_lines(mounts_of_it, stmts=(), ruls=()):
-    """整理到 欄：檔案卡每行「<編號> <fp>」，口述與裁示每行「<編號> -」，全部照編號排（f-、r-、s-）。"""
-    lines = {m["id"]: f"{m['id']} {m.get('fp') or ''}".rstrip() for m in mounts_of_it}
+def synced_lines(mounts_of_it, stmts=(), ruls=(), redo=()):
+    """整理到 欄：檔案卡每行「<編號> <fp>」，口述與裁示每行「<編號> -」，全部照編號排（f-、r-、s-）。
+    redo 是 redo 記號還有效的卡編號（cards redo 之後、卡還沒重寫）：那張卡的指紋欄寫 redo（實作回報裁定 1）。"""
+    lines = {m["id"]: f"{m['id']} {REDO if m['id'] in redo else (m.get('fp') or '')}".rstrip() for m in mounts_of_it}
     lines.update({x["id"]: f"{x['id']} -" for x in list(stmts) + list(ruls)})
     return [lines[k] for k in sorted(lines)]
 
 
 def knowledge(vault):
-    """口述清單與裁示（讀一次給整批用）；titles 是檔案卡標題，要用時才掃（_titles）。讀不到丟 ValueError（帶檔名）。"""
-    from kb._lib import rulings, statements
-    return {"statements": statements.load(vault), "rulings": rulings.load(vault), "titles": None}
+    """口述清單與裁示（讀一次給整批用）、清冊的 redo 記號 {卡編號: 記號}；titles 是檔案卡標題，要用時才掃（_titles）。
+    讀不到丟 ValueError（帶檔名）。"""
+    from kb._lib import inventory, rulings, statements
+    marks = {e["id"]: e["redo"] for e in inventory.load(vault)["entries"] if e.get("redo") and e.get("id")}
+    return {"statements": statements.load(vault), "rulings": rulings.load(vault), "titles": None, "redo": marks}
+
+
+def redo_ids(vault, know, mounts_of_it):
+    """這幾張卡裡 redo 記號還有效的（卡檔現在的 sha256 前 12 碼等於記號，也就是 cards redo 之後還沒重寫）。"""
+    from kb._lib import inventory
+    marks = know.get("redo") or {}
+    return {m["id"] for m in mounts_of_it if m["id"] in marks and inventory.card_sha(vault, m["path"]) == marks[m["id"]]}
 
 
 def basis(know, name, mounts):
@@ -144,7 +155,8 @@ def header_for(vault, entity, mounts_of_it, today=None, data=None, mounts=None, 
     return _front_text({
         "編號": entity["id"], "型別": entity.get("type"), "大類": category_text(prof, entity.get("type")),
         "名稱": entity["name"], "別名": list(entity.get("aliases") or []), "範本版本": TEMPLATE_VERSION,
-        "整理到": synced_lines(mounts_of_it, stmts, ruls), "更新日": today or date.today().isoformat(),
+        "整理到": synced_lines(mounts_of_it, stmts, ruls, redo_ids(vault, know, mounts_of_it)),
+        "更新日": today or date.today().isoformat(),
         "檔案卡": card_lines(mounts_of_it), "相關實體": related(data, mounts, entity)})
 
 
@@ -237,7 +249,8 @@ def problems(vault, rel, text, data, mounts, prof, know=None):
     have = front["整理到"]
     know = know if know is not None else knowledge(vault)
     stmts, ruls = basis(know, entry["name"], mounts)
-    if not isinstance(have, list) or sorted(have) != sorted(synced_lines(mounts.get(entry["name"], []), stmts, ruls)):
+    ms = mounts.get(entry["name"], [])
+    if not isinstance(have, list) or sorted(have) != sorted(synced_lines(ms, stmts, ruls, redo_ids(vault, know, ms))):
         out.append((STALE_CODE, "整理到不是現行的，重跑 kb cards todo 拿新檔頭"))
     day = front["更新日"]
     ok = isinstance(day, str) and bool(_DATE.match(day))
@@ -434,11 +447,13 @@ def _stale_item(vault, e, rel, text, ms, data, mounts, prof, today, know):
         if len(parts) == 3:
             titles[parts[0]] = parts[2]
     stmts, ruls = basis(know, e["name"], mounts)
-    now = {m["id"]: (m.get("fp") or "", dict(_brief(m), source="card")) for m in ms}
+    redo = redo_ids(vault, know, ms)
+    now = {m["id"]: (REDO if m["id"] in redo else (m.get("fp") or ""), dict(_brief(m), source="card")) for m in ms}
     now.update({s["id"]: ("-", dict(statement_brief(s), source="statement")) for s in stmts})
     now.update({r["id"]: ("-", _ruling_source(r)) for r in ruls})
     added = [now[c][1] for c in sorted(now) if c not in have]
-    changed = [now[c][1] for c in sorted(now) if c in have and have[c] != now[c][0]]
+    changed = [dict(now[c][1], **({"reason": cards.REDO_REASON} if have[c] == REDO else {}))
+               for c in sorted(now) if c in have and have[c] != now[c][0]]
     gone = [c for c in sorted(have) if c not in now]
     groups = cards._scan_groups(vault)[0] if any(c.startswith("f-") for c in gone) else {}
     removed = []

@@ -578,12 +578,39 @@ def _title(card):
 
 
 def mark_redo(vault, fid, turn_id):
-    """kb cards redo：清冊條目記 redo（卡檔現在的 sha256 前 12 碼）；回 {"id","title","path","redo","changed"}。"""
-    from kb._lib import inventory
+    """kb cards redo：清冊條目記 redo（卡檔現在的 sha256 前 12 碼）；掛著這張卡的綜合卡「整理到」裡那一行指紋欄改成 redo
+    （replace_front、備份 by program，實作回報裁定 1）：卡重寫後綜合卡才會列待更新。
+    回 {"id","title","path","redo","changed","synthesis"（改到的綜合卡名稱）,"synthesis_paths"}。"""
+    from kb._lib import entities, inventory, synthesis, turn
     card = card_of(vault, fid)
     sha = inventory.card_sha(vault, card["path"])
     changed = inventory.set_redo(vault, fid, sha, turn_id)
-    return {"id": fid, "title": _title(card), "path": card["path"], "redo": sha, "changed": changed}
+    names, paths = [], []
+    with entities.lock(vault):
+        data = entities.load(vault)
+        for name in entity_names_of([card]):
+            e, _hit = entities.find(data, name)
+            if e is None or e.get("status") != "active" or entities.is_self(e) or not e.get("type"):
+                continue
+            loc = entities.locate(vault, e)
+            if not loc or e["name"] in names:
+                continue
+            text = _read(vault, loc)
+            try:
+                lines = parse_front(text).get("整理到")
+            except ValueError:
+                continue
+            if not isinstance(lines, list):
+                continue
+            new = [f"{fid} {synthesis.REDO}" if str(x).split(" ")[0] == fid else x for x in lines]
+            if new == lines:
+                continue
+            turn.backup(vault, loc, turn_id, by="program")
+            write_text_atomic(Path(vault) / loc, synthesis.replace_front(text, {"整理到": new}))
+            names.append(e["name"])
+            paths.append(loc)
+    return {"id": fid, "title": _title(card), "path": card["path"], "redo": sha, "changed": changed,
+            "synthesis": names, "synthesis_paths": paths}
 
 
 def mount(vault, fid, names, turn_id):

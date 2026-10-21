@@ -103,6 +103,7 @@
 | B-091 | 2026-10-21 | open | 推算清單（`findings.json`）掛的實體名稱不跟著 `entity rename`／`merge` 換（answer 題 `entities.py` 不能動）；現在查的時候照 `entities.find` 轉到現名（舊名進別名、合併轉址）。下一次動 `entities.py` 的題目在 rename／merge 裡跟換（同口述與裁示的做法） | answer 實作回報裁定 5 |
 | B-092 | 2026-10-21 | deferred | answer 測試第一輪讀碼低項（未重現）：多視窗共用 `current.json` 時 A 的 `cards todo` 可能把 `ingest` 標到 B 的回合；`lookup` 的 `mentions` 讀卡正文沒有大小上限、不帶 ruled_out／stale；`findings.stale` 不看清冊狀態（依據卡被排除時不判過期）；`journal.changed_text` 遇壞行 AttributeError；`check_text` 不擋控制字元與 markdown（口述同）；`turn.mark` 有鎖但 Stop 的 `set_done`（`_set`）沒拿同一把，同時寫仍可能互蓋 | answer 測試 F-9、F-10、第二輪疑義 1；第二輪 G-7：按停止後沒新句就 compact 指示照印（ingest_stopped 要等下一句才寫）、寫入失敗也印讀不到、tally 前導零 16 位誤判太大、很小的平均顯示 0、回顯沒濾控制字元 |
 | B-093 | 2026-10-22 | open | spike：桌面版用網址加 marketplace 裝假 plugin（archive zip，D-171、D-172），看有新版怎麼顯示、自動更新開關；真 plugin 用本機 marketplace 在桌面版跑全部 hook（開場、回合、守門、驗卡、工作日誌、摺疊）；移除再裝回知識庫照留。任務檔 llm-wiki-test 的 install-spike 夾 B-093-任務.md；公開測試 repo jielle2453/wiki-with-willy-spike 驗完由設計 session 刪 | 桌面版安裝與發行 |
+| B-094 | 2026-10-22 | open | 低：repo `CLAUDE.md` 地圖第 27、35、59 列（entity.py、profile_cli.py、_lib/profile.py）說明裡有沒跳脫的直線 `|`，會把表格切壞（answer 測試第三輪 H-3，早就存在）；下一個動 CLAUDE.md 的題順手改 | answer 測試 H-3 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

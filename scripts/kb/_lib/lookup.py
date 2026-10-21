@@ -69,14 +69,14 @@ def mentions(vault, word):
 
 
 def lookup(vault, query):
-    """回 {"query","entity","synthesis","cards","statements","rulings","findings","agenda","unsorted","mentions"}
-    （沒登記多 mentions_total）。"""
+    """回 {"query","entity","synthesis","cards","statements","rulings","findings","agenda","unsorted","mentions","verify_max"}
+    （沒登記多 mentions_total）。verify_max 是要逐份核對的份數上限（answer_verify_max，answer 裁定 6）；裁示帶日期（短標用）。"""
     from kb._lib import agenda, cards, findings, inventory, rulings, statements, synthesis
     ent = entities.load(vault)
     unsorted = cards.unsorted(vault)
     e, _hit = entities.find(ent, query)
     out = {"query": query, "entity": None, "synthesis": None, "cards": [], "statements": [], "rulings": [], "findings": [],
-           "agenda": [], "unsorted": unsorted, "mentions": []}
+           "agenda": [], "unsorted": unsorted, "mentions": [], "verify_max": config.get(vault, "answer_verify_max")}
     if e is None or e.get("status") != "active":
         found = mentions(vault, query)
         limit = config.get(vault, "lookup_mentions_max")
@@ -98,7 +98,7 @@ def lookup(vault, query):
     out["statements"] = [synthesis.statement_brief(s) for s in statements.active_for(statements.load(vault), name)]
     titles = agenda.card_titles(vault)
     ruls = sorted(rulings.for_entity(rul, name, mounts), key=lambda r: r.get("kind") != "spoken_wins")
-    out["rulings"] = [{"id": r["id"], "kind": r.get("kind"), "text": r.get("text"),
+    out["rulings"] = [{"id": r["id"], "kind": r.get("kind"), "text": r.get("text"), "date": r.get("date"),
                        "cards": [{"id": cid, "title": titles.get(cid)} for cid in rulings.card_ids(r)]} for r in ruls]
     finds = findings.active_for(findings.load(vault), name, ent)
     if finds:

@@ -109,6 +109,9 @@ def run(args):
     except ValueError as e:
         print(f"狀態檔讀不到：{e}")
         return 3
+    except Exception as e:  # noqa: BLE001  OSError 這類：一句白話，不印 traceback 與絕對路徑（answer 裁定 22）
+        print(f"查不出來（{type(e).__name__}），沒有結果")
+        return 3
     if getattr(args, "json", False):
         print(json.dumps(got, ensure_ascii=False))
     else:

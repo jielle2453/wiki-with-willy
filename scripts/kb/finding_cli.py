@@ -70,8 +70,9 @@ def _list(vault, args, as_json):
     items = data["findings"] if args.all else [c for c in data["findings"] if c.get("status") == "active"]
     if args.entity:
         found, _hit = entities.find(ent, args.entity.strip())
-        name = found["name"] if found is not None else args.entity.strip()
-        k = entities.key(name)
+        if found is None or found.get("status") != "active":  # 同 cards list（answer 裁定 22）
+            raise findings.FindingRefused(findings.NO_ENTITY.format(args.entity.strip()))
+        k = entities.key(found["name"])
         items = [c for c in items
                  if any(entities.key(findings._current_name(ent, n)) == k for n in c.get("entities") or [])]
     order = {id(c): i for i, c in enumerate(data["findings"])}  # 同一天照記的先後，新的在上
@@ -92,6 +93,18 @@ def _list(vault, args, as_json):
 
 
 WRITERS = {"add": _add, "withdraw": _withdraw}
+
+
+def rel_of(vault, e):
+    """OSError 的檔名換成總資料夾的相對路徑（人讀不印絕對路徑，answer 裁定 22）；不在總資料夾裡或沒有檔名就只講錯的種類。"""
+    from pathlib import Path
+    name = getattr(e, "filename", None)
+    if name:
+        try:
+            return Path(name).resolve().relative_to(Path(vault).resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+    return type(e).__name__
 
 
 def run(args):
@@ -118,5 +131,5 @@ def run(args):
         print(f"狀態檔讀不到：{e}")
         return 3
     except OSError as e:
-        print(f"沒有寫入：{type(e).__name__}: {e}")
+        print(f"狀態檔讀不到：{rel_of(vault, e)}")
         return 3

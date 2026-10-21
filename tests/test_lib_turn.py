@@ -609,5 +609,44 @@ class Folders(unittest.TestCase):
             turn.record_folder(self.V, self.t, "rename", "a", "b")
 
 
+class MarkLockAndInherit(unittest.TestCase):
+    """answer 測試後修正裁定 21（F-9）：turn.mark 在回合檔的鎖裡讀改寫（等不到鎖丟 TimeoutError、不寫）；
+    turn.start(inherit=…) 帶 ingest、ingest_stopped 兩個旗標。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_mark_waits_for_the_turn_file_lock(self):
+        from kb._lib import io as kio
+        turn.start(self.V, SID, "整理")
+        sess = self.V / ".system" / "turns" / f"{SID}.json"
+        lock = Path(str(sess) + ".lock")
+        lock.write_text("held", encoding="utf-8")
+        old = kio.LOCK_TIMEOUT
+        kio.LOCK_TIMEOUT = 0.2
+        try:
+            with self.assertRaises(TimeoutError):
+                turn.mark(self.V, "ingest")
+        finally:
+            kio.LOCK_TIMEOUT = old
+            lock.unlink()
+        self.assertNotIn("ingest", json.loads(sess.read_text(encoding="utf-8")))
+        self.assertTrue(turn.mark(self.V, "ingest"))
+        self.assertTrue(json.loads(sess.read_text(encoding="utf-8"))["ingest"])
+
+    def test_inherit_carries_ingest_flags(self):
+        turn.start(self.V, SID, "整理")
+        turn.mark(self.V, "ingest")
+        turn.mark(self.V, "ingest_stopped")
+        t = turn.current(self.V, SID)
+        n = turn.start(self.V, SID, "退回", inherit=t)
+        self.assertEqual((n.get("ingest"), n.get("ingest_stopped")), (True, True))
+        plain = turn.start(self.V, SID, "下一句")
+        self.assertNotIn("ingest", plain)
+
+
 if __name__ == "__main__":
     unittest.main()

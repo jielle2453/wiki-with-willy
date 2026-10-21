@@ -81,9 +81,19 @@ def _lines(row):
     return [head, f"{INDENT}結果：{_head(row.get('result'))}｜做了：{journal._flat(row.get('note'))}"] + tail
 
 
+def _own_turn(vault):
+    """對話裡這一句自己的工作日誌那行（turn hook 已經寫了開口）：--find 不算它，不然「以前問過」永遠成立（answer 裁定 12）。"""
+    try:
+        data = turn._read_turn(turn._current_file(vault))
+    except OSError:
+        return None
+    return turn.journal_key(data) if data and data.get("session_id") and not data.get("done") else None
+
+
 def _recent(vault, args, as_json):
     filtered = args.changed or args.find or args.since
-    rows = journal.recent(vault, args.n, changed=args.changed, find=args.find, since=args.since)
+    skip = _own_turn(vault) if args.find else None
+    rows = journal.recent(vault, args.n, changed=args.changed, find=args.find, since=args.since, skip=skip)
     if as_json:
         print(json.dumps(rows, ensure_ascii=False))
         return 0

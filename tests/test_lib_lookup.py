@@ -190,8 +190,8 @@ class ReadOnly(Base):
 class Human(Base):
     def test_first_line_format_and_no_ids(self):
         statements.add(self.V, "信義王改用系統櫃", ["信義王"], self.t)
-        rulings.add(self.V, "不採用", [], [self.contract], "合約是舊的，別信", self.t)
         findings.add(self.V, "信義王報價合計 182 萬", "兩份相加", ["信義王"], [self.quote, self.contract], self.t)
+        rulings.add(self.V, "不採用", [], [self.contract], "合約是舊的，別信", self.t)  # 先記推算、後說別信（裁定 15 之後依據不能是別信的卡）
         agenda.add(self.V, "到期", "2030-01-05", "交平面圖", ["信義王"], self.t)
         self.change_contract()
         n = self.todo_unsorted()
@@ -210,6 +210,29 @@ class Human(Base):
         self.assertTrue(out.splitlines()[0].startswith("沒有登記「內湖李」；有 1 張卡提到它"), out)
         self.assertIn("- 內湖李估價單（標題）", out.splitlines())
         self.assertIsNone(ID.search(out))
+
+
+
+class Round2(Base):
+    """answer 測試後修正裁定 18、22、23：rulings 帶日期（短標〔你 10/21 說的〕）；--json 帶 verify_max；
+    其他例外 exit 3 一句白話、不印 traceback 與絕對路徑。"""
+
+    def test_ruling_date_and_verify_max(self):
+        r = rulings.add(self.V, "口述為準", ["信義王"], [], "信義王的報價以口述為準", self.t)
+        got = lookup.lookup(self.V, "信義王")
+        self.assertEqual(got["rulings"][0]["date"], r["date"])
+        self.assertEqual(got["verify_max"], 20)
+        self.assertEqual(json.loads(self.kb("沒這個", "--json"))["verify_max"], 20)
+
+    def test_other_errors_exit_3_without_paths(self):
+        p = self.V / ".system" / "inventory.json"
+        p.unlink()
+        p.mkdir()
+        out = self.kb("信義王", code=3)
+        self.assertNotIn("Traceback", out)
+        self.assertNotIn(str(self.V), out)
+        self.assertNotIn(str(self.V).replace("\\", "/"), out)
+        self.assertEqual(len(out.strip().splitlines()), 1, out)
 
 
 if __name__ == "__main__":

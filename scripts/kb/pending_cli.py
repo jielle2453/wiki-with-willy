@@ -139,5 +139,6 @@ def run(args):
         print("等不到待處理的鎖（別的指令正在改它），沒有寫入；請稍後再試")
         return 3
     except OSError as e:
-        print(f"沒有寫入：{type(e).__name__}: {e}")
+        from kb.finding_cli import rel_of
+        print(f"狀態檔讀不到：{rel_of(vault, e)}")
         return 3

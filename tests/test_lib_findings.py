@@ -194,5 +194,23 @@ class Synthesis(Base):
         self.assertEqual((got["id"], got["stale"]), (it["id"], True))
 
 
+class RuledOut(Base):
+    """answer 測試後修正裁定 15（F-3）：依據卡被不採用算過期；依據含不採用的卡拒絕。"""
+
+    def test_ruled_out_after_add_makes_it_stale(self):
+        from kb._lib import rulings
+        it, _ = self.add()
+        rulings.add(self.V, "不採用", [], [self.est], "估價是舊的，別信", self.t)
+        self.assertTrue(self.stale(it["id"]))
+
+    def test_add_with_ruled_out_basis_refused(self):
+        from kb._lib import rulings
+        rulings.add(self.V, "不採用", [], [self.est], "估價是舊的，別信", self.t)
+        with self.assertRaises(findings.FindingRefused) as cm:
+            self.add()
+        self.assertEqual(str(cm.exception), "「信義王估價」你說過別信，不能當依據")
+        self.assertFalse((self.V / findings.FINDINGS_POSIX).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

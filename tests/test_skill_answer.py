@@ -17,7 +17,8 @@ BODY_MAX_CHARS = 3000
 BODY_MAX_LINES = 120
 REFERENCE_MAX_LINES = 150
 ABS_PATH = re.compile(r"(?<![A-Za-z$])[A-Za-z]:[\\/]|/Users/|/home/")
-FLAGS = re.compile(r"--(type|year|entity|source|row|changed|find|since|from|to|kind|card|basis|text|how|replaces|n)\b")
+# 裁定 12：骨架那一句准帶 --changed、--find、--from --to（AI 不讀 find.md 也挑得對），其餘參數仍住 references
+FLAGS = re.compile(r"--(type|year|entity|source|row|since|kind|card|basis|text|how|replaces|n)\b")
 DESCRIBES = ("現況", "找檔", "數字", "統計", "比較", "這週", "最近改了什麼", "聊過", "確認")
 NEGATIVES = ("把剛才的答案記下來", "改用系統櫃", "8500", "Excel", "放進去了", "搬到", "幫我檢查一下", "整理一下")
 
@@ -75,9 +76,11 @@ class Body(unittest.TestCase):
         for want in ("現在怎樣", "在哪", "數字", "比", "這週", "改了什麼", "聊過", "要我確認", "一般知識"):
             with self.subTest(want=want):
                 self.assertIn(want, part)
-        for want in ("note", "ingest", "produce", "manage"):
+        for want in ("note", "ingest", "manage", "這版還做不到"):
             with self.subTest(hand_off=want):
                 self.assertIn(want, part)
+        self.assertNotIn("produce", part, "裁定 18：produce 還沒有，不指過去")
+        self.assertIn("開場有新檔", part, "裁定 18：收例句 13")
 
     def test_principles_have_reasons_and_codes(self):
         part = self.section("## 原則", "## 骨架")
@@ -106,6 +109,63 @@ class Body(unittest.TestCase):
                 self.assertIsNone(ABS_PATH.search(p.read_text(encoding="utf-8")), p.name)
 
 
+class Round2(unittest.TestCase):
+    """answer 測試後修正裁定 12、13、18、19：骨架寫明每種問法叫哪個指令與篩法；原則不改卡；過場一律繁中放最前面；
+    find.md 日程與工作日誌用人讀輸出；verify.md 照 verify_max、粗估不加總、那份在哪只給檔名日期、裁示短標、矛盾閉環。"""
+
+    def setUp(self):
+        self.body = split(SKILL.read_text(encoding="utf-8"))[1]
+        self.find = REFS["find.md"].read_text(encoding="utf-8")
+        self.verify = REFS["verify.md"].read_text(encoding="utf-8")
+
+    def section(self, head, nxt):
+        return self.body[self.body.index(head):self.body.index(nxt)]
+
+    def test_12_skeleton_names_the_filters(self):
+        part = self.section("## 骨架", "## 共通")
+        for want in ("journal recent --changed", "--find", "agenda list --from --to"):
+            with self.subTest(want=want):
+                self.assertIn(want, part)
+
+    def test_13_never_edit_cards(self):
+        part = self.section("## 原則", "## 骨架")
+        line = next(ln for ln in part.splitlines() if "一律不改" in ln)
+        for want in ("綜合卡、檔案卡、設定檔一律不改", "照原檔答", "cards redo", "不叫 `turn note`", "D-155"):
+            with self.subTest(want=want):
+                self.assertIn(want, line)
+
+    def test_18_findings_and_counts(self):
+        part = self.section("## 原則", "## 骨架")
+        self.assertIn("依據沒變", part)
+        self.assertIn("扣掉不採用", self.find)
+
+    def test_19_chinese_transitions_first(self):
+        first = self.body.index("繁體中文")
+        self.assertLess(first, self.body.index("## 分辨"))
+        self.assertIn("不唸步驟", self.body[:self.body.index("## 分辨")])
+        self.assertNotIn("過場", self.body[self.body.index("## 共通"):], "移到最前面，不留兩份")
+
+    def test_18_find_uses_human_output_for_agenda_and_journal(self):
+        for head in ("## 三、", "## 四、"):
+            with self.subTest(head=head):
+                line = next(ln for ln in self.find.splitlines() if ln.startswith(head))
+                self.assertNotIn("--json", line)
+        self.assertIn("人讀", self.find)
+
+    def test_18_verify(self):
+        self.assertIn("verify_max", self.verify)
+        self.assertNotIn("answer_verify_max", self.verify)
+        self.assertNotIn("粗估約", self.verify)
+        self.assertIn("15 張卡，正在逐份對", self.verify)
+        self.assertIn("〔你 10/21 說的〕", self.verify)
+        self.assertIn("kb pending resolve", self.verify)
+        self.assertNotIn("那份在哪」才給", self.verify)
+        self.assertNotIn("設定檔第四節時", self.verify)
+        record = (ROOT / "skills" / "note" / "references" / "record-answer.md").read_text(encoding="utf-8")
+        line = next(ln for ln in record.splitlines() if ln.startswith("kb finding add"))
+        self.assertNotIn("--json", line)
+
+
 class References(unittest.TestCase):
     def test_exist_and_short(self):
         for name, p in REFS.items():
@@ -123,7 +183,7 @@ class References(unittest.TestCase):
     def test_verify_covers(self):
         text = REFS["verify.md"].read_text(encoding="utf-8")
         for want in ("粗估", "kb convert", "kb tally", "--row", "kb cards redo", "kb pending add", "--kind conflict",
-                     "answer_verify_max", "〔你", "〔我算的", "一般知識", "第二次問", "原檔改過"):
+                     "verify_max", "〔你", "〔我算的", "一般知識", "第二次問", "原檔改過"):
             with self.subTest(want=want):
                 self.assertIn(want, text)
 

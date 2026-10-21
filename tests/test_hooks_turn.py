@@ -319,6 +319,12 @@ class IngestStopped(unittest.TestCase):
         self.assertEqual(self.say("第二句"), "")
         self.assertNotIn("ingest_stopped", self.session())
 
+    def test_hooks_json_description_mentions_it(self):
+        """answer 測試後修正裁定 20（F-8）：hooks.json 的 description 補開場接著整理與按停止兩句。"""
+        desc = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["description"]
+        self.assertIn("還有沒整理完的照樣接著整理", desc)
+        self.assertIn("整理中按了停止，這個對話不再自動整理", desc)
+
     def test_terminal_todo_does_not_mark(self):
         from kb._lib import turn
         turn.start(self.V, None, "")

@@ -395,13 +395,15 @@ def keep(row, changed=False, find=None, since=None):
     return True
 
 
-def recent(vault, n, changed=False, find=None, since=None):
-    """從本月往前翻最多 12 個月（給了 since 就翻到那個月為止），收到 n 行為止，新在前；兩種 kind 都收，照 keep 篩。"""
+def recent(vault, n, changed=False, find=None, since=None, skip=None):
+    """從本月往前翻最多 12 個月（給了 since 就翻到那個月為止），收到 n 行為止，新在前；兩種 kind 都收，照 keep 篩；
+    skip 是不要的那一行的 turn（--find 跳過這一句自己）。"""
     out = []
     for month in _months_back(RECENT_MONTHS):
         if since and month < since[:7]:
             break
-        out.extend(r for r in _newest_first(read_lines(vault, month)) if keep(r, changed, find, since))
+        out.extend(r for r in _newest_first(read_lines(vault, month))
+                   if keep(r, changed, find, since) and not (skip and r.get("turn") == skip))
         if len(out) >= n:
             break
     return out[:n]

@@ -84,5 +84,19 @@ class CardsList(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
 
 
+    def test_verify_max_in_json(self):
+        self.assertEqual(self.json()["verify_max"], 20)
+        (self.V / ".system" / "config.json").write_text(json.dumps({"answer_verify_max": 5}), encoding="utf-8")
+        self.assertEqual(self.json()["verify_max"], 5)
+
+    def test_scan_groups_checks_deadline(self):
+        """裁定 17（F-5）：時限檢查放進 _scan_groups（讀每張卡之前）。"""
+        import time
+        from kb._lib import cards
+        with self.assertRaises(TimeoutError):
+            cards._scan_groups(self.V, deadline=time.monotonic() - 1)
+        self.assertTrue(cards._scan_groups(self.V)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -229,10 +229,14 @@ def _read(vault, rel):
     return (Path(vault) / rel).read_text(encoding="utf-8")
 
 
-def _scan_groups(vault):
-    """回 (groups, broken)：groups {編號: [{"path", "front"}, …]}（照路徑排）；解析不了、沒有編號的進 broken。"""
+def _scan_groups(vault, deadline=None):
+    """回 (groups, broken)：groups {編號: [{"path", "front"}, …]}（照路徑排）；解析不了、沒有編號的進 broken。
+    deadline（time.monotonic 的時刻）給開場 hook：讀每張卡之前看一次，過了丟 TimeoutError（answer 裁定 17）。"""
+    import time
     groups, broken = {}, []
     for rel in _walk_cards(vault):
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("讀卡讀太久")
         try:
             front = parse_front(_read(vault, rel))
         except (ValueError, OSError, UnicodeDecodeError) as e:
@@ -439,7 +443,7 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
     unreadable_skip = set(unreadable_open) | {first_file(i) for i in items
                                               if i.get("kind") == "unreadable" and i.get("status") == "dismissed"}
     missing_open = {first_file(i): i for i in opened if i.get("kind") == "missing_file"}
-    groups, broken = _scan_groups(vault)
+    groups, broken = _scan_groups(vault, deadline)
     out = {"new": [], "stale": [], "moved": [], "duplicates": [], "orphans": [], "unreadable": [], "missing": [],
            "skipped": dict({k: 0 for k in SKIPPED_READS}, skipped=0), "broken": list(broken), "pdf_restored": restored,
            "unlinked": [], "missing_types": {}}
@@ -640,7 +644,8 @@ def active_cards(vault):
 
 def listing(vault, types=(), year=None, names=(), source=None):
     """kb cards list 的本體（D-153、D-157）：窮舉不挑。篩法可疊加：卡型照字面（任一相符）、文件日期的年、掛的實體（任一，
-    別名與合併過的照登記的名稱認）、原檔來源別名。回 {"cards", "types", "undated"}：types 是卡型以外的篩法篩完後
+    別名與合併過的照登記的名稱認）、原檔來源別名。回 {"cards", "types", "undated", "verify_max"}：verify_max 是要逐份核對的
+    份數上限（answer_verify_max，客戶端可覆寫，answer 裁定 6）；types 是卡型以外的篩法篩完後
     實際出現的卡型與份數（in_profile 是設定檔第二節有沒有這個卡型）；undated 是文件日期未載的份數（給了年就不列進 cards）。
     實體沒登記丟 CardRefused。只讀。"""
     from kb._lib import entities, rulings
@@ -676,7 +681,8 @@ def listing(vault, types=(), year=None, names=(), source=None):
     if types:
         pool = [(b, d) for b, d in pool if b["card_type"] in types]
     undated = sum(1 for _b, dated in pool if not dated)
-    return {"cards": newest_first([b for b, dated in pool if dated or not year]), "types": type_rows, "undated": undated}
+    return {"cards": newest_first([b for b, dated in pool if dated or not year]), "types": type_rows, "undated": undated,
+            "verify_max": config.get(vault, "answer_verify_max")}
 
 
 # ---------- 重做與改掛（note 改知識第 5 點） ----------

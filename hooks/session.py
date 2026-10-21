@@ -5,7 +5,9 @@
 唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
 客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）；日程行只讀 agenda.json。
 沒有新變動、但清冊還有沒做成卡的（cards.unsorted，跟 kb cards todo 第一行同一個數，只讀）：變動行改印「還有 N 份沒整理完」，
-後面一樣接整理指示（answer 第 9b 點，D-161）；算超過開場時限就這行不印、寫 log。
+後面接整理指示（開頭不寫「有變動：」，answer 第 9b 點、裁定 14，D-161）；算超過開場時限就這行不印、寫 log。
+payload 的 session 在這個對話按過停止（session 檔記著 ingest_stopped，compact／resume 時）就不印整理指示（D-156、裁定 14）；
+這一步只讀 session 檔。
 core.md 之後接設定檔第六節的「客戶偏好（…照核心規則）：」一條一行（D-137，沒有不印；讀不到這段不印、寫 log；框住，測試後修正裁定 15）。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
@@ -47,6 +49,7 @@ CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動�
 MISSING_SOURCES_LINE = "這台電腦找不到來源{names}，其他照常；搬過的話跟我說。"
 MISSING_SOURCES_SHOWN = 3
 # D-156（note 改規則實作中裁定 1）：先整理、整理完再回答；門檻內開始前照 announce 說一句（D-100 修訂）
+HINT_HEAD = "有變動："
 INGEST_HINT = ("有變動：先照 ingest skill 整理（開始前照 announce 說一句），整理完再完整回答客戶；"
                "超過 {n} 份不整理，先用現有資料答、末尾問要不要整理。")
 _SCAN = {}  # vault → (sources, report) 或 None（scan 出錯）；兩行共用一次快速 scan（審閱裁定 9）
@@ -126,13 +129,26 @@ def line_changes(vault):
     return UNSORTED_LINE.format(n=left) if left else None
 
 
-def line_ingest_hint(vault):
-    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先照 ingest skill 整理、整理完再回答（D-156）；n 讀 ingest_auto_max。"""
-    if line_changes(vault) is None:
+def _stopped(vault, session_id):
+    """這個 session 按過停止嗎：session 檔記著 ingest_stopped（turn hook 記的，answer 第 9 點）。只讀；讀不到當沒按過。"""
+    if not session_id:
+        return False
+    from kb._lib import turn
+
+    data = turn._read_turn(turn._session_file(vault, session_id))
+    return bool(data and data.get("ingest_stopped"))
+
+
+def line_ingest_hint(vault, session_id=None):
+    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先照 ingest skill 整理、整理完再回答（D-156）；n 讀 ingest_auto_max。
+    接在「還有 N 份沒整理完」後面時開頭不寫「有變動：」；這個 session 按過停止就不印（answer 裁定 14）。"""
+    line = line_changes(vault)
+    if line is None or _stopped(vault, session_id):
         return None
     from kb._lib import config
 
-    return INGEST_HINT.format(n=config.get(vault, "ingest_auto_max"))
+    hint = INGEST_HINT.format(n=config.get(vault, "ingest_auto_max"))
+    return hint[len(HINT_HEAD):] if line.startswith(UNSORTED_LINE.split("{", 1)[0]) else hint
 
 
 def line_missing_sources(vault):
@@ -221,10 +237,10 @@ def line_compact(vault, source):
     return COMPACT_LINE if source == "compact" else None
 
 
-def status_lines(vault, source):
+def status_lines(vault, source, session_id=None):
     """固定順序；每一行各自 try：出錯那行回 None、寫 hook-errors.log，其他行照印（I-046）。kb 行不包，它出錯走整段出錯。"""
     out = [line_kb(vault)]
-    for fn in (line_version, line_changes, line_ingest_hint, line_missing_sources, line_profile, line_agenda, line_backup,
+    for fn in (line_version, line_changes, lambda v: line_ingest_hint(v, session_id), line_missing_sources, line_profile, line_agenda, line_backup,
                line_health,
                lambda v: line_compact(v, source)):
         try:
@@ -291,7 +307,7 @@ def main():
     if vault is None:
         return
     try:
-        context = "\n".join(status_lines(vault, payload.get("source"))) + "\n\n" + read_core()
+        context = "\n".join(status_lines(vault, payload.get("source"), payload.get("session_id"))) + "\n\n" + read_core()
         block = preferences_block(vault)
         if block:
             context += "\n" + block

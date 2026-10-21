@@ -6,7 +6,7 @@
 ## 怎麼記
 
 ```
-kb finding add --entity <名> --text "<結果一句>" --how "<算法一句>" --basis <卡編號> <卡編號> … --json
+kb finding add --entity <名> --text "<結果一句>" --how "<算法一句>" --basis <卡編號> <卡編號> …
 ```
 
 - `--entity`：那件事掛的實體，可以多個；講整個公司的（「今年報價總共多少」）掛客戶自己（`kb profile show --json` 第五節的名稱，

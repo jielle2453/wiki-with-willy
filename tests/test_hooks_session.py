@@ -306,6 +306,7 @@ class OpeningInventory(unittest.TestCase):
 
 INGEST_HINT = ("有變動：先照 ingest skill 整理（開始前照 announce 說一句），整理完再完整回答客戶；"
                "超過 {n} 份不整理，先用現有資料答、末尾問要不要整理。")  # D-156、note 改規則實作中裁定 1
+UNSORTED_HINT = INGEST_HINT[len("有變動："):]  # answer 裁定 14：「還有 N 份沒整理完」後面那句不寫「有變動：」
 
 
 class OpeningIngestHint(unittest.TestCase):
@@ -342,12 +343,34 @@ class OpeningIngestHint(unittest.TestCase):
                   for p in (self.V / ".system").rglob("*") if p.is_file()}
         lines = self.status()
         i = lines.index(f"還有 {n} 份沒整理完")
-        self.assertEqual(lines[i + 1], INGEST_HINT.format(n=20))
+        self.assertEqual(lines[i + 1], UNSORTED_HINT.format(n=20), "裁定 14：這一種的指示開頭不寫「有變動：」")
+        self.assertEqual(self.hint_lines(lines), [])
         after = {p.relative_to(self.V).as_posix(): p.stat().st_mtime_ns
                  for p in (self.V / ".system").rglob("*") if p.is_file()}
         self.assertLessEqual({k for k in after if before.get(k) != after[k]}, {".system/env.json"})
         (self.V / ".system" / "config.json").write_text(json.dumps({"ingest_auto_max": 1}), encoding="utf-8")
-        self.assertEqual(self.hint_lines(self.status()), [INGEST_HINT.format(n=1)])
+        self.assertIn(UNSORTED_HINT.format(n=1), self.status())
+
+    def stop_session(self):
+        """payload 的 session（abc）在這個對話按過停止：session 檔記著 ingest_stopped。"""
+        turns = self.V / ".system" / "turns"
+        turns.mkdir(parents=True, exist_ok=True)
+        (turns / "abc.json").write_text(json.dumps({
+            "schema_version": 1, "turn": "20261021-100000-abc", "session_id": "abc", "started": "2026-10-21T10:00:00",
+            "prompt_head": "", "approved": False, "note": "", "done": True, "ingest_stopped": True}), encoding="utf-8")
+
+    def test_stopped_session_gets_no_hint(self):
+        """answer 測試後修正裁定 14（F-2）：同一個 session 按過停止，compact／resume 照 D-156 不再叫 AI 整理。"""
+        self.stop_session()
+        for source in ("compact", "resume"):
+            with self.subTest(source=source):
+                lines = self.status(source)
+                self.assertTrue(any(ln.startswith("還有 ") for ln in lines), lines)
+                self.assertEqual([ln for ln in lines if "先照 ingest skill 整理" in ln], [])
+        (self.raw / "客戶案件" / "新.txt").write_text("新\n", encoding="utf-8")
+        lines = self.status("compact")
+        self.assertIn("變動：新增 1、修改 0、不見 0", lines)
+        self.assertEqual(self.hint_lines(lines), [])
 
     def test_unsorted_over_time_limit_not_printed_and_logged(self):
         import importlib.util

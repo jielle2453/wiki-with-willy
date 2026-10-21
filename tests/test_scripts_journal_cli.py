@@ -76,7 +76,8 @@ def turn_row(turn_id, time, prompt, result="好", note="做了一件事", change
 
 
 class RecentFilters(Base):
-    """D-158：預設全列（含沒改動的）；--changed、--find（問、結果、做了，NFKC casefold）、--since 可疊加；改了照路徑分類。"""
+    """answer 測試後修正裁定 12：對話裡跑 --find，turn hook 剛開的這一句自己的段不算。
+    D-158：預設全列（含沒改動的）；--changed、--find（問、結果、做了，NFKC casefold）、--since 可疊加；改了照路徑分類。"""
 
     def setUp(self):
         super().setUp()
@@ -125,6 +126,16 @@ class RecentFilters(Base):
         self.assertEqual(self.recent("--find", "沒這個詞"), ["沒有符合的段"])
         data = json.loads(run_kb("journal", "recent", "--changed", "--json", cwd=self.V).stdout)
         self.assertEqual([d["turn"] for d in data], ["20261020-220100-aaaa", "20261019-100000-aaaa"])
+
+    def test_own_open_turn_skipped(self):
+        import sys
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from kb._lib import turn
+        t = turn.start(self.V, "s", "上次我問王董你怎麼說？")
+        journal.begin_turn(self.V, None, t)
+        heads = self.heads(self.recent("--find", "王董"))
+        self.assertEqual(heads, ["2026-10-18 09:00｜你說：王董的電話幾號？"])
+        self.assertEqual(len(self.heads(self.recent())), 5, "不帶 --find 時照列")
 
     def test_bad_since_exit_2(self):
         r = run_kb("journal", "recent", "--since", "2026-02-30", cwd=self.V)
@@ -186,6 +197,7 @@ class Render(Base):
     def test_bad_month_exit_2(self):
         r = run_kb("journal", "render", "十月", cwd=self.V)
         self.assertEqual(r.returncode, 2)
+
 
 
 if __name__ == "__main__":

@@ -359,5 +359,15 @@ class ConflictCli(unittest.TestCase):
         self.assertEqual(md.read_bytes() if md.exists() else None, before)
 
 
+
+class ConflictCliOsError(unittest.TestCase):
+    setUp, tearDown, kb, add = ConflictCli.setUp, ConflictCli.tearDown, ConflictCli.kb, ConflictCli.add
+
+    def test_os_error_prints_relative_path(self):
+        (self.V / pending.PENDING_POSIX).unlink(missing_ok=True)
+        (self.V / pending.PENDING_POSIX).mkdir(parents=True)
+        self.assertEqual(self.add(self.a, self.b, code=3), [f"狀態檔讀不到：{pending.PENDING_POSIX}"])
+
+
 if __name__ == "__main__":
     unittest.main()

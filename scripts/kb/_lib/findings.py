@@ -4,7 +4,8 @@
 entities（登記的實體名稱，客戶自己也可以）、basis（[{id, fp}]，fp 是記的時候那張檔案卡的指紋前 12 碼）、
 mounts_fp（記的時候掛的實體掛著的卡編號集合的雜湊；掛客戶自己的算全庫的卡）、date、turn、
 status（active｜superseded｜withdrawn）、replaced_by。被取代、收回的留著，清理交 lint。
-過期（stale）：依據卡指紋變了（或卡不見），或那個集合變了（掛的實體多了新卡）；過期的不直接用，重算記新的一筆取代。
+過期（stale）：依據卡指紋變了（或卡不見）、依據卡被客戶說別信（不採用，answer 裁定 15），或那個集合變了（掛的實體多了新卡）；
+過期的不直接用，重算記新的一筆取代。記的時候依據含不採用的卡拒絕。
 綜合卡的「整理到」收 c- 行（指紋欄寫 -），所以有新推算或推算被取代時，那個實體列進待更新綜合卡（synthesis 接）。
 實體改名、合併不改這裡記的名稱：查的時候照 entities.find 轉到現在的名稱（改名時舊名進別名）。
 不渲染 md。每次寫都在 findings.json 的 FileLock 裡：先 turn.backup 再原子寫（D-074）；只經 kb finding 寫。
@@ -26,6 +27,7 @@ NOT_FOUND = "沒有這筆推算：{}"
 SUPERSEDED_MSG = "這筆已經被取代了，改最新的那筆"
 WITHDRAWN_MSG = "這筆已經收回了"
 STALE_TEXT = "依據有變，待重算"
+RULED_OUT_MSG = "「{}」你說過別信，不能當依據"
 
 
 class FindingRefused(ValueError):
@@ -89,8 +91,8 @@ def active_for(data, name, ent=None):
 # ---------- 過期 ----------
 
 def context(vault, ent=None, mounts=None, groups=None):
-    """算 stale 要的東西讀一次給整批用：實體清單、掛載、檔案卡、全庫 active 的卡編號。"""
-    from kb._lib import cards, entities, inventory
+    """算 stale 要的東西讀一次給整批用：實體清單、掛載、檔案卡、全庫 active 的卡編號、不採用的卡編號。"""
+    from kb._lib import cards, entities, inventory, rulings
     ent = ent if ent is not None else entities.load(vault)
     groups = groups if groups is not None else cards._scan_groups(vault)[0]
     mounts = mounts if mounts is not None else entities.mounts(vault, ent)
@@ -98,7 +100,8 @@ def context(vault, ent=None, mounts=None, groups=None):
         active = {e.get("id") for e in inventory.load(vault)["entries"] if e.get("status") == "active"}
     except ValueError:
         active = set()
-    return {"ent": ent, "groups": groups, "mounts": mounts, "all": {cid for cid in groups if cid in active}}
+    return {"ent": ent, "groups": groups, "mounts": mounts, "all": {cid for cid in groups if cid in active},
+            "ruled_out": cards.ruled_out_ids(rulings.load(vault))}
 
 
 def _mount_ids(names, ctx):
@@ -126,10 +129,10 @@ def _card_fp(ctx, cid):
 
 
 def stale(vault, item, ctx=None):
-    """依據卡的指紋跟記下的不同（或卡不見了），或掛的實體掛著的卡編號集合變了（掛客戶自己的：全庫的卡）。"""
+    """依據卡的指紋跟記下的不同（或卡不見了）、依據卡被說別信，或掛的實體掛著的卡編號集合變了（掛客戶自己的：全庫的卡）。"""
     ctx = ctx if ctx is not None else context(vault)
     for b in item.get("basis") or []:
-        if not isinstance(b, dict) or _card_fp(ctx, b.get("id")) != b.get("fp"):
+        if not isinstance(b, dict) or _card_fp(ctx, b.get("id")) != b.get("fp") or b.get("id") in ctx["ruled_out"]:
             return True
     return _hash(_mount_ids(item.get("entities") or [], ctx)) != item.get("mounts_fp")
 
@@ -186,14 +189,17 @@ def _names(vault, names):
 
 
 def _basis(vault, ids):
-    """每張依據卡要在清冊 active 且有檔案卡（同 cards.card_of）；回 [{id, fp}]，去重照順序。"""
-    from kb._lib import agenda, cards
+    """每張依據卡要在清冊 active 且有檔案卡（同 cards.card_of）、不是客戶說別信的；回 [{id, fp}]，去重照順序。"""
+    from kb._lib import agenda, cards, rulings
     out = []
+    ruled_out = cards.ruled_out_ids(rulings.load(vault))
     for cid in dict.fromkeys(ids):
         try:
             card = cards.card_of(vault, cid)
         except cards.CardRefused as e:
             raise FindingRefused(str(e)) from None
+        if cid in ruled_out:
+            raise FindingRefused(RULED_OUT_MSG.format(cards._title(card)))
         out.append({"id": cid, "fp": agenda.card_fp(card["front"])})
     return out
 

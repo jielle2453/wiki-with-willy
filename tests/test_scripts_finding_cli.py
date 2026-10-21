@@ -147,5 +147,18 @@ class Revert(Base):
         self.assertEqual((self.V / findings.FINDINGS_POSIX).read_bytes(), before)
 
 
+
+class Round2(Base):
+    """answer 測試後修正裁定 22（F-10）：list --entity 沒登記的拒絕；OSError 不印絕對路徑。"""
+
+    def test_list_unknown_entity_refused(self):
+        self.assertEqual(self.kb("list", "--entity", "沒登記", code=3), ["實體清單沒有「沒登記」，先 kb entity add"])
+
+    def test_os_error_prints_relative_path(self):
+        (self.V / findings.FINDINGS_POSIX).mkdir(parents=True)
+        out = self.kb("add", "--entity", "信義王", "--text", "x", "--how", "y", "--basis", self.quote, code=3)
+        self.assertEqual(out, [f"狀態檔讀不到：{findings.FINDINGS_POSIX}"])
+
+
 if __name__ == "__main__":
     unittest.main()

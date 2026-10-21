@@ -3,6 +3,8 @@
 每一筆是一張檔案卡、一個數字、卡上的〔位置〕（可省）。數字收千分位逗號、小數、負號、「萬」字尾（乘一萬），其他拒絕；
 卡要在清冊、原檔 active、有檔案卡（同 cards.card_of）。回逐筆表（卡標題、數字、位置）與筆數、合計、平均；
 人讀不印編號（日程確認後裁定 6），數字一律印成千分位。拒絕的第一行就是原因、exit 3，一字不差。
+上限（answer 裁定 16）：整數最多 15 位、小數最多 4 位（超過「數字太大」）；千分位要合法；位置一行、最多 30 字、不收 |；
+同一張卡可以有好幾筆（一份報價好幾項）。其他例外也接住，exit 3 一句白話、不印路徑。
 """
 import argparse
 import json
@@ -14,7 +16,12 @@ from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
 NO_ROWS = "至少要一筆"
 BAD_NUMBER = "看不懂這個數字：{}"
-_NUMBER = re.compile(r"^(-?)([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(\.[0-9]+)?(萬?)$")  # 只收半形數字（\d 會收全形）
+_NUMBER = re.compile(r"^(-?)([1-9][0-9]{0,2}(?:,[0-9]{3})+|[0-9]+)(\.[0-9]+)?(萬?)$")  # 只收半形數字（\d 會收全形）
+TOO_BIG = "數字太大：{}"
+WHOLE_MAX, FRAC_MAX = 15, 4  # 整數、小數最多幾位：遠在 Decimal 預設 28 位精度以內，加總不會失準
+WHERE_MAX = 30
+BAD_WHERE = "位置要一行、最多 30 字，不能有 |"
+CRASHED = "加總沒算出來（{}），沒有結果"
 AVERAGE_PLACES = Decimal("0.01")
 
 
@@ -35,6 +42,8 @@ def parse_number(text):
     if not m:
         raise TallyRefused(BAD_NUMBER.format(text))
     sign, whole, frac, wan = m.groups()
+    if len(whole.replace(",", "")) > WHOLE_MAX or len((frac or ".")[1:]) > FRAC_MAX:
+        raise TallyRefused(TOO_BIG.format(text))
     value = Decimal(sign + whole.replace(",", "") + (frac or ""))
     return value * 10000 if wan else value
 
@@ -66,11 +75,14 @@ def tally(vault, rows):
         if len(parts) > 2 and parts[2].startswith("萬"):  # 「54 萬」：萬跟數字分開會被當成位置，合計差一萬倍，拒絕
             raise TallyRefused(BAD_NUMBER.format(f"{parts[1]} 萬"))
         value = parse_number(parts[1])
+        where = parts[2].strip() if len(parts) > 2 else ""
+        if len(where) > WHERE_MAX or any(c in where for c in "|\r\n"):
+            raise TallyRefused(BAD_WHERE)
         try:
             card = cards.card_of(vault, fid)
         except cards.CardRefused as e:
             raise TallyRefused(str(e)) from None
-        out.append({"id": fid, "title": cards._title(card), "value": value, "where": parts[2].strip() if len(parts) > 2 else ""})
+        out.append({"id": fid, "title": cards._title(card), "value": value, "where": where})
     total = sum((r["value"] for r in out), Decimal(0))
     average = (total / len(out)).quantize(AVERAGE_PLACES, rounding=ROUND_HALF_UP)
     if average == average.to_integral_value():
@@ -104,6 +116,9 @@ def run(args):
         return 3
     except ValueError as e:
         print(f"狀態檔讀不到：{e}")
+        return 3
+    except Exception as e:  # noqa: BLE001  ArithmeticError、OSError 這類：一句白話，不印 traceback 與絕對路徑
+        print(CRASHED.format(type(e).__name__))
         return 3
     if getattr(args, "json", False):
         print(json.dumps(got, ensure_ascii=False))

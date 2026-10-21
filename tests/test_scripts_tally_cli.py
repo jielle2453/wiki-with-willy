@@ -80,5 +80,38 @@ class Cli(unittest.TestCase):
                 self.assertEqual(self.tally(*rows, code=3).strip(), want)
 
 
+
+class Limits(unittest.TestCase):
+    setUp, tearDown, tally = Cli.setUp, Cli.tearDown, Cli.tally
+    """answer 測試後修正裁定 16（F-4）：整數最多 15 位、小數最多 4 位；千分位要合法；ArithmeticError 也 exit 3；
+    位置欄最多 30 字、不收換行與 |；同一張卡兩筆照收。"""
+
+    def test_size_limits(self):
+        self.assertEqual(self.tally(f"{self.quote} 999,999,999,999,999 x").splitlines()[-1],
+                         "共 1 筆，合計 999,999,999,999,999，平均 999,999,999,999,999")
+        for raw in ("1,000,000,000,000,000", "9999999999999999", "99999999999999999999999999999", "1.23456", "3.14159萬"):
+            with self.subTest(raw=raw):
+                out = self.tally(f"{self.quote} {raw}", code=3).strip()
+                self.assertEqual(out, f"數字太大：{raw}")
+                self.assertNotIn("Traceback", out)
+        self.assertEqual(self.tally(f"{self.quote} 0.1234").splitlines()[-1], "共 1 筆，合計 0.1234，平均 0.12")
+
+    def test_thousands_must_be_legal(self):
+        for raw in ("0,001", "01,000", ",100", "1,00"):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.tally(f"{self.quote} {raw}", code=3).strip(), f"看不懂這個數字：{raw}")
+
+    def test_where_checked(self):
+        too_long = "第" * 31
+        for where in (too_long, "第 3 頁 | 總表", "第 3 頁\n總表"):
+            with self.subTest(where=where[:5]):
+                self.assertEqual(self.tally(f"{self.quote} 100 {where}", code=3).strip(),
+                                 "位置要一行、最多 30 字，不能有 |")
+
+    def test_same_card_twice_counts_both(self):
+        self.assertEqual(self.tally(f"{self.quote} 100 木作", f"{self.quote} 200 油漆").splitlines()[-1],
+                         "共 2 筆，合計 300，平均 150")
+
+
 if __name__ == "__main__":
     unittest.main()

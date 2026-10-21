@@ -17,8 +17,8 @@ COMMANDS = {
     "changes": ("kb.changes", "變動：跟清冊上次掃描比，列新增、修改、搬動、不見；只看不改"),
     "convert": ("kb.convert", "抽字：把一份原檔轉成純文字暫存檔給製卡者讀；PDF、圖片指給 Read"),
     "cards": ("kb.cards", "檔案卡：todo 列該做的卡，sync 跟著原檔搬卡，drop 拿掉原檔已刪的卡，index 重寫總目錄，"
-                          "skip 記成不整理，redo 卡讀錯了標成要重做，mount 卡掛錯實體改掛"),
-    "pending": ("kb.pending_cli", "待處理：list 列等你決定的事，resolve 記下怎麼處理，dismiss 記成不用管"),
+                          "skip 記成不整理，redo 卡讀錯了標成要重做，mount 卡掛錯實體改掛，list 列卡（只讀）"),
+    "pending": ("kb.pending_cli", "待處理：list 列等你決定的事，add 記一件兩份寫法不同的，resolve 記下怎麼處理，dismiss 記成不用管"),
     "profile": ("kb.profile_cli", "客戶設定檔：check 看改了什麼，apply 套用並建型別夾"),
     "entity": ("kb.entity", "實體：add 登記，confirm 確認名稱，rename 改名，merge 合併，remove 移除，rebuild 重寫綜合卡，"
                             "clean 清放錯的綜合卡，list 列出，render 重寫綜合卡快取，progress 事類的進行中、結案、擱置，"
@@ -27,6 +27,9 @@ COMMANDS = {
     "ruling": ("kb.ruling_cli", "個案裁示：add 記一條（口述為準、不採用），remove 收回，recheck 原檔新版看過了照舊，list 列出"),
     "agenda": ("kb.agenda_cli", "日程：add 加一條，edit 改，done／cancel／reopen 改狀態，recheck 原檔新版看過了，list 列出，render 重寫日程.md"),
     "asks": ("kb.asks_cli", "要問客戶的事：只讀，列出 asks 與 tell（逾期、日程有出入、結案、名字確認…）"),
+    "lookup": ("kb.lookup_cli", "查一個實體：只讀，一次給齊綜合卡、檔案卡、口述、裁示、推算、日程與還沒整理的份數"),
+    "finding": ("kb.finding_cli", "推算：add 記一筆（--replaces 改舊的），withdraw 收回，list 列出"),
+    "tally": ("kb.tally_cli", "加總：只讀，收每一筆（卡、數字、位置），回逐筆表、筆數、合計、平均"),
 }
 
 

@@ -1,7 +1,9 @@
 """待處理 .system/pending.json（schema 1，D-102、D-062）與渲染視圖 系統/待處理.md（D-067：JSON 為真）。
 
 三種 kind：missing_file（原檔不見，照清冊狀態由 sync_missing 開與自動 done）、unreadable（kb convert 讀不到）、
-close（事類實體看起來結案了，等客戶答；entity_ids 帶實體，file_ids 是依據，日程第 3 點、D-127；客戶答了 kb entity progress 自動 done）。
+close（事類實體看起來結案了，等客戶答；entity_ids 帶實體，file_ids 是依據，日程第 3 點、D-127；客戶答了 kb entity progress 自動 done）、
+conflict（兩份原檔寫法不同，answer 核對時發現；file_ids 是那兩張卡、titles 是記的時候的卡標題，同一對不論順序只開一條，
+answer 第 6 點、D-155；不進 asks，客戶說哪個對之後照 note 記完再 resolve）。
 每次寫都在 pending.json 的 FileLock 裡：先 turn.backup pending.json 與 待處理.md 兩個（退回後客戶看到的要一致），
 再原子寫，寫完重渲染 md。沒有改動就什麼都不寫（不建檔、不備份）。形狀不對的 pending.json 丟 ValueError。
 """
@@ -16,8 +18,8 @@ PENDING_POSIX = ".system/pending.json"
 MD_POSIX = "系統/待處理.md"
 SCHEMA_VERSION = 1
 EMPTY = {"schema_version": SCHEMA_VERSION, "items": []}
-KINDS = ("missing_file", "unreadable", "close")
-SECTIONS = (("missing_file", "原檔不見"), ("unreadable", "讀不到"), ("close", "要確認結案的"))
+KINDS = ("missing_file", "unreadable", "close", "conflict")
+SECTIONS = (("missing_file", "原檔不見"), ("unreadable", "讀不到"), ("close", "要確認結案的"), ("conflict", "兩份寫法不同的"))
 HEADER = ("# 待處理\n"
           "這是什麼：等你回答或處理的事，程式從 .system/pending.json 整理出來。\n"
           "怎麼用：在對話裡直接回答我，處理完會從這裡消失。\n"
@@ -74,6 +76,13 @@ def _find_open(items, file_id, kind, entity_ids=None):
                  and (kind != "close" or (i.get("entity_ids") or []) == list(entity_ids or []))), None)
 
 
+def _open_pair(items, file_ids):
+    """同一對卡（不論順序）的 open conflict 條目。"""
+    pair = sorted(file_ids)
+    return next((i for i in items if i.get("status") == "open" and i.get("kind") == "conflict"
+                 and sorted(i.get("file_ids") or []) == pair), None)
+
+
 def open_for(vault, file_id, kind):
     return _find_open(load(vault)["items"], file_id, kind)
 
@@ -119,6 +128,24 @@ def add(vault, kind, file_ids, text, reason, turn_id, entity_ids=None):
         return True
     _edit(vault, turn_id, change)
     return found["id"]
+
+
+def add_conflict(vault, file_ids, text, turn_id, entity_ids=None, titles=None):
+    """記一條「兩份寫法不同」：同一對卡已有 open 的不重複。回 (條目, 新建了嗎)。"""
+    found = {}
+
+    def change(items):
+        old = _open_pair(items, file_ids)
+        if old is not None:
+            found["item"] = dict(old)
+            return False
+        item = _new_item(items, "conflict", file_ids, text, None, turn_id, entity_ids)
+        item["titles"] = list(titles or [])
+        items.append(item)
+        found["item"] = dict(item)
+        return True
+    created = _edit(vault, turn_id, change)
+    return found["item"], bool(created)
 
 
 def _close(item, status, how):
@@ -225,7 +252,7 @@ def sync_missing(vault, entries, turn_id):
 def ask_of(item):
     if item.get("kind") == "missing_file":
         return MISSING_ASK
-    if item.get("kind") == "close":
+    if item.get("kind") in ("close", "conflict"):
         return ""
     reason = item.get("reason") or ""
     return next((ask for head, ask in UNREADABLE_ASKS if reason.startswith(head)), UNREADABLE_OTHER)
@@ -236,13 +263,16 @@ def line_of(item):
     text = item.get("text", "")
     if item.get("kind") == "close":
         return text + (f"（{item['reason']}）" if item.get("reason") else "")
+    if item.get("kind") == "conflict":
+        titles = "".join(f"「{t}」" for t in item.get("titles") or [])
+        return f"{text}（{titles + '，' if titles else ''}{str(item.get('created', ''))[:10]}）"
     if item.get("kind") == "unreadable" and item.get("reason"):
         text += f"：{item['reason']}"
     return f"{text}。{ask_of(item)}"
 
 
 def render(vault, data=None):
-    """寫 系統/待處理.md：只列 open，依 kind 分段、新的在上；沒有 open 時一行 NOTHING。"""
+    """寫 系統/待處理.md：只列 open，依 kind 分段、新的在上；沒有 open 時一行 NOTHING。兩份寫法不同的日期寫在句尾。"""
     data = data if data is not None else load(vault)
     opened = [i for i in data["items"] if i.get("status") == "open"]
     parts = [HEADER]
@@ -251,7 +281,8 @@ def render(vault, data=None):
                       reverse=True)
         if rows:
             parts.append(f"\n## {title}（{len(rows)}）\n")
-            parts.extend(f"- {str(i.get('created', ''))[:10]} {line_of(i)}\n" for i in rows)
+            parts.extend((f"- {line_of(i)}\n" if kind == "conflict" else f"- {str(i.get('created', ''))[:10]} {line_of(i)}\n")
+                         for i in rows)
     if not opened:
         parts.append(f"\n{NOTHING}\n")
     target = Path(vault) / MD_POSIX

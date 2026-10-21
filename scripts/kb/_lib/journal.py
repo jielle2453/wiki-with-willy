@@ -8,11 +8,14 @@
 壞行跳過，只有寫入路徑寫一行 hook-errors.log，重寫時原樣留著（I-046）。
 從人或模型來的欄位（prompt、result、AI 的 note）寫入前一律過 mask_secrets（D-086，多遮不改）；程式的 note 不遮。
 結果先壓成一行再遮再截（值跟關鍵詞隔空行也遮得到，測試後修正 M2）。
+recent 可篩（answer 第 7 點，D-158）：只要有改動的、問／結果／做了裡有某個詞的（NFKC casefold）、某天之後的，可疊加；
+changed_text 把改了的路徑照區分類成白話（綜合卡、檔案卡、AI 產出、系統檔照檔名說），給 kb journal recent 印。
 """
 import contextlib
 import json
 import re
 import time
+import unicodedata
 from datetime import date, datetime
 from pathlib import Path
 
@@ -376,14 +379,95 @@ def _months_back(n):
         y, m = (y - 1, 12) if m == 1 else (y, m - 1)
 
 
-def recent(vault, n):
-    """從本月往前翻最多 12 個月，收到 n 行為止，新在前；兩種 kind 都收。"""
+def _fold(text):
+    return unicodedata.normalize("NFKC", str(text or "")).casefold()
+
+
+def keep(row, changed=False, find=None, since=None):
+    """篩法（D-158，可疊加）：changed 只要有改動的；find 在問、結果、做了裡找（NFKC casefold）；since（YYYY-MM-DD）那天以後的。"""
+    if changed and not row.get("changed"):
+        return False
+    if since and str(row.get("time", ""))[:10] < since:
+        return False
+    if find:
+        word = _fold(find)
+        return any(word in _fold(row.get(k)) for k in ("prompt", "result", "note"))
+    return True
+
+
+def recent(vault, n, changed=False, find=None, since=None, skip=None):
+    """從本月往前翻最多 12 個月（給了 since 就翻到那個月為止），收到 n 行為止，新在前；兩種 kind 都收，照 keep 篩；
+    skip 是不要的那一行的 turn（--find 跳過這一句自己）。"""
     out = []
     for month in _months_back(RECENT_MONTHS):
-        out.extend(_newest_first(read_lines(vault, month)))
+        if since and month < since[:7]:
+            break
+        out.extend(r for r in _newest_first(read_lines(vault, month))
+                   if keep(r, changed, find, since) and not (skip and r.get("turn") == skip))
         if len(out) >= n:
             break
     return out[:n]
+
+
+# 系統檔的白話（D-158）：同一件事的 JSON 與 md 說成同一個詞；不在這裡的照檔名說
+SYSTEM_WORDS = {
+    ".system/agenda.json": "日程", "系統/日程.md": "日程",
+    ".system/pending.json": "待處理", "系統/待處理.md": "待處理",
+    ".system/statements.json": "口述",
+    ".system/rulings.json": "裁示", "系統/裁示.md": "裁示",
+    ".system/findings.json": "推算",
+    ".system/entities.json": "實體清單",
+    ".system/profile.json": "客戶設定檔", "系統/客戶設定檔.md": "客戶設定檔",
+    ".system/inventory.json": "清冊",
+    ".system/sources.json": "來源登記",
+    "總目錄.md": "總目錄",
+}
+NAMES_SHOWN = 3
+_TOP_RESERVED = ("檔案索引", "系統", ".system", "AI 產出", "收件匣")
+
+
+def _named(names, unit):
+    """「甲、乙、丙等 5 張」：最多列 NAMES_SHOWN 個，多的講份數。"""
+    shown = "、".join(names[:NAMES_SHOWN])
+    return shown + (f"等 {len(names)} {unit}" if len(names) > NAMES_SHOWN else "")
+
+
+def changed_text(changed):
+    """改了的路徑 → 一行白話：「綜合卡 王宅；檔案卡 1 張；AI 產出 1 份；日程；其他 2 個檔」；沒有回空字串。"""
+    synth, cards, outputs, words, files, other = [], 0, 0, [], [], 0
+    for c in changed or []:
+        rel = str(c.get("path") or "")
+        parts = rel.split("/")
+        if rel in SYSTEM_WORDS:
+            if SYSTEM_WORDS[rel] not in words:
+                words.append(SYSTEM_WORDS[rel])
+        elif parts[0] == "檔案索引":
+            cards += 1
+        elif parts[0] == "AI 產出":
+            outputs += 1
+        elif parts[0] in ("系統", ".system"):
+            stem = parts[-1].rsplit(".", 1)[0]
+            if stem not in files:
+                files.append(stem)
+        elif (len(parts) == 3 and parts[0] not in _TOP_RESERVED and parts[2].endswith(".md")
+              and parts[2][:-3] == parts[1]):
+            if parts[1] not in synth:
+                synth.append(parts[1])
+        else:
+            other += 1
+    out = []
+    if synth:
+        out.append(f"綜合卡 {_named(synth, '張')}")
+    if cards:
+        out.append(f"檔案卡 {cards} 張")
+    if outputs:
+        out.append(f"AI 產出 {outputs} 份")
+    out += words
+    if files:
+        out.append(_named(files, "個"))
+    if other:
+        out.append(f"其他 {other} 個檔")
+    return "；".join(out)
 
 
 def months(vault):

@@ -77,6 +77,9 @@ def start(vault, session_id, prompt, inherit=None):
     }
     if inherit:
         data["journal_turn"] = journal_key(inherit)
+        for flag in MARK_FLAGS:  # 同一句話跑過整理、按過停止，退回自己後照樣認得（answer 裁定 21）
+            if inherit.get(flag):
+                data[flag] = True
     (Path(vault) / TURNS_REL).mkdir(parents=True, exist_ok=True)
     if session_id:
         write_json_atomic(_session_file(vault, session_id), data)
@@ -185,6 +188,25 @@ def set_done(vault, session_id):
 
 def set_prompt_head(vault, session_id, text):
     return _set(vault, session_id, prompt_head=text)
+
+
+MARK_FLAGS = ("ingest", "ingest_stopped")  # mark 記的回合旗標；退回自己這句時 start(inherit=) 帶過去
+
+
+def mark(vault, key):
+    """目前回合檔設一個旗標（回合狀態，不是知識；answer 第 9 點）：只在對話裡的回合（current.json 有 session_id 且還沒答完），
+    終端機跑的不記。已經是 true 不寫。讀改寫在 session 檔的鎖裡（answer 裁定 21），等不到鎖丟 TimeoutError、什麼都不寫。
+    回這個回合現在有沒有這個旗標。"""
+    data = _read_turn(_current_file(vault))
+    if not data or not data.get("session_id") or data.get("done"):
+        return False
+    if data.get(key) is True:
+        return True
+    with FileLock(_session_file(vault, data["session_id"])):
+        sess = _read_turn(_session_file(vault, data["session_id"]))
+        if not sess or sess.get("turn") != data["turn"]:  # session 檔已經是別的回合：不記到錯的那句
+            return False
+        return _set(vault, data["session_id"], **{key: True}) is not None
 
 
 def _realcase(p):

@@ -266,5 +266,77 @@ class TurnHook(unittest.TestCase):
         self.assertEqual(second["prompt_head"], "第二句")
 
 
+STOPPED = "上一句的整理被你停了：這個對話不再自動整理，你說整理才做；回答用現有的資料，末尾一句還有幾份沒整理。"
+
+
+class IngestStopped(unittest.TestCase):
+    """answer 第 9 點、驗收 12：上一句跑過 kb cards todo（回合記 ingest）又沒等到 Stop → 這一句帶一次 additionalContext、
+    session 檔記 ingest_stopped；第三句不再印；沒跑 todo 的中斷不印；壞檔照開回合、exit 0。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        self.sess = self.V / ".system" / "turns" / f"{SID}.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def say(self, prompt):
+        r = run_hook(prompt_payload(self.V, prompt))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def context(self, out):
+        data = json.loads(out)
+        self.assertEqual(data["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        return data["hookSpecificOutput"]["additionalContext"]
+
+    def session(self):
+        return json.loads(self.sess.read_text(encoding="utf-8"))
+
+    def test_todo_then_interrupt_prints_once(self):
+        self.assertEqual(self.say("信義王現在怎樣？"), "")
+        kb = ROOT / "scripts" / "kb.py"
+        r = subprocess.run([sys.executable, str(kb), "cards", "todo", "--json"], capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(self.V), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT)))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.session()["ingest"])
+        out = self.say("信義王現在怎樣？")
+        self.assertEqual(self.context(out), STOPPED)
+        out.encode("ascii")
+        self.assertTrue(self.session()["ingest_stopped"])
+        self.assertEqual(self.say("那大安陳呢？"), "")
+        self.assertTrue(self.session()["ingest_stopped"], "同一個 session 一直記著")
+
+    def test_finished_turn_with_ingest_does_not_print(self):
+        from kb._lib import turn
+        self.say("整理")
+        turn.mark(self.V, "ingest")
+        turn.set_done(self.V, SID)
+        self.assertEqual(self.say("下一句"), "")
+
+    def test_interrupt_without_todo_does_not_print(self):
+        self.say("第一句")
+        self.assertEqual(self.say("第二句"), "")
+        self.assertNotIn("ingest_stopped", self.session())
+
+    def test_hooks_json_description_mentions_it(self):
+        """answer 測試後修正裁定 20（F-8）：hooks.json 的 description 補開場接著整理與按停止兩句。"""
+        desc = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["description"]
+        self.assertIn("還有沒整理完的照樣接著整理", desc)
+        self.assertIn("整理中按了停止，這個對話不再自動整理", desc)
+
+    def test_terminal_todo_does_not_mark(self):
+        from kb._lib import turn
+        turn.start(self.V, None, "")
+        self.assertFalse(turn.mark(self.V, "ingest"))
+        self.assertNotIn("ingest", json.loads((self.V / ".system" / "turns" / "current.json").read_text(encoding="utf-8")))
+
+    def test_broken_session_file_still_opens_turn(self):
+        self.say("第一句")
+        self.sess.write_text("{bad", encoding="utf-8")
+        self.assertEqual(self.say("第二句"), "")
+        self.assertEqual(self.session()["prompt_head"], "第二句")
+
+
 if __name__ == "__main__":
     unittest.main()

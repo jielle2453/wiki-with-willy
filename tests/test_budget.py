@@ -230,6 +230,10 @@ def opening_preferences_chars():
 
 
 class ResidentTotal(unittest.TestCase):
+    def test_answer_description_is_counted(self):
+        """answer 第 15 點：常駐合計含 answer 的描述（四個 skill 的描述都在 skill_files 裡）。"""
+        self.assertLessEqual({"answer", "ingest", "manage", "note"}, {p.parent.name for p in skill_files()})
+
     def test_resident_total(self):
         parts = [measure_skill(p)["desc_chars"] for p in skill_files()]
         for p in (CORE, CLIENT_CLAUDE_MD):

@@ -39,6 +39,10 @@
   "_why_preference_max": "客戶設定檔第六節偏好最多幾條（D-137）：開場整段帶進每個對話，條數多了互相打架也占常駐",
   "preference_max_chars": 400,
   "_why_preference_max_chars": "第六節偏好合計最多幾字（D-137）：常駐合計上限 5000 字，六個 skill 做完約 2650，留 400 給偏好",
+  "answer_verify_max": 20,
+  "_why_answer_verify_max": "answer 回答數字時要逐份回原檔核對的份數上限，超過先問客戶（D-159）；粗估那句在問之前就給了；同 D-100 的量級，一份約 8 秒，20 份客戶等得起",
+  "lookup_mentions_max": 30,
+  "_why_lookup_mentions_max": "kb lookup 查沒登記的名稱時最多列幾張提到它的卡（D-153），多的只講份數；AI 只讀需要的，列太多反而整包讀",
   "agenda_past_days": 30,
   "_why_agenda_past_days": "系統/日程.md 過去區與甘特圖往回看幾天（D-105）：再久的已過去、完成、取消都在 agenda.json 裡，不佔清單"
 }

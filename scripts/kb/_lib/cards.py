@@ -229,10 +229,14 @@ def _read(vault, rel):
     return (Path(vault) / rel).read_text(encoding="utf-8")
 
 
-def _scan_groups(vault):
-    """回 (groups, broken)：groups {編號: [{"path", "front"}, …]}（照路徑排）；解析不了、沒有編號的進 broken。"""
+def _scan_groups(vault, deadline=None):
+    """回 (groups, broken)：groups {編號: [{"path", "front"}, …]}（照路徑排）；解析不了、沒有編號的進 broken。
+    deadline（time.monotonic 的時刻）給開場 hook：讀每張卡之前看一次，過了丟 TimeoutError（answer 裁定 17）。"""
+    import time
     groups, broken = {}, []
     for rel in _walk_cards(vault):
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("讀卡讀太久")
         try:
             front = parse_front(_read(vault, rel))
         except (ValueError, OSError, UnicodeDecodeError) as e:
@@ -414,19 +418,17 @@ def _profile_or_default(vault):
     return (data, False) if data is not None else (profile.defaults(), True)
 
 
-def todo(vault, sources, tell_all=True):
-    """讀清冊 active 條目、卡與待處理，分 new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped（D-104）；
-    skipped 多一鍵 skipped（設定檔說不整理、清冊記了 skip_kind 的份數，D-113），另帶 profile 塊（卡型、段落、個資種類、型別、
-    每類段落、關於你）。實體與綜合卡第 4 點：多 unlinked（第一版的卡、待補型別後來進了型別表的卡）、missing_types、
-    synthesis_new／stale／broken、entity_drift（後四桶由 synthesis.buckets 給）與 entities（active、removed 的名稱），
-    日程第 5 點：多 agenda_recheck（出處卡重做後待重對的日程條目）與 agenda_counts（逾期、今天、接下來）；
-    entities 塊的事類條目多 progress 與 asked_evidence；agenda_unscanned（D-140）列還沒抽過日期的卡。
-    最後併進 plan、asks、tell 三鍵（plan.build，整理 ingest；tell_all 是 False 時 tell 只帶這一回合做了什麼，D-141，kb asks 用）。
-    不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
-    from kb._lib import agenda, entities, extract, inventory, ledger, pending, plan, synthesis
-    restored = _restore_pdf(vault)
-    ent_data = entities.load(vault)
-    entries = inventory.load(vault)["entries"]
+def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, deadline=None):
+    """todo 的檔案分桶（new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped、unlinked、missing_types）：
+    回 (out, groups, 設定檔)。light 給 unsorted：new、stale 只放 {"id"}、不印 header（份數照算，跟 todo 第一行同一個數）；
+    deadline（time.monotonic 的時刻）過了丟 TimeoutError（開場 hook 有時限）。不寫檔。"""
+    import time
+    from kb._lib import entities, extract, inventory, pending
+
+    def check_time():
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("還沒整理的份數算太久")
+    check_time()
     by_id = {e.get("id"): e for e in entries}
     try:
         items = pending.load(vault)["items"]
@@ -441,7 +443,7 @@ def todo(vault, sources, tell_all=True):
     unreadable_skip = set(unreadable_open) | {first_file(i) for i in items
                                               if i.get("kind") == "unreadable" and i.get("status") == "dismissed"}
     missing_open = {first_file(i): i for i in opened if i.get("kind") == "missing_file"}
-    groups, broken = _scan_groups(vault)
+    groups, broken = _scan_groups(vault, deadline)
     out = {"new": [], "stale": [], "moved": [], "duplicates": [], "orphans": [], "unreadable": [], "missing": [],
            "skipped": dict({k: 0 for k in SKIPPED_READS}, skipped=0), "broken": list(broken), "pdf_restored": restored,
            "unlinked": [], "missing_types": {}}
@@ -451,6 +453,8 @@ def todo(vault, sources, tell_all=True):
     today = date.today().isoformat()
 
     def work_item(entry, card):
+        if light:
+            return {"id": entry["id"]}
         path = inventory.path_of(vault, sources, entry["locations"][0]["uri"])
         return {"id": entry["id"], "uri": entry["locations"][0]["uri"], "path": str(path) if path else None,
                 "origin": entry.get("origin"), "kind": extract.kind_by_name(entry["locations"][0]["uri"]),
@@ -461,6 +465,8 @@ def todo(vault, sources, tell_all=True):
 
     def broken_item(entry, card, reason):
         """編號對得到 active 條目的壞卡：多帶 id 與 header，製卡者照它整張寫回 path（審閱後補）。"""
+        if light:
+            return {"path": card["path"], "reason": reason, "id": entry["id"]}
         return {"path": card["path"], "reason": reason, "id": entry["id"],
                 "header": header_for(vault, sources, entry, today, ent_data)}
 
@@ -471,6 +477,7 @@ def todo(vault, sources, tell_all=True):
 
     carded = set()
     for cid, group in groups.items():
+        check_time()
         entry = by_id.get(cid)
         if entry is None or entry.get("status") != "active":
             out["orphans"].extend(c["path"] for c in group)
@@ -506,6 +513,7 @@ def todo(vault, sources, tell_all=True):
             out["broken"].append(broken_item(entry, keep, others[0][1]))
         elif "link" in names:  # 只有開原檔對不上（來源搬家、連結形式改了）：sync 重寫（裁定 19）
             out["moved"].append({"id": cid, "from": keep["path"], "to": card_dir(entry)})
+    check_time()
     for entry in entries:
         status, eid = entry.get("status"), entry.get("id")
         if status == "missing" and entry.get("locations"):
@@ -531,6 +539,23 @@ def todo(vault, sources, tell_all=True):
             continue
         if entry.get("read") == "ok" and eid not in carded and eid not in unreadable_skip:
             out["new"].append(work_item(entry, None))
+    return out, groups, data
+
+
+def todo(vault, sources, tell_all=True):
+    """讀清冊 active 條目、卡與待處理，分 new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped（D-104）；
+    skipped 多一鍵 skipped（設定檔說不整理、清冊記了 skip_kind 的份數，D-113），另帶 profile 塊（卡型、段落、個資種類、型別、
+    每類段落、關於你）。實體與綜合卡第 4 點：多 unlinked（第一版的卡、待補型別後來進了型別表的卡）、missing_types、
+    synthesis_new／stale／broken、entity_drift（後四桶由 synthesis.buckets 給）與 entities（active、removed 的名稱），
+    日程第 5 點：多 agenda_recheck（出處卡重做後待重對的日程條目）與 agenda_counts（逾期、今天、接下來）；
+    entities 塊的事類條目多 progress 與 asked_evidence；agenda_unscanned（D-140）列還沒抽過日期的卡。
+    最後併進 plan、asks、tell 三鍵（plan.build，整理 ingest；tell_all 是 False 時 tell 只帶這一回合做了什麼，D-141，kb asks 用）。
+    不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
+    from kb._lib import agenda, entities, inventory, ledger, plan, synthesis
+    restored = _restore_pdf(vault)
+    ent_data = entities.load(vault)
+    entries = inventory.load(vault)["entries"]
+    out, groups, data = _sort_files(vault, sources, ent_data, entries, restored)
     out.update(synthesis.buckets(vault, ent_data, entities.mounts(vault, ent_data), data))
     matters = {entities.key(t["name"]) for t in data.get("types") or [] if t.get("category") == "matter"}
     # 狀態只在事類顯示：事類併進別的大類後 progress 留在實體清單、不再顯示（D-143）
@@ -550,6 +575,114 @@ def todo(vault, sources, tell_all=True):
         out["agenda_counts"] = {"overdue": 0, "today": 0, "upcoming": 0}
     out.update(plan.build(out, vault, config, tell_all=tell_all))
     return out
+
+
+# ---------- 查詢（answer 第 1、2 點） ----------
+
+def unsorted(vault, sources=None, deadline=None):
+    """還沒整理的份數：todo 第一行「待製卡」的同一個數（new＋stale），同一套分桶、不寫檔（不跑 _restore_pdf）。
+    deadline 給開場 hook：過了丟 TimeoutError。"""
+    from kb._lib import entities, inventory
+    from kb._lib import sources as sources_lib
+    sources = sources if sources is not None else sources_lib.load(vault)
+    out, _groups, _data = _sort_files(vault, sources, entities.load(vault), inventory.load(vault)["entries"],
+                                      light=True, deadline=deadline)
+    return len(out["new"]) + len(out["stale"])
+
+
+def card_state(vault, entry, card):
+    """這張卡該重做嗎：客戶說讀錯了（redo 記號還有效）回 "redo"，原檔改過（卡上的指紋不是清冊現行的，內容指紋對得上的不算）
+    回 "changed"，都不是回 None。"""
+    from kb._lib import inventory
+    if entry.get("redo") and inventory.card_sha(vault, card["path"]) == entry["redo"]:
+        return "redo"
+    front = card["front"]
+    fp = (entry.get("fingerprints") or [{}])[-1]
+    text_fp = front.get("內容指紋")
+    if front.get("指紋") != fp.get("sha256") and not (text_fp and text_fp == fp.get("text_sha256")):
+        return "changed"
+    return None
+
+
+def ruled_out_ids(rul_data):
+    """有效的「不採用」裁示掛著的卡編號（D-149）：answer 不引用、不算進統計。"""
+    from kb._lib import rulings
+    return {cid for r in rul_data["rulings"] if rulings.is_active(r) and r.get("kind") == "ruled_out"
+            for cid in rulings.card_ids(r)}
+
+
+def _text_or(front, key, default=""):
+    value = front.get(key)
+    return value if isinstance(value, str) else default
+
+
+def card_brief(vault, entry, card, ruled_out):
+    """lookup 與 cards list 的一張卡：編號、標題、卡型、文件日期、實體、讀取、卡的路徑、stale（原檔改過或標了重做）、
+    redo（是標了重做的那種）、ruled_out。"""
+    front = card["front"]
+    state = card_state(vault, entry, card)
+    names = front.get("實體")
+    return {"id": entry["id"], "title": _title(card), "card_type": _text_or(front, "卡型"),
+            "date": _text_or(front, "文件日期", "未載"), "entities": list(names) if isinstance(names, list) else [],
+            "read": _text_or(front, "讀取"), "path": card["path"], "stale": state is not None, "redo": state == "redo",
+            "ruled_out": entry["id"] in ruled_out}
+
+
+def newest_first(items):
+    """文件日期新的在前、未載的排最後，同日照標題。"""
+    ordered = sorted(items, key=lambda c: (c["title"], c["id"]))
+    return sorted(ordered, key=lambda c: (1, c["date"]) if _DATE.match(c["date"]) else (0, ""), reverse=True)
+
+
+def active_cards(vault):
+    """清冊 active 的條目有檔案卡的（同編號多張取第一張）：[(條目, 卡)]，照編號排。"""
+    from kb._lib import inventory
+    by_id = {e.get("id"): e for e in inventory.load(vault)["entries"] if e.get("status") == "active"}
+    groups, _broken = _scan_groups(vault)
+    return [(by_id[cid], group[0]) for cid, group in sorted(groups.items()) if cid in by_id]
+
+
+def listing(vault, types=(), year=None, names=(), source=None):
+    """kb cards list 的本體（D-153、D-157）：窮舉不挑。篩法可疊加：卡型照字面（任一相符）、文件日期的年、掛的實體（任一，
+    別名與合併過的照登記的名稱認）、原檔來源別名。回 {"cards", "types", "undated", "verify_max"}：verify_max 是要逐份核對的
+    份數上限（answer_verify_max，客戶端可覆寫，answer 裁定 6）；types 是卡型以外的篩法篩完後
+    實際出現的卡型與份數（in_profile 是設定檔第二節有沒有這個卡型）；undated 是文件日期未載的份數（給了年就不列進 cards）。
+    實體沒登記丟 CardRefused。只讀。"""
+    from kb._lib import entities, rulings
+    ent = entities.load(vault)
+    want_ids = None
+    if names:
+        mounts = entities.mounts(vault, ent)
+        want_ids = set()
+        for name in names:
+            e, _hit = entities.find(ent, name)
+            if e is None or e.get("status") != "active":
+                raise CardRefused(f"實體清單沒有「{name}」，先 kb entity add")
+            want_ids |= {m["id"] for m in mounts.get(e["name"], [])}
+    ruled_out = ruled_out_ids(rulings.load(vault))
+    pool = []
+    for entry, card in active_cards(vault):
+        if want_ids is not None and entry["id"] not in want_ids:
+            continue
+        if source and all(_split(u)[0].casefold() != source.casefold() for u in _uris(entry)):
+            continue
+        brief = card_brief(vault, entry, card, ruled_out)
+        dated = bool(_DATE.match(brief["date"]))
+        if year and dated and brief["date"][:4] != str(year):
+            continue
+        pool.append((brief, dated))
+    prof, _missing = _profile_or_default(vault)
+    known = {entities.key(c["name"]) for c in prof.get("card_types") or []}
+    counts = {}
+    for brief, _dated in pool:
+        counts[brief["card_type"]] = counts.get(brief["card_type"], 0) + 1
+    type_rows = [{"card_type": t, "count": n, "in_profile": entities.key(t) in known}
+                 for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    if types:
+        pool = [(b, d) for b, d in pool if b["card_type"] in types]
+    undated = sum(1 for _b, dated in pool if not dated)
+    return {"cards": newest_first([b for b, dated in pool if dated or not year]), "types": type_rows, "undated": undated,
+            "verify_max": config.get(vault, "answer_verify_max")}
 
 
 # ---------- 重做與改掛（note 改知識第 5 點） ----------

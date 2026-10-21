@@ -1,0 +1,22 @@
+[
+  {"query": "內湖李那案現在進行到哪了？木作做完了沒", "should_trigger": true},
+  {"query": "大安陳的報價總共多少錢？我記得改過一次", "should_trigger": true},
+  {"query": "上次給王宅的那份估價單在哪，我找不到", "should_trigger": true},
+  {"query": "今年我總共報了幾次價？估價單也算進去", "should_trigger": true},
+  {"query": "這週有什麼要交的？我怕漏掉", "should_trigger": true},
+  {"query": "你最近幫我改了什麼？", "should_trigger": true},
+  {"query": "王董的電話幾號？我要打給他約丈量", "should_trigger": true},
+  {"query": "信義王結案了嗎？尾款收到沒", "should_trigger": true},
+  {"query": "內湖李跟大安陳的木作費用比一比，哪個比較貴", "should_trigger": true},
+  {"query": "有沒有要我確認的？", "should_trigger": true},
+  {"query": "把剛才的答案記下來，以後不用再算", "should_trigger": false},
+  {"query": "內湖李改用系統櫃了，不做木工", "should_trigger": false},
+  {"query": "不對，那個單價是 8500，你記錯了", "should_trigger": false},
+  {"query": "幫我把王宅的報價整理成 Excel，要給業主看", "should_trigger": false},
+  {"query": "我剛把新的合約放進去了，在報價與合約那個夾", "should_trigger": false},
+  {"query": "那份估價單幫我搬到 2026 那夾", "should_trigger": false},
+  {"query": "幫我檢查一下知識庫有沒有壞掉的地方", "should_trigger": false},
+  {"query": "整理一下", "should_trigger": false},
+  {"query": "信義王結案了，尾款昨天收齊", "should_trigger": false},
+  {"query": "以後回答我的時候短一點，條列就好", "should_trigger": false}
+]

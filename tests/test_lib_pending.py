@@ -4,8 +4,11 @@ import json
 import shutil
 import unittest
 
+from tests import _cards
+from tests import _entities as E
 from tests._guard_fixture import FIXTURES
 from tests.test_lib_inventory_scan import make_inv_vault
+from tests.test_scripts_inventory_cli import run_kb
 from kb._lib import pending, turn  # noqa: E402
 
 CARDS = FIXTURES / "cards"
@@ -258,6 +261,112 @@ class CloseKind(Base):
         pending.resolve(self.V, a, "客戶說結案", self.t)
         pending.dismiss(self.V, b, self.t)
         self.assertEqual([i["status"] for i in self.items()], ["done", "dismissed"])
+
+
+ANSWER = FIXTURES / "answer"
+
+
+class Conflict(Base):
+    """answer 第 6 點：kind conflict（兩份原檔寫法不同）；同一對（不論順序）已有 open 的回既有那條；渲染多一段「兩份寫法不同的」。"""
+
+    def add(self, a="f-3f9a1b2c", b="f-5d0e2a77", text="報價表寫每坪 5800、合約寫 6000"):
+        return pending.add_conflict(self.V, [a, b], text, self.t, entity_ids=["e-1a2b3c4d"],
+                                    titles=["大安陳報價表", "大安陳室內裝修工程合約"])
+
+    def test_add_shape_and_backup(self):
+        item, created = self.add()
+        self.assertTrue(created)
+        self.assertEqual((item["kind"], item["file_ids"], item["entity_ids"], item["status"], item["titles"]),
+                         ("conflict", ["f-3f9a1b2c", "f-5d0e2a77"], ["e-1a2b3c4d"], "open",
+                          ["大安陳報價表", "大安陳室內裝修工程合約"]))
+        self.assertIn("conflict", pending.KINDS)
+        self.assertEqual(self.manifest(), {".system/pending.json": "create", "系統/待處理.md": "modify"})
+        self.assertIn("## 兩份寫法不同的（1）\n- 報價表寫每坪 5800、合約寫 6000（「大安陳報價表」「大安陳室內裝修工程合約」，",
+                      self.md())
+
+    def test_same_pair_either_order_not_repeated(self):
+        first, _ = self.add()
+        again, created = self.add("f-5d0e2a77", "f-3f9a1b2c", text="另一句")
+        self.assertFalse(created)
+        self.assertEqual((again["id"], again["text"]), (first["id"], first["text"]))
+        self.assertEqual(len(self.items()), 1)
+        _other, created = self.add("f-3f9a1b2c", "f-00000001")
+        self.assertTrue(created)
+        pending.resolve(self.V, first["id"], "客戶說合約為準", self.t)
+        _again, created = self.add()
+        self.assertTrue(created, "done 的不算，同一對可以再記")
+
+    def test_matches_fixture(self):
+        shutil.copy2(ANSWER / "pending.json", self.V / ".system" / "pending.json")
+        pending.render(self.V)
+        self.assertEqual(self.md(), (ANSWER / "待處理.md").read_text(encoding="utf-8"))
+
+
+class ConflictCli(unittest.TestCase):
+    """answer 第 6 點、驗收 9、13、14：kb pending add --kind conflict 成功與拒絕句一字不差；asks 不收、tell 一句；revert 回去。"""
+
+    def setUp(self):
+        from tests.test_lib_lookup import write_card
+        self.tmp, self.V, self.raw = E.make_entity_vault(with_entities=True)
+        self.a, _ = write_card(self.V, E.QUOTE, "大安陳報價表", ["大安陳"])
+        self.b, _ = write_card(self.V, E.CONTRACT, "大安陳室內裝修工程合約", ["大安陳"], kind="合約")
+        self.memo = _cards.entry_of(self.V, E.MEMO)["id"]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def kb(self, *args, code=0):
+        r = run_kb("pending", *args, cwd=self.V)
+        self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+        return r.stdout.splitlines()
+
+    def add(self, a, b, *extra, code=0):
+        return self.kb("add", "--kind", "conflict", "--card", a, "--card", b, "--text", "報價表寫每坪 5800、合約寫 6000",
+                       *extra, code=code)
+
+    def test_add_dedupe_refusals_and_md(self):
+        self.assertEqual(self.add(self.a, self.b, "--entity", "大安陳"), ["已記進待處理：報價表寫每坪 5800、合約寫 6000"])
+        (item,) = pending.load(self.V)["items"]
+        self.assertEqual((item["kind"], item["file_ids"], item["entity_ids"], item["titles"]),
+                         ("conflict", [self.a, self.b], ["e-1a2b3c4d"], ["大安陳報價表", "大安陳室內裝修工程合約"]))
+        md = (self.V / "系統" / "待處理.md").read_text(encoding="utf-8")
+        self.assertIn("## 兩份寫法不同的（1）\n- 報價表寫每坪 5800、合約寫 6000（「大安陳報價表」「大安陳室內裝修工程合約」，", md)
+        self.assertEqual(self.add(self.b, self.a), ["已經記過了：報價表寫每坪 5800、合約寫 6000"])
+        self.assertEqual(len(pending.load(self.V)["items"]), 1)
+        self.assertEqual(self.add(self.a, self.a, code=3), ["兩張要是不同的卡"])
+        self.assertEqual(self.add(self.a, self.memo, code=3), ["這份還沒有檔案卡"])
+        self.assertEqual(self.add(self.a, "f-00000000", code=3), ["清冊沒有 f-00000000"])
+        self.assertEqual(self.add(self.a, self.b, "--entity", "沒登記", code=3), ["實體清單沒有「沒登記」，先 kb entity add"])
+        self.assertEqual(self.kb("add", "--kind", "conflict", "--card", self.a, "--text", "x", code=3), ["兩張要是不同的卡"])
+        listed = self.kb("list")
+        self.assertEqual(len(listed), 1)
+        self.assertIn("寫法不同 報價表寫每坪 5800、合約寫 6000", listed[0])
+
+    def test_asks_skip_and_tell_one_line(self):
+        self.add(self.a, self.b)
+        got = json.loads(run_kb("asks", "--json", cwd=self.V).stdout)
+        self.assertEqual([a for a in got["asks"] if "conflict" in a["kind"] and a["kind"] != "agenda_conflict"], [])
+        self.assertIn("還有 1 件兩份寫法不同的，在待處理", got["tell"])
+
+    def test_revert(self):
+        turn.start(self.V, None, "")
+        before = (self.V / "系統" / "待處理.md").read_bytes() if (self.V / "系統" / "待處理.md").exists() else None
+        self.add(self.a, self.b)
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(pending.load(self.V)["items"], [])
+        md = self.V / "系統" / "待處理.md"
+        self.assertEqual(md.read_bytes() if md.exists() else None, before)
+
+
+
+class ConflictCliOsError(unittest.TestCase):
+    setUp, tearDown, kb, add = ConflictCli.setUp, ConflictCli.tearDown, ConflictCli.kb, ConflictCli.add
+
+    def test_os_error_prints_relative_path(self):
+        (self.V / pending.PENDING_POSIX).unlink(missing_ok=True)
+        (self.V / pending.PENDING_POSIX).mkdir(parents=True)
+        self.assertEqual(self.add(self.a, self.b, code=3), [f"狀態檔讀不到：{pending.PENDING_POSIX}"])
 
 
 if __name__ == "__main__":

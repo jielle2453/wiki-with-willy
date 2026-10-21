@@ -4,6 +4,10 @@
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
 唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
 客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）；日程行只讀 agenda.json。
+沒有新變動、但清冊還有沒做成卡的（cards.unsorted，跟 kb cards todo 第一行同一個數，只讀）：變動行改印「還有 N 份沒整理完」，
+後面接整理指示（開頭不寫「有變動：」，answer 第 9b 點、裁定 14，D-161）；算超過開場時限就這行不印、寫 log。
+payload 的 session 在這個對話按過停止（session 檔記著 ingest_stopped，compact／resume 時）就不印整理指示（D-156、裁定 14）；
+這一步只讀 session 檔。
 core.md 之後接設定檔第六節的「客戶偏好（…照核心規則）：」一條一行（D-137，沒有不印；讀不到這段不印、寫 log；框住，測試後修正裁定 15）。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
@@ -12,6 +16,7 @@ hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一
 import json
 import os
 import sys
+import time
 
 sys.dont_write_bytecode = True
 for _stream in (sys.stdout, sys.stderr):
@@ -19,6 +24,7 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
+_START = time.monotonic()  # 開場 hook 的時限從這裡算
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
@@ -43,6 +49,7 @@ CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動�
 MISSING_SOURCES_LINE = "這台電腦找不到來源{names}，其他照常；搬過的話跟我說。"
 MISSING_SOURCES_SHOWN = 3
 # D-156（note 改規則實作中裁定 1）：先整理、整理完再回答；門檻內開始前照 announce 說一句（D-100 修訂）
+HINT_HEAD = "有變動："
 INGEST_HINT = ("有變動：先照 ingest skill 整理（開始前照 announce 說一句），整理完再完整回答客戶；"
                "超過 {n} 份不整理，先用現有資料答、末尾問要不要整理。")
 _SCAN = {}  # vault → (sources, report) 或 None（scan 出錯）；兩行共用一次快速 scan（審閱裁定 9）
@@ -83,9 +90,29 @@ def _drift_count(vault):
     return _DRIFT[key]
 
 
+UNSORTED_LINE = "還有 {n} 份沒整理完"
+UNSORTED_BUDGET = 6  # 秒，從 hook 開始算；SessionStart 逾時 10 秒，留給讀 core.md 與其他行
+_UNSORTED = {}  # vault → 還沒整理的份數或 None（出錯、超時）；line_changes 被叫兩次，log 只記一行
+
+
+def _unsorted_count(vault, sources):
+    """D-161：清冊還有沒做成卡的份數（cards.unsorted，只讀）；超過時限丟 TimeoutError，跟其他錯一樣記一行 log、回 None。"""
+    key = str(vault)
+    if key not in _UNSORTED:
+        try:
+            from kb._lib import cards
+
+            _UNSORTED[key] = cards.unsorted(vault, sources, deadline=_START + UNSORTED_BUDGET)
+        except Exception as e:  # noqa: BLE001
+            _UNSORTED[key] = None
+            _log_vault(vault, e)
+    return _UNSORTED[key]
+
+
 def line_changes(vault):
     """清冊題：新增、修改、不見三個數都 0 且比完 → None；走訪時間到 → 還沒比完。搬動、重複、之前就不見的不印。
-    實體夾有變 N（D-057，客戶改了實體夾名、卡名、刪夾）接在後面；清冊沒變動但 N > 0 自己成一行。"""
+    實體夾有變 N（D-057，客戶改了實體夾名、卡名、刪夾）接在後面；清冊沒變動但 N > 0 自己成一行。
+    清冊沒變動、實體夾也沒變，但還有沒整理完的 → 「還有 N 份沒整理完」（D-161）。"""
     got = _quick_scan(vault)
     drift = _drift_count(vault) or 0
     if got is None:
@@ -96,16 +123,37 @@ def line_changes(vault):
     counts = {k: len(report[k]) for k in ("added", "modified", "missing")}
     if any(counts.values()):
         return CHANGES_LINE.format(**counts) + (DRIFT_PART.format(n=drift) if drift else "")
-    return DRIFT_LINE.format(n=drift) if drift else None
+    if drift:
+        return DRIFT_LINE.format(n=drift)
+    left = _unsorted_count(vault, got[0])
+    return UNSORTED_LINE.format(n=left) if left else None
 
 
-def line_ingest_hint(vault):
-    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先照 ingest skill 整理、整理完再回答（D-156）；n 讀 ingest_auto_max。"""
-    if line_changes(vault) is None:
+def _stopped(vault, session_id):
+    """這個 session 按過停止嗎：session 檔記著 ingest_stopped（turn hook 記的，answer 第 9 點）。只讀；讀不到（壞 JSON、OSError）
+    當沒按過，OSError 寫一行 log（answer 裁定 34），整理指示照印。"""
+    if not session_id:
+        return False
+    from kb._lib import turn
+
+    try:
+        data = turn._read_turn(turn._session_file(vault, session_id))
+    except OSError as e:
+        _log_vault(vault, e)
+        return False
+    return bool(data and data.get("ingest_stopped"))
+
+
+def line_ingest_hint(vault, session_id=None):
+    """ingest 製卡第 7 點：變動行（含還沒比完）印出來時緊接著一行，叫 AI 先照 ingest skill 整理、整理完再回答（D-156）；n 讀 ingest_auto_max。
+    接在「還有 N 份沒整理完」後面時開頭不寫「有變動：」；這個 session 按過停止就不印（answer 裁定 14）。"""
+    line = line_changes(vault)
+    if line is None or _stopped(vault, session_id):
         return None
     from kb._lib import config
 
-    return INGEST_HINT.format(n=config.get(vault, "ingest_auto_max"))
+    hint = INGEST_HINT.format(n=config.get(vault, "ingest_auto_max"))
+    return hint[len(HINT_HEAD):] if line.startswith(UNSORTED_LINE.split("{", 1)[0]) else hint
 
 
 def line_missing_sources(vault):
@@ -194,10 +242,10 @@ def line_compact(vault, source):
     return COMPACT_LINE if source == "compact" else None
 
 
-def status_lines(vault, source):
+def status_lines(vault, source, session_id=None):
     """固定順序；每一行各自 try：出錯那行回 None、寫 hook-errors.log，其他行照印（I-046）。kb 行不包，它出錯走整段出錯。"""
     out = [line_kb(vault)]
-    for fn in (line_version, line_changes, line_ingest_hint, line_missing_sources, line_profile, line_agenda, line_backup,
+    for fn in (line_version, line_changes, lambda v: line_ingest_hint(v, session_id), line_missing_sources, line_profile, line_agenda, line_backup,
                line_health,
                lambda v: line_compact(v, source)):
         try:
@@ -264,7 +312,7 @@ def main():
     if vault is None:
         return
     try:
-        context = "\n".join(status_lines(vault, payload.get("source"))) + "\n\n" + read_core()
+        context = "\n".join(status_lines(vault, payload.get("source"), payload.get("session_id"))) + "\n\n" + read_core()
         block = preferences_block(vault)
         if block:
             context += "\n" + block

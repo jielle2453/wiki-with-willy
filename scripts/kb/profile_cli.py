@@ -163,15 +163,18 @@ def _apply_locked(vault, as_json, conversation):
     if st["state"] == "error":
         _refuse(as_json, st, f"客戶設定檔讀不懂：{st['error']}")
         return 3
-    if st["state"] == "ok":  # 沒有內容差異也補跑一次關於你（冪等；上次寫完設定檔才失敗的會補上，測試後修正裁定 12）
-        about = entities.sync_self(vault, st["data"].get("about") or [], turn.current(vault)["turn"])
-        lines = _about_lines(about)
+    if st["state"] == "ok":  # 沒有內容差異也補跑不整理種類與關於你（冪等；上次寫完設定檔才失敗的會補上，測試後修正裁定 12、19）
+        turn_id = turn.current(vault)["turn"]
+        unskipped = inventory.unskip_kinds(vault, _stale_skip_kinds(vault, st["data"]), turn_id)
+        about = entities.sync_self(vault, st["data"].get("about") or [], turn_id)
+        lines = ([f"{len(unskipped)} 份回到待製卡"] if unskipped else []) + _about_lines(about)
         if lines:
-            journal_cli.record_program_or_warn(vault, lines[0], [{"path": entities.ENTITIES_POSIX, "action": "modify"}],
-                                               "profile apply", conversation)
+            changed = ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if unskipped else []) + \
+                ([{"path": entities.ENTITIES_POSIX, "action": "modify"}] if _about_lines(about) else [])
+            journal_cli.record_program_or_warn(vault, "；".join(lines), changed, "profile apply", conversation)
         if as_json:
-            print(json.dumps(dict(_public(st), applied=False, created_dirs=[], unskipped=0, message=NOT_APPLIED,
-                                  about=about), ensure_ascii=False))
+            print(json.dumps(dict(_public(st), applied=False, created_dirs=[], unskipped=len(unskipped),
+                                  message=NOT_APPLIED, about=about), ensure_ascii=False))
         else:
             print("\n".join([NOT_APPLIED] + lines))
         return 0
@@ -204,8 +207,14 @@ def _apply_locked(vault, as_json, conversation):
     removed_dirs, kept_dirs = _remove_empty_dirs(vault, st["removed_empty"])
     for name in removed_dirs:
         turn.record_folder(vault, turn_id, "remove", name)
-    unskipped = inventory.unskip_kinds(vault, profile.unskipped_kinds(old, merged), turn_id)
-    about = entities.sync_self(vault, merged["about"], turn_id)
+    try:
+        with _written():
+            kinds = set(profile.unskipped_kinds(old, merged)) | _stale_skip_kinds(vault, merged)
+            unskipped = inventory.unskip_kinds(vault, kinds, turn_id)
+            about = entities.sync_self(vault, merged["about"], turn_id)
+    except Refused as e:
+        _refuse(as_json, st, e.line)
+        return 3
     about_lines = _about_lines(about)
     summary = _with_dirs(profile.summary_short(st["diff"]), removed_dirs, kept_dirs)
     st["unlisted"] = [n for n in st["unlisted"] if n not in removed_dirs]
@@ -239,6 +248,12 @@ def _about_lines(about):
     return lines
 
 
+def _stale_skip_kinds(vault, data):
+    """清冊裡記了 skip_kind、但設定檔第三節已經不是「不整理」的種類（上次寫完設定檔、清冊那步沒做完留下的）。"""
+    keep = set(profile.no_card_kinds(data))
+    return {e["skip_kind"] for e in inventory.load(vault)["entries"] if e.get("skip_kind")} - keep
+
+
 def _apply(vault, as_json, conversation):
     with profile.lock(vault):
         return _apply_locked(vault, as_json, conversation)
@@ -250,6 +265,7 @@ PENDING = "設定檔有你改過還沒套用的地方（{summary}），先套用
 PENDING_ASK = "設定檔有你改過還沒套用的地方（{summary}），要先套用嗎？"
 PENDING_ERROR = "設定檔有你改過但讀不懂：{error}，改好之前我記不了"
 BAD_FIELD = "「{arg}」要寫成 欄=值"
+WRITTEN_BUT = "設定檔已改好，但後面沒做完（{why}）；跑 kb profile apply 會補上"
 SECTION_HEADS = [(num, title, head) for num, title, head in zip(profile.NUMERALS, profile.TITLES, profile.TABLE_HEADS)]
 
 
@@ -362,8 +378,9 @@ def _edit_locked(vault, op, args, as_json, conversation):
     turn_id = turn.current(vault)["turn"]
     created = _make_dirs(vault, profile.folder_check(vault, new["types"], old["types"])["to_create"], turn_id)
     profile.write_locked(vault, dict(old, **new), turn_id)
-    unskipped = inventory.unskip_kinds(vault, profile.unskipped_kinds(old, new), turn_id)
-    about = entities.sync_self(vault, new["about"], turn_id)
+    with _written():
+        unskipped = inventory.unskip_kinds(vault, profile.unskipped_kinds(old, new), turn_id)
+        about = entities.sync_self(vault, new["about"], turn_id)
     message = res["message"] + (f"；建了資料夾 {'、'.join(created)}" if created else "") + \
         (f"；{len(unskipped)} 份回到待製卡" if unskipped else "")
     changed = CHANGED + ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if unskipped else [])
@@ -374,6 +391,20 @@ def _edit_locked(vault, op, args, as_json, conversation):
     _out(as_json, [message] + about_lines, {"applied": True, "section": section, "op": op, "row": res["row"],
                                             "message": message, "created_dirs": created, "unskipped": len(unskipped)})
     return 0
+
+
+class _written:
+    """profile.json 已寫入之後的步驟（unskip_kinds、sync_self）失敗（測試後修正裁定 19）：不說「沒有寫入」，
+    丟 Refused 帶「設定檔已改好，但後面沒做完…」；apply 沒有內容差異時會補跑這兩步。"""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, e, _tb):
+        if e is None or not isinstance(e, (OSError, ValueError, entities.EntityRefused)):
+            return False
+        why = "等不到鎖" if isinstance(e, TimeoutError) else str(e)
+        raise Refused(WRITTEN_BUT.format(why=why)) from e
 
 
 def _out(as_json, lines, payload):
@@ -563,8 +594,12 @@ def _check_out(as_json, op, name, target, imp, question, results):
 
 
 def _move(vault, undo, turn_id, src, dst):
-    """整夾搬（os.rename），記進 undo 與它的資料夾帳（做完才寫進回合）。"""
+    """整夾搬（os.rename），記進 undo 與它的資料夾帳（做完才寫進回合）。
+    目的地的上層夾沒有就建、記 make（AI 產出/<目標>/，測試後修正裁定 18）：退回時夾空了就拿掉。"""
+    missing = [p for p in reversed((vault / dst).parents) if vault in p.parents and not p.exists()]
     (vault / dst).parent.mkdir(parents=True, exist_ok=True)
+    for p in missing:
+        undo.folder(turn_id, "make", p.relative_to(vault).as_posix())
     os.rename(vault / src, vault / dst)
     undo.moved(src, dst)
     undo.folder(turn_id, "move", src, dst)

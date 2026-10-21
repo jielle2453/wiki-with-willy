@@ -17,6 +17,7 @@ import unicodedata
 from datetime import date, datetime
 from pathlib import Path
 
+from kb._lib import credentials
 from kb._lib.io import FileLock, read_json, write_json_atomic, write_text_atomic
 
 PROFILE_POSIX = ".system/profile.json"
@@ -82,6 +83,13 @@ TABLE_HEADS = (("名稱", "大類", "一句說明", "來源", "日期"),
                ("偏好", "來源", "日期"))
 
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
+# 名字會被貼進雙引號的指令：" 與 \ 上面已擋，這兩個另擋（型別名、第五節名稱與別名、實體名稱同一套，測試後修正裁定 16）
+SHELL_CHARS = "$`"
+# 偏好照 rule 擋的四種字元（測試後修正裁定 16）；不收密碼（裁定 14）
+FREE_TEXT_CHARS = '"$`\\'
+PREFERENCE_SECRET = "偏好裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版"
+PREFERENCE_CHARS = '偏好裡不能有 " $ ` \\ 這四種字元'
+_ASCII_TOKEN = re.compile(r"[A-Za-z0-9_.\-]+")
 # 實體名稱、第五節名稱與別名另擋卡檔頭清單的分隔與括號（測試後修正裁定 10）
 _LIST_CHARS = re.compile(r"[,\[\]]")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -116,7 +124,8 @@ def _key(name):
     return unicodedata.normalize("NFKC", str(name)).casefold()
 
 
-RESERVED_KEYS = {_key(n) for n in RESERVED_TYPE_NAMES}
+# 型別名另擋「知識庫」（D-042 的保留別名，測試後修正裁定 16）；它不是第一層的夾，不進 RESERVED_TYPE_NAMES
+RESERVED_KEYS = {_key(n) for n in RESERVED_TYPE_NAMES + ("知識庫",)}
 
 
 # ---------- JSON ----------
@@ -259,7 +268,7 @@ def type_name_problem(name, taken=()):
         return "空的"
     if _key(name) in RESERVED_KEYS:
         return "跟保留字一樣"
-    if _BAD_CHARS.search(name):
+    if _BAD_CHARS.search(name) or any(c in name for c in SHELL_CHARS):
         return "含不能用的字元"
     if name.startswith(".") or name.endswith(".") or name != name.rstrip():
         return "不能以點開頭，也不能以點或空白結尾"
@@ -380,7 +389,7 @@ def _parse_about(rows, types, max_chars):
         source, when = _source_date(5, m, extra)
         alias_list = [a for a in split_aliases(aliases) if _key(a) != _key(name)]
         for a in alias_list:
-            if _BAD_CHARS.search(a) or _LIST_CHARS.search(a):
+            if _BAD_CHARS.search(a) or _LIST_CHARS.search(a) or any(c in a for c in SHELL_CHARS):
                 _err(5, m, f"的別名「{a}」不能用（含不能用的字元）")
         for word in [name] + alias_list:
             if _key(word) in seen:
@@ -391,13 +400,28 @@ def _parse_about(rows, types, max_chars):
     return out
 
 
+def preference_problem(text):
+    """偏好不能收的那句，能收回 None（測試後修正裁定 14、16）：遮值會遮到字、或有像憑證的檔名 → 不放密碼；
+    含 " $ ` \\ → 四種字元。add 與手改的 apply 都走這裡。"""
+    if credentials.mask_secrets(text) != text or any(
+            credentials.looks_like_filename(t) and credentials.match_segment([t]) for t in _ASCII_TOKEN.findall(text)):
+        return PREFERENCE_SECRET
+    if any(c in text for c in FREE_TEXT_CHARS):
+        return PREFERENCE_CHARS
+    return None
+
+
 def _parse_preferences(rows, max_count, max_chars):
-    """第六節（D-137）：一條一列，不能空、不能重複；超過 max_count 條或合計超過 max_chars 字在超過的那列報錯（手改同一條上限）。"""
+    """第六節（D-137）：一條一列，不能空、不能重複、不收密碼與四種字元；超過 max_count 條或合計超過 max_chars 字
+    在超過的那列報錯（手改同一條上限）。"""
     out, seen, total = [], {}, 0
     for m, cells in enumerate(rows, 1):
         (text,), extra = _columns(6, m, cells)
         if not text:
             _err(6, m, "的偏好是空的")
+        why = preference_problem(text)
+        if why:
+            _err(6, m, f"：{why}")
         source, when = _source_date(6, m, extra)
         if text in seen:
             _err(6, m, f"跟第 {seen[text]} 列重複（{text}）")
@@ -720,7 +744,7 @@ SECTION_SPECS = (
 FREE_TEXT_RULE = "一句白話，不含 \" $ ` \\ 這四種字元"  # 值會被貼進雙引號的指令（同 plan.FREE_TEXT_RULE）
 _HINT_RULE = {"rule": "一句白話告訴製卡者這段寫什麼，可以空"}
 COLUMN_RULES = {
-    (1, "名稱"): {"rule": "知識庫第一層的資料夾名；不能用 AI 產出、收件匣、檔案索引、系統，不含 \\ / : * ? \" < > |"},
+    (1, "名稱"): {"rule": "知識庫第一層的資料夾名；不能用 AI 產出、收件匣、檔案索引、系統、知識庫，不含 \\ / : * ? \" < > | $ `"},
     (1, "大類"): {"choices": list(CATEGORIES)},
     (1, "一句說明"): {"rule": "一句白話，可以空"},
     (2, "卡型"): {"rule": "文件種類的名字，例：報價、會議紀錄"},
@@ -966,6 +990,9 @@ def _edit_preferences(out, op, f, today, absent, max_count, max_chars):
         gone = rows.pop(n - 1)
         return f"已拿掉偏好 {n}：{gone['text']}", True
     text = f["偏好"]
+    why = preference_problem(text)
+    if why:
+        raise ProfileError(6, None, why)
     if any(p["text"] == text for p in rows):
         return f"偏好已經有了：{text}", False
     if len(rows) >= max_count:

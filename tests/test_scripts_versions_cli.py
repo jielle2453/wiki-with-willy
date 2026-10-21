@@ -1008,5 +1008,144 @@ class FolderLedger(Base):
         self.assertEqual((r.returncode, r.stdout.strip()), (3, "退不回去：「設計師」現在是檔案，什麼都沒動"))
 
 
+class FolderLedgerAfterTest(Base):
+    """note 改規則測試後修正裁定 12、13、17（F-1、F-2、F-6）：夾的還原整段成功或整段不動、make 在還原檔案之後才判空、
+    folders.jsonl 讀回驗路徑；revert 整段持一把鎖。"""
+
+    def two_moves(self):
+        t = turn.start(self.V, None, "兩個夾改名")["turn"]
+        for src, dst in (("A1", "B1"), ("C1", "D1")):
+            (self.V / dst).mkdir()
+            (self.V / dst / "f.txt").write_text(dst, encoding="utf-8")
+            turn.record_folder(self.V, t, "move", src, dst)
+        turn.backup(self.V, self.card_rel, t)
+        self.card.write_text("改過了\n", encoding="utf-8")
+        return t
+
+    def ledgers(self):
+        return {p.parent.name for p in (self.V / ".system" / "versions").glob("*/folders.jsonl")}
+
+    def in_process(self, *argv, patches=()):
+        import contextlib
+        import io
+        from kb import cli
+        from kb._lib import io as kio
+        out, cwd, timeout = io.StringIO(), os.getcwd(), kio.LOCK_TIMEOUT
+        os.chdir(self.V)
+        try:
+            with contextlib.ExitStack() as stack:
+                for p in patches:
+                    stack.enter_context(p)
+                stack.enter_context(contextlib.redirect_stdout(out))
+                code = cli.main(list(argv))
+        finally:
+            os.chdir(cwd)
+            kio.LOCK_TIMEOUT = timeout  # CLI 把鎖改成 30 秒，不留給後面的測試
+        return code, out.getvalue().strip()
+
+    @unittest.skipUnless(os.name == "nt", "Windows 上夾裡有開著的檔，夾改不了名")
+    def test_open_file_rolls_back_every_folder(self):
+        t = self.two_moves()
+        before = tree(self.V)
+        with open(self.V / "B1" / "f.txt", encoding="utf-8"):
+            r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual((r.returncode, r.stdout.strip()),
+                         (3, "退不回去：「B1」裡有檔案正開著（檔案總管或 Office），什麼都沒動；關掉再說一次退回"))
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(tree(self.V), before, "D1 改回 C1 的那步也倒回去，檔案不還原")
+        self.assertFalse((self.versions_dir(t) / "reverted.json").exists())
+        self.assertEqual(self.ledgers(), {t}, "倒回去的步驟不留在別的回合的帳裡")
+        r = run_kb("versions", "revert", "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["turn"], t, "關掉再退，退的還是同一回合")
+        self.assertTrue((self.V / "A1" / "f.txt").is_file() and (self.V / "C1" / "f.txt").is_file())
+        self.assertEqual(self.card.read_bytes(), self.original)
+
+    def test_other_failure_says_why_and_rolls_back(self):
+        from unittest import mock
+        from kb import versions
+        t = self.two_moves()
+        before = tree(self.V)
+        real = os.rename
+
+        def fake(a, b):
+            if str(a).endswith("B1"):
+                raise OSError(28, "磁碟滿了")
+            return real(a, b)
+        code, out = self.in_process("versions", "revert", patches=[mock.patch.object(versions.os, "rename", fake)])
+        self.assertEqual((code, out), (3, "退不回去：[Errno 28] 磁碟滿了，什麼都沒動"))
+        self.assertEqual(tree(self.V), before)
+        self.assertFalse((self.versions_dir(t) / "reverted.json").exists())
+        self.assertEqual(self.ledgers(), {t})
+
+    def test_made_folder_judged_after_files(self):
+        """F-2：同回合加型別、在新夾裡建實體夾與綜合卡；退回後不留空夾、不印「裡有東西」。"""
+        before = tree(self.V)
+        t = turn.start(self.V, None, "多一個設計師類，王設計師是我們合作的")["turn"]
+        (self.V / "設計師").mkdir()
+        turn.record_folder(self.V, t, "make", "設計師")
+        rel = "設計師/王設計師/王設計師.md"
+        turn.backup(self.V, rel, t)
+        (self.V / rel).parent.mkdir(parents=True)
+        (self.V / rel).write_text("王設計師\n", encoding="utf-8")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("裡有東西", r.stdout)
+        self.assertFalse((self.V / "設計師").exists())
+        self.assertEqual(tree(self.V), before)
+
+    def test_remove_then_make_same_folder_keeps_it(self):
+        """同回合拿掉空夾又建回來：退回後夾照原本在。"""
+        (self.V / "工地").mkdir()
+        t = turn.start(self.V, None, "拿掉又加回來")["turn"]
+        (self.V / "工地").rmdir()
+        turn.record_folder(self.V, t, "remove", "工地")
+        (self.V / "工地").mkdir()
+        turn.record_folder(self.V, t, "make", "工地")
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.V / "工地").is_dir())
+
+    def test_bad_paths_refused_and_logged(self):
+        outside = self.tmp / "victim" / "moved_out"
+        outside.mkdir(parents=True)
+        (self.V / "案子" / "pwn").mkdir()
+        rows = ({"op": "move", "from": "../victim/moved_out", "to": "案子/pwn"},
+                {"op": "move", "from": "案子/pwn", "to": "../victim/moved_out"},
+                {"op": "make", "from": str(self.tmp / "abs_made"), "to": None},
+                {"op": "move", "from": "案子/x", "to": "案子/../../victim/y"},
+                {"op": "remove", "from": "/abs_removed", "to": None},
+                {"op": "remove", "from": "C:/abs_removed", "to": None},
+                {"op": "remove", "from": "\\\\server\\share", "to": None})
+        for row in rows:
+            with self.subTest(row=row):
+                t = turn.start(self.V, None, "手寫的帳")["turn"]
+                self.versions_dir(t).mkdir(parents=True, exist_ok=True)
+                (self.versions_dir(t) / "folders.jsonl").write_text(json.dumps(row, ensure_ascii=False) + "\n",
+                                                                    encoding="utf-8")
+                before = tree(self.V)
+                r = run_kb("versions", "revert", cwd=self.V)
+                self.assertEqual((r.returncode, r.stdout.strip()), (3, "回合紀錄的資料夾路徑不對，沒有退回"))
+                self.assertEqual(tree(self.V), before)
+                self.assertTrue(outside.is_dir())
+                self.assertFalse((self.tmp / "abs_made").exists())
+                self.assertFalse((self.versions_dir(t) / "reverted.json").exists())
+                log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8")
+                self.assertIn(t, log.splitlines()[-1])
+                shutil.rmtree(self.versions_dir(t))
+
+    def test_revert_holds_one_lock(self):
+        from unittest import mock
+        from kb import versions
+        from kb._lib import io as kio
+        t = self.modify_card_in_turn()
+        with kio.FileLock(versions.revert_lock_path(self.V)):
+            code, out = self.in_process("versions", "revert",
+                                        patches=[mock.patch.object(versions, "REVERT_LOCK_TIMEOUT", 0.3)])
+        self.assertEqual((code, out), (3, "另一個退回正在跑，等它做完再說一次"))
+        self.assertFalse((self.versions_dir(t["turn"]) / "reverted.json").exists())
+        self.assertNotEqual(self.card.read_bytes(), self.original)
+
+
 if __name__ == "__main__":
     unittest.main()

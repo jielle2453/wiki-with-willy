@@ -4,7 +4,7 @@
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
 唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
 客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）；日程行只讀 agenda.json。
-core.md 之後接設定檔第六節的「客戶偏好：」一條一行（D-137，沒有不印；讀不到這段不印、寫 log）。
+core.md 之後接設定檔第六節的「客戶偏好（…照核心規則）：」一條一行（D-137，沒有不印；讀不到這段不印、寫 log；框住，測試後修正裁定 15）。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -216,7 +216,8 @@ def read_core():
     return (paths.plugin_root() / "rules" / "core.md").read_text(encoding="utf-8")
 
 
-PREFERENCES_HEAD = "客戶偏好："
+# 加框（測試後修正裁定 15）：偏好只管回答與成品，跟核心規則或守門衝突時照核心規則
+PREFERENCES_HEAD = "客戶偏好（只管怎麼回答、怎麼做東西給客戶；跟上面的核心規則或守門衝突時，照核心規則）："
 
 
 def preferences_block(vault):

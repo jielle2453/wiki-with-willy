@@ -99,20 +99,22 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - 拒絕（exit 3）：`沒有這條待處理：p-…`、`這條已經處理過了：p-…` → 重跑 `pending list` 看現在的。
 
 ## profile check|apply [--json]
+另有 `show`、`add`、`remove`、`type rename|merge|remove`：客戶在對話裡說要改設定檔時用，怎麼問、怎麼說看 note skill 的 `references/preference.md`。
 開場有「設定檔有改（…）」那行、或客戶說設定檔改好了要套用時用；同時有「有變動」就先處理設定檔再整理，卡型才會是新的。先跑 `profile check`：
 
 - `客戶設定檔有改：…` 底下每行一項差異 → 逐條複述（「多了 工班（對象）」），問「要套用嗎？」，客戶說好才跑 `profile apply`。
 - `客戶設定檔有改，但沒有內容上的差異` → 不自動 apply，說「設定檔只有空白或提示句變了，沒有要套用的；要我重寫成標準格式再說」，客戶明說才 `apply`。
 - `客戶設定檔沒有改` → 告訴客戶設定檔跟上次一樣，可能還沒存檔。`還沒有客戶設定檔，跑 kb init 補`（`check` 是 exit 0，`apply` 是 exit 3）→ 「設定檔還沒建，請服務人員跑一次 kb init。」
-- 最後一行 `第一層夾不在型別表：X（…）` → 請客戶在設定檔第一節補一列，這版不代改。
+- 最後一行 `第一層夾不在型別表：X（…）` → 問客戶 X 是不是新的一類；是就照 note skill 用 `kb profile add 型別` 加（大類推一個），不是就留著。
 - 開場是「設定檔有改但讀不懂：…；改好下次再問」→ 照冒號後那句告訴客戶哪一列要改；不用跑 `check`。
 
-`apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`（拿掉的型別夾是空的會一起拿掉，印在「型別 -1（拿掉了空夾 X）」），第五節有改多一行 `關於你：登記了 X`（或「「X」改記成你自己；…」），照著講；有「回到待製卡」就照 ingest 骨架，從 `cards todo --json` 起做。設定檔只讓客戶自己改，你不改 `系統/客戶設定檔.md`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`removed_dirs`、`unskipped`。拒絕（exit 3）：
+`apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`（拿掉的型別夾是空的會一起拿掉，印在「型別 -1（拿掉了空夾 X）」），第五節有改多一行 `關於你：登記了 X`（或「「X」改記成你自己；…」），照著講；有「回到待製卡」就照 ingest 骨架，從 `cards todo --json` 起做。你不直接改 `系統/客戶設定檔.md`，要改就用上面的 `add`／`remove`／`type`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`removed_dirs`、`unskipped`。拒絕（exit 3）：
 
 - `客戶設定檔讀不懂：第 N 節第 M 列…`（`check` 也是 exit 3）→ 照句子告訴客戶哪一列要改，改好再說一次。
 - `型別「X」底下還有 N 項，先搬走再拿掉這列` → 照講；夾裡的東西不幫客戶搬。
 - `「X」已經有同名的檔，不能建成型別夾；先改名或搬走` → 照講。
 - `等不到鎖，沒有寫入` → 等一下再跑一次。
+- `設定檔已改好，但後面沒做完（…）；跑 kb profile apply 會補上` → 設定檔已經改了，再跑一次 `profile apply` 補完。
 - `建不了資料夾「X」：…；設定檔沒有套用`（下一行列已建的夾）→ 「資料夾建不起來，設定檔先沒套用；說「檢查」我看原因。」
 - `apply` 印 `客戶設定檔沒有改，沒有套用` 是 exit 0，不是拒絕 → 告訴客戶設定檔跟上次一樣，可能還沒存檔。
 

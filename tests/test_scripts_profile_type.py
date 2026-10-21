@@ -192,6 +192,22 @@ class Merge(Base):
         self.assertTrue((self.V / "工班" / "陳師傅" / "報價.txt").is_file())
         self.assertNotEqual(tree(self.V), before_revert)
 
+    def test_ai_output_parent_is_recorded_and_reverted(self):
+        """測試後修正裁定 18（F-7）：AI 產出/<被併> 搬進新建的 AI 產出/<目標>/，上層夾記 make，退回後不留空夾。"""
+        draft = self.V / "AI 產出" / "工班" / "草稿.md"
+        draft.parent.mkdir(parents=True)
+        draft.write_text("草稿\n", encoding="utf-8")
+        self.kb("merge", "工班", "--into", "廠商")
+        self.assertTrue((self.V / "AI 產出" / "廠商" / "工班" / "草稿.md").is_file())
+        ops = [(x["op"], x["from"], x["to"]) for x in turn.folders(self.V, self.turn)]
+        self.assertIn(("make", "AI 產出/廠商", None), ops)
+        self.assertLess(ops.index(("make", "AI 產出/廠商", None)), ops.index(("move", "AI 產出/工班", "AI 產出/廠商/工班")))
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(draft.is_file())
+        self.assertFalse((self.V / "AI 產出" / "廠商").exists())
+        self.assertNotIn("裡有東西", r.stdout)
+
     def test_cross_category_keeps_progress(self):
         t = turn.start(self.V, None, "")["turn"]
         agenda.add(self.V, "期間", "2026-12-31", "施工", ["信義王"], t, start="2026-10-01")

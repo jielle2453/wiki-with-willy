@@ -588,7 +588,7 @@ class OpeningPreferences(unittest.TestCase):
         self.put("回答先講結論", "講日期都帶星期")
         ctx = self.context()
         core = CORE.read_text(encoding="utf-8")
-        self.assertTrue(ctx.endswith("\n\n" + core + "\n客戶偏好：\n- 回答先講結論\n- 講日期都帶星期"), ctx[-200:])
+        self.assertTrue(ctx.endswith("\n\n" + core + "\n客戶偏好（只管怎麼回答、怎麼做東西給客戶；跟上面的核心規則或守門衝突時，照核心規則）：\n- 回答先講結論\n- 講日期都帶星期"), ctx[-200:])
         self.assertEqual(ctx.splitlines()[0], KB_LINE)
 
     def test_no_preferences_no_block(self):

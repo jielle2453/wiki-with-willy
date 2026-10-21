@@ -91,6 +91,10 @@
 | B-079 | 2026-10-21 | deferred | note 改規則測試第二輪低項：同一句話裡「加型別乙→乙改名丙→再加型別乙」之後退回被擋（「乙」已有東西），而且只能從最近一次退、更早的也退不了（N-2）；偏好擋密碼是關鍵字黑名單，漏擋「hunter2 是我的密碼」「ＰＩＮ 是 4821」、全形與 token 樣式，誤擋「銀行帳號只顯示後四碼」「請節省 tokens」（N-3a，併「密碼與守門」題與 B-047 一起改）；只讀碼未實跑：型別操作 `_move` 回滾後上層空夾沒記帳、revert 鎖過期可被搶、`_bad_path` 用 resolve 會拒合法 junction 的夾帳、remove 還原的 PermissionError 也印「檔案正開著」；第四輪回報：`profile apply` 的 `record_folder` 迴圈在寫入保護外、這條路徑沒寫工作日誌程式段 | note 改規則測試第二輪 |
 | B-080 | 2026-10-21 | deferred | 狀態檔完整性：有人在 plugin 之外改了 `.system/versions/*/manifest.jsonl`、`folders.jsonl`、`inventory.json`，`versions revert` 能刪改知識庫裡的檔（收件匣原檔、設定檔、清冊）、`folders` 的 move 能把狀態檔當目的地、保留名比對在根不存在時可用結尾加點繞過（note 改規則測試第三輪 S-1、S-2）。AI 寫 `.system` 被守門擋，能改的人本來就能直接動檔，所以現在不擋；還原、搬家、移轉題要匯入別處來的知識庫時，要先決定狀態檔怎麼驗（雜湊、簽章或匯入時重建） | note 改規則測試第三輪 |
 | B-081 | 2026-10-21 | open | produce spike（D-162）：在這台用 Claude Code 桌面版開一個測試知識庫，驗：(1) 看不看得到 `anthropic-skills:docx`、`anthropic-skills:xlsx`；(2) docx 技能要的 node docx 套件裝在哪、裝不裝得起來；(3) 技能附的工具（soffice.py、recalc.py、validate.py、pandoc、pdftoppm）哪些在 Windows 能用；(4) 轉 PDF 與 Excel 重算走 LibreOffice（這台有）做不做得成、沒有 Office 時怎麼降級；(5) 實做一份新 Word、改一份既有 Word（追蹤修訂）、改一份既有 Excel（只改輸入格），看結果與守門有沒有擋；(6) 改一份既有 PowerPoint 的文字（D-165）；(7) 桌面版看不看得到 Claude Docs、Slides 與網頁 artifact；Docs 匯出（base64）由 AI 轉寫成檔放進 `AI 產出/` 做不做得到、多大的檔吃不消；Slides 能不能由 AI 下載、還是只能她在網頁按下載（D-165）；(8) 改完的 PowerPoint 用 LibreOffice 轉成圖片，AI 看不看得出字超出框這類問題（D-165）；(9) 本機新做一份 PowerPoint（`anthropic-skills:pptx`）在 Windows 跑不跑得起來。報告 `design/reports/B-081-spike.md`。舊 plugin `rules/office.md` 是對照 | produce 設計 |
+| B-082 | 2026-10-21 | open | `statements.json`、`rulings.json` 壞了會擋 `cards todo`／`kb asks`（exit 3），`agenda.json` 壞了卻不擋；要一致（照日程那樣只記 log、該兩塊當空） | note 改知識測試第一輪 F-5 |
+| B-083 | 2026-10-21 | open | 收回「取代了別條的口述」時，被它取代的舊口述不會變回 active；要不要復活、還是叫 AI 重記一條，answer 或 lint 時再定 | note 改知識測試第一輪 F-6 |
+| B-084 | 2026-10-21 | open | spec 驗收環境「三張檔案卡、兩張綜合卡」撐不起門檻 2；fixture `inventory/vault/案子/信義王/信義王.md` 檔頭是壞的，要先刪。寫下一份用這個 fixture 的 spec 時修驗收前置 | note 改知識測試第一輪 F-9 |
+| B-085 | 2026-10-21 | open | 測試子代理讀碼列的未驗疑點：重複編號卡取 group[0]、`cards redo`／`mount` 沒走 `_guarded`、`sync_self` 不跟換口述裡的名稱、口述與裁示兩檔寫入不原子 | note 改知識測試第一輪 F-10 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

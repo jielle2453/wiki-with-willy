@@ -136,3 +136,75 @@
 不退步：note、ingest 與第一輪前相同；manage 比 `manage-測試.md` 記的 30/30 少兩次觸發（93%），仍在 ≥ 90%。這次 run_eval 沒有載 wiki-with-willy（只放該 skill 的暫存指令檔），answer 的描述不會與它們競爭，兩次 2/3 看起來是取樣雜訊，不是 answer 造成；要確認「同時裝著四個 skill」的路由要到確認情境用真實對話看。
 
 **提醒：這個 plugin（舊 `llm-wiki@llm-wiki`）目前仍是 enabled，確認情境前要再停用。**
+
+---
+
+# 第二輪（測試後修正裁定 12～23）
+日期：2026-10-22
+被測：HEAD `d827e70`（前一個 `e841494` 是 merge main，不審）。spec 以 main `03279d5` 的「測試後修正裁定」12～28 為準。
+範圍（裁定 24）：只驗 12～23 與無退步；第 18 條只重跑 (d)，另在有「沒改動的段」的庫再跑；描述沒改，路由不重跑。
+方法：每條裁定自己跑 CLI／hook／模擬（黑箱）；code-review（high）只看 `e841494..d827e70`（不含 tests）、security-review 看 hook 與鎖，兩個唯讀子代理只讀碼；文字類（13、18、19）對照 `skills/answer/` 的實際字句；(d) 用 headless `claude -p`。沒改任何程式。
+
+## 結論
+
+**裁定 12～23：12 條都照做、0 不過；無退步（全部測試 exit 0、`claude plugin validate` 通過）。第 18 條 (d) 重跑：仍不過**（`--changed` 還是沒被用到，原因不在 skill 文字，在常駐的 `rules/core.md` R-13，見 G-1）。
+- `python -m unittest discover tests` exit 0（Ran 1752，OK，skipped=1，349 秒；第一輪 1728，多 24 個），樹乾淨。
+- `claude plugin validate` exit 0（同樣只有 icon 與 README 安裝行兩則既有警告）。
+- code-review（high）：12～23 全部讀碼確認做到，沒有會造成錯誤輸出或崩潰的 bug；security-review：沒有 CONFIRMED，只有低度 PLAUSIBLE。
+- 不可以動清單（guard、credentials、cmdparse、versions、其餘三支 hook、core.md、ingest／manage、agenda／profile／statements／rulings／entities、plugin.json、CHANGELOG、design）`e841494..d827e70` 皆無變動；`hooks.json` 只改了 `description`（結構與 timeout 沒變）。
+
+新發現（依嚴重度）：G-1【中】(d) 根因在 core.md R-13；G-2【低中】F-7 英文過場沒有改善；G-3【低】回答「綜合卡引用對不上」時印了內部編號；其餘低度見「疑點」。
+
+## 逐條
+
+| 裁定 | 結果 | 證據 |
+|---|---|---|
+| 12 `journal --find` 跳過這一句＋骨架寫明指令 | 過（程式與文字）；行為見第 18 條 | 開 session 的一句「上次我問王董你怎麼說」（還沒結束）後 `journal recent --find 王董`：只列「王董的電話幾號」與 `kb entity alias` 的程式段，不含這一句自己；不帶 `--find` 時照列（「結果：（還沒結束）」）；`--json` 也跳過；終端機（無 session）跑 `--find` 不誤跳別的段。`SKILL.md` 骨架一句寫了「最近改了什麼用 `kb journal recent --changed`、以前聊過什麼用 `--find`，這週要做什麼用 `kb agenda list --from --to`」，沒做成表。 |
+| 13 綜合卡、檔案卡、設定檔一律不改 | 過（文字）；行為重測過 | `SKILL.md` 原則逐字有「綜合卡、檔案卡、設定檔一律不改；看到引用對不上，照原檔答、在回答裡說，卡抄錯才 `kb cards redo`，其他不寫檔、不叫 `turn note`」，帶理由與 D-155。F-1 情境（王先生綜合卡引用錯編號）用新 skill 重跑 2 次：**0 次 `Edit`**，AI 說「我沒有改卡」，指令只有 `lookup`／`cards list`／`convert`／`asks`。（但見 G-3、G-4。） |
+| 14 session.py 看 `ingest_stopped` | 過 | 12 份沒整理、沒按過停止：`還有 12 份沒整理完` 後面接 `先照 ingest skill 整理（…）`（**開頭沒有「有變動：」**）；同 session 按停止後（UserPromptSubmit 寫入 `ingest_stopped`）`compact`／`resume`／`startup` 都只剩 `還有 12 份沒整理完`、不印整理指示；別的 session 不受影響；有新變動＋按過停止 → 印 `變動：新增 1…`、不印整理指示。session 檔壞（`{ bad`）→ 當沒按過、照印；session 檔是目錄 → exit 0、這一行不印、寫 log；空 session_id、含 `../` 的 session_id → exit 0、照印。 |
+| 15 findings 與不採用 | 過 | `finding add --basis <不採用的卡>`（兩種：只有它、與別張並列）→ `「信義王合約」你說過別信，不能當依據`、exit 3、`findings.json` 沒建出來；先記推算再對依據卡記「不採用」→ `lookup` 那筆 `stale: true`，人讀 `〔依據有變，待重算〕`；收回那條裁示 → `stale: false`。 |
+| 16 tally 限制 | 過 | 15 位整數收、16 位 → `數字太大：9999999999999999`（29 位、20 位同）；小數 4 位收、5 位 → `數字太大：1.23456`；`0,001`、`1,23`、`1,234,56` → `看不懂這個數字：…`；`ArithmeticError` 不再 traceback，29 位那個案例 exit 3；位置欄 30 字收、31 字／含 `|`／換行 → `位置要一行、最多 30 字，不能有 |`（exit 3，裁定 27 追認）；同一張卡兩筆都算（合計 300、平均 150）；`萬` 乘出來 20 位照算。（我第一次測 30 字被拒是 Windows 的 `python print` 帶了 `\r`，用 `printf` 重測後 29／30 收、31 拒。） |
+| 17 時限進 `_scan_groups` | 過 | 6000 張卡＋12 份沒整理的庫：把 hook 的起算時間撥到「只剩 0.3 秒」，**新碼 0.35 秒就中止**並寫 log `TimeoutError: 讀卡讀太久`、那行不印；舊碼（54580ef）要 0.87 秒掃完才報「算太久」；剩很多時間時兩者都印、約 0.9～1.0 秒；`kb cards todo` 同庫 3.3 秒完整跑、不被截斷（deadline 只由 `session.py` 傳）。 |
+| 18 find／verify／record-answer 文字 | 過（文字） | 逐項對照 `skills/answer/`：`find.md` 的 `agenda list`、`journal recent` 改人讀（寫明「日期帶星期、『改了』分好類，`--json` 沒有這些」）、其餘照 `--json`；`verify.md` 「那份在哪」只給檔名與日期、「打開給我看」才給連結；粗估範例改成「15 張卡，正在逐份對」、不加總；`record-answer.md` 的 `finding add` 不帶 `--json`；短標補裁示〔你 10/21 說的〕且 `lookup --json` 的 `rulings` 有 `date`（實測 `2026-10-21`）；`find.md` 份數題「照程式印的張數、扣掉不採用的」；`SKILL.md` 分辨收例句 13（開場有新檔先整理再答）、做 Word／Excel「這版還做不到，照實說」；conflict 閉環（客戶說哪個對 → 歸 note → `pending list --json` 找編號 → `pending resolve --how`）寫進 `verify.md` 第四節（`pending resolve --how` 實際存在）；「不在第四節」改成看 `lookup` 的 `synthesis`；有效推算怎麼用在原則與 `find.md` 第一節。描述逐字沒改；`SKILL.md` 本文 2340 字（≤ 3000）、`find.md` 74 行、`verify.md` 79 行、`record-answer.md` 36 行。殘留（不在裁定清單）：G-5。 |
+| 19 過場繁中移到最前面 | 過（文字）；**行為沒改善** | `SKILL.md` 第一段（標題下）：「給客戶看的字一律繁體中文，工具之間的過場也是；不唸步驟、不寫自言自語」，「共通」裡的重複句已刪。但新 skill 重跑 (b) 仍出現兩句英文過場（G-2）。 |
+| 20 CLAUDE.md、hooks.json | 過 | `CLAUDE.md` 第 79 列「其餘兩個 skill 尚未」；`hooks.json` description 補了「沒有新變動但還有沒整理完的照樣接著整理；整理中按了停止，這個對話不再自動整理」，hooks 結構不變；`claude plugin validate` exit 0。小缺：G-6。 |
+| 21 `turn.mark` 鎖、`inherit` 帶旗標 | 過 | 手動持有 `<sid>.json.lock` 時在對話回合內跑 `kb cards todo`：等 30 秒（鎖逾時＝殘留 30 秒，之後清掉）後照樣跑完、不擋 todo，旗標在鎖清掉後寫入；`turn.start(inherit=)`：原回合 `ingest` → 新回合 `ingest: True`、`ingest_stopped` 有則帶、沒 inherit 則無。鎖只擋 mark 對 mark，不擋 Stop 的 `set_done`（裁定 25 已併 B-092；我的並行壓測因 `set_done` 先到時 `mark` 依設計不記，不具鑑別力，不當證據）。 |
+| 22 OSError 與例外 | 過 | `findings.json` 或 `pending.json` 變成目錄：`finding list`／`finding add`／`pending add`／`pending list` → `狀態檔讀不到：.system/findings.json`（相對路徑、exit 3，沒有絕對路徑）；`lookup`（讀 findings 時 `PermissionError`）→ `查不出來（PermissionError），沒有結果` exit 3；清冊 `[]`、`entries: 5`、實體清單 `entities: 7` → `lookup`／`tally`／`cards list` 都是一句 `狀態檔讀不到：…`、exit 3，沒有 traceback；`finding list --entity 沒登記` → `實體清單沒有「沒這個」，先 kb entity add`（跟 `cards list` 一致，exit 3），別名查得到；`findings.json` 唯讀、`os.replace` 被拒 → `狀態檔讀不到：.system/findings.json.tmp`（措辭見 G-7）。 |
+| 23 `verify_max` | 過 | `lookup --json` 與 `cards list --json` 都有 `verify_max`（預設 20）；客戶端 `.system/config.json` 設 `answer_verify_max: 3` 後兩者都是 3（沒登記的名稱也有）；設成 `"abc"` 退回 20；`verify.md` 照它。 |
+
+## 第 18 條 (d)：重跑
+
+做法同第一輪：`git archive HEAD`（d827e70）展開 plugin、headless `claude -p`、`--settings` 關掉舊 `llm-wiki`、每次一份新的庫複本。
+
+1. **跟第一輪同一個乾淨庫（VC）**：新 skill 一次。指令序列：`kb journal recent` → `kb asks`。**沒有呼叫 `Skill` 工具、沒帶 `--changed`。**
+2. **有「沒改動的段」的庫（VC2）**：先「王董的電話幾號」「信義王的尾款是多少」（都不改東西）、再「水電驗收改到 11/2」（改日程，`turn note`）、最後「信義王現在怎樣」（不改），所以日誌最新一段是沒改動的。新 skill 4 次、第一輪版 skill 1 次、沒有 answer skill 1 次：
+
+| 版本 | 指令序列 | `Skill`？ | 有帶 `--changed`？ | 回答 |
+|---|---|---|---|---|
+| 新 skill（d827e70）×4 | `kb journal recent` → `kb asks`（其中一次只有 `journal recent`） | 4／4 沒呼叫 | 0／4 | 正確：只有一筆實際改動（水電驗收 10/25 → 11/2，日程）；4 次都先講有改的那筆，之後又用一兩句帶過沒改動的三題查詢（1 次逐句列出「只是查詢、沒有改任何東西：…」，其餘 3 次一句帶過），所以不是「只講有改的」 |
+| 第一輪版 skill（54580ef）×1 | `Skill answer` → `kb journal recent` → `kb asks --json` | 有 | 沒有 | 同上，正確 |
+| 沒有 answer skill ×1 | `kb journal recent` → `kb asks` | — | 沒有 | 同上，正確（也列了沒改動的查詢） |
+
+判讀：**(d) 仍不過**（spec 要求用 `--changed`）。這次 5／5 的新 skill 連 `Skill` 都沒呼叫，直接答：常駐的 `rules/core.md` R-13 寫「問最近改了什麼用 kb journal recent 答」，模型照它做了，**skill 本文骨架那句 `--changed`（裁定 12 的修法）根本沒機會被讀到**。回答內容始終正確、有改的那筆放最前面（VC2 裡 `--changed` 與否的差別只在「是否也提沒改動的查詢」，4／4 都有提）；沒有資料風險，是指令不符 spec。
+
+## 疑點與建議（第二輪新的；嚴重度）
+
+- **G-1【中，已重現 5／5】** (d) 的根因：`rules/core.md` R-13 讓「問最近改了什麼」在 skill 載入前就被直接回答，且沒有 `--changed`。裁定 12 只改了 skill 文字，碰不到。建議（`core.md` 是設計 session 才能動的）：R-13 那句改成「問最近改了什麼 → 走 answer」或補成 `kb journal recent --changed`。
+- **G-2【低中，已重現】** F-7 沒改善：新 skill 重跑 (b)，工具之間仍有兩句英文過場（「Start by checking which card types exist, without a type filter.」「Three 2026 cards (報價 2, 估價單 1), plus one undated. I will read the cards.」，原文略），跟第一輪同一種、同一個情境。裁定 19 的文字照做了但沒效。若要壓住，可能得放進 `core.md`（常駐）或換成更具體的說法；也可接受為模型行為上限。（(a)×2、(d)×5 的過場都是中文。）
+- **G-3【低，已重現 1／2】** 裁定 13 要 AI「在回答裡說引用對不上」，但沒說怎麼講：新 skill (a) 第一次回答寫「綜合卡寫電話在原檔〔f-b0b15ec0〕…實際的檔案卡是 f-7603d260」，印了內部編號，與 D-160「不印編號」衝突。建議原則補「用卡標題講，不貼編號」。
+- **G-4【低，子代理讀碼】** `SKILL.md` 原則 13「卡抄錯才 `cards redo`，其他不寫檔、不叫 `turn note`」與 `verify.md` 第四節末「標重做、記待處理之後…跑 `kb turn note`」字面互相打架，建議原則補一句「redo／pending add 之後照 `verify.md` 叫 `turn note`」。
+- **G-5【低，已確認】** `verify.md` 第三節 `kb tally` 範例的指令結尾帶 `--json`，下一條卻寫「不帶 `--json` 跑，回的表…原樣貼進回答」（第一輪 M7 沒被裁定列到，仍在）。
+- **G-6【低，子代理讀碼，我核過】** `CLAUDE.md` 的 `tally_cli.py` 那一列文末是「…不收 |，其他例外 exit 3 |」，cell 裡有沒跳脫的 `|`，Markdown 表格會多切出欄位；改成「不收豎線」並拿掉多的結尾 `|`。
+- **G-7【低】** 讀碼／子代理（多數未重現）：寫入失敗與讀取失敗都印「狀態檔讀不到」；`hooks/session.py` 的 `_stopped` 沒接 `OSError`（docstring 說「讀不到當沒按過」，實測 session 檔是目錄時是「整行指示不印＋寫 log」）；`ingest_stopped` 要等下一句 UserPromptSubmit 才寫入（按停止後沒再送新句就直接 compact，指示照印）；`journal --find` 在終端機看到被中斷的上一場 `current.json` 時可能跳過那一段；`turn.mark` 的鎖不涵蓋 Stop 的 `set_done`／`set_note`（裁定 25，B-092），UserPromptSubmit 的 5 秒 timeout 與鎖 3 秒疊加最壞會超時（hook 本身不擋）；`tally` 前導零 16 位被誤判太大、很小的平均（`0.0001＋0.0001`）印成 `0`、`--json` 的 `total`／`average` 有小數時轉 float 失準（`total_text` 準）、位置欄與拒絕句回顯沒濾 ESC／U+2028 等控制字元與 markdown；`finding add` 拒絕句帶的卡標題沒過濾（卡標題是可控文字）；`finding_cli.rel_of` 沒接 `RuntimeError`／`TypeError`；`lookup_cli` 的 `except Exception` 會把程式 bug 也吞成一句白話且不留 log；`cards._walk_cards` 走訪與單張巨檔沒時限。皆不擋發行，進 backlog 建議。
+
+## 無退步檢查
+
+全部測試 exit 0；`plugin validate` 通過；第一輪的重現全部不再重現：F-1（新 skill (a)×2 不 `Edit`）、F-2（`compact`／`resume` 不印整理指示）、F-3（拒絕、`stale`）、F-4（29 位數 exit 3、`0,001` 拒絕）、F-5（`_scan_groups` 內中止）、F-6 的 H2／H4（`--find` 跳過這一句；`agenda list`／`journal recent` 改人讀）。(b) 重跑一次：粗估一句（中文）→ `kb convert`×3 → `kb tally`（合計 2,030,000、平均 676,667）→ 範圍、估價單舊名、沒算大安陳（未載）、不採用合約說明都在；另自己記了一筆木作 310,000 vs 210,000 的 conflict 待處理並叫 `turn note`（合 D-155）。
+
+## 給設計 session 的 backlog 建議（第二輪，一行一條）
+
+1. G-1：`rules/core.md` R-13 改成走 answer 或補 `--changed`（設計 session 決定）。
+2. G-2：過場英文要不要放進常駐規則，或接受為上限。
+3. G-3、G-4、G-5：answer 原則補「用卡標題講、不貼編號」與 `turn note` 例外一句，`verify.md` 第三節範例拿掉 `--json`。
+4. G-6：`CLAUDE.md` tally 列拿掉未跳脫的 `|`。
+5. G-7：`_stopped` 接 `OSError`、讀寫失敗訊息分開、`ingest_stopped` 寫入時機、`tally` 邊角與控制字元、其餘低度項併 B-092。

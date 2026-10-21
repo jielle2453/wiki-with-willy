@@ -208,3 +208,62 @@
 3. G-3、G-4、G-5：answer 原則補「用卡標題講、不貼編號」與 `turn note` 例外一句，`verify.md` 第三節範例拿掉 `--json`。
 4. G-6：`CLAUDE.md` tally 列拿掉未跳脫的 `|`。
 5. G-7：`_stopped` 接 `OSError`、讀寫失敗訊息分開、`ingest_stopped` 寫入時機、`tally` 邊角與控制字元、其餘低度項併 B-092。
+
+---
+
+# 第三輪（測試第二輪後裁定 29、31～34）
+日期：2026-10-22
+被測：HEAD `20633b4`（前一個 `a841d4d` 是 merge main，不審）。spec 以 main `f37cfbf` 的「測試第二輪後裁定」29～36 為準。
+範圍（裁定 35）：只驗 29、31～34（加疑義 36）是否照做、有無退步；18(d) 在有「沒改動的段」的庫重跑至少 3 次；路由不重跑。
+方法：每條自己實跑（hook 模擬、grep 全文、headless `claude -p`）；code-review（high）派唯讀子代理只看 `a841d4d..20633b4`（不含 tests）。沒改任何程式。
+
+## 結論
+
+**裁定 29、31、32、33、34（含疑義 36）全部照做、0 不過；無退步。18(d) 這次過：4／4 用了 `kb journal recent --changed`、回答只講有改的。**
+- `python -m unittest discover tests` exit 0（Ran 1757，OK，skipped=1，339 秒；第二輪 1752，多 5 個），樹乾淨。
+- `claude plugin validate` exit 0（同樣只有 icon 與 README 安裝行兩則既有警告）。
+- code-review（high）：六條都做到，沒有 CONFIRMED 缺陷；只有兩處文字層級的 PLAUSIBLE（見疑點）。
+- 常駐預算沒超：`rules/core.md` 約 924 字（上限 2500），R-13 多的只有 `--changed` 幾個字（位元組 2226 → 2236）；四個 skill 描述合計 558 字，加 `skeleton/CLAUDE.md` 484 字，三項合計約 1966 字，遠低於 5000。
+
+## 逐條
+
+| 裁定 | 結果 | 證據 |
+|---|---|---|
+| 29 R-13 帶 `--changed` | 過 | `rules/core.md` 只有 R-13 最後一句改成「問最近改了什麼用 kb journal recent --changed 答」，其他條未動；SessionStart 實際注入的 `additionalContext` 裡那行就是新句子；與 `SKILL.md` 骨架一致。18(d) 行為見下節。（歷史 spec `design/specs/2026-10-16-開場注入與核心規則.md` 還留著舊 R-13 原文，不算矛盾，同步與否設計 session 決定。） |
+| 31 不貼編號 | 過 | `SKILL.md` 原則 13 補「用卡標題與短標講，不貼〔f-…〕這類編號（D-160、B-089）」；`verify.md` 第四節開頭多同一句；grep `skills/answer`、`skills/note` 全文，〔f-…〕只出現在「不要貼」的語境。行為：F-1 情境（王先生綜合卡引用錯編號）新 skill 重跑 2 次，**兩次回答都沒有印內部編號**（第二輪是 1／2 有印），也都沒有 `Edit`，AI 說「指向的檔案編號對不上現有的任何卡…沒有改卡」。 |
+| 32 原則 13 與 verify.md 第四節一致 | 過 | `SKILL.md` 原則 13：「…卡抄錯才 `kb cards redo`，其他問題不寫檔；只有 `kb cards redo` 或 `kb pending add` 的回合才叫 `turn note`」；`verify.md` 第四節末「只有標重做（`kb cards redo`）或記待處理（`kb pending add`）的回合，送出最終回答前跑 `kb turn note`…其他問題不寫檔、不叫」；`SKILL.md` 骨架那句也一致。（G-4 的字面打架已消除；剩一個措辭瑕疵見 H-1。） |
+| 33 tally 範例、CLAUDE.md 不破表 | 過 | `verify.md` 第三節範例結尾已無 `--json`，與下一條「不帶 `--json` 跑」一致；`skills/answer`、`skills/note` 沒有其他地方要求 `tally` 帶 `--json`（`record-answer.md` 的 `--json` 是取編號用，相容）。`CLAUDE.md` 的 `tally_cli.py` 那列改成「不收直線，其他例外 exit 3 |」，用管線數檢查（正常列 3 條）已不再被標出（第二輪是 4 條）。其他三列（`entity.py`、`profile_cli.py`、`_lib/profile.py`）本來就含 `rename\|merge` 這類未跳脫的 `\|`，改前版本也一樣，非本輪引入，見 H-3。 |
+| 34 `_stopped` 接 `OSError` | 過 | session 檔是目錄（讀它丟 `PermissionError`）：exit 0、`還有 12 份沒整理完` **照印、整理指示照印**（第二輪是整行不印）、`hook-errors.log` 多一行 `session PermissionError…`；session 檔壞 JSON → 當沒按過、照印；真的按過停止的 session（`ingest_stopped`）→ `compact` 仍只印 `還有 12 份沒整理完`、不印整理指示；`_log_vault` 存在、簽名對，其他例外由 `status_lines` 每行各自 try 接住、hook 永遠 exit 0。 |
+| 36（疑義） | 過 | `verify.md` 第二節只剩「讀不到照實說…位置欄寫『沒核對』」，「convert 記了讀不到也算寫入」那句與第四節末的「或 convert 記了讀不到」都已刪；`skills/answer`、`skills/note` 沒有別處還說 convert 讀不到要叫 `turn note`。 |
+
+## 第 18 條 (d)：重跑（裁定 35）
+
+做法同第二輪：`git archive HEAD`（20633b4）展開 plugin、headless `claude -p`、關掉舊 `llm-wiki`、**VC2**（日誌最新一段是沒改動的：先問「王董的電話幾號」「信義王的尾款是多少」、再「水電驗收改到 11/2」、最後「信義王現在怎樣」）、每次一份新複本、4 次同時跑。
+
+| 次 | 指令序列 | `Skill`？ | `--changed`？ | 回答 |
+|---|---|---|---|---|
+| 1 | `kb journal recent --changed` → `kb asks` | 沒呼叫（R-13 直接答） | **有** | 只講有改的：日程（水電驗收 10/25 → 11/2）、待處理新增一筆（終端機）、清冊三筆「日程抽過」（終端機）；沒提那三題只是查詢；「日誌裡只有這幾筆」；末尾逾期兩件加「還有 1 件兩份寫法不同的」 |
+| 2 | `kb journal recent --changed` → `kb asks` | 沒呼叫 | 有 | 同上（三筆改動，沒提查詢），末尾 asks |
+| 3 | `kb journal recent --changed` → `kb asks` | 沒呼叫 | 有 | 同上 |
+| 4 | `kb journal recent --changed` | 沒呼叫 | 有 | 同上；沒跑 `asks`，改成末尾一句建議「我可以跑 `kb asks` 逐一跟你確認」（符合 R-11） |
+
+**4／4 用了 `--changed`、4／4 回答只講有改的，沒有一次提「只是查詢、沒有改東西」**（第二輪 4／4 都有提）。仍然是 R-13 在 skill 載入前就答（0／4 呼叫 `Skill`），這次 R-13 本身帶了 `--changed`，所以結果對了。**裁定 35 的 (d)：過。**
+
+(a)（G-3 順便看）：新 skill 在乾淨庫 VC（王先生綜合卡仍引用錯編號）跑 2 次：兩次都是 `Skill answer` → `kb lookup "王董"` → … → `kb convert`／Read 原檔 → `kb asks --json`，回答王董＝王先生、0912-345-678、出處短標「信義王報價第一版原檔（2026-08-12）」；**都沒有印 `f-…` 編號、都沒有 `Edit`**。
+
+## 疑點（第三輪新的；都不擋發行）
+
+- **H-1【低，子代理，文字】** `SKILL.md` 原則 13 的順序「卡抄錯才 `redo`，其他問題不寫檔；只有 `redo` 或 `pending add` 才叫 `turn note`」：「其他問題」讀起來包含「兩份原檔不同」，那種其實要 `pending add`（也是寫入）；後半句救回來了、不會誤判，只是前後半句字面上有點打架，可改成「除了 `kb pending add` 其他情況不寫檔」。
+- **H-2【低，子代理，行為層，裁定 36 是刻意的】** `scripts/kb/_lib/convert.py` 的 `_record_unreadable` 在條目已在清冊時仍會寫一條 `unreadable` 待處理，所以「其他問題不寫檔」嚴格說不完全真，那個回合 AI 也不叫 `turn note`；工作日誌「做了」由程式地板句補（我沒去驗那一句寫得對不對，列為未驗）。
+- **H-3【低，既有】** `CLAUDE.md` 第 27、35、59 列（`entity.py`、`profile_cli.py`、`_lib/profile.py`）含未跳脫的 `|`（如 `rename|merge|remove`），在 GFM 表格會多切欄；改前一樣，非本題。
+- G-2（英文過場，併 B-064）這輪沒有專門重測；(a)×2、(d)×4 的過場都是中文。
+
+## 無退步檢查
+
+全部測試 exit 0；`plugin validate` 通過；不可動清單與第二輪相同（本輪只動 `CLAUDE.md`、`hooks/session.py`、`rules/core.md`〔准動，只 R-13 一句〕、`skills/answer/SKILL.md`、`references/verify.md` 與測試）；第二輪重現過的問題維持不重現（F-1 不 `Edit`、compact 不整理、`verify_max` 等沒被動到）。
+
+## 給設計 session 的 backlog 建議（第三輪）
+
+1. H-1：原則 13 那句改成「除了 `kb pending add` 其他情況不寫檔」（可選）。
+2. H-3：`CLAUDE.md` 第 27、35、59 列的 `|` 跳脫或改寫（既有，順手）。
+3. 確認前請使用者停用舊 `llm-wiki@llm-wiki`（仍 enabled）。

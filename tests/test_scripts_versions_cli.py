@@ -956,6 +956,32 @@ class FolderLedger(Base):
         self.assertEqual(tree(self.V), before)
         self.assertFalse((self.V / "工程").exists())
 
+    def test_list_and_revert_say_folders(self):
+        """確認後 G-5：list 每個回合列資料夾動作（人讀一行一項、--json 多 folders）；revert 成功句後列改回去的夾。"""
+        t = self.rename_type_in_turn()
+        (self.V / "設計師").mkdir()
+        turn.record_folder(self.V, t, "make", "設計師")
+        (self.V / "空的").mkdir()
+        (self.V / "空的").rmdir()
+        turn.record_folder(self.V, t, "remove", "空的")
+        lines = run_kb("versions", "list", cwd=self.V).stdout.splitlines()
+        head = next(i for i, ln in enumerate(lines) if ln.startswith(t))
+        self.assertEqual(lines[head + 1:head + 4],
+                         ["    資料夾：案子 → 工程", "    建了資料夾：設計師", "    拿掉了空夾：空的"])
+        got = json.loads(run_kb("versions", "list", "--json", cwd=self.V).stdout)
+        row = next(x for x in got if x["turn"] == t)
+        self.assertEqual(row["folders"], [{"op": "move", "from": "案子", "to": "工程"},
+                                          {"op": "make", "from": "設計師", "to": None},
+                                          {"op": "remove", "from": "空的", "to": None}])
+        self.assertTrue(all(x["folders"] == [] for x in got if x["turn"] != t))
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = r.stdout.splitlines()
+        at = next(i for i, ln in enumerate(out) if ln.startswith("已退回 "))
+        first = out.index("    建了資料夾：空的")  # 成功句（與成品清單）之後
+        self.assertGreater(first, at)
+        self.assertEqual(out[first:first + 3], ["    建了資料夾：空的", "    資料夾：工程 → 案子", "    拿掉了空夾：設計師"])
+
     def test_revert_of_revert_moves_again(self):
         self.rename_type_in_turn()
         self.assertEqual(run_kb("versions", "revert", cwd=self.V).returncode, 0)

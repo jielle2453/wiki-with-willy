@@ -229,6 +229,7 @@ def _list(vault, n, as_json):
             "turn": t["turn"], "started": t["started"], "prompt_head": t["prompt_head"],
             "reverted": t["reverted"], "reverted_turn": t["reverted_turn"], "current": t["turn"] == current,
             "counts": _counts(vault, t), "entries": t["entries"],
+            "folders": [{k: f.get(k) for k in ("op", "from", "to")} for f in t["folders"]],
         } for t in shown], ensure_ascii=False))
         return 0
     if not all_turns:
@@ -240,6 +241,8 @@ def _list(vault, n, as_json):
         outputs = "" if c["outputs"] is None else f"、成品 {c['outputs']}"
         print(f"{t['turn']}{flags}｜{_fmt_time(t['started'])}｜問：「{t['prompt_head']}」｜"
               f"修改 {c['modify']}、新增 {c['create']}、刪除 {c['delete']}{outputs}")
+        for line in _folder_lines(t["folders"]):
+            print(line)
         for e in t["entries"][:ENTRY_LINES_MAX]:
             print(f"    {e.get('action')}：{e.get('path')}")
         if len(t["entries"]) > ENTRY_LINES_MAX:
@@ -249,6 +252,12 @@ def _list(vault, n, as_json):
     except ValueError as e:
         print(f"清冊讀不到：{e}")
     return 0
+
+
+def _folder_lines(ops):
+    """資料夾動作的白話（確認後 G-5）：AI 退回前講得出「夾會改回工班」。"""
+    words = {"move": "    資料夾：{from} → {to}", "make": "    建了資料夾：{from}", "remove": "    拿掉了空夾：{from}"}
+    return [words[f["op"]].format(**{"from": f["from"], "to": f.get("to")}) for f in ops if f.get("op") in words]
 
 
 def _prune_dirs(vault, rel):
@@ -497,6 +506,8 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
     print(sentence)
     for rel in out_rels:
         print(f"    {rel}")
+    for line in _folder_lines(folders_done):  # 夾改回去了哪些（確認後 G-5）
+        print(line)
     for msg in kept_msgs:
         print(msg)
     if outputs and not delete_outputs:

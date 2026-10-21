@@ -29,6 +29,11 @@ class RulesCore(unittest.TestCase):
         for bad in ("C:", "${CLAUDE_PLUGIN_ROOT}", "\\", "http"):
             self.assertNotIn(bad, self.text)
 
+    def test_r13_recent_changes_uses_changed(self):
+        """answer 測試第二輪後裁定 29（G-1）：「最近改了什麼」在常駐就寫明帶 --changed，不載 answer 也篩得對。"""
+        line = next(ln for ln in self.text.splitlines() if ln.startswith("- R-13 "))
+        self.assertTrue(line.endswith("問最近改了什麼用 kb journal recent --changed 答。"), line)
+
     def test_utf8_lf_single_trailing_newline(self):
         raw = CORE.read_bytes()
         self.assertNotIn(b"\r", raw)

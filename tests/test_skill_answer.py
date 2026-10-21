@@ -130,7 +130,9 @@ class Round2(unittest.TestCase):
     def test_13_never_edit_cards(self):
         part = self.section("## 原則", "## 骨架")
         line = next(ln for ln in part.splitlines() if "一律不改" in ln)
-        for want in ("綜合卡、檔案卡、設定檔一律不改", "照原檔答", "cards redo", "不叫 `turn note`", "D-155"):
+        for want in ("綜合卡、檔案卡、設定檔一律不改", "照原檔答", "cards redo", "D-155",
+                     "用卡標題與短標講，不貼〔f-…〕這類編號",  # 裁定 31
+                     "其他問題不寫檔；只有 `kb cards redo` 或 `kb pending add` 的回合才叫 `turn note`"):  # 裁定 32
             with self.subTest(want=want):
                 self.assertIn(want, line)
 
@@ -164,6 +166,32 @@ class Round2(unittest.TestCase):
         record = (ROOT / "skills" / "note" / "references" / "record-answer.md").read_text(encoding="utf-8")
         line = next(ln for ln in record.splitlines() if ln.startswith("kb finding add"))
         self.assertNotIn("--json", line)
+
+
+class Round3(unittest.TestCase):
+    """answer 測試第二輪後裁定 31～33：verify.md 跟原則 13 一致（短標不貼編號、只有 redo 與 pending add 才 turn note）；
+    tally 範例不帶 --json；CLAUDE.md 的 tally_cli 那列不被 | 破表。"""
+
+    def setUp(self):
+        self.verify = REFS["verify.md"].read_text(encoding="utf-8")
+
+    def test_31_32_verify_matches_principle(self):
+        part = self.verify[self.verify.index("## 四、"):self.verify.index("## 五、")]
+        self.assertIn("用卡標題與短標講，不貼〔f-…〕這類編號（D-160、B-089）", part)
+        line = next(ln for ln in part.splitlines() if "turn note" in ln)
+        self.assertIn("只有標重做（`kb cards redo`）或記待處理（`kb pending add`）的回合", line)
+        self.assertNotIn("convert 記了讀不到", self.verify)
+
+    def test_33_tally_example_without_json(self):
+        part = self.verify[self.verify.index("## 三、"):self.verify.index("## 四、")]
+        line = next(ln for ln in part.splitlines() if ln.startswith("kb tally --row"))
+        self.assertNotIn("--json", line)
+
+    def test_33_claude_md_tally_row_keeps_three_columns(self):
+        row = next(ln for ln in (ROOT / "CLAUDE.md").read_text(encoding="utf-8").splitlines()
+                   if ln.startswith("| `scripts/kb/tally_cli.py` |"))
+        cells = re.split(r"(?<!\\)\|", row)
+        self.assertEqual(len(cells), 4, cells)
 
 
 class References(unittest.TestCase):

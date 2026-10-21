@@ -130,12 +130,17 @@ def line_changes(vault):
 
 
 def _stopped(vault, session_id):
-    """這個 session 按過停止嗎：session 檔記著 ingest_stopped（turn hook 記的，answer 第 9 點）。只讀；讀不到當沒按過。"""
+    """這個 session 按過停止嗎：session 檔記著 ingest_stopped（turn hook 記的，answer 第 9 點）。只讀；讀不到（壞 JSON、OSError）
+    當沒按過，OSError 寫一行 log（answer 裁定 34），整理指示照印。"""
     if not session_id:
         return False
     from kb._lib import turn
 
-    data = turn._read_turn(turn._session_file(vault, session_id))
+    try:
+        data = turn._read_turn(turn._session_file(vault, session_id))
+    except OSError as e:
+        _log_vault(vault, e)
+        return False
     return bool(data and data.get("ingest_stopped"))
 
 

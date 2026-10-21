@@ -359,6 +359,16 @@ class OpeningIngestHint(unittest.TestCase):
             "schema_version": 1, "turn": "20261021-100000-abc", "session_id": "abc", "started": "2026-10-21T10:00:00",
             "prompt_head": "", "approved": False, "note": "", "done": True, "ingest_stopped": True}), encoding="utf-8")
 
+    def test_unreadable_session_file_counts_as_not_stopped(self):
+        """answer 測試第二輪後裁定 34（G-7）：session 檔讀不到（OSError）當沒按過停止，指示照印，寫一行 log。"""
+        (self.V / ".system" / "turns" / "abc.json").mkdir(parents=True)
+        lines = self.status("compact")
+        self.assertTrue(any(ln.startswith("還有 ") for ln in lines), lines)
+        self.assertEqual([ln for ln in lines if ln.startswith("先照 ingest skill 整理")], [UNSORTED_HINT.format(n=20)])
+        log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(log), 1, log)
+        self.assertEqual(log[0].split("\t")[1], "session")
+
     def test_stopped_session_gets_no_hint(self):
         """answer 測試後修正裁定 14（F-2）：同一個 session 按過停止，compact／resume 照 D-156 不再叫 AI 整理。"""
         self.stop_session()

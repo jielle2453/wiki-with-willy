@@ -213,7 +213,11 @@ def _apply_locked(vault, as_json, conversation):
             unskipped = inventory.unskip_kinds(vault, kinds, turn_id)
             about = entities.sync_self(vault, merged["about"], turn_id)
     except Refused as e:
-        _refuse(as_json, st, e.line)
+        if as_json:
+            print(json.dumps(dict(_public(st), created_dirs=created, removed_dirs=removed_dirs, message=e.line,
+                                  **e.payload), ensure_ascii=False))
+        else:
+            print(e.line)
         return 3
     about_lines = _about_lines(about)
     summary = _with_dirs(profile.summary_short(st["diff"]), removed_dirs, kept_dirs)
@@ -404,7 +408,8 @@ class _written:
         if e is None or not isinstance(e, (OSError, ValueError, entities.EntityRefused)):
             return False
         why = "等不到鎖" if isinstance(e, TimeoutError) else str(e)
-        raise Refused(WRITTEN_BUT.format(why=why)) from e
+        # 已寫入：--json 回 applied true、incomplete true（測試第二輪後裁定 28）
+        raise Refused(WRITTEN_BUT.format(why=why), {"applied": True, "incomplete": True}) from e
 
 
 def _out(as_json, lines, payload):

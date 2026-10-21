@@ -28,7 +28,7 @@ from kb._lib.io import read_json, write_json_atomic
 
 ENTRY_LINES_MAX = 15
 CLI_LOCK_TIMEOUT = 30
-REVERT_LOCK_TIMEOUT = CLI_LOCK_TIMEOUT
+REVERT_LOCK_TRY = 0.2  # 只試一下（殘留鎖照 FileLock 清掉）；搶不到就不排隊（測試第二輪後裁定 24）
 NOT_IN_VAULT = "不在知識庫裡：這裡往上找不到 .system/sources.json"
 TOUCHED_THIS_TURN = "{rel} 這一句話已經改過，下一句再刪"
 CHANGED_SINCE = "{rel} 之後被改過，留著"
@@ -37,8 +37,13 @@ MADE_KEPT = "建的資料夾「{rel}」裡有東西，留著"
 FOLDER_OPEN = "退不回去：「{rel}」裡有檔案正開著（檔案總管或 Office），什麼都沒動；關掉再說一次退回"
 FOLDER_FAILED = "退不回去：{why}，什麼都沒動"
 BAD_LEDGER = "回合紀錄的資料夾路徑不對，沒有退回"
+BAD_MANIFEST = "回合紀錄的檔案路徑不對，沒有退回"
 REVERT_BUSY = "另一個退回正在跑，等它做完再說一次"
+FILE_OPEN = "退不回去：「{rel}」正開著（檔案總管、Office 或記事本），什麼都沒動；關掉再說一次退回"
+UNEXPECTED = "退不回去：{why}；可能只退了一部分，先別再說退回，請服務人員看一下"
 _DRIVE = re.compile(r"^[A-Za-z]:")
+# 帳裡的路徑不能是這些保留區的根本身（測試第二輪後裁定 26）：資料夾帳只動型別夾、實體夾與 AI 產出底下的子夾
+RESERVED_ROOTS = {s.casefold() for s in (".system", "系統", "收件匣", "檔案索引", "AI 產出")}
 
 
 def add_arguments(sub):
@@ -107,20 +112,88 @@ def _folder_steps(vault, ops):
     return list(reversed(ops)), None
 
 
+def _path_ok(root, rel):
+    """帳裡的一個路徑（F-6、N-6）：要是知識庫裡的相對路徑，不是絕對路徑、不含 ..、解析後在知識庫裡，
+    也不是知識庫本身或保留區的根本身。"""
+    s = rel if isinstance(rel, str) else ""
+    if not s or s.startswith(("/", "\\")) or _DRIVE.match(s) or Path(s).is_absolute() or ".." in re.split(r"[\\/]", s):
+        return False
+    try:
+        parts = (root / s).resolve().relative_to(root).parts
+    except (ValueError, OSError):
+        return False
+    return bool(parts) and not (len(parts) == 1 and parts[0].casefold() in RESERVED_ROOTS)
+
+
 def _bad_path(vault, ops):
-    """F-6：帳裡的路徑要是知識庫裡的相對路徑；絕對路徑、含 ..、解析後不在知識庫裡的那一列回出來，都對回 None。"""
+    """資料夾帳每一列的 from／to 照 _path_ok 驗；不行的那一列回出來，都對回 None。"""
     root = Path(vault).resolve()
     for op in ops:
         for rel in [op.get("from")] + ([op["to"]] if op.get("to") is not None else []):
-            s = rel if isinstance(rel, str) else ""
-            if (not s or s.startswith(("/", "\\")) or _DRIVE.match(s) or Path(s).is_absolute()
-                    or ".." in re.split(r"[\\/]", s)):
-                return op
-            try:
-                (root / s).resolve().relative_to(root)
-            except (ValueError, OSError):
+            if not _path_ok(root, rel):
                 return op
     return None
+
+
+def _bad_entry(vault, entries):
+    """manifest 每一列的 path 跟資料夾帳同一套檢查（測試第二輪後裁定 26）。"""
+    root = Path(vault).resolve()
+    return next((e for e in entries if not _path_ok(root, e.get("path"))), None)
+
+
+def _forward(ops):
+    """夾改回去之前，還原目標（舊位置）現在在哪：照記的順序一層層換成新位置（_translator 的反方向）。"""
+    moves = [(op["from"], op["to"]) for op in ops if op["op"] == "move" and op.get("to")]
+
+    def ahead(rel):
+        for src, dst in moves:
+            k, s = _fkey(rel), _fkey(src)
+            if k == s or k.startswith(s + "/"):
+                rel = dst + rel[len(src):]
+        return rel
+    return ahead
+
+
+def _writable(path):
+    """能不能寫：開檔寫入試一次再關（Windows 上被 Office 開著、唯讀都會丟 PermissionError）。"""
+    try:
+        with open(path, "r+b"):
+            return True
+    except PermissionError:
+        return False
+
+
+def _locked_file(vault, target, delete_outputs, sources):
+    """測試第二輪後裁定 25（N-7）：改夾之前先試每個要還原或移除的檔能不能寫；回第一個不行的（現在的位置），都行回 None。"""
+    back, ahead = _translator(target["folders"]), _forward(target["folders"])
+    for e in target["entries"]:
+        rel = back(e.get("path"))
+        now = ahead(rel)
+        p = Path(vault) / now
+        if not p.is_file():
+            continue
+        if e.get("action") == "create":
+            if turn.zone_of(vault, rel, sources) == "Z3" and not delete_outputs:
+                continue  # 成品留著，不動它
+        elif not (target["dir"] / "files" / e.get("path")).is_file():
+            continue  # 備份不在，不會寫它
+        if not _writable(p):
+            return now
+    return None
+
+
+def _plain(vault, e):
+    """其他例外的白話：OSError 用 strerror，檔名換成知識庫裡的相對路徑（不在知識庫裡就不印）；不印絕對路徑。"""
+    if not isinstance(e, OSError):
+        return type(e).__name__
+    why = e.strerror or type(e).__name__
+    if e.filename:
+        try:
+            rel = Path(e.filename).resolve().relative_to(Path(vault).resolve()).as_posix()
+            why += f"（「{rel}」）"
+        except (ValueError, OSError):
+            pass
+    return why
 
 
 class _FolderFailed(Exception):
@@ -370,7 +443,7 @@ def revert_lock_path(vault):
 
 
 def _revert(vault, code, delete_outputs, as_json, conversation=False):
-    lock = kio.FileLock(revert_lock_path(vault), timeout=REVERT_LOCK_TIMEOUT)
+    lock = kio.FileLock(revert_lock_path(vault), timeout=REVERT_LOCK_TRY)
     try:
         lock.__enter__()
     except TimeoutError:
@@ -378,6 +451,10 @@ def _revert(vault, code, delete_outputs, as_json, conversation=False):
         return 3
     try:
         return _revert_locked(vault, code, delete_outputs, as_json, conversation)
+    except Exception as e:  # noqa: BLE001  白話一句、不丟 traceback、不印絕對路徑（測試第二輪後裁定 25）
+        ledger.log_error(vault, f"revert 失敗：{type(e).__name__}: {e}", source="versions")
+        print(UNEXPECTED.format(why=_plain(vault, e)))
+        return 3
     finally:
         lock.__exit__(None, None, None)
 
@@ -398,9 +475,19 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
                          source="versions")
         print(BAD_LEDGER)
         return 3
+    bad = _bad_entry(vault, target["entries"])
+    if bad is not None:
+        ledger.log_error(vault, f"{target['turn']} manifest 路徑不對：{json.dumps(bad, ensure_ascii=False)}",
+                         source="versions")
+        print(BAD_MANIFEST)
+        return 3
     steps, refused = _folder_steps(vault, target["folders"])
     if refused:  # D-142：夾改不回去就整個不退，回合、檔、夾都不動
         print(refused)
+        return 3
+    locked = _locked_file(vault, target, delete_outputs, sources_lib.load(vault))
+    if locked:  # N-7：不退成一半延伸到檔案階段
+        print(FILE_OPEN.format(rel=locked))
         return 3
     try:
         folders_done = _undo_moves(vault, steps)

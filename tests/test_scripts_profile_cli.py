@@ -625,6 +625,21 @@ class SecondRound(Base):
         self.assertEqual(self.apply(), ["客戶設定檔沒有改，沒有套用", "關於你：登記了 林美華"])
         self.assertEqual([e["name"] for e in entities.load(self.V)["entities"] if e.get("self")], ["林美華"])
 
+    def test_follow_up_failure_json_says_applied_incomplete(self):
+        """測試第二輪後裁定 28（N-4）：設定檔已寫入、後面沒做完時 --json 回 applied true、incomplete true（add 與 apply 都是）。"""
+        from unittest import mock
+        from kb._lib import entities
+        want = "設定檔已改好，但後面沒做完（等不到鎖）；跑 kb profile apply 會補上"
+        fail = mock.patch.object(entities, "sync_self", side_effect=TimeoutError("等待檔案鎖逾時"))
+        code, lines = self.run_in_process("profile", "add", "關於你", "名稱=林美華", "是什麼=本人", "--json", patches=[fail])
+        got = json.loads(lines[0])
+        self.assertEqual((code, got["applied"], got["incomplete"], got["message"]), (3, True, True, want))
+        self.hand_add("## 六、", "| 林小姐室內設計 | 公司 |  |")
+        fail = mock.patch.object(entities, "sync_self", side_effect=TimeoutError("等待檔案鎖逾時"))
+        code, lines = self.run_in_process("profile", "apply", "--json", patches=[fail])
+        got = json.loads(lines[0])
+        self.assertEqual((code, got["applied"], got["incomplete"], got["message"]), (3, True, True, want))
+
     def test_follow_up_unskip_failure_then_apply_fills_in(self):
         from unittest import mock
         self.assertEqual(self.kb("add", "不整理與敏感", "種類=請款", "處理=不整理").returncode, 0)

@@ -25,7 +25,7 @@
 | B-013 | 2026-10-12 | done（2026-10-16 manage 確認第 1 步人眼：/skills 列 wiki-with-willy:manage） | 下一題（第一個 skill 或 command）的確認情境必含「/help 或 /plugin 看得到 wiki-with-willy」，補建殼沒拿到的載入正面證據；順便弄清楚 --plugin-dir 載的 plugin 在 /plugin 裡列不列。守門確認第 1 步已給 hook 層證據（2026-10-13）；事務層確認人眼看到 /plugin Installed 列 `wiki-with-willy inline`（2026-10-13）；/help 可見留給第一個 skill | 建殼確認 |
 | B-014 | 2026-10-12 | open | spike：CLI `claude plugin update wiki-with-willy@<mp>` 能不能由 `kb upgrade` 用 subprocess 代跑、桌面版重開後吃不吃；能就 D-072 維持一句「升級」，不能就修訂成「說升級後我帶你點四步」（I-102） | B-008 |
 | B-015 | 2026-10-12 | done | 守門 spec 疑義待設計 session 拍板：(1) Bash 只提到登記來源或寫 Z1／Z3 時實作回 pass 不回 allow（spec 第 2 節「其餘不表態」vs 驗收 11「allow」vs D-073）；(2) Z8 寫擋的 reason_code 表上沒有，暫用 protected；(3) `kb guard decide` 例子 `cat a.txt > b.txt` 標 Z9，但無斜線 token 不抽路徑，實作會是 unparsed 或 Z8 | 守門實作 |
-| B-016 | 2026-10-12 | open | 查 Claude Code hooks 設定有沒有「hook 失敗或逾時即 deny」的欄位（onFailure 之類）與最低版本；有就加進 hooks.json，沒有就靠開場偵測 python（I-103） | 守門實作 |
+| B-016 | 2026-10-12 | open | 查 Claude Code hooks 設定有沒有「hook 失敗或逾時即 deny」的欄位（onFailure 之類）與最低版本；有就加進 hooks.json，沒有就靠開場偵測 python（I-103）。2026-10-21 查到：hook 可加 `"onFailure": "block"`（Claude Code 2.1.295 以上），PreToolUse 起不來、exit 非 0 非 2、逾時、輸出壞掉都擋；預設是放行。歸「密碼與守門」題 | 守門實作 |
 | B-017 | 2026-10-12 | deferred | 守門測試的低優先：guard-status 每次呼叫都讀改成每天一次快取；`.gitattributes` 對 tests/fixtures 的二進位檔標 binary；POSIX 上 CLAUDE.md 大小寫；型別夾根新檔理由句用 Z8；origin/HEAD 沒設讓 security-review skill 跑不起來（已設）；Z9 理由句結尾補句號；fixture a.txt 內容別用 hello；deny 在終端機顯示成「Error: PreToolUse:X hook error: <理由句>」，事務層確認已人眼看過（2026-10-13）：理由句完整但前綴嚇人，是 Claude Code 固定格式，只能靠理由句白話（併 B-110） | 守門測試、確認 |
 | B-018 | 2026-10-13 | deferred | AI 產出的指紋先用位元組 sha256，`kb convert` 出來後 Office 檔改文字指紋（D-014 補、D-076） | 事務層設計 |
 | B-020 | 2026-10-13 | done | v0.3.0 README 加「環境需求」一節（2026-10-13）。原題：發行 README 寫明只支援 Windows、Python 3.10 以上、PATH 上要有 `python`（hooks.json 是裸 python，沒有就 fail open，I-103）；plugin-dev 的 validate-hook-schema.sh 沒 jq 會誤報 Invalid JSON，不拿它當發行關卡 | 事務層 plugin-validator |
@@ -100,6 +100,8 @@
 | B-086 | 2026-10-21 | deferred | 日程匯出成行事曆檔（.ics，匯進 Google／Outlook）與其他匯出格式：produce 這版只做印出來的 Word／PDF（例句 6）；同步到手機行事曆會兩邊各改，牽涉日程第二題的排程設計（D-107），到那題再看 | produce 設計 |
 | B-089 | 2026-10-21 | open | 中：ingest 整理完的回答把綜合卡的出處標記〔f-…〕〔r-…〕原樣貼給客戶（note 改知識確認第 6 步，2 則）；口述與裁示讓出處變多，會更常見。候選：ingest 原則加「回答不帶〔…〕，要講出處就說檔名或哪天說的」，或 Stop hook 掃回答裡的編號。ingest 下一版或 answer 題一起看 | note 改知識確認落差 1 |
 | B-090 | 2026-10-21 | open | 低（note 改知識確認落差 4～9）：改既有的事 AI 只查口述清單、沒看卡上原本寫的（第 2 步）；口述句尾 AI 自己加「（日期（週三）客戶口述）」跟日期欄重複；登記新實體的問法沒照「<名稱> 是新的案子／對象嗎？」、登記後仍待確認；`cards mount` 後 removed 項 `title` 是 null；憑證那題 AI 先 Glob 找含「密碼」的檔名（沒讀）；原檔寫的名稱跟實體不同時先問再 mount（合理，多一回合） | note 改知識確認 |
+| B-091 | 2026-10-21 | open | 推算清單（`findings.json`）掛的實體名稱不跟著 `entity rename`／`merge` 換（answer 題 `entities.py` 不能動）；現在查的時候照 `entities.find` 轉到現名（舊名進別名、合併轉址）。下一次動 `entities.py` 的題目在 rename／merge 裡跟換（同口述與裁示的做法） | answer 實作回報裁定 5 |
+| B-092 | 2026-10-21 | deferred | answer 測試第一輪讀碼低項（未重現）：多視窗共用 `current.json` 時 A 的 `cards todo` 可能把 `ingest` 標到 B 的回合；`lookup` 的 `mentions` 讀卡正文沒有大小上限、不帶 ruled_out／stale；`findings.stale` 不看清冊狀態（依據卡被排除時不判過期）；`journal.changed_text` 遇壞行 AttributeError；`check_text` 不擋控制字元與 markdown（口述同） | answer 測試 F-9、F-10 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

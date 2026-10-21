@@ -1190,6 +1190,13 @@
 - 放棄了：進待處理；只在 answer 回答末尾說一句（不問就看不到、也不會去做）；`kb asks` 每句末尾問一題（每句都問直到答）。
 - 重談條件：開場算還沒整理的份數超出 SessionStart 時限；或客戶常在開場按停止。
 
+## D-162 produce 的檔案交給 Anthropic 文件技能做，我們的程式管工具偵測、轉 PDF、重算、放哪裡與登記；先跑 spike 驗桌面版
+- 日期：2026-10-21
+- 選了：照舊 plugin `rules/office.md` 的分工。新文件、改既有 Word（追蹤修訂）、改既有 Excel（只改輸入格、直接改 XML）由 `anthropic-skills:docx`、`anthropic-skills:xlsx` 做；不自己用 python-docx 之類的程式庫。我們的程式只管：偵測客戶電腦有什麼（桌面版 Office → LibreOffice → 都沒有）並轉 PDF、Excel 重算、舊格式轉新格式，沒有就照實降級（公式要打開才更新、不報手算的數字）；成品放哪（D-045）；登記與製卡。寫進 spec 之前先跑 spike（B-081）：Claude Code 桌面版在客戶型的 Windows 上看不看得到兩個文件技能、node 的 docx 套件裝不裝得起來、技能自己的哪些工具在 Windows 不能用、轉 PDF 與重算走哪條路做得成，做一份新 Word、改一份既有 Word 與 Excel。
+- 為什麼：舊 plugin 實測過這套（e8），套客戶範本與追蹤修訂只有文件技能做得好；自己寫只做得出簡單版面，工作量是好幾倍；只靠 LibreOffice 轉檔，客戶多半沒裝、版面也粗。前提（桌面版看得到技能、node 套件）沒驗過，先 spike 免得 spec 建在沒驗的假設上。
+- 放棄了：自己用標準函式庫寫 docx／xlsx；只寫草稿靠 LibreOffice 轉。
+- 重談條件：spike 看不到文件技能或 node 套件裝不起來。
+
 ## 未決
 
 目前沒有未決（2026-10-16，U-2 收進 D-097）。新的未決照舊用表：編號、事、要什麼才能決。

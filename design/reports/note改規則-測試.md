@@ -213,3 +213,28 @@
 - 偽造狀態檔類以外：`lock.__enter__()` 在 `try` 外，`.system/revert.lock` 建不起來時是帶絕對路徑的 traceback；`_plain` 的 `resolve()` 遇符號連結迴圈會丟 RuntimeError；`_writable` 只接 PermissionError，唯讀屬性也會印「正開著」（措辭，與第二輪 #9 同類）；`_translator.back()` 用 casefold 比對、用原長切片，`ß` 這類字元長度會變的字會算錯偏移（未端到端實測）。
 - 已在 B-079 的：revert 鎖 30 秒過期可被搶、`_move` 回滾後上層空夾沒記帳、N-2、N-3a、N-5、第二輪讀碼四項。
 - 第三輪確認的行為：失敗發生在事前檢查之後時，`reverted.json` 沒寫、訊息叫客戶別再說退回（子代理指出：重試會挑到還沒封的動作回合把半退退掉，還原的是先前內容，不算損毀）。
+
+---
+
+# 第四輪（S-3）
+
+日期：2026-10-21
+測試對象：分支 `spec/note改規則` HEAD b21b47a（第五輪實作，裁定 32）
+範圍：只驗 S-3；不做 code-review、不找新發現（停止規則）。
+
+## 結論
+
+- **S-3 修好，過。** `python -m unittest discover tests` exit 0（Ran 1542 tests，OK，skipped=1）。
+
+## 證據（b21b47a，照第三輪的重現）
+
+- **`kb versions delete-outputs`**：清冊偽造三筆 `status: turn_reverted`、`origin: ai_output`、`created_turn` 是已退回回合、`fingerprints: []` 的條目——uri 為 `file://../OUTSIDE.txt`、`file://AI 產出/legit.txt`、`file://收件匣/client.txt`（知識庫內、但不在 AI 產出）。exit 0，輸出：
+  ```
+  已刪 1 份成品（回合 20261021-165414-s1）：
+      AI 產出/legit.txt
+  這份不在 AI 產出裡，沒有刪
+  這份不在 AI 產出裡，沒有刪
+  ```
+  知識庫外的 `OUTSIDE.txt` 還在、`收件匣/client.txt` 還在、合法的 `AI 產出/legit.txt` 被刪；`hook-errors.log` 記一行 `delete-outputs 路徑不對：f-inbox01`（對照：第三輪時這一筆會把 vault 外的檔刪掉）。
+- **`kb versions revert --delete-outputs`**：(A) 合法成品（manifest `create` 加清冊 active）→ exit 0「還原 2、移除 1、成品 1 份刪了」，`AI 產出/legit.txt` 被刪；(B) 清冊另有一筆指向 `../OUTSIDE.txt`、manifest 只有合法的 `create` → 只刪 legit，`OUTSIDE.txt` 還在（這條路徑只動 manifest 裡的路徑）；(C) manifest 偽造 `create ../OUTSIDE.txt` → exit 3「回合紀錄的檔案路徑不對，沒有退回」，`OUTSIDE.txt` 還在。
+- 一個測法上的註記：我第一次用「清冊 active、manifest 沒有 create」測 `revert --delete-outputs`，輸出「成品 0 份」，合法成品也沒刪，因為 revert 路徑只認 manifest 的 `create`；那組不能當證據，改用上面 (A)(B)(C)。

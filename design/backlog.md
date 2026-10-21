@@ -101,6 +101,7 @@
 | B-089 | 2026-10-21 | open | 中：ingest 整理完的回答把綜合卡的出處標記〔f-…〕〔r-…〕原樣貼給客戶（note 改知識確認第 6 步，2 則）；口述與裁示讓出處變多，會更常見。候選：ingest 原則加「回答不帶〔…〕，要講出處就說檔名或哪天說的」，或 Stop hook 掃回答裡的編號。ingest 下一版或 answer 題一起看 | note 改知識確認落差 1 |
 | B-090 | 2026-10-21 | open | 低（note 改知識確認落差 4～9）：改既有的事 AI 只查口述清單、沒看卡上原本寫的（第 2 步）；口述句尾 AI 自己加「（日期（週三）客戶口述）」跟日期欄重複；登記新實體的問法沒照「<名稱> 是新的案子／對象嗎？」、登記後仍待確認；`cards mount` 後 removed 項 `title` 是 null；憑證那題 AI 先 Glob 找含「密碼」的檔名（沒讀）；原檔寫的名稱跟實體不同時先問再 mount（合理，多一回合） | note 改知識確認 |
 | B-091 | 2026-10-21 | open | 推算清單（`findings.json`）掛的實體名稱不跟著 `entity rename`／`merge` 換（answer 題 `entities.py` 不能動）；現在查的時候照 `entities.find` 轉到現名（舊名進別名、合併轉址）。下一次動 `entities.py` 的題目在 rename／merge 裡跟換（同口述與裁示的做法） | answer 實作回報裁定 5 |
+| B-092 | 2026-10-21 | deferred | answer 測試第一輪讀碼低項（未重現）：多視窗共用 `current.json` 時 A 的 `cards todo` 可能把 `ingest` 標到 B 的回合；`lookup` 的 `mentions` 讀卡正文沒有大小上限、不帶 ruled_out／stale；`findings.stale` 不看清冊狀態（依據卡被排除時不判過期）；`journal.changed_text` 遇壞行 AttributeError；`check_text` 不擋控制字元與 markdown（口述同） | answer 測試 F-9、F-10 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

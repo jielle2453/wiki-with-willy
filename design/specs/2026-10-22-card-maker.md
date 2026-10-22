@@ -1,6 +1,6 @@
 # card-maker 與整批製卡
 日期：2026-10-22
-狀態：draft
+狀態：approved（2026-10-22；開工條件見下：密碼與守門發行之後；確認與 build 併在一起）
 版本：（發行後填）
 
 ## 目的
@@ -219,3 +219,4 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-22：整理「本題釐清」六點（規則注入、權限、回合與日誌、一個或兩個子代理、舊程式對照、B-412）。
 - 2026-10-22：寫完整 spec 草稿（使用者說寫 spec）。查官方文件補兩件：Bash 子行程沒有 session／agent 的環境變數，子代理身分只能從 hook 拿；PreToolUse 的 `updatedInput` 可改 Bash 指令並同時 allow。據此定回合歸屬的做法（job、agents 對照、守門插 `--turn`）、認領防重做、日誌補記、停、大改動、估時；一個子代理三種工作；例句 5、9 照 spike 改收，15 照 D-196 改收。I-116 grep：core.md、其他 skill 沒有相反的整理做法（answer 的 `unsorted`、note 的 `agenda scanned` 照用）。等使用者看過。
 - 2026-10-22：a2 看過 spec，補「跟密碼與守門、manage 第二版的交界」五點（加密檔不進批次、secret_shown、守門順序與引號、plan 排在 purge 兩步後、不讀的夾不走訪）與驗收 2b。
+- 2026-10-22：使用者說可以，狀態改 approved。

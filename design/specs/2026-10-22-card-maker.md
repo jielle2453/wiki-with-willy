@@ -65,7 +65,7 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - **B-412 的其他資料與 B-415（a2 轉來 manage 第二版確認第 0～0c 節，10-22）**：三次開場兩次照做，沒照做的那次第一句是一大段接手指示（任務書），AI 先處理那段才整理——B-412 重現時也要試「第一句很長」的情況。另外兩件併進這題：(1) 開場的數字要對：`cards.unsorted` 只算 `dispatch` 真的派得出去的（讀不到的、包括 produce 連結型條目打不開的，記進待處理後不再算，B-415），另外把要跟著原檔搬的卡算出來，開場行改成「還有 N 份沒整理完、M 張卡要跟著搬」（0 的那半不印）；(2) 連結型條目讀不到時 `convert` 記 unreadable，原因「線上文件打不開」，`plan.py` 的 `UNREADABLE_ADVICE` 加一句怎麼辦（到 claude.ai 確認那份還在、有分享給這個帳號，或跟我說先跳過）。確認時另記：主對話有沒有英文自言自語（a2 看到「Carding says to run `convert`.」，R-10）。
 - **B-412**：開場有「還有 N 份沒整理完」（門檻內）時 AI 沒照 D-161 直接整理。開場指示照 D-196 改寫（見要做的事 8）；實作先用 `claude -p` 在測試知識庫重現（19 份沒整理、說「你好」跑 5 次），找出原因再改，改完同法再跑 5 次（驗收 14）。
 - **跟密碼與守門、manage 第二版的交界**（a2 10-22 看過 spec 後提，兩題發行後都在 main）：
-  1. **加密檔**：背景子代理不能問客戶，`convert` 一律不帶 `--password`、`--saved`；`dispatch` 切批時排除清冊或待處理已記成讀不到（含有密碼）的條目，留給主對話照 `plan`／`asks`（`unlock_same_kind` 等）問客戶。第一次遇到、還不知道有密碼的，子代理 `convert` 失敗照記讀不到、回報沒做成，下次 dispatch 就排除。
+  1. **加密檔**：背景子代理不能問客戶，`convert` 一律不帶 `--password`、`--saved`；`dispatch` 切批時排除清冊或待處理已記成讀不到（含有密碼）的條目，留給主對話照 `plan`／`asks`（`unlock_same_kind` 等）問客戶。第一次遇到、還不知道有密碼的，子代理 `convert` 失敗照記讀不到、回報沒做成，下次 dispatch 就排除。檔名是憑證樣式的檔（含裁示「可以讀」的密碼檔，D-183、D-184）也不切進批次、留給主對話：它們的暫存是 `.system/temp/*.secret.md`，密碼與守門在每句話開頭與 Stop 時刪掉，子代理跑到一半可能被主對話那句的 Stop 刪掉（a2 10-23）。
   2. **密碼顯示過的回合（`secret_shown`）**：`refresh_changed` 與 `job_result` 照 `agent_turn` 找到的回合，回合檔記了 `secret_shown` 就不寫結果（跟 `stop.py` 同一條規矩），只更新改了。
   3. **守門的順序**：`updatedInput` 只加在 `scripts/kb/guard.py` 的判斷已經放行、而且是單一 kb 呼叫的指令上；排在密碼與守門加的 `onFailure: block` 與「shell 工具內部出錯也擋」之後；插進去的值照 `plan.py` 那套加引號（`shell_arg`）；PowerShell 裡有彎引號的 kb 指令照 manage 第二版擋下，不改寫。`is_single_plugin_call` 照它發行後的介面（多 `tool` 參數）。
   4. **plan 的順序**：manage 第二版排除時的兩步（`purge: "pending"` 先重寫綜合卡、再 `folders purge`）排最前面、不算門檻；`dispatch` 排在它們後面，而且不把 `purge: "pending"` 那夾的條目切進批次。
@@ -160,7 +160,7 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 
 1. [ ] `cards todo --json` 的 `plan`：有新檔時是 `[sync?, dispatch]`；45 份時 `asks` 第一題是先問題（句子一字不差）、`then` 是 `[sync, dispatch]`；10 份時 `announce` 一字不差、秒數照 config 算。
 2. [ ] `cards dispatch --json`（回合在對話裡）：45 份 → 3 批（20、20、5）、`prompt` 含 `cards batch <批次>` 與完整前綴；再跑一次 → 不建新批（都被認領）、`running` 3；終端機（current.json 沒 session_id）跑 → 拒絕一字不差。
-2b. [ ] 交界：清冊記成讀不到（有密碼）的條目不進批次；`purge: "pending"` 那夾的條目不進批次、`plan` 裡 purge 兩步排在 `dispatch` 前面；job 回合記了 `secret_shown` 時 `refresh_changed` 與 `job_result` 不寫結果。
+2b. [ ] 交界：清冊記成讀不到（有密碼）的條目與憑證樣式檔名（含裁示可以讀的）不進批次；`purge: "pending"` 那夾的條目不進批次、`plan` 裡 purge 兩步排在 `dispatch` 前面；job 回合記了 `secret_shown` 時 `refresh_changed` 與 `job_result` 不寫結果。
 3. [ ] 認領：把一批改 `done` 再 dispatch → 只從沒卡、沒認領的切；把批次 `created` 改成 31 分鐘前 → 當放掉、項目回來；換一個 session 的 current 跑 → 舊 session 的 open 批次不算。
 4. [ ] 順序：還有 cards 時不建 synthesis 批次；cards 全做完（替身寫卡）後才建，大小照 `synthesis_batch_size`；`--source` 只切那個來源。
 5. [ ] 大改動：job 回合的 `ai_synthesis` 已 9 張、這次 synthesis_stale 3 張 → 不派、回 `approval`（`--turn` 是 job 回合）；`turn approve --turn <回合>` 後再 dispatch → 派。
@@ -223,3 +223,4 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-22：a2 看過 spec，補「跟密碼與守門、manage 第二版的交界」五點（加密檔不進批次、secret_shown、守門順序與引號、plan 排在 purge 兩步後、不讀的夾不走訪）與驗收 2b。
 - 2026-10-22：使用者說可以，狀態改 approved。
 - 2026-10-22（approved 後）：a2 轉來 manage 第二版確認的開場三次（兩次照做、第一句是長指示那次沒照做）；B-415（連結型讀不到每次都算進還有 N 份）與開場沒算要搬的卡，併進 B-412 那條；驗收加 13b、14 多試長指示。範圍跟開場整理同一處，不另開題。
+- 2026-10-23（approved 後）：a2 提憑證樣式檔（可以讀的密碼檔）的暫存會被 Stop 刪，補進交界第 1 點與驗收 2b：不切進批次、留給主對話；`hooks/turn.py` 以密碼與守門發行版為底（它加了刪 `.secret.md` 那幾行）。

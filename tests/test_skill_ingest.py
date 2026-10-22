@@ -21,7 +21,7 @@ BODY_MAX_LINES = 120
 REFERENCE_MAX_LINES = 150
 ABS_PATH = re.compile(r"(?<![A-Za-z$])[A-Za-z]:[\\/]|/Users/|/home/")
 NOT_TRIGGER = ("上次那份報價在哪", "以後報價一律附日期", "做成 Word")
-MANAGE_CLOSE = "加完說「從現在起讀得到；要我現在整理成卡嗎？」客戶說要就照 ingest skill 做。"
+MANAGE_CLOSE = "加完問要不要整理成卡，要就照 ingest。"
 
 
 def split(text):
@@ -141,8 +141,9 @@ class FieldTables(unittest.TestCase):
 
 class ManageRow(unittest.TestCase):
     def test_add_row_closing_sentence(self):
-        row = next(ln for ln in MANAGE.read_text(encoding="utf-8").splitlines() if ln.startswith("| 加資料夾"))
-        self.assertTrue(row.rstrip(" |").endswith(MANAGE_CLOSE), row[-80:])
+        """manage 第二版改成 D-132 的骨架：加資料夾那行加完問要不要整理成卡，要就交給 ingest。"""
+        row = next(ln for ln in MANAGE.read_text(encoding="utf-8").splitlines() if ln.startswith("- **加資料夾**"))
+        self.assertTrue(row.rstrip().endswith(MANAGE_CLOSE), row[-80:])
         self.assertNotIn("整理成卡的功能之後補", row)
 
 

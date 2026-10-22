@@ -1,7 +1,7 @@
-"""skills/manage 的形狀（specs/2026-10-16-manage.md 第 5 節）：frontmatter 只有 name、description；
-描述 150 字內、不帶英文觸發詞；本文用 ${CLAUDE_PLUGIN_ROOT} 叫 kb.py、不寫絕對路徑；提到的 reference 都在且 ≤150 行；
-tests/evals/manage.json 20 句、該觸發與不該各 10、不重複、含 spec 給的句子（含疑義裁定 2 的兩句）；
-憑證那句與 repo CLAUDE.md commands/ 列照疑義裁定 3、5。字數門檻在 test_budget，這裡只守形狀。
+"""skills/manage 的形狀（manage 第二版第 8 點、驗收 17，D-132 五條）：frontmatter 只有 name、description，描述照 spec、150 字內、
+不帶英文觸發詞；本文 3000 字內，有分辨、原則、骨架三段，原則每條帶理由與決策編號，沒有參數對照表與六步搬家；
+用 ${CLAUDE_PLUGIN_ROOT} 叫 kb.py、不寫絕對路徑；兩份 references 在且 ≤150 行；tests/evals/manage.json 20 句各半、含 spec 給的句子。
+字數總門檻在 test_budget，這裡只守形狀。
 """
 import json
 import re
@@ -13,22 +13,16 @@ SKILL_DIR = ROOT / "skills" / "manage"
 SKILL = SKILL_DIR / "SKILL.md"
 EVALS = ROOT / "tests" / "evals" / "manage.json"
 DESC_MAX = 150
+BODY_MAX = 3000
 REFERENCE_MAX_LINES = 150
 ABS_PATH = re.compile(r"(?<![A-Za-z$])[A-Za-z]:[\\/]|/Users/|/home/")
-SPEC_QUERIES = (
-    "把 D:\\報價 也加進來，裡面是去年到現在的報價單",
-    "不要讀 公司行政 裡面那個薪資的資料夾，那是私人的",
-    "廠商資料那個資料夾不要了",
-    "薪資那夾還是讀好了",
-    "你現在讀哪些資料夾",
-    "報價那個資料夾我搬到 E 槽了",
-    "幫我把信義王的報價 v2 搬到王宅那夾",
-    "D 槽報價單裡信義王那份寫多少錢",
-    "以後不要把私人的事記進卡",
-    "把信義王報價 v2 的付款條件改成 30 天",
-)
+DESCRIPTION = ("管資料夾與原檔的位置都用這個：加資料夾、不讀某夾、拿掉、恢復讀、現在讀哪些、「報價夾搬到 E 槽了」「這份搬到 2026」"
+               "「合約改個名字」「舊備忘幫我刪掉」「定稿放到王宅那夾」「這份要放哪」；改檔案內容、整理成卡、實體改名、重建不用這個。")
+SHOULD = ("報價那個資料夾我搬到 E 槽了", "這份估價單幫我搬到 2026 那夾", "合約改名叫『信義王合約_簽約版』", "舊備忘幫我刪掉，那份早就沒用了",
+          "把信義王整個資料夾搬到 2025 封存", "剛做好的定稿要放哪？你決定就好")
+SHOULD_NOT = ("我自己把報價搬到信義王那夾了", "信義王改叫王宅", "把這份合約付款條件改 30 天", "信義王現在怎樣")
 CREDENTIAL_LINE = "檔名像密碼或金鑰的預設不讀，這版還不能開放，之後會有"
-COMMANDS_ROW = "| `commands/` | 尚未。build 五步與 upgrade、backup、restore、relocate、migrate、account（D-028），沒有 manage 指令 |"
+COMMANDS_ROW = "| `commands/` | 尚未。build（一個指令走五步，D-190）與 upgrade、backup、restore、relocate、migrate、account（D-028），沒有 manage 指令 |"
 
 
 def split(text):
@@ -37,6 +31,12 @@ def split(text):
     assert lines and lines[0] == "---", "SKILL.md 開頭不是 ---"
     end = lines.index("---", 1)
     return lines[1:end], "\n".join(lines[end + 1:])
+
+
+def section(body, title):
+    start = body.index(f"## {title}")
+    nxt = body.find("\n## ", start + 1)
+    return body[start:nxt if nxt != -1 else len(body)]
 
 
 class Frontmatter(unittest.TestCase):
@@ -48,57 +48,58 @@ class Frontmatter(unittest.TestCase):
         self.assertEqual(set(self.fields), {"name", "description"})
         self.assertEqual(self.fields["name"].strip(), "manage")
 
-    def test_description_short_chinese_no_english_triggers(self):
+    def test_description_is_spec_text(self):
         desc = self.fields["description"].strip()
-        self.assertTrue(desc)
+        self.assertEqual(desc, DESCRIPTION)
         self.assertLessEqual(len(desc), DESC_MAX)
-        self.assertIsNone(re.search(r"[A-Za-z]{2,}", desc), desc)  # D 槽、E 槽這種單字母可以
-        self.assertIn("幫我搬", desc)  # 疑義裁定 2：搬單一檔案也進 manage，回做不到
-        self.assertIn("改名", desc)
+        self.assertIsNone(re.search(r"[A-Za-z]{2,}", desc), desc)  # E 槽這種單字母可以
 
 
 class Body(unittest.TestCase):
     def setUp(self):
         self.body = split(SKILL.read_text(encoding="utf-8"))[1]
 
+    def test_size_and_three_parts(self):
+        self.assertLessEqual(len(self.body), BODY_MAX)
+        for title in ("分辨", "原則", "骨架"):
+            self.assertIn(f"## {title}", self.body)
+
+    def test_no_parameter_table_or_six_steps(self):
+        """驗收 17：本文沒有參數對照表與六步搬家（細節住 references，介面由程式輸出給）。"""
+        self.assertNotIn("|---", self.body)
+        self.assertNotIn("⑥", self.body)
+        self.assertNotIn("做不到", section(self.body, "分辨"))
+
+    def test_principles_have_reason_and_decision(self):
+        rules = [ln for ln in section(self.body, "原則").splitlines() if re.match(r"^\d+\. \*\*", ln)]
+        self.assertGreaterEqual(len(rules), 8)
+        for ln in rules:
+            with self.subTest(rule=ln[:20]):
+                bold_end = ln.index("**", ln.index("**") + 2) + 2
+                self.assertTrue(ln[bold_end:].strip(), "原則後面要一句理由")
+                self.assertRegex(ln, r"[DI]-\d{3}")
+
+    def test_principles_cover_spec_points(self):
+        rules = section(self.body, "原則")
+        for word in ("kb source-edit", "--check", "kb folders purge", "open", "where", "對不太上", "救不回"):
+            with self.subTest(word=word):
+                self.assertIn(word, rules)
+        self.assertIn("清完的回答不提那夾裡的檔名與內容", rules)  # 疑義第 4 條
+
+    def test_distinguishes_and_hands_off(self):
+        part = section(self.body, "分辨")
+        for word in ("ingest", "note", "produce", "重建"):
+            with self.subTest(word=word):
+                self.assertIn(word, part)
+
     def test_calls_kb_through_plugin_root(self):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}/scripts/kb.py", self.body)
 
-    def test_credential_line_follows_ruling_3(self):
-        """驗收 17：憑證檔那句照疑義裁定 3；不再承諾一份一份放行。"""
+    def test_credential_line(self):
         self.assertIn(CREDENTIAL_LINE, self.body)
-        for p in (SKILL, *(SKILL_DIR / "references").glob("*.md")):
-            with self.subTest(file=p.name):
-                self.assertNotIn("一份一份", p.read_text(encoding="utf-8"))
-
-    def test_move_row_checks_new_path_first(self):
-        """驗收 19：搬家那列先對新路徑 add --check，過了才 remove；被拒什麼都不動。"""
-        row = next(line for line in self.body.splitlines() if line.startswith("| 已經搬好"))
-        self.assertLess(row.index("--check"), row.index("remove"))
-        self.assertIn("什麼都不動", row)
-
-    def test_move_row_step1_no_alias_step5_uses_old_spec(self):
-        """驗收 21：第①步不問別名、不念暫用名；第⑤步用第②步記下的舊 spec 接新路徑，不再 list。"""
-        row = next(line for line in self.body.splitlines() if line.startswith("| 已經搬好"))
-        step1 = row[row.index("①"):row.index("②")]
-        step5 = row[row.index("⑤"):row.index("⑥")]
-        self.assertNotIn("別名", step1)
-        self.assertIn("spec", step5)
-        self.assertIn("新路徑", step5)
-        self.assertNotIn("list", step5)
 
     def test_common_section_says_traditional_chinese(self):
-        """驗收 22：共通段要求回答客戶一律繁體中文。"""
-        common = self.body[self.body.index("## 共通"):self.body.index("## 參考")]
-        self.assertIn("回答客戶一律繁體中文", common)
-
-    def test_exclude_row_checks_registration_first(self):
-        """驗收 23：不讀某夾先 list --json；沒登記就說本來就沒在讀、請客戶貼路徑，不推；在來源裡才問①②。"""
-        row = next(line for line in self.body.splitlines() if line.startswith("| 不讀某夾"))
-        self.assertIn("list --json", row)
-        self.assertLess(row.index("list --json"), row.index("①"))
-        self.assertIn("本來就沒在讀", row)
-        self.assertIn("不從別的路徑推", row)
+        self.assertIn("回答客戶一律繁體中文", section(self.body, "共通"))
 
     def test_no_absolute_paths(self):
         for text, name in ((self.body, "SKILL.md"),
@@ -106,14 +107,23 @@ class Body(unittest.TestCase):
             with self.subTest(file=name):
                 self.assertIsNone(ABS_PATH.search(text), name)
 
-    def test_mentioned_references_exist_and_short(self):
+    def test_references_exist_and_short(self):
         refs = set(re.findall(r"references/[^\s`)）、，。]+\.md", self.body))
-        self.assertIn("references/sources.md", refs)
+        self.assertEqual(refs, {"references/sources.md", "references/files.md"})
         for ref in refs:
             p = SKILL_DIR / ref
             with self.subTest(reference=ref):
                 self.assertTrue(p.is_file())
                 self.assertLessEqual(len(p.read_text(encoding="utf-8").splitlines()), REFERENCE_MAX_LINES)
+
+    def test_references_cover_new_subcommands(self):
+        sources = (SKILL_DIR / "references" / "sources.md").read_text(encoding="utf-8")
+        files = (SKILL_DIR / "references" / "files.md").read_text(encoding="utf-8")
+        for word in ("## relocate", "## purge", "還有綜合卡寫著那夾的內容"):
+            self.assertIn(word, sources)
+        for word in ("## move", "## rename", "## trash", "## where", "## open", "OneDrive", "不同顆硬碟不代搬"):
+            self.assertIn(word, files)
+        self.assertNotIn("這版還沒有卡和備份要清", sources)
 
 
 class Evals(unittest.TestCase):
@@ -126,23 +136,21 @@ class Evals(unittest.TestCase):
             self.assertEqual(set(item), {"query", "should_trigger"})
             self.assertIsInstance(item["should_trigger"], bool)
         self.assertEqual(sum(i["should_trigger"] for i in self.items), 10)
-        queries = [i["query"] for i in self.items]
-        self.assertEqual(len(set(queries)), 20)
+        self.assertEqual(len({i["query"] for i in self.items}), 20)
 
     def test_contains_spec_queries(self):
         by_query = {i["query"]: i["should_trigger"] for i in self.items}
-        for q in SPEC_QUERIES:
+        for q in SHOULD:
             with self.subTest(query=q):
-                self.assertIn(q, by_query)
-        self.assertTrue(by_query[SPEC_QUERIES[6]])  # 驗收 15：搬單一檔案要觸發
-        self.assertFalse(by_query[SPEC_QUERIES[9]])  # 驗收 15：改內容是 produce
-        self.assertFalse(by_query[SPEC_QUERIES[8]])
-        self.assertTrue(by_query[SPEC_QUERIES[5]])
+                self.assertIs(by_query.get(q), True)
+        for q in SHOULD_NOT:
+            with self.subTest(query=q):
+                self.assertIs(by_query.get(q), False)
 
 
 class RepoClaudeMd(unittest.TestCase):
-    def test_commands_row_follows_ruling_5(self):
-        """驗收 17：commands/ 列不寫 manage 指令，免得跟 skill 撞名。"""
+    def test_commands_row_has_no_manage_command(self):
+        """commands/ 列不寫 manage 指令，免得跟 skill 撞名。"""
         lines = (ROOT / "CLAUDE.md").read_text(encoding="utf-8").splitlines()
         self.assertIn(COMMANDS_ROW, lines)
 

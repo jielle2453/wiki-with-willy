@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import zipfile
 from pathlib import Path
 
@@ -106,7 +107,8 @@ def _setup(as_json):
             parts.append("node 套件 " + "、".join(res["node"]))
         lines = [f"已裝好：{'；'.join(parts)}（花了 {res['seconds']} 秒）"]
     if res["skipped_node"]:
-        lines.append("這台沒有 Node.js，只裝了 python 那組；" + office.NO_NODE)
+        lines.append("這台沒有 npm（Node.js 裝得不完整），只裝了 python 那組；新做 Word 或簡報要重裝 Node.js"
+                     if res.get("has_node") else "這台沒有 Node.js，只裝了 python 那組；" + office.NO_NODE)
     _out(as_json, lines, dict({"ok": True}, **res))
     return 0
 
@@ -127,6 +129,7 @@ def _copy(args, as_json):
         ws = office.workspace(vault, _turn_id(vault))
         dst = _free_name(ws / Path(str(path)).name)
         shutil.copy2(path, dst)
+        os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)  # 唯讀原檔的副本也要能改、能清（測試後修正裁定 20 L-9）
     except convert.Refused as e:
         return _fail(as_json, COPY_HEAD + e.args[0])
     except office.Refused as e:

@@ -14,7 +14,7 @@ SKILL = SKILL_DIR / "SKILL.md"
 REFS = {name: SKILL_DIR / "references" / name for name in ("draft.md", "make.md")}
 EVALS = ROOT / "tests" / "evals" / "produce.json"
 DESC = ("要 AI 做出一份東西都用這個：做成 Word、Excel、PowerPoint、PDF、線上文件或簡報，「幫我做一份報價」「照去年的合約寫新的」"
-        "「合約付款條件改成 30 天」「剛才那個表存成 Excel」「做一份提案簡報」「這週日程印出來」；問資料、記下來、整理檔案、搬檔、寄出去不用這個。")
+        "「合約付款條件改成 30 天」「剛才那個表存成檔」「這週日程印出來」「草稿可以了，定稿」；問資料、記下來、整理檔案、搬檔、寄出去不用這個。")
 DESC_MAX = 150
 BODY_MAX_CHARS = 3000
 REFERENCE_MAX_LINES = 150
@@ -122,6 +122,49 @@ class Body(unittest.TestCase):
         for want in ("（草稿）.md", "短標", "kb tally", "照片", "剛回答過的", "kb output drop-draft", "kb asks"):
             with self.subTest(want=want):
                 self.assertIn(want, draft)
+
+
+class Round2(unittest.TestCase):
+    """測試後修正裁定 17（預設推薦線上文件、三件事在建之前講）、18（修訂作者範例、Grep 驗）、19（描述、tally 格式、
+    Docs 改請她下載、範本從 profile show --json 讀、草稿用 Write、拒絕句補一句）。"""
+
+    def setUp(self):
+        self.body = split(SKILL.read_text(encoding="utf-8"))[1]
+        self.draft = REFS["draft.md"].read_text(encoding="utf-8")
+        self.make = REFS["make.md"].read_text(encoding="utf-8")
+
+    def test_online_by_default_and_three_things_first(self):
+        part = self.body[self.body.index("## 原則"):self.body.index("## 骨架")]
+        for want in ("一律推薦線上文件", "給業主", "claude.ai 帳號", "只有她看得到", "要檔怎麼拿", "建之前"):
+            with self.subTest(want=want):
+                self.assertIn(want, part)
+        for text in (self.draft, self.make):
+            self.assertIn("一律推薦線上文件" if text is self.draft else "預設推薦線上文件", text)
+            self.assertIn("建之前", text)
+
+    def test_draft_written_with_write(self):
+        self.assertIn("檔案工具（Write）", self.body)
+
+    def test_redline_author_example_and_grep(self):
+        self.assertIn('w:author="AI 助理"', self.make)
+        self.assertIn("<w:ins", self.make)
+        self.assertIn("Grep", self.make)
+
+    def test_tally_row_format(self):
+        self.assertIn('--row "<卡編號> <數字> [位置]"', self.draft)
+        self.assertRegex(self.draft, r'kb tally --row "f-[0-9a-f]{8} ')
+
+    def test_docs_download_not_written_by_me(self):
+        self.assertNotIn("由我把匯出的 docx", self.make)
+        self.assertIn("請她從線上文件下載", self.make)
+
+    def test_template_from_profile_show(self):
+        self.assertIn("kb profile show --json", self.make)
+        self.assertIn("只收工作區或 AI 產出裡的檔", self.make)
+
+    def test_answer_says_excel_file(self):
+        answer = (ROOT / "skills" / "answer" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("做成文件、Excel 檔、簡報", answer)
 
 
 class Evals(unittest.TestCase):

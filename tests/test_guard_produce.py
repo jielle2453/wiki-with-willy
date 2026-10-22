@@ -5,6 +5,7 @@
 import os
 import shutil
 import unittest
+import sys
 
 from tests._guard_fixture import KB, ROOT, make_vault, payload
 from kb import guard  # noqa: E402
@@ -174,6 +175,43 @@ class SecurityReview(Base):
         with mock.patch.object(guard, "_touches_output", side_effect=RuntimeError("壞了")):
             d = self.decide("Bash", "node b.js")
         self.assertEqual((d.decision, d.reason_code), ("deny", "output_shell"))
+
+
+
+class FreshVault(unittest.TestCase):
+    """測試後修正裁定 12（H-1）：還沒有 .system/temp/office/ 的新庫，第一次寫工作區也放行；officeX、.. 照擋。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        os.environ["CLAUDE_PLUGIN_ROOT"] = str(ROOT)
+        self.assertFalse((self.V / ".system" / "temp").exists())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def decide(self, tool, value):
+        return guard.decide(payload(tool, value, self.V))
+
+    def test_first_write_allowed(self):
+        for target in (self.V / ".system/temp/office/20261022-101010-test/build.js",
+                       self.V / ".system/temp/office/20261022-101010-test/sub/a.py"):
+            with self.subTest(target=target):
+                d = self.decide("Write", target)
+                self.assertEqual((d.decision, d.zone, d.reason), ("allow", "Z7", "工作區"))
+
+    def test_lookalikes_still_denied(self):
+        for target in (self.V / ".system/temp/officeX/a.js", self.V / ".system/temp/office/../x.js",
+                       self.V / ".system/temp/office", self.V / ".system/temp/office/_lo_profile/x.xcu"):
+            with self.subTest(target=target):
+                self.assertEqual(self.decide("Write", target).decision, "deny")
+
+    def test_kb_guard_decide_cli(self):
+        import json as _json
+        import subprocess as _sp
+        r = _sp.run([sys.executable, str(KB), "guard", "decide", "--tool", "Write", "--path",
+                     str(self.V / ".system/temp/office/20261022-101010-test/build.js"), "--json"],
+                    capture_output=True, text=True, encoding="utf-8", cwd=str(self.V))
+        self.assertEqual(_json.loads(r.stdout)["decision"], "allow")
 
 
 if __name__ == "__main__":

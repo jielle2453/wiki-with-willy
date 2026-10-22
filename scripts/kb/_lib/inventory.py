@@ -279,8 +279,8 @@ def is_file_uri(uri):
 
 
 def register_link(vault, url, turn_id, title, type_=None, entities=(), basis=()):
-    """kb output link（D-168）：Claude artifact 記成一筆 AI 產出，位置是網址、沒有指紋；同網址已有 active 的就更新那筆的
-    title、type、entities、basis 並回它。呼叫端先備份清冊。"""
+    """kb output link（D-168）：Claude artifact 記成一筆 AI 產出，位置是網址、沒有指紋；同網址已有 active 的原樣回它、不覆蓋
+    （測試後修正裁定 14，output 先擋）。呼叫端先備份清冊。"""
     key = uri_key(url)
     now = _now()
     p = _path(vault)
@@ -289,12 +289,13 @@ def register_link(vault, url, turn_id, title, type_=None, entities=(), basis=())
         data = load(vault)
         entry = next((e for e in data["entries"] if e.get("status") == "active" and is_link(e) and _has_location(e, key)),
                      None)
-        if entry is None:
-            entry = {"id": _new_id({e.get("id") for e in data["entries"]}), "origin": "ai_output", "kind": LINK,
-                     "locations": [{"uri": url}], "fingerprints": [], "read": "ok", "status": "active",
-                     "first_seen": now, "created_turn": turn_id, "missing_since": None}
-            data["entries"].append(entry)
-        entry.update(title=title, type=type_, entities=list(entities), basis=list(basis))
+        if entry is not None:
+            return entry
+        entry = {"id": _new_id({e.get("id") for e in data["entries"]}), "origin": "ai_output", "kind": LINK,
+                 "locations": [{"uri": url}], "fingerprints": [], "read": "ok", "status": "active",
+                 "first_seen": now, "created_turn": turn_id, "missing_since": None,
+                 "title": title, "type": type_, "entities": list(entities), "basis": list(basis)}
+        data["entries"].append(entry)
         _write(vault, data["entries"])
         return entry
 

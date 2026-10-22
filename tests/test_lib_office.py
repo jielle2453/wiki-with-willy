@@ -45,9 +45,11 @@ class FakeEnv(unittest.TestCase):
         if py:
             for name in office.PY_PACKAGES:
                 (office.pylib() / name).mkdir(parents=True, exist_ok=True)
+            office.mark_ready("python")
         if node:
             for name in office.NODE_PACKAGES:
                 (office.node_modules() / name).mkdir(parents=True, exist_ok=True)
+            office.mark_ready("node")
 
 
 class Check(FakeEnv):
@@ -86,8 +88,8 @@ class Check(FakeEnv):
         self.fake(NO_OFFICE, "C:/LO/soffice.exe", "C:/node/node.exe", None)
         self.install(node=False)
         lines = office.check_lines(office.detect())
-        self.assertEqual(lines[2], "Node.js：有（v24.20.0）；沒有 npm；工具夾 node 套件：沒裝")
-        self.assertIn("不行：新做 Word、新做簡報（要裝 Node.js）", lines[-1])
+        self.assertEqual(lines[2], "Node.js：有（v24.20.0）；沒有 npm（Node.js 裝得不完整）；工具夾 node 套件：沒裝")
+        self.assertIn("不行：新做 Word、新做簡報（要重裝 Node.js）", lines[-1])
         self.assertNotIn("要先做", "\n".join(lines))
 
 
@@ -275,7 +277,7 @@ class Convert(FakeEnv):
         self.assertEqual(used, "LibreOffice")
         self.assertEqual(argv[:3], ["C:/LO/soffice.exe", "--headless", "--norestore"])
         self.assertTrue(argv[3].startswith("-env:UserInstallation=file:"))
-        self.assertIn("_lo_profile", argv[3])
+        self.assertTrue(argv[3].endswith("/wiki-with-willy/lo"), "測試後修正裁定 20 L-1：profile 放短路徑")
         self.assertEqual(argv[4:], ["--convert-to", "pdf", "--outdir", str(self.ws), str(self.src)])
 
     def test_excel_recalc_com(self):
@@ -318,6 +320,79 @@ class ComSecurity(unittest.TestCase):
             with self.subTest(script=script[:40]):
                 self.assertIn("AutomationSecurity=3", script)
                 self.assertLess(script.index("AutomationSecurity=3"), script.index(".Open("))
+
+
+class Round2(FakeEnv):
+    """測試後修正裁定 15（自閉合格）、16（轉 PDF 前清舊檔）、20 L-1（profile 放短路徑、沒輸出的失敗句）、L-2（裝好記號）、
+    L-3（unpack --to 不收 _lo_profile）、L-5（有 node 沒 npm 的說法）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.vtmp, self.V, _raw = make_inv_vault()
+        self.ws = office.workspace(self.V, "20261022-101010-test")
+
+    def tearDown(self):
+        shutil.rmtree(self.vtmp, ignore_errors=True)
+        super().tearDown()
+
+    def test_self_closing_cell(self):
+        xlsx = self.ws / "e.xlsx"
+        with zipfile.ZipFile(xlsx, "w") as z:
+            z.writestr("xl/worksheets/sheet1.xml", '<worksheet><sheetData><row r="1"><c r="A1" s="1"/><c r="B1" t="e">'
+                                                   '<f>1/0</f><v>#DIV/0!</v></c><c r="C1"><f>1+1</f><v>2</v></c>'
+                                                   '</row></sheetData></worksheet>')
+        self.assertEqual(office.formula_report(xlsx), (2, [("sheet1", "B1", "#DIV/0!")]))
+
+    def test_old_pdf_removed_before_convert(self):
+        src = self.ws / "壞.docx"
+        src.write_text("not a docx", encoding="utf-8")
+        old = self.ws / "壞.pdf"
+        old.write_bytes(b"%PDF old")
+        with mock.patch.object(office, "_call", return_value=(0, "")):
+            with self.assertRaises(office.Unavailable):
+                office.to_pdf(self.V, src, self.ws, {"office": NO_OFFICE, "soffice": "C:/LO/soffice.exe"})
+        self.assertFalse(old.exists(), "舊的同名 PDF 轉之前就刪掉，不會被當成這次轉出來的")
+
+    def test_profile_on_short_path_and_silent_failure(self):
+        calls = []
+
+        def call(argv, timeout, env=None, cwd=None):
+            calls.append(argv)
+            return 1, ""
+        with mock.patch.object(office, "_call", call):
+            with self.assertRaises(office.Unavailable) as c:
+                office.to_pdf(self.V, self.ws / "a.docx", self.ws, {"office": NO_OFFICE, "soffice": "C:/LO/soffice.exe"})
+        self.assertIn("LibreOffice 沒有執行成功", str(c.exception))
+        profile = calls[0][3]
+        self.assertIn("wiki-with-willy", profile)
+        self.assertNotIn(".system", profile, "profile 不在知識庫裡（長路徑會讓 LibreOffice 閃退）")
+
+    def test_ready_marker(self):
+        self.fake(NO_OFFICE, None, "C:/node/node.exe", "C:/node/npm.cmd")
+        for name in office.PY_PACKAGES:
+            (office.pylib() / name).mkdir(parents=True, exist_ok=True)
+        for name in office.NODE_PACKAGES:
+            (office.node_modules() / name).mkdir(parents=True, exist_ok=True)
+        env = office.detect()
+        self.assertEqual((env["py_missing"], env["node_packages"]), (list(office.PY_PACKAGES), False),
+                         "只有夾、沒有裝好記號不算裝好")
+        office.mark_ready("python")
+        office.mark_ready("node")
+        env = office.detect()
+        self.assertEqual((env["py_missing"], env["node_packages"]), ([], True))
+
+    def test_unpack_to_profile_refused(self):
+        src = self.ws / "a.docx"
+        with zipfile.ZipFile(src, "w") as z:
+            z.writestr("word/document.xml", "<w/>")
+        with self.assertRaises(office.Refused):
+            office.unpack(self.V, src, self.V / ".system" / "temp" / "office" / "_lo_profile" / "user")
+
+    def test_node_without_npm_wording(self):
+        self.fake(NO_OFFICE, "C:/LO/soffice.exe", "C:/node/node.exe", None)
+        lines = office.check_lines(office.detect())
+        self.assertEqual(lines[2], "Node.js：有（v24.20.0）；沒有 npm（Node.js 裝得不完整）；工具夾 node 套件：沒裝")
+        self.assertIn("新做 Word、新做簡報（要重裝 Node.js）", lines[-2] if lines[-1].startswith("要先做") else lines[-1])
 
 
 class NoNode(unittest.TestCase):

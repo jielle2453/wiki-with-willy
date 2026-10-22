@@ -463,23 +463,34 @@ def _unresolved_rows(tool, sources, head):
 
 
 def in_workspace(path, vault_n):
-    """normalize 過的 path 在工作區 .system/temp/office/ 底下（不含工作區根本身），而且磁碟上存在的部分 realpath 後還在
-    （工作區裡的連結跳出去的不算）。"""
+    """normalize 過的 path 在工作區 .system/temp/office/ 底下（不含工作區根本身）：先照字串前綴判（測試後修正裁定 12：
+    新庫還沒有這個夾也要放行）；工作區夾已存在時，磁碟上存在的部分 realpath 後還要在裡面（工作區裡的連結跳出去的不算）；
+    還不存在時，存在的最近上層不能是被連結導走的。"""
     root = vault_n.rstrip("/") + "/" + WORKSPACE_POSIX
     if path == root or not inside(path, root):
         return False
     if path[len(root) + 1:].split("/", 1)[0] == LO_PROFILE_DIR:
         return False  # LibreOffice 的設定（巨集、信任路徑）不給檔案工具改（收尾 security-review）
-    cur, tail = path, []
-    while not os.path.exists(cur):
-        head, name = cur.rsplit("/", 1) if "/" in cur else ("", cur)
-        if not head or head == cur:
-            return False
-        tail.append(name)
-        cur = head
+    if not os.path.exists(root):
+        anc = _nearest_existing(root)
+        return anc is not None and normalize(os.path.realpath(anc), None) == anc
+    cur = _nearest_existing(path)
+    if cur is None:
+        return False
     real = normalize(os.path.realpath(cur), None)
-    real_root = normalize(os.path.realpath(root), None) if os.path.exists(root) else root
+    real_root = normalize(os.path.realpath(root), None)
     return real == real_root or inside(real, real_root)
+
+
+def _nearest_existing(path):
+    """normalize 過的 path 往上找第一個磁碟上存在的；找不到回 None。"""
+    cur = path
+    while not os.path.exists(cur):
+        head = cur.rsplit("/", 1)[0] if "/" in cur else ""
+        if not head or head == cur:
+            return None
+        cur = head
+    return cur
 
 
 def _file_tool(tool, target, cwd, vault, sources):

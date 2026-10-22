@@ -3,7 +3,9 @@
 工具夾在 %LOCALAPPDATA%\\wiki-with-willy\\tools\\（node\\、pylib\\），按機器、不進知識庫，路徑不寫進任何狀態檔（D-019 同理，每次從環境變數算）。
 偵測：桌面版 Office 查登錄檔 App Paths（WINWORD、EXCEL、POWERPNT），LibreOffice 找 PATH 與常見位置，Node.js 與 npm 找 PATH，
 套件看工具夾裡的套件夾。轉 PDF、重算：有 Office 用 Office（PowerShell COM），否則 LibreOffice（--headless --norestore、
-固定 profile 在 .system/temp/office/_lo_profile、輸出一律用 UTF-8 解，B-081 spike 結論 4）；都沒有回 Unavailable 帶固定句。
+固定 profile 在 %TEMP%\\wiki-with-willy\\lo（短路徑：profile 路徑太長 LibreOffice 會閃退，測試後修正裁定 20 L-1；不寫進狀態檔）、
+輸出一律用 UTF-8 解，B-081 spike 結論 4）；都沒有回 Unavailable 帶固定句。setup 驗 import 成功才在工具夾寫「裝好了」記號
+（READY_NAME），check、setup 看記號不看夾在不在（L-2）。
 呼叫外部程式一律經 _call（測試換掉它當替身，這台沒有 Office）；setup 裝完驗 import，失敗等 5 秒重試三次（spike 結論 2）。
 核心只用標準函式庫；轉圖用的 pypdfium2 在子行程裡用（PYTHONPATH 帶工具夾），本行程不動模組搜尋路徑。
 """
@@ -23,7 +25,8 @@ from kb._lib.paths import plugin_root
 
 TEMP_POSIX = ".system/temp"
 OFFICE_DIR = "office"
-LO_PROFILE = "_lo_profile"
+LO_PROFILE = "_lo_profile"  # 舊位置（工作區底下），守門與 unpack 照樣不給寫
+READY_NAME = "ready.json"  # 工具夾裡的「裝好了」記號：{"python": true, "node": true}
 NODE_PACKAGES = ("docx", "pptxgenjs")
 PY_PACKAGES = ("defusedxml", "lxml", "openpyxl", "pypdfium2")
 PY_IMPORTS = "import defusedxml, lxml.etree, openpyxl, pypdfium2"
@@ -151,11 +154,35 @@ def find_npm():
     return _which("npm") or _which("npm.cmd")
 
 
+def _ready():
+    import json
+    try:
+        data = json.loads((tools_dir() / READY_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def mark_ready(kind):
+    """setup 驗 import 成功後記一筆（kind 是 python 或 node）。"""
+    import json
+    data = _ready()
+    data[kind] = True
+    tools_dir().mkdir(parents=True, exist_ok=True)
+    tmp = tools_dir() / (READY_NAME + ".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, tools_dir() / READY_NAME)
+
+
 def node_packages_ok():
-    return all((node_modules() / name).is_dir() for name in NODE_PACKAGES)
+    """有「裝好了」記號才算（只有夾、沒驗過 import 不算，L-2）。"""
+    return bool(_ready().get("node")) and all((node_modules() / name).is_dir() for name in NODE_PACKAGES)
 
 
 def py_packages_missing():
+    """沒有「裝好了」記號就整組算缺（L-2）；有記號再看夾還在不在。"""
+    if not _ready().get("python"):
+        return list(PY_PACKAGES)
     return [name for name in PY_PACKAGES if not (pylib() / name).is_dir()]
 
 
@@ -172,7 +199,7 @@ def detect():
 
 
 def capabilities(env):
-    """回 {"can", "after_setup", "cannot": [(事, 要裝什麼)], "setup"}。
+    """回 {"can", "after_setup", "cannot": [(事, 括號裡那句)], "setup"}。
     改 Word／Excel／簡報只要 python（office unpack／pack）；新做 Word、簡報要 Node.js 與 node 套件；新做 Excel 要 openpyxl；
     轉 PDF、看版面要 Office 或 LibreOffice（看版面另要 pypdfium2）；重算要 Excel 或 LibreOffice。"""
     can, later, cannot = ["改 Word", "改 Excel", "改簡報"], [], []
@@ -181,8 +208,10 @@ def capabilities(env):
         can += ["新做 Word", "新做簡報"]
     elif env["node"] and env["npm"]:
         later += ["新做 Word", "新做簡報"]
+    elif env["node"]:
+        cannot.append(("新做 Word、新做簡報", "要重裝 Node.js"))  # 有 node 沒 npm：裝得不完整（L-5）
     else:
-        cannot.append(("新做 Word、新做簡報", "Node.js"))
+        cannot.append(("新做 Word、新做簡報", "要裝 Node.js"))
     (can if py_ready else later).append("新做 Excel")
     office = env["office"]
     converter = bool(env["soffice"]) or any(office.values())
@@ -190,11 +219,11 @@ def capabilities(env):
         can.append("轉 PDF")
         (can if env["pdfium"] else later).append("看版面")
     else:
-        cannot.append(("轉 PDF、看版面", "LibreOffice"))
+        cannot.append(("轉 PDF、看版面", "要裝 LibreOffice"))
     if env["soffice"] or office.get("excel"):
         can.append("重算 Excel")
     else:
-        cannot.append(("重算 Excel", "LibreOffice"))
+        cannot.append(("重算 Excel", "要裝 LibreOffice"))
     setup = bool(env["py_missing"]) or bool(env["node"] and env["npm"] and not env["node_packages"])
     return {"can": can, "after_setup": later, "cannot": cannot, "setup": setup}
 
@@ -205,7 +234,7 @@ def check_lines(env):
     lines = [f"Office：{'有（' + '、'.join(apps) + '）' if apps else '沒有'}",
              f"LibreOffice：{'有（' + env['soffice'] + '）' if env['soffice'] else '沒有'}"]
     if env["node"]:
-        npm = "" if env["npm"] else "；沒有 npm"
+        npm = "" if env["npm"] else "；沒有 npm（Node.js 裝得不完整）"
         version = f"（{env['node_version']}）" if env["node_version"] else ""
         lines.append(f"Node.js：有{version}{npm}；工具夾 node 套件：{'裝好了' if env['node_packages'] else '沒裝'}")
     else:
@@ -222,7 +251,7 @@ def check_lines(env):
     if cap["after_setup"]:
         last += "；裝好工具後也可以" + "、".join(cap["after_setup"])
     if cap["cannot"]:
-        last += "；不行：" + "、".join(f"{what}（要裝 {need}）" for what, need in cap["cannot"])
+        last += "；不行：" + "、".join(f"{what}（{need}）" for what, need in cap["cannot"])
     lines.append(last)
     if cap["setup"]:
         lines.append("要先做：kb office setup（大約 1 分鐘）")
@@ -265,6 +294,7 @@ def setup(timeout=600):
     need_py = bool(env["py_missing"])
     need_node = bool(env["node"] and env["npm"] and not env["node_packages"])
     out = {"already": False, "python": [], "node": [], "skipped_node": not (env["node"] and env["npm"]),
+           "has_node": bool(env["node"]),
            "seconds": 0, "tries": {}}
     if not need_py and not need_node:
         out["already"] = True
@@ -283,6 +313,7 @@ def setup(timeout=600):
         out["tries"]["python"] = tries
         if not ok:
             raise Unavailable(f"python 套件裝好了但載不起來：{_last_line(text)}；過一兩分鐘再跑一次 kb office setup")
+        mark_ready("python")
         out["python"] = list(PY_PACKAGES)
     if need_node:
         (tools_dir() / "node").mkdir(parents=True, exist_ok=True)
@@ -297,6 +328,7 @@ def setup(timeout=600):
         out["tries"]["node"] = tries
         if not ok:
             raise Unavailable(f"node 套件裝好了但載不起來：{_last_line(text)}")
+        mark_ready("node")
         out["node"] = list(NODE_PACKAGES)
     out["seconds"] = round(_clock() - started, 1)
     return out
@@ -423,7 +455,8 @@ def unpack(vault, src, dest=None):
     src = resolve_arg(src)
     need_in_temp(vault, src)
     dest = resolve_arg(dest) if dest else src.with_name(src.stem + "_unpacked")
-    if not in_temp(vault, dest):
+    if not in_temp(vault, dest) or _real(dest) == _real(office_root(vault) / LO_PROFILE) or inside(
+            dest, office_root(vault) / LO_PROFILE):
         raise Refused(f"只能解開到工作區裡：{dest}")
     try:
         with zipfile.ZipFile(src) as z:
@@ -509,9 +542,18 @@ def _powershell(script, inp, out, seconds):
 
 
 def _lo_profile(vault):
-    p = office_root(vault) / LO_PROFILE
+    """LibreOffice 的設定夾放短路徑 %TEMP%\\wiki-with-willy\\lo（L-1），不在知識庫裡、不寫進狀態檔。"""
+    p = Path(tempfile.gettempdir()) / "wiki-with-willy" / "lo"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+LO_SILENT = "LibreOffice 沒有執行成功"
+
+
+def _why(code, text):
+    """失敗的原因一句：非 0 又沒有輸出（閃退）說「LibreOffice 沒有執行成功」（L-1）。"""
+    return LO_SILENT if code != 0 and not str(text or "").strip() else _last_line(text)
 
 
 def _soffice(vault, soffice, args, seconds):
@@ -534,6 +576,11 @@ def to_pdf(vault, src, ws, env=None):
         if _real(src) != _real(out):
             shutil.copyfile(src, out)
         return out, "pdf"
+    if out.exists() and in_temp(vault, out):  # 同名舊 PDF 先刪：成功要是這次轉出來的檔（測試後修正裁定 16）
+        try:
+            out.unlink()
+        except OSError:
+            raise Unavailable(f"舊的 {out.name} 正開著，關掉再轉") from None
     try:
         if app and env["office"].get(app):
             code, text = _powershell(_PS_PDF[app], src, out, seconds)
@@ -548,7 +595,7 @@ def to_pdf(vault, src, ws, env=None):
     except FileNotFoundError:
         raise Unavailable(NO_CONVERTER) from None
     if code != 0 or not out.is_file():
-        raise Unavailable(f"轉不出 PDF（{used}）：{_last_line(text)}")
+        raise Unavailable(f"轉不出 PDF（{used}）：{_why(code, text)}")
     return out, used
 
 
@@ -581,12 +628,12 @@ def recalc(vault, src, env=None):
     except FileNotFoundError:
         raise Unavailable(NO_CONVERTER + "\n" + NO_RECALC_TAIL) from None
     if code != 0 or (os.stat(src).st_mtime_ns, os.stat(src).st_size) == before:
-        raise Unavailable(f"沒有重算成（{used}）：{_last_line(text)}\n{NO_RECALC_TAIL}")
+        raise Unavailable(f"沒有重算成（{used}）：{_why(code, text)}\n{NO_RECALC_TAIL}")
     formulas, errors = formula_report(src)
     return {"used": used, "formulas": formulas, "errors": errors}
 
 
-_CELL = re.compile(r'<c\b([^>]*)>(.*?)</c>', re.S)
+_CELL = re.compile(r'<c\b([^>]*?)(?:/>|>(.*?)</c>)', re.S)  # 先認自閉合格（<c r="A1" s="1"/>），測試後修正裁定 15
 _REF = re.compile(r'\br="([A-Z]+[0-9]+)"')
 
 

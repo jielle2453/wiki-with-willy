@@ -6,7 +6,8 @@ save：目的地要在 AI 產出底下、不是 .md（md 用檔案工具寫，ho
 登記的來源裡的客戶原檔要先 kb office copy。--to 的檔名不收冒號（NTFS 資料流會繞過 .md 與同名檢查）。turn.backup（create）→ 搬或複製 → 清冊登記（register_output，--from 記 derived_from；
 --link 掛到那筆 link 條目）→ --draft 把草稿備進回合（delete）後拿掉、清冊那筆改 deleted。清冊不另備份：退回照 manifest
 的 create 把成品改 turn_reverted，草稿照 delete 還原、對帳回 active（versions 既有的帳就夠）。
-link：只收 https://claude.ai/ 的網址，清冊記一筆 kind link（不算指紋、掃描不走），實體要登記過、依據要是寫好卡的。
+link：只收 https://claude.ai/ 的網址，清冊記一筆 kind link（不算指紋、掃描不走），實體要登記過、依據要是寫好卡的；
+寫清冊前先把 inventory.json 備進回合（退回這一句就拿掉這筆）；同網址已登記拒絕、不覆蓋；標題不收 $ 與反引號。
 drop-draft：草稿要在 AI 產出底下、檔名是（草稿）.md。拒絕一律丟 Refused，訊息就是給人看的那句（一字不差）。
 """
 import os
@@ -32,6 +33,8 @@ NO_SOURCE = "找不到這份原檔：{target}"
 EXCLUDED = "這個位置你說過不讀"
 ORIGINAL = "客戶原檔先用 kb office copy 拿副本"
 COLON = "檔名不能有冒號"
+LINKED_BEFORE = "這個網址已經登記過了：{title}"
+TITLE_CHARS = "標題不能有 $ 或 ` 這兩種字元"
 _URL = re.compile(r"^https://claude\.ai/[^\s\"'`$\\]+$")
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f$`]')
 
@@ -104,7 +107,8 @@ def check_url(url):
 def source_mode(vault, src):
     """來源在哪：工作區回 move、知識庫外回 copy、知識庫裡其他地方拒絕。知識庫外的照守門判斷：排除的（Z10、Z10b）、
     檔名像密碼或金鑰的（守門第一道）拒絕，登記的來源（Z9）要先 kb office copy。"""
-    if _inside(src, Path(vault) / ".system" / "temp") and _real(src) != _real(Path(vault) / ".system" / "temp"):
+    office_root = Path(vault) / ".system" / "temp" / "office"  # 工作區只算 office/（測試後修正裁定 20 L-3）
+    if _inside(src, office_root) and _real(src) != _real(office_root):
         return "move"
     if _inside(src, vault):
         raise Refused(IN_VAULT)
@@ -123,13 +127,20 @@ def source_mode(vault, src):
     return "copy"
 
 
-def _link_entry(vault, url):
+def _find_link(vault, url):
     key = inventory.uri_key(url)
     for e in inventory.load(vault)["entries"]:
         if e.get("status") == "active" and inventory.is_link(e) and any(
                 inventory.uri_key(loc.get("uri", "")) == key for loc in e.get("locations") or []):
             return e
-    raise Refused(UNKNOWN_LINK)
+    return None
+
+
+def _link_entry(vault, url):
+    e = _find_link(vault, url)
+    if e is None:
+        raise Refused(UNKNOWN_LINK)
+    return e
 
 
 def _source_entry(vault, target, cwd):
@@ -211,6 +222,11 @@ def link(vault, url, title, turn_id, type_=None, names=(), basis=()):
     title = str(title or "").strip()
     if not title:
         raise Refused(NO_TITLE)
+    if any(c in title for c in "$`"):  # 同型別名、實體名稱的 SHELL_CHARS（測試後修正裁定 20 L-4）
+        raise Refused(TITLE_CHARS)
+    old = _find_link(vault, url)
+    if old is not None:  # 同網址再 link 不覆蓋（測試後修正裁定 14）
+        raise Refused(LINKED_BEFORE.format(title=old.get("title") or url))
     if type_ is not None and (not type_.strip() or _UNSAFE.search(type_) or type_.strip(" .") != type_):
         raise Refused(BAD_TYPE.format(name=type_))
     ent = entities.load(vault)
@@ -225,6 +241,7 @@ def link(vault, url, title, turn_id, type_=None, names=(), basis=()):
             cards.card_of(vault, fid.strip())
         except cards.CardRefused as e:
             raise Refused(str(e)) from None
+    turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)  # 進回合帳：說退回拿掉的就是這筆（測試後修正裁定 13）
     return inventory.register_link(vault, url, turn_id, title=title, type_=type_,
                                    entities=found_names, basis=[b.strip() for b in basis])
 

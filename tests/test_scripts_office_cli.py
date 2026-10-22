@@ -95,6 +95,20 @@ class Copy(Base):
         self.assertEqual(self.refused("copy", "f-00000000"), "拿不到副本：清冊沒有 f-00000000")
         self.assertFalse(self.ws.exists() and any(self.ws.iterdir()), "拒絕時不留副本")
 
+    def test_copy_clears_read_only(self):
+        """測試後修正裁定 20 L-9：唯讀的原檔，副本要能改、能清。"""
+        import os
+        import stat
+        src = self.raw / _cards.MEETING
+        os.chmod(src, stat.S_IREAD)
+        try:
+            fid = self.entry_id("客戶案件/" + _cards.MEETING.split("/", 1)[1])
+            copy = Path(self.ok("copy", fid)[0][len("副本："):])
+            self.assertTrue(os.access(copy, os.W_OK))
+            self.assertFalse(os.access(src, os.W_OK), "原檔的屬性不動")
+        finally:
+            os.chmod(src, stat.S_IWRITE | stat.S_IREAD)
+
     def test_copy_takes_no_vault_flag(self):
         r = self.kb("copy", "f-00000000", "--vault", str(self.V))
         self.assertEqual(r.returncode, 2, "跟 convert 一樣不收 --vault（實作回報裁定 5）")

@@ -218,5 +218,42 @@ class Link(Base):
         self.assertEqual(inventory.entry_for(self.V, self.URL), None)
 
 
+
+class Round2(Base):
+    """測試後修正裁定 13（link 進回合帳、退回拿掉 link）、14（同網址拒絕）、20 L-3（工作區來源收窄到 office/）、L-4（標題擋 $ 與反引號）。"""
+
+    URL = "https://claude.ai/artifact/bbb"
+
+    def test_link_is_its_own_turn_and_revert_removes_it(self):
+        self.ok("save", str(self.work()), "--to", "AI 產出/報價/a.xlsx")
+        saved = self.entry("AI 產出/報價/a.xlsx")
+        t_b = turn.start(self.V, SID, "做成線上文件")["turn"]
+        self.ok("link", self.URL, "--title", "內湖李進度報告")
+        self.assertIn(".system/inventory.json", {e["path"] for e in turn.entries(self.V, t_b)})
+        r = run_kb("versions", "revert", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(inventory.entry_for(self.V, self.URL), "退回拿掉的是 B 的 link")
+        again = next(x for x in inventory.load(self.V)["entries"] if x["id"] == saved["id"])
+        self.assertEqual(again["status"], "active", "A 的成品留著")
+
+    def test_same_url_refused(self):
+        self.ok("link", self.URL, "--title", "內湖李進度報告", "--type", "報告")
+        before = inventory.entry_for(self.V, self.URL)
+        self.assertEqual(self.refused("link", self.URL, "--title", "v2"), "這個網址已經登記過了：內湖李進度報告")
+        self.assertEqual(inventory.entry_for(self.V, self.URL), before)
+
+    def test_title_shell_chars_refused(self):
+        for title in ("報價$(whoami)", "報價`id`"):
+            with self.subTest(title=title):
+                self.assertEqual(self.refused("link", self.URL, "--title", title), "標題不能有 $ 或 ` 這兩種字元")
+
+    def test_workspace_source_is_office_only(self):
+        other = self.V / ".system" / "temp" / "converted.txt"
+        other.write_text("x", encoding="utf-8")
+        self.assertEqual(self.refused("save", str(other), "--to", "AI 產出/a.txt"),
+                         "只收工作區或知識庫外的檔，這份在知識庫裡")
+        self.assertTrue(other.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

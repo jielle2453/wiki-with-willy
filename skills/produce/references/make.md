@@ -14,10 +14,12 @@
 
 ## 線上文件
 
-- 推薦時講清楚三件事：存在她自己的 claude.ai 帳號、不在這台電腦的資料夾；預設只有她看得到，要給別人看由她自己按分享；要檔案的話 Docs 可以匯出 Word／PDF，Slides 請她在頁面上按下載。
+- 預設推薦線上文件：她沒說寄出、印出、套範本、要 Excel 的（給業主看、給同事看都算）都推薦。
+- 推薦時同一句講清楚三件事再問：存在她自己的 claude.ai 帳號、不在這台電腦的資料夾；預設只有她看得到，要給別人看由她自己按分享；要檔案的話從那一頁下載（Docs 匯出 Word／PDF，Slides 按下載）。
+- 她自己說「做成線上文件」：不用再問，但三件事一樣先講一句，講完才建。三件事一定在叫 Docs／Artifact 建之前講。
 - 她對內容與做成線上文件都說好了，才建（Docs 用 Claude Docs 工具、簡報用 Artifact 的 Slides）。建在她自己的帳號不算替她分享。這個對話沒有這些工具就照實說，改做本機檔。
 - 建好後登記：`kb output link <網址> --title "<標題>" --type <型別>`；掛實體加 `--entity <登記的名稱>`（沒登記的不寫，不要為這個去登記），依據加 `--basis <卡編號>`（編號從 `kb lookup`、`kb cards list` 的 `--json` 取）。下次整理會做卡，卡的開原檔就是網址。
-- Docs 匯出存回本機：純文字、小檔（約 20 KB 以下）由我把匯出的 docx 寫進工作區再 `kb output save "<工作區的 docx>" --to … --link <網址>`；有圖或比較大請她自己按匯出到下載夾，再 `kb output save "<下載夾的檔>" --to … --link <網址>`（知識庫外的檔用複製的，不動她的）。匯出存回不要存成 md（md 會被拒絕）。
+- 她要本機檔：請她從線上文件下載（Docs 匯出 Word／PDF、Slides 按下載）到下載夾，再 `kb output save "<下載的檔>" --to "AI 產出/<型別>/<檔名>" --link <網址>`（知識庫外的檔用複製的，不動她的下載夾）。docx 是二進位，不要自己用檔案工具寫。
 - Slides、網頁 artifact 下載回來的檔一樣用 `--link` 掛在同一筆。
 
 ## 本機做檔
@@ -33,13 +35,16 @@
 
 ## 套範本、照舊檔寫新的
 
+- 範本在設定檔第七節：`kb profile show --json` 的 `範本` 那節，每列的「底」是卡編號；同種文件只有一份直接用，多份才問。
 - `kb office copy <範本或舊檔的卡編號>` 拿副本，在副本上把內容換成新的（Word、PowerPoint 解開改 XML；Excel 改輸入格），抬頭、表格、頁尾照留。
 - 驗過後 `kb output save … --from <範本或舊檔>`；檔名用新內容的（`2026-10-22 大安陳 合約.docx`），不用「（AI 修改）」。
 
 ## 改她原本的檔
 
 - 一律 `kb office copy <卡編號或路徑>` 拿副本，在副本上改；原檔不動。放進 AI 產出時 `--to` 的檔名用「原檔主檔名（AI 修改）」，`pack` 的工作檔名隨意。
-- **Word**：用修訂標記（`w:ins`／`w:del`），作者固定「AI 助理」，只包住改的那幾個字；`kb office unpack` 解開 → 檔案工具改 `word/document.xml` → `kb office pack <夾> --to <檔名> --like <副本>`（照原檔順序，沒改的部件逐位元相同）。改完數一下修訂幾處、表格與頁尾還在。
+- **Word**：用修訂標記，作者固定「AI 助理」（不是 Claude），只包住改的那幾個字：`kb office unpack` 解開 → 檔案工具改 `word/document.xml` → `kb office pack <夾> --to <檔名> --like <副本>`（照原檔順序，沒改的部件逐位元相同）。修訂長這樣：
+  `<w:del w:id="901" w:author="AI 助理" w:date="2026-10-22T10:00:00Z"><w:r><w:delText>15</w:delText></w:r></w:del><w:ins w:id="902" w:author="AI 助理" w:date="2026-10-22T10:00:00Z"><w:r><w:t>30</w:t></w:r></w:ins>`
+  改完驗：對解開的夾用 Grep 數 `w:ins`、`w:del`、`w:author="AI 助理"`（不用 `python -c`，會被守門擋），再確認表格與頁尾還在。
 - **Excel**：只改輸入格，公式格不動；直接改 XML（unpack／pack）最保險，用 openpyxl 存檔可能弄掉圖表與圖片。改完 `kb office recalc`，把合計讀回來跟預期比；重算會整份重寫檔案（圖表還在、不是逐位元相同），這是正常的。
 - **PowerPoint** 分三級：
   - 改幾個字、字數差不多：直接改 `ppt/slides/slideN.xml` 的字，打包。
@@ -69,6 +74,7 @@
   - 「找不到這份原檔：…」：`--from` 寫錯，用卡編號。
   - 「草稿不在 AI 產出：…」「網址要是 claude.ai 的 artifact」「這個網址還沒登記；先跑 kb output link」「要給標題（--title）」「型別要是一個資料夾名…」「實體清單沒有…」：照句子補或拿掉那個參數。
   - 「檔案被別的程式開著或沒有權限」：請她關掉 Word／Excel 再說一次。「等不到鎖，沒有寫入」：等一下再放一次。「狀態檔讀不到」：照句子講，請服務人員看。
+- `kb office pdf`／`render` 的「只收工作區或 AI 產出裡的檔：…」：原檔先 `kb office copy`，用副本的路徑。
 - `kb office copy` 的「拿不到副本：…」：排除的、像密碼的照句子跟她說是她設定的不讀；「不在登記的資料夾裡」要先把那個夾加進來（manage）；「清冊沒有這份檔」是剛放進來的，先跑 `kb inventory scan`。
 - 守門擋「AI 產出的檔用 kb output save 放進來…」：表示指令碰到 AI 產出了，改成工作區做、output save 放；不要換寫法繞過去。
 - 回答裡不印清冊編號與工作區的長路徑；講 AI 產出裡的夾與檔名就好。

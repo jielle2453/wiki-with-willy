@@ -15,7 +15,7 @@
 - `--check` 只印報告、不寫。別名預設是資料夾名，結尾的空白與點會去掉。
 - 第一行：`會登記「客戶案件」（../raw/客戶案件，12 份）`（`--check`）／`已登記「客戶案件」（../raw/客戶案件，12 份）`。
 - 之後可能有 `- 其中 3 份檔名像密碼或金鑰，不會讀：…`（最多列 10 個）與 `- 提醒：<一句>`。
-- `--json`：`id`（`--check` 時是 null）、`alias`、`spec`、`path`、`files`、`credential_files`、`warnings`、`check`。
+- `--json`：`id`（`--check` 時是 null）、`alias`、`spec`、`path`、`files`、`credential_files`、`warnings`、`check`、`inventory`（`added`、`restored`、`credential`）。
 
 ### `--check` 報告怎麼轉白話
 
@@ -29,15 +29,18 @@
 `folders exclude "<路徑>" --kind hidden|unused [--reason "<一句>"]`
 
 - 問法：「①不想讓 AI 看到（之前讀過的已送過雲端）②只是用不到，選哪一種？」只認「1」「不想讓 AI 看到」「用不到」這種明確的選擇。
-- 對象要真的存在、在某個登記的來源裡面。兩種之後都不讀，那夾的檔案卡一起拿掉（退回救得回）。
+- 對象要真的存在、在某個登記的來源裡面。兩種之後都不讀，那夾的檔案卡一起拿掉：`unused` 退回救得回；`hidden` 清掉殘留（purge）之後，
+  卡的舊版也清了，退回救不回，只能取消排除後重新整理。
 - 第一行：`已排除「行政/薪資」（不想讓 AI 看到）。卡拿掉 5 張。`；第二行清冊的數字。
 - `hidden` 之後兩種情形：
   - 有綜合卡寫著那夾的內容：多一行 `接著要重寫的綜合卡：王宅、信義王（拿掉「日記」等 5 張卡的內容），寫完跑 kb folders purge "行政/薪資"`。
     同一句話裡照 `rules/synthesis.md` 改那幾張綜合卡（拿掉那些卡的內容、「整理到」照 `cards todo --json` 的檔頭），再跑那個 purge。
-  - 沒有：同一個指令已經清完，多一行 `清好了：…`（見 purge）。
+  - 沒有：同一個指令接著清，多一行 `清好了：…`（見 purge）；沒清完多一行 `還沒清完：…`，照 purge 那條做。
+    夾名同時有 $ 或反引號和單引號時，指令給不出來，那一行改說請她先改夾名。
 - `unused`：綜合卡照一般整理列待更新，下次整理時寫。
-- `--json`：`source_id`、`alias`、`spec`、`kind`、`reason`、`added`、`cards_removed`、`rewrite`（要重寫的綜合卡名稱）、
-  `removed_titles`、`purge`（同指令清了的數字或 null）、`purge_command`。
+- `--json`：`source_id`、`alias`、`spec`、`kind`、`reason`、`added`、`purge`（hidden 才有：`pending` 或清完的日期；同指令清了的話
+  另帶數字）、`purge_ids`、`purge_names`（記下的範圍，清完拿掉）、`inventory`、`cards_removed`、`rewrite`（要重寫的綜合卡名稱）、
+  `removed_titles`、`purge_command`。
 
 ## purge：清「不想讓 AI 看到」那夾的殘留
 
@@ -47,6 +50,10 @@
 - 成功：`清好了：卡 5 張、備份 12 份、暫存 3 份、推算 1 條、工作日誌 4 段；之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉`（推算 0 條不印）。
   照念最後那句；清完的回答不提那夾的檔名與內容。
 - `「X」沒有要清的`（exit 0）：那條不是「不想讓 AI 看到」或已經清過，不用再做。
+- `還沒清完：暫存 1 份；關掉開著的檔再跑一次 kb folders purge …`（exit 3）：有檔開著或鎖等不到；範圍已經記在那條排除裡，
+  請她關掉 Word、預覽這類開著的檔，再照那個指令跑一次。
+- `--json`：成功 `cards`、`backups`、`temp`、`journal`、`findings`、`remaining`、`purged`、`name`；被擋或沒清完 `purged` 是 false，
+  另帶 `blocked` 或 `remaining` 與 `error`（就是人讀那句）。
 - `cards todo` 的 `plan` 最前面有 `purge_synthesis` 與 `purge` 兩步時，代表上次排除後沒做完，先做這兩步。
 
 ## remove：拿掉一個來源
@@ -63,7 +70,7 @@
 `folders include "<路徑>"`
 
 - 路徑要跟當初排除的那個夾或檔一樣；夾已經被刪掉也可以（只比路徑）。原本是「不想讓 AI 看到」的，複述時講出來。
-- 第一行：`已取消排除「行政/薪資」，從現在起讀得到。`；`--json`：`source_id`、`alias`、`spec`、`kind`。
+- 第一行：`已取消排除「行政/薪資」，從現在起讀得到。`；`--json`：`source_id`、`alias`、`spec`、`kind`、`inventory`（`added`、`restored`、`credential`）。
 
 ## list：列出登記的來源與排除
 
@@ -89,7 +96,10 @@
   不讀的夾在新位置找不到的逐條講，問她那夾現在在哪。不設門檻，她說要才不帶 `--check` 再跑。
 - 清冊裡還沒有這個來源的檔時第二行是 `清冊裡還沒有這個來源的檔，沒有抽樣`：不是對不上，是沒得比，照實講。
 - 成功第一行：`已把「報價」換到新位置：<新路徑>；說「退回上一版」換得回來`，下面同 `--check` 的報告。
-- 換過去後不在原位的照一般整理處理（搬動、新增）。`--json`：`alias`、`spec`、`path`、`sampled`、`matched`、`misses`、`excludes`、`check`。
+- 不想讓 AI 看到的夾在新位置找不到，不帶 `--check` 也拒絕：`不想讓 AI 看到的「X」在新位置找不到；先說它現在叫什麼，或重新設不讀，再換過去`；
+  問她那夾現在叫什麼，她講了就照新名字先 `exclude --kind hidden`（排除的對象在新位置），或請她確認不用再設，才換過去。
+- 換過去後不在原位的照一般整理處理（搬動、新增）。`--json`：`alias`、`spec`、`path`、`sampled`、`matched`、`misses`、`excludes`（`spec`、`found`）、
+  `check`；`--check` 多 `lines`，換過去的多 `old_spec`、`cards_updated`。
 
 ## 常見拒絕與怎麼跟客戶說
 

@@ -83,7 +83,7 @@ class Purge(unittest.TestCase):
         office.mkdir(parents=True)
         (office / DIARY).write_text(SECRET, encoding="utf-8")
         turn.record_move(V, t1, "move", "file", f"file://客戶案件/{DIARY}", f"file://客戶案件/私人/{DIARY}")
-        journal.record_program(V, f"拿到 {DIARY}", [{"path": self.card_rel, "action": "create"}], "cards")
+        journal.record_program(V, f"拿到 客戶案件/私人/{DIARY}", [{"path": self.card_rel, "action": "create"}], "cards")
         jt = turn.start(V, SID, f"幫我看 {DIARY}")
         journal.begin_turn(V, None, jt)
         journal.complete_turn(V, jt, f"裡面寫{SECRET}", "看了日記", "ai", [{"path": self.card_rel, "action": "modify"}], False)
@@ -123,7 +123,7 @@ class Purge(unittest.TestCase):
         self.assertEqual(code, 0, out)
         lines = out.splitlines()
         self.assertEqual(lines[0], "已排除「客戶案件/私人」（不想讓 AI 看到）。卡拿掉 1 張。")
-        self.assertEqual(lines[2], "接著要重寫的綜合卡：信義王（拿掉「王家心情」等 1 張卡的內容），寫完跑 kb folders purge \"客戶案件/私人\"")
+        self.assertEqual(lines[2], "接著要重寫的綜合卡：信義王（拿掉「王家心情」等 1 張卡的內容），寫完跑 kb folders purge 客戶案件/私人")
         self.assertEqual(self.sources_row()["purge"], "pending")
         self.assertFalse((Path(V) / self.card_rel).exists())
         # 13：cards todo 的 plan 最前面兩步
@@ -155,8 +155,9 @@ class Purge(unittest.TestCase):
         # 驗收 12：整個知識庫找不到獨特字串；檔名只剩工作日誌的 prompt（jsonl 與渲染的月檔）
         self.assertEqual(hits(V, SECRET), [])
         diary = hits(V, DIARY)
-        # 回合檔的 prompt_head 就是那一句的「問」，跟工作日誌的 prompt 同一個東西
-        self.assertTrue(all(h.startswith((".system/journal/", "系統/工作日誌/", ".system/turns/")) for h in diary), diary)
+        # 那一句的「問」：工作日誌的 prompt（jsonl 與月檔）、回合檔（turns/<sid>.json、current.json）、versions/*/turn.json
+        self.assertTrue(all(h.startswith((".system/journal/", "系統/工作日誌/", ".system/turns/"))
+                            or (h.startswith(".system/versions/") and h.endswith("/turn.json")) for h in diary), diary)
         for row in journal.read_lines(V, journal.month_of(turn.current(V)["turn"])):
             for k in ("note", "result"):
                 self.assertNotIn(DIARY, str(row.get(k, "")), row)

@@ -47,16 +47,17 @@ NOT_AN_OUTPUT = "這份不在 AI 產出裡，沒有刪"
 REVERT_BUSY = "另一個退回正在跑，等它做完再說一次"
 PURGED_LINE = "那一版因為不讀的夾清掉了，退不回"
 IN_BIN = "{name} 在資源回收筒，要從那裡拿回來"
-MOVE_BAD = "退不回去：回合紀錄的搬動路徑不對（{uri}），什麼都沒動"
-MOVE_PURGED = "退不回去：那一回合搬過的檔在清掉的不讀夾裡，什麼都沒動"
-MOVE_UNREGISTERED = "退不回去：「{alias}」現在沒有登記，什麼都沒動"
-MOVE_EXCLUDED = "退不回去：「{name}」在設成不讀的夾裡，什麼都沒動"
-MOVE_GONE = "退不回去：「{name}」不見了，搬不回「{folder}」，什麼都沒動"
-MOVE_TAKEN = "退不回去：「{folder}」裡已經有「{name}」了，什麼都沒動"
-MOVE_NO_PARENT = "退不回去：原本的夾「{folder}」不見了，什麼都沒動"
+# 被擋的句子說怎麼解開（第一輪修）；跳過被擋的回合這版不做（B-410）
+MOVE_BAD = "退不回去：回合紀錄的搬動路徑不對（{uri}），什麼都沒動；請服務人員看"
+MOVE_PURGED = "退不回去：那一回合搬過的檔在清掉的不讀夾裡，紀錄已經清掉，什麼都沒動"
+MOVE_UNREGISTERED = "退不回去：「{alias}」現在沒有登記；要退回得先把它加回來，什麼都沒動"
+MOVE_EXCLUDED = "退不回去：「{name}」在設成不讀的夾裡；要退回得先取消不讀，什麼都沒動"
+MOVE_GONE = "退不回去：「{name}」不見了，搬不回「{folder}」；把它找回來放回去再說退回，什麼都沒動"
+MOVE_TAKEN = "退不回去：「{folder}」裡已經有「{name}」了；先把那份改名或搬走再說退回，什麼都沒動"
+MOVE_NO_PARENT = "退不回去：原本的夾「{folder}」不見了；把夾建回來再說退回，什麼都沒動"
 MOVE_OPEN = "退不回去：「{name}」裡有檔案正開著，什麼都沒動；關掉再說一次退回"
 MOVE_FAILED = "退不回去：{why}，什麼都沒動"
-MOVE_CREDENTIAL = "退不回去：「{name}」裡有檔名像密碼或金鑰的檔，不搬進知識庫，什麼都沒動"
+MOVE_CREDENTIAL = "退不回去：「{name}」裡有檔名像密碼或金鑰的檔，不搬進知識庫；先把那些檔移開再說退回，什麼都沒動"
 PURGED_MARK = "（已排除）"
 FILE_OPEN = "退不回去：「{rel}」正開著（檔案總管、Office 或記事本），什麼都沒動；關掉再說一次退回"
 UNEXPECTED = "退不回去：{why}；可能只退了一部分，先別再說退回，請服務人員看一下"
@@ -663,8 +664,9 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
         return 3
     sources_now = sources_lib.load(vault)
     move_steps, refused = _move_steps(vault, sources_now, target["moves"])
-    if refused:  # D-175：搬動帳有一項不過整個不退，回合、檔、夾都不動
-        ledger.log_error(vault, f"{target['turn']} moves 退不回：{refused}", source="versions")
+    if refused:  # D-175：搬動帳有一項不過整個不退，回合、檔、夾都不動；紀錄壞了才記 log，預期中的拒絕不記
+        if refused.startswith(MOVE_BAD.split("{")[0]):
+            ledger.log_error(vault, f"{target['turn']} moves 路徑不對：{refused}", source="versions")
         print(refused)
         return 3
     steps, refused = _folder_steps(vault, target["folders"])

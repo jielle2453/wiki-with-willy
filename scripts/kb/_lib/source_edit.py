@@ -10,10 +10,16 @@
 再掃那幾個根補大小與時間、cards.sync 搬卡、重寫總目錄與綜合卡快取。全部先備進回合。
 丟資源回收筒（D-173）用 ctypes 叫 SHFileOperationW；放不下（不跳視窗的呼叫會直接永久刪）或回收筒用不了就拒絕，不改成直接刪。
 OneDrive（B-095）：只在雲端看 FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS，在 OneDrive 裡看 %OneDrive% 那三個環境變數。
-外部呼叫（os.rename、回收筒、os.startfile、屬性）集中在模組層的幾個名字，測試換替身。
+外部呼叫（os.rename、回收筒、os.startfile、屬性、磁碟種類）集中在模組層的幾個名字，測試換替身。
+第一輪修（測試報告）：夾裡不讀的子夾 spec 先寫成新舊兩條都在、再改名、最後拿掉舊的，不讀的夾沒有一刻變成可讀；
+改名之後任何一步失敗就把改名與改過的檔倒回去（倒不回才說「已搬好，但後面沒做完」）；--replace 先把這份移到目標夾裡的
+暫名（驗過改名做得到）才丟目標；丟回收筒只收固定磁碟、唯讀另一句；新名字或目標夾是 .、~$ 開頭或隱藏的拒絕；
+副檔名照已知清單判，其他自動補原副檔名；給 AI 跑的指令遇到 $、反引號改用單引號。
 """
+import copy
 import os
 import re
+import secrets
 from pathlib import Path
 
 from kb import guard
@@ -33,7 +39,8 @@ BAD_NAME_CHARS = '\\/:*?"<>|'
 # 拒絕句（exit 3，一字不差；spec 與 a2 回覆的疑義第 1 條）
 EXISTS = "目標已經有「{name}」"
 OPEN = "有檔開著（{name}），關掉再試"
-OTHER_DISK = '不同顆硬碟不代搬；可以幫你打開兩個夾自己拖：kb source-edit open "{src}" "{dst}"'
+OTHER_DISK = "不同顆硬碟不代搬；可以幫你打開兩個夾自己拖：{cmd}"
+OTHER_DISK_NO_CMD = "不同顆硬碟不代搬，請在檔案總管自己拖；夾名有特殊符號，開夾的指令給不出來，要我幫你開請先改夾名"
 UNREGISTERED = "「{name}」沒有登記，要先把它加進來才能搬過去"
 EXCLUDED = "「{name}」設成不讀，不搬進去也不搬出來"
 CREDENTIAL = "這個檔名像密碼或金鑰，不動"
@@ -54,6 +61,21 @@ TRASH_FOLDER = "整個夾請在檔案總管刪"
 BIN_UNAVAILABLE = "資源回收筒用不了（{why}），沒有刪"
 BIN_TOO_BIG = "這份 {size}，資源回收筒放不下，刪了救不回來；要刪請在檔案總管自己刪"
 OPEN_TOO_MANY = "一次最多開兩個夾"
+READONLY = "這份是唯讀的，先取消唯讀再刪"
+HIDDEN_NAME = "這種名字知識庫不會讀，換個名字"
+NOT_MOVED = "沒有動：{why}"
+PARTIAL = "已搬好，但後面沒做完；說「退回」可以退回"
+REPLACED_NOT_MOVED = "原本的「{name}」已經丟進資源回收筒，要從那裡拿回來；這份沒搬過去（{why}），還在原位"
+REPLACED_STUCK = "原本的「{name}」已經丟進資源回收筒，要從那裡拿回來；這份搬到一半，請服務人員看"
+REMOVABLE = "隨身碟或網路磁碟"
+DRIVE_FIXED = 3
+# 已知副檔名（kb 認得的加上常見的 Office、圖、影音）：新名字的尾巴是這些之一又跟原本不同，才算要換副檔名（拒絕）
+KNOWN_EXTS = {
+    ".doc", ".docx", ".docm", ".dot", ".dotx", ".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".csv", ".ppt", ".pptx",
+    ".pptm", ".pps", ".ppsx", ".pot", ".potx", ".pdf", ".txt", ".md", ".rtf", ".odt", ".ods", ".odp", ".pages", ".numbers",
+    ".key", ".json", ".xml", ".html", ".htm", ".eml", ".msg", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff",
+    ".heic", ".heif", ".webp", ".svg", ".raw", ".psd", ".ai", ".dwg", ".dxf", ".skp", ".mp3", ".wav", ".m4a", ".aac",
+    ".flac", ".wma", ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".m4v", ".zip", ".rar", ".7z"}
 NO_ENTITY = "實體清單沒有「{name}」，先 kb entity add"
 
 
@@ -84,6 +106,30 @@ def _attrs(path):
 
 def _dev(path):
     return os.stat(path).st_dev
+
+
+def _drive_type(path):
+    """GetDriveTypeW：3 是固定磁碟；隨身碟（2）、網路磁碟（4）丟回收筒不一定進得去（FOF_ALLOWUNDO 會直接永久刪）。"""
+    if os.name != "nt":
+        return DRIVE_FIXED
+    import ctypes
+    drive = os.path.splitdrive(os.path.abspath(str(path)))[0] + "\\"
+    return int(ctypes.windll.kernel32.GetDriveTypeW(drive))
+
+
+def shell_arg(text):
+    """給 AI 跑的指令裡的一個參數：一般用雙引號；有 $ 或反引號改單引號；同時又有單引號回 None（給不出來）。"""
+    text = str(text)
+    if "$" in text or "`" in text:
+        return None if "'" in text else f"'{text}'"
+    return f'"{text}"'
+
+
+def other_disk(src_dir, dst_dir):
+    a, b = shell_arg(_real(src_dir)), shell_arg(_real(dst_dir))
+    if a is None or b is None:
+        return OTHER_DISK_NO_CMD
+    return OTHER_DISK.format(cmd=f"kb source-edit open {a} {b}")
 
 
 def recycle_room(path):
@@ -282,10 +328,45 @@ def check_to(vault, sources, dest, target_text):
     if zone == "Z11":
         raise Refused(UNREGISTERED.format(name=dest.name))
     if zone in ("Z9", "Z2"):
+        if _unread_dir(vault, sources, dest, parts):
+            raise Refused(HIDDEN_NAME)
         return
     if zone in ("Z3", "Z4"):
         raise Refused(NOT_INTO.format(name=parts[0]))
     raise Refused(SYSTEM.format(name=parts[0]))
+
+
+def _alias_form(vault, sources, text):
+    """「別名/相對路徑」（kb source-edit where 印的、知識庫/…、AI 產出/…）：第一段是登記的別名或三區就照 uri 解，否則回 None。"""
+    first = text.replace("\\", "/").split("/", 1)[0].casefold()
+    names = {s["alias"].casefold() for s in sources.entries} | {a.casefold() for a in sources_lib.RESERVED_ALIASES}
+    if first not in names:
+        return None
+    return inventory.path_of(vault, sources, "file://" + text.replace("\\", "/"))
+
+
+def _unread_name(name):
+    return name.startswith(".") or name.startswith("~$")
+
+
+def _unread_dir(vault, sources, dest, parts):
+    """目標夾（從它的根往下每一段）有 . 或 ~$ 開頭、或隱藏屬性的：清冊走訪會跳過，搬進去就變成「不見了」。"""
+    if parts is not None:
+        base, segs = Path(_real(vault)), parts
+    else:
+        src = _source_of(sources, dest)
+        if src is None:
+            return False
+        base = Path(_real(src["root"]))
+        segs = os.path.relpath(_real(dest), base).replace("\\", "/").split("/")
+    cur = base
+    for seg in segs:
+        if seg in ("", "."):
+            continue
+        cur = cur / seg
+        if _unread_name(seg) or _attrs(str(cur)) & 0x2:
+            return True
+    return False
 
 
 def resolve(vault, sources, target, cwd):
@@ -298,8 +379,12 @@ def resolve(vault, sources, target, cwd):
             path = inventory.path_of(vault, sources, entry["locations"][0]["uri"])
     elif text.startswith("file://"):
         path = inventory.path_of(vault, sources, text)
+    elif os.path.isabs(text):
+        path = Path(text)
     else:
-        path = Path(text) if os.path.isabs(text) else Path(cwd) / text
+        path = _alias_form(vault, sources, text)
+        if path is None or not os.path.exists(path):
+            path = Path(cwd) / text
     if path is None or not os.path.exists(path):
         raise Refused(NOT_FOUND.format(target=text))
     path = Path(_real(path))
@@ -313,8 +398,12 @@ def resolve_folder(vault, sources, target, cwd):
     text = str(target).strip()
     if text.startswith("file://"):
         path = inventory.path_of(vault, sources, text)
+    elif os.path.isabs(text):
+        path = Path(text)
     else:
-        path = Path(text) if os.path.isabs(text) else Path(cwd) / text
+        path = _alias_form(vault, sources, text)
+        if path is None or not os.path.isdir(path):
+            path = Path(cwd) / text
     if path is None or not os.path.isdir(path):
         raise Refused(NO_FOLDER.format(target=text))
     return Path(_real(path))
@@ -418,32 +507,6 @@ def excludes_under(vault, path):
     return out
 
 
-def _rewrite_excludes(vault, moved, new_root, turn_id):
-    """搬完夾：裡面不讀的子夾 spec 改寫成新位置；跨來源就搬到新來源那條。呼叫端持 sources.json 的鎖。回有沒有寫。"""
-    if not moved:
-        return False
-    raw = sources_lib.load_raw(vault)
-    by_id = {(s.get("id") or s.get("alias")): s for s in raw["sources"]}
-    sources = sources_lib.Sources(vault, raw)
-    for src, ex, rest in moved:
-        new_abs = os.path.join(new_root, *rest.split("/"))
-        dest = _source_of(sources, new_abs)
-        old_entry = by_id[src.get("id") or src.get("alias")]
-        row = next(r for r in old_entry["excludes"] if r == ex)
-        if dest is None:
-            continue
-        dest_entry = by_id[dest["id"] or dest["alias"]]
-        spec = os.path.relpath(_real(new_abs), _real(dest["root"])).replace("\\", "/")
-        if dest_entry is old_entry:
-            row["spec"] = spec
-        else:
-            old_entry["excludes"].remove(row)
-            dest_entry.setdefault("excludes", []).append(dict(row, spec=spec))
-    turn.backup(vault, sources_lib.SOURCES_REL, turn_id)
-    write_json_atomic(Path(vault) / sources_lib.SOURCES_REL, raw)
-    return True
-
-
 # ---------- 搬、改名 ----------
 
 def plan_move(vault, sources, target, cwd, dest=None, new_name=None):
@@ -476,7 +539,7 @@ def plan_move(vault, sources, target, cwd, dest=None, new_name=None):
         raise Refused(CREDENTIAL)  # 同理：知識庫裡不查憑證樣式
     try:
         if _dev(src.parent) != _dev(dest_dir):
-            raise Refused(OTHER_DISK.format(src=_real(src.parent), dst=_real(dest_dir)))
+            raise Refused(other_disk(src.parent, dest_dir))
     except OSError as e:
         raise Refused(NOT_FOUND.format(target=target)) from e
     from_uri = uri_of(vault, sources, src)
@@ -500,18 +563,22 @@ def plan_move(vault, sources, target, cwd, dest=None, new_name=None):
 
 
 def _check_name(src, new_name, folder):
+    """新名字：不能空、不能含 Windows 不收的字；. 或 ~$ 開頭的知識庫不會讀。檔的副檔名：以原副檔名結尾照收；尾巴是已知副檔名
+    又跟原本不同才拒絕；其他（「2026.10 報價」「Dr. Wang」）自動補原副檔名。"""
     name = str(new_name or "").strip().rstrip(" .")
     if not name or name in (".", "..") or any(ch in BAD_NAME_CHARS or ord(ch) < 32 for ch in name):
         raise Refused(BAD_NAME)
+    if _unread_name(name):
+        raise Refused(HIDDEN_NAME)
     if folder:
         return name
     old_ext = src.suffix
-    new_ext = Path(name).suffix
-    if new_ext.casefold() == old_ext.casefold():
+    if old_ext and name.casefold().endswith(old_ext.casefold()):
         return name
-    if not new_ext:
-        return name + old_ext
-    raise Refused(EXTENSION.format(old=old_ext or "（沒有）", new=new_ext))
+    new_ext = Path(name).suffix
+    if new_ext and new_ext.casefold() in KNOWN_EXTS and new_ext.casefold() != old_ext.casefold():
+        raise Refused(EXTENSION.format(old=old_ext or "（沒有）", new=new_ext))
+    return name + old_ext
 
 
 def check_lines(plan, op):
@@ -538,6 +605,10 @@ def check_lines(plan, op):
     return lines
 
 
+def _readonly(path):
+    return os.path.isfile(path) and not os.access(path, os.W_OK)
+
+
 def _writable(path):
     if os.path.isdir(path):
         return True
@@ -548,51 +619,153 @@ def _writable(path):
         return False
 
 
+def _check_deletable(path, name):
+    """丟回收筒之前：唯讀另一句，開著的說關掉；不行丟 Refused。"""
+    if _readonly(path):
+        raise Refused(READONLY)
+    if not _writable(path):
+        raise Refused(OPEN.format(name=name))
+
+
+def _why(e):
+    return getattr(e, "strerror", None) or type(e).__name__
+
+
+def _exclude_versions(vault, moved, new_root):
+    """搬整個夾、裡面有不讀的子夾：回 (新舊兩條都在的登記表, 只剩新的登記表)。改名之前先寫前者，那一刻兩邊都不讀；
+    搬好後寫後者。跨來源就把那條放到新來源。"""
+    raw = sources_lib.load_raw(vault)
+    sources = sources_lib.Sources(vault, raw)
+    both, final = copy.deepcopy(raw), copy.deepcopy(raw)
+
+    def key(s):
+        return s.get("id") or s.get("alias")
+    for src, ex, rest in moved:
+        new_abs = os.path.join(str(new_root), *rest.split("/"))
+        dest = _source_of(sources, new_abs)
+        if dest is None:
+            continue
+        spec = os.path.relpath(_real(new_abs), _real(dest["root"])).replace("\\", "/")
+        for target in (both, final):
+            by = {key(s): s for s in target["sources"]}
+            if target is final:
+                old = by[key(src)]
+                old["excludes"] = [r for r in old.get("excludes") or [] if r != ex]
+            by[dest["id"] or dest["alias"]].setdefault("excludes", []).append(dict(ex, spec=spec))
+    return both, final
+
+
 def do_move(vault, plan, turn_id, op, replace=False):
-    """真的搬。呼叫端已持 sources.json 的鎖。回 {"to_uri","replaced","changed","cards_moved"}；不行丟 Refused（什麼都沒動）。"""
-    from kb._lib import cards
+    """真的搬。呼叫端已持 sources.json 的鎖。回 {"to_uri","replaced","changed","cards_moved"}；不行丟 Refused。
+    改名之前任何一步不行：什麼都沒動。改名之後任何一步失敗：先把檔搬回原位、再照 undo 還原改過的檔與登記表，
+    說「沒有動：…」；搬不回去才說「已搬好，但後面沒做完」（moves.jsonl 那行留著，說「退回」搬得回來）。"""
+    from kb._lib import cards, entities, pending
     src, dst = plan["src"], plan["dst"]
-    changed = []
+    if plan["existing"] and (not replace or plan["kind"] == "folder" or plan["existing_is_dir"]):
+        raise Refused(EXISTS.format(name=plan["new_name"]))
+    sp = Path(vault) / sources_lib.SOURCES_REL
+    original = sp.read_bytes()
+    versions = _exclude_versions(vault, plan["_moved_ex"], dst) if plan["_moved_ex"] else None
+    if versions:  # 新舊兩條都在：改名那一刻兩邊都不讀
+        try:
+            turn.backup(vault, sources_lib.SOURCES_REL, turn_id)
+            write_json_atomic(sp, versions[0])
+        except OSError as e:
+            raise Refused(NOT_MOVED.format(why=_why(e))) from e
+
+    def restore_sources():
+        if versions:
+            from kb._lib.io import write_text_atomic
+            write_text_atomic(sp, original.decode("utf-8"))
     replaced = None
-    if plan["existing"]:
-        if not replace or plan["kind"] == "folder" or plan["existing_is_dir"]:
-            raise Refused(EXISTS.format(name=plan["new_name"]))
-        if not _writable(src):
-            raise Refused(OPEN.format(name=plan["name"]))
-        sources = sources_lib.load(vault)
-        tplan = plan_trash(vault, sources, dst, os.getcwd())
-        replaced = do_trash(vault, tplan, turn_id)
-        changed += replaced["changed"]
     try:
-        _rename(src, dst)
+        if plan["existing"]:
+            replaced = _replace_into(vault, plan, turn_id)
+        else:
+            _rename(src, dst)
+    except Refused:
+        restore_sources()
+        raise
     except PermissionError as e:
+        restore_sources()
         raise Refused(OPEN.format(name=plan["name"])) from e
     except OSError as e:
+        restore_sources()
         if getattr(e, "errno", None) == 18 or getattr(e, "winerror", None) == 17:  # EXDEV、ERROR_NOT_SAME_DEVICE
-            raise Refused(OTHER_DISK.format(src=_real(Path(src).parent), dst=_real(plan["dest_dir"]))) from e
-        raise
-    sources = sources_lib.load(vault)
-    to_uri = uri_of(vault, sources, dst)
+            raise Refused(other_disk(Path(src).parent, plan["dest_dir"])) from e
+        raise Refused(NOT_MOVED.format(why=_why(e))) from e
+
+    changed = list(replaced["changed"]) if replaced else []
+    undo = entities._Undo(vault)
     folder = plan["kind"] == "folder"
-    if plan["from_uri"] and to_uri:
-        turn.record_move(vault, turn_id, op, plan["kind"], plan["from_uri"], to_uri)
-    if _rewrite_excludes(vault, plan["_moved_ex"], dst, turn_id):
-        changed.append({"path": sources_lib.SOURCES_REL, "action": "modify"})
+    got = {"moved": [], "updated": [], "dropped": [], "changed": [], "touched": []}
+    try:
         sources = sources_lib.load(vault)
-    hit = inventory.move_locations(vault, plan["from_uri"], to_uri, turn_id, folder) if plan["from_uri"] and to_uri else []
-    roots = sorted({inventory.split_uri(u)[0] for u in (plan["from_uri"], to_uri) if u})
-    report = inventory.scan(vault, sources, only_roots=roots)
-    if hit or inventory.has_changes(vault, report):
-        inventory.apply(vault, report, turn_id)
-        changed.append({"path": inventory.INVENTORY_POSIX, "action": "modify"})
-    got = cards.sync(vault, sources, turn_id)
-    if got["moved"] or got["updated"] or got["dropped"]:
-        changed += got["changed"]
-        cards.render_index(vault, turn_id)
-        changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
-        changed += [{"path": rel, "action": "modify"} for rel in cards.refresh_synthesis(vault, got["touched"], turn_id)]
+        to_uri = uri_of(vault, sources, dst)
+        undo.file(turn.VERSIONS_REL.as_posix() + f"/{turn_id}/moves.jsonl")
+        if plan["from_uri"] and to_uri:
+            turn.record_move(vault, turn_id, op, plan["kind"], plan["from_uri"], to_uri)
+        if versions:
+            undo.file(sources_lib.SOURCES_REL)
+            write_json_atomic(sp, versions[1])
+            changed.append({"path": sources_lib.SOURCES_REL, "action": "modify"})
+            sources = sources_lib.load(vault)
+        undo.file(inventory.INVENTORY_POSIX)
+        hit = inventory.move_locations(vault, plan["from_uri"], to_uri, turn_id, folder) if plan["from_uri"] and to_uri else []
+        roots = sorted({inventory.split_uri(u)[0] for u in (plan["from_uri"], to_uri) if u})
+        report = inventory.scan(vault, sources, only_roots=roots)
+        if hit or inventory.has_changes(vault, report):
+            undo.file(pending.PENDING_POSIX)
+            undo.file(pending.MD_POSIX)
+            inventory.apply(vault, report, turn_id)
+            changed.append({"path": inventory.INVENTORY_POSIX, "action": "modify"})
+        got = cards.sync(vault, sources, turn_id, undo)
+        if got["moved"] or got["updated"] or got["dropped"]:
+            changed += got["changed"]
+            undo.file(cards.INDEX_POSIX)
+            cards.render_index(vault, turn_id)
+            changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
+    except Exception as e:  # noqa: BLE001  改名之後的任何失敗都要倒回去或說實話
+        try:
+            _rename(dst, src)
+        except Exception:  # noqa: BLE001
+            raise Refused(PARTIAL) from e
+        try:
+            undo.rollback()
+            restore_sources()
+        except Exception as again:  # noqa: BLE001  檔已在原位；清冊下次掃描會對上
+            from kb._lib import ledger
+            ledger.log_error(vault, f"source-edit 倒回時紀錄沒還原完：{type(again).__name__}: {again}", source="source-edit")
+        if replaced is not None:
+            raise Refused(REPLACED_NOT_MOVED.format(name=plan["new_name"], why=_why(e))) from e
+        raise Refused(NOT_MOVED.format(why=_why(e))) from e
+    changed += [{"path": rel, "action": "modify"} for rel in cards.refresh_synthesis(vault, got["touched"], turn_id)]
     return {"to_uri": to_uri, "replaced": replaced, "changed": changed,
             "cards_moved": len(got["moved"]) + len(got["updated"])}
+
+
+def _replace_into(vault, plan, turn_id):
+    """--replace：先把這份移到目標夾裡的暫名（驗過改名做得到、同一顆硬碟），再把目標丟回收筒，最後換成目標的名字。
+    丟之前出事就把這份搬回原位；丟了之後換名失敗，說舊的那份已經進回收筒。回 do_trash 的結果。"""
+    src, dst = Path(plan["src"]), Path(plan["dst"])
+    _check_deletable(dst, plan["new_name"])
+    tmp = Path(plan["dest_dir"]) / f".kb-move-{secrets.token_hex(4)}{src.suffix}"
+    _rename(src, tmp)  # PermissionError、跨硬碟由呼叫端說
+    try:
+        tplan = plan_trash(vault, sources_lib.load(vault), dst, os.getcwd())
+        replaced = do_trash(vault, tplan, turn_id)
+    except BaseException:
+        _rename(tmp, src)
+        raise
+    try:
+        _rename(tmp, dst)
+    except OSError as e:
+        try:
+            _rename(tmp, src)
+        except OSError:
+            raise Refused(REPLACED_STUCK.format(name=plan["new_name"])) from e
+        raise Refused(REPLACED_NOT_MOVED.format(name=plan["new_name"], why=_why(e))) from e
+    return replaced
 
 
 # ---------- 丟資源回收筒 ----------
@@ -608,6 +781,8 @@ def plan_trash(vault, sources, target, cwd):
     if entry is None and uri:
         entry = inventory.entry_for(vault, uri)
     size = os.path.getsize(path)
+    if _drive_type(path) != DRIVE_FIXED:  # 隨身碟、網路磁碟：不跳視窗的呼叫可能直接永久刪
+        raise Refused(BIN_UNAVAILABLE.format(why=REMOVABLE))
     cloud = cloud_only(path)
     if not cloud:
         try:
@@ -674,8 +849,7 @@ def do_trash(vault, plan, turn_id):
     """丟資源回收筒，再照 kb cards drop 那條跟上：條目 deleted、卡拿掉（備份）、待處理關掉、推測日程取消。
     同一份內容還在別處（清冊多個位置）只拿掉這個位置，卡照 sync 跟上。回 {"changed","card_removed","cancelled"}。"""
     from kb._lib import agenda, cards, pending
-    if not _writable(plan["path"]):
-        raise Refused(OPEN.format(name=plan["name"]))
+    _check_deletable(plan["path"], plan["name"])
     try:
         shell_trash(plan["path"])
     except BinUnavailable as e:

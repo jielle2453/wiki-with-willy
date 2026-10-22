@@ -28,7 +28,7 @@ from datetime import date
 from pathlib import Path
 
 from kb import guard, journal_cli
-from kb._lib import cards, config, credentials, env, inventory, purge, turn
+from kb._lib import cards, config, credentials, env, inventory, plan, purge, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb._lib.io import FileLock, write_json_atomic
@@ -43,6 +43,8 @@ PURGE_TAIL = "之前讀過的已送過雲端，Claude 自己的對話紀錄也�
 NOTHING_TO_PURGE = "「{name}」沒有要清的"
 PURGE_BLOCKED = "還有綜合卡寫著那夾的內容：{names}（先重寫再清）"
 RESERVED_RELOCATE = "「{alias}」是知識庫自己的，不用換位置"
+HIDDEN_LOST = "不想讓 AI 看到的「{spec}」在新位置找不到；先說它現在叫什麼，或重新設不讀，再換過去"
+PURGE_AGAIN = "{left}；關掉開著的檔再跑一次 {cmd}"
 ALIAS_BAD_CHARS = '<>:"/\\|?*'
 # Windows 保留裝置名（N7）：當夾名會建不出來或指到裝置
 DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
@@ -269,6 +271,18 @@ def _drop_cards(vault, ids, turn_id):
     return removed, titles, changed
 
 
+def purge_cmd(name):
+    """給 AI 跑的那一行（$、反引號用單引號）；給不出來回 None（第一輪修）。"""
+    arg = plan.shell_arg(name)
+    return f"kb folders purge {arg}" if arg is not None else None
+
+
+def _left_line(got, name):
+    cmd = purge_cmd(name)
+    return PURGE_AGAIN.format(left=purge.remaining_text(got["remaining"]), cmd=cmd) if cmd else \
+        purge.remaining_text(got["remaining"]) + "；" + plan.PURGE_NO_CMD
+
+
 def _purge_sentence(got):
     found = f"、推算 {got['findings']} 條" if got["findings"] else ""
     return (f"清好了：卡 {got['cards']} 張、備份 {got['backups']} 份、暫存 {got['temp']} 份{found}、"
@@ -389,9 +403,16 @@ def _exclude(vault, args, as_json):
             row["purge"] = sources_lib.PURGE_PENDING  # D-174：殘留清完才改成日期
         entry.setdefault("excludes", []).append(row)
         before = _snapshot_status(vault)
+        before_entries = inventory.load(vault)["entries"]
         turn_id, original = _backup_then_write(vault, raw)
         result, inv_changed = _inventory_step(vault, original, _reconcile, vault, raw, turn_id)
         ids = _gone(before, _snapshot_status(vault))
+        if args.kind == "hidden":  # 範圍當場記下：同一回合先掃描再排除時，回合裡的清冊備份沒有這些條目（第一輪修）
+            gone = set(ids)
+            names = {loc.get("uri", "").rpartition("/")[2] for e in before_entries if e.get("id") in gone
+                     for loc in e.get("locations") or [] if isinstance(loc, dict)}
+            purge.record_scope(vault, best["alias"], rel,
+                               {"ids": gone, "hashes": {purge.name_hash(n) for n in names if n}}, turn_id)
         removed, titles, card_changed = _drop_cards(vault, ids, turn_id)
         name = f"{best['alias']}/{rel}"
         first = f"已排除「{name}」（{KIND_TEXT[args.kind]}）。卡拿掉 {len(removed)} 張。"
@@ -399,15 +420,15 @@ def _exclude(vault, args, as_json):
         rewrite, purged = [], None
         if args.kind == "hidden":
             rewrite = purge.blocking(vault, set(purge.target(vault, best["alias"], rel)["ids"]) | set(ids))
-            if not rewrite:  # 沒有受影響的綜合卡：同一個指令接著清（D-174）
+            if not rewrite:  # 沒有受影響的綜合卡：同一個指令接著清（D-174）；沒清完就留著 pending
                 purged = purge.purge(vault, best["alias"], rel, str(t), turn_id)
-                purge.mark_done(vault, best["alias"], rel, turn_id)
+                if not purged["remaining"]:
+                    purge.mark_done(vault, best["alias"], rel, turn_id)
     if as_json:
         print(json.dumps({"source_id": best["id"], "alias": best["alias"], **row, "inventory": result,
                           "cards_removed": len(removed), "rewrite": rewrite, "removed_titles": titles,
-                          "purge": {k: v for k, v in purged.items() if k != "ids"} if purged else None,
-                          "purge_command": f'kb folders purge "{name}"' if rewrite else None},
-                         ensure_ascii=False))
+                          "purge": purged, "purge_command": purge_cmd(name) if rewrite or (purged or {}).get("remaining")
+                          else None}, ensure_ascii=False))
         return 0
     print(first)
     if args.kind == "hidden":
@@ -416,7 +437,10 @@ def _exclude(vault, args, as_json):
         print(f"清冊：{result['excluded']} 份標為不讀")
     if rewrite:
         what = f"拿掉「{titles[0]}」等 {len(titles)} 張卡的內容" if titles else "拿掉那夾的內容"
-        print(f"接著要重寫的綜合卡：{'、'.join(rewrite)}（{what}），寫完跑 kb folders purge \"{name}\"")
+        cmd = purge_cmd(name)
+        print(f"接著要重寫的綜合卡：{'、'.join(rewrite)}（{what}），" + (f"寫完跑 {cmd}" if cmd else plan.PURGE_NO_CMD))
+    elif purged is not None and purged["remaining"]:
+        print(_left_line(purged, name))
     elif purged is not None:
         print(_purge_sentence(purged))
     return 0
@@ -531,14 +555,20 @@ def _purge(vault, args, as_json):
         try:
             got = purge.purge(vault, ex["alias"], ex["spec"], ex["root"], turn_id)
         except purge.Blocked as b:
-            print(PURGE_BLOCKED.format(names="、".join(b.args[0])))
+            line = PURGE_BLOCKED.format(names="、".join(b.args[0]))
+            print(json.dumps({"purged": False, "name": name, "blocked": b.args[0], "error": line}, ensure_ascii=False)
+                  if as_json else line)
+            return 3
+        if got["remaining"]:  # 沒清完：留著 pending 與記下的範圍，重跑接著清
+            line = _left_line(got, name)
+            print(json.dumps(dict(got, purged=False, name=name, error=line), ensure_ascii=False) if as_json else line)
             return 3
         purge.mark_done(vault, ex["alias"], ex["spec"], turn_id)
     sentence = _purge_sentence(got)
     journal_cli.record_program_or_warn(vault, sentence, [{"path": sources_lib.SOURCES_REL, "action": "modify"}],
                                        "folders purge", journal_cli.in_conversation(vault))
     if as_json:
-        print(json.dumps(dict({k: v for k, v in got.items() if k != "ids"}, purged=True, name=name), ensure_ascii=False))
+        print(json.dumps(dict(got, purged=True, name=name), ensure_ascii=False))
     else:
         print(sentence)
     return 0
@@ -627,10 +657,14 @@ def _relocate(vault, args, as_json):
             if e["alias"].casefold() != alias.casefold() and _overlap(tn, e["root"]):
                 return _reject(f"和既有來源「{e['alias']}」重疊，同一份檔會有兩張卡；要細分請在來源裡建子夾")
         total, ok, misses = _sample(vault, alias, t)
-        excludes = [(ex.get("spec", ""), resolve_spec(ex["spec"], str(t)) is not None
-                     and os.path.exists(resolve_spec(ex["spec"], str(t))))
-                    for ex in entry.get("excludes") or [] if ex.get("spec")]
+        rows = [ex for ex in entry.get("excludes") or [] if ex.get("spec")]
+        found = [resolve_spec(ex["spec"], str(t)) is not None and os.path.exists(resolve_spec(ex["spec"], str(t)))
+                 for ex in rows]
+        excludes = [(ex["spec"], f) for ex, f in zip(rows, found)]
         lines = _relocate_lines(t, spec, total, ok, misses, excludes)
+        lost = [ex["spec"] for ex, f in zip(rows, found) if not f and ex.get("kind", "hidden") == "hidden"]
+        if lost and not args.check:  # 不想讓 AI 看到的夾對不上就不換（第一輪修）：換了那條排除就默默失效
+            return _reject(HIDDEN_LOST.format(spec=lost[0]))
         if args.check:
             if as_json:
                 print(json.dumps({"alias": alias, "spec": spec, "path": str(t), "sampled": total, "matched": ok,

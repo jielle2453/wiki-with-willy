@@ -26,6 +26,7 @@ DATE_RULE = "YYYY-MM-DD"
 AGENDA_RECHECK = "agenda_recheck"
 AGENDA_UNSCANNED = "agenda_unscanned"
 PURGE_STEPS = ("purge_synthesis", "purge")
+PURGE_NO_CMD = "夾名同時有 $ 或反引號和單引號，清殘留的指令給不出來；請她先在檔案總管改夾名，再說一次不想讓 AI 看到"
 BATCH_SECONDS = 10  # 一份抓 10 秒（D-100）
 ANNOUNCE = "有 {n} 份要整理，大約{how_long}；要停的話按停止"  # 門檻內開始前先說（D-100 修訂）：整理中打字要等回合結束，停止鈕才停得下來
 UNREADABLE_LISTED = 5
@@ -55,14 +56,25 @@ class Slot(str):
         return str.__new__(cls, "{" + name + "}")
 
 
-def quote(arg):
-    """指令參數：安全字元（含中文）照寫，有空白或特殊字元加雙引號、裡面的 " \\ $ ` 前面加反斜線。"""
-    if isinstance(arg, Slot):
-        return str(arg)
+def shell_arg(arg):
+    """指令參數：安全字元（含中文）照寫，有空白或特殊字元加雙引號、裡面的 " \\ 前面加反斜線；有 $ 或反引號改用單引號
+    （雙引號裡 PowerShell 會展開，manage 第二版測試）；同時又有單引號就給不出來，回 None。"""
     arg = str(arg)
+    if "$" in arg or "`" in arg:
+        return None if "'" in arg else f"'{arg}'"
     if _SAFE.fullmatch(arg):
         return arg
     return '"' + _ESCAPE.sub(r"\\\1", arg) + '"'
+
+
+def quote(arg):
+    """Slot 照印；其他照 shell_arg，給不出來丟 ValueError（呼叫端事先擋掉這種名字）。"""
+    if isinstance(arg, Slot):
+        return str(arg)
+    got = shell_arg(arg)
+    if got is None:
+        raise ValueError(f"參數同時有 $ 或反引號和單引號：{arg}")
+    return got
 
 
 def cmd(*parts):
@@ -96,8 +108,11 @@ def _how_long(waiting):
 
 # ---------- plan ----------
 
-def _step(step, items, do, read):
-    return {"step": step, "items": items, "do": do, "read": read}
+def _step(step, items, do, read, note=None):
+    out = {"step": step, "items": items, "do": do, "read": read}
+    if note:
+        out["note"] = note
+    return out
 
 
 def _synthesis_rules():
@@ -137,7 +152,10 @@ def _purge_steps(out):
     if rewrite:
         steps.append(_step("purge_synthesis", len(rewrite), "照清單重寫綜合卡，拿掉那夾的卡的內容（purge_pending）",
                            _synthesis_rules()))
-    steps += [_step("purge", 1, cmd("folders", "purge", p["name"]), None) for p in pend]
+    for p in pend:
+        arg = shell_arg(p["name"])
+        steps.append(_step("purge", 1, f"kb folders purge {arg}", None) if arg is not None else
+                     _step("purge", 1, None, None, note=PURGE_NO_CMD))
     return steps
 
 

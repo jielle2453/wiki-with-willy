@@ -94,7 +94,7 @@ class RevertMoves(Base):
         before = self.snapshot()
         code, out = revert(self.V)
         self.assertEqual(code, 3)
-        self.assertEqual(out.strip(), "退不回去：「內湖李」裡已經有「估價單.pdf」了，什麼都沒動")
+        self.assertEqual(out.strip(), "退不回去：「內湖李」裡已經有「估價單.pdf」了；先把那份改名或搬走再說退回，什麼都沒動")
         self.assertEqual(self.snapshot(), before)
         self.assertFalse((Path(self.V) / ".system/versions" / self.t / "reverted.json").exists())
 
@@ -112,17 +112,17 @@ class RevertMoves(Base):
         data["sources"][2]["excludes"].append({"spec": "舊檔", "kind": "unused", "reason": "", "added": "2026-10-22"})
         p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         cases = {
-            "file://客戶案件/C:/Windows/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://客戶案件/C:/Windows/x.pdf），什麼都沒動",
-            "file://客戶案件/../../x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://客戶案件/../../x.pdf），什麼都沒動",
-            "file://沒有這個/x.pdf": "退不回去：「沒有這個」現在沒有登記，什麼都沒動",
-            "file://公司行政/舊檔/x.pdf": "退不回去：「x.pdf」在設成不讀的夾裡，什麼都沒動",
-            "file://知識庫/.system/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/.system/x.pdf），什麼都沒動",
-            "/abs/x.pdf": "退不回去：回合紀錄的搬動路徑不對（/abs/x.pdf），什麼都沒動",
-            "file://客戶案件/（已排除）": "退不回去：那一回合搬過的檔在清掉的不讀夾裡，什麼都沒動",
+            "file://客戶案件/C:/Windows/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://客戶案件/C:/Windows/x.pdf），什麼都沒動；請服務人員看",
+            "file://客戶案件/../../x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://客戶案件/../../x.pdf），什麼都沒動；請服務人員看",
+            "file://沒有這個/x.pdf": "退不回去：「沒有這個」現在沒有登記；要退回得先把它加回來，什麼都沒動",
+            "file://公司行政/舊檔/x.pdf": "退不回去：「x.pdf」在設成不讀的夾裡；要退回得先取消不讀，什麼都沒動",
+            "file://知識庫/.system/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/.system/x.pdf），什麼都沒動；請服務人員看",
+            "/abs/x.pdf": "退不回去：回合紀錄的搬動路徑不對（/abs/x.pdf），什麼都沒動；請服務人員看",
+            "file://客戶案件/（已排除）": "退不回去：那一回合搬過的檔在清掉的不讀夾裡，紀錄已經清掉，什麼都沒動",
             # security-review：段中間的磁碟代號會變成另一顆磁碟的相對路徑（D:Secret/x），不能被當成在根底下
-            "file://知識庫/a/D:/Secret/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/a/D:/Secret/x.pdf），什麼都沒動",
-            "file://客戶案件/a/D:/Secret/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://客戶案件/a/D:/Secret/x.pdf），什麼都沒動",
-            "file://知識庫/系統./x/y.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/系統./x/y.pdf），什麼都沒動",
+            "file://知識庫/a/D:/Secret/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/a/D:/Secret/x.pdf），什麼都沒動；請服務人員看",
+            "file://客戶案件/a/D:/Secret/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://客戶案件/a/D:/Secret/x.pdf），什麼都沒動；請服務人員看",
+            "file://知識庫/系統./x/y.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/系統./x/y.pdf），什麼都沒動；請服務人員看",
         }
         self.assertTrue(excluded.is_dir())
         here = os.getcwd()

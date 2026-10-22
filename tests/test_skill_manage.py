@@ -17,7 +17,7 @@ BODY_MAX = 3000
 REFERENCE_MAX_LINES = 150
 ABS_PATH = re.compile(r"(?<![A-Za-z$])[A-Za-z]:[\\/]|/Users/|/home/")
 DESCRIPTION = ("管資料夾與原檔的位置都用這個：加資料夾、不讀某夾、拿掉、恢復讀、現在讀哪些、「報價夾搬到 E 槽了」「這份搬到 2026」"
-               "「合約改個名字」「舊備忘幫我刪掉」「定稿放到王宅那夾」「這份要放哪」；改檔案內容、整理成卡、實體改名、重建不用這個。")
+               "「合約改個名字」「舊備忘幫我刪掉」「定稿放到王宅那夾」「這份要放哪」；我自己搬／刪好了、改檔案內容、整理成卡、實體改名、重建不用這個。")
 SHOULD = ("報價那個資料夾我搬到 E 槽了", "這份估價單幫我搬到 2026 那夾", "合約改名叫『信義王合約_簽約版』", "舊備忘幫我刪掉，那份早就沒用了",
           "把信義王整個資料夾搬到 2025 封存", "剛做好的定稿要放哪？你決定就好")
 SHOULD_NOT = ("我自己把報價搬到信義王那夾了", "信義王改叫王宅", "把這份合約付款條件改 30 天", "信義王現在怎樣")
@@ -86,6 +86,20 @@ class Body(unittest.TestCase):
                 self.assertIn(word, rules)
         self.assertIn("清完的回答不提那夾裡的檔名與內容", rules)  # 疑義第 4 條
 
+    def test_exclude_finds_folder_under_roots(self):
+        """第一輪修第 1 條：不讀某夾不再「先 folders list 查、不在就說沒在讀」；在登記的根底下找夾名，多個問、找不到才說，exclude 自己判。"""
+        line = next(ln for ln in section(self.body, "骨架").splitlines() if ln.startswith("- **不讀某夾**"))
+        self.assertIn("Glob", line)
+        self.assertIn("找到多個就問", line)
+        self.assertIn("都找不到才說本來就沒在讀", line)
+        self.assertIn("由它判", line)
+        self.assertNotIn("查它在不在來源裡", line)
+
+    def test_principles_3_and_8_merged(self):
+        rules = section(self.body, "原則")
+        self.assertEqual(rules.count("救不回"), 1)
+        self.assertIn("D-174", rules[rules.index("3. **"):rules.index("4. **")])
+
     def test_distinguishes_and_hands_off(self):
         part = section(self.body, "分辨")
         for word in ("ingest", "note", "produce", "重建"):
@@ -146,6 +160,14 @@ class Evals(unittest.TestCase):
         for q in SHOULD_NOT:
             with self.subTest(query=q):
                 self.assertIs(by_query.get(q), False)
+
+
+class IngestHandOff(unittest.TestCase):
+    def test_type_folder_line(self):
+        """第一輪修第 10 條：型別底下還有東西時，實體換型別走 kb entity，散檔才問要不要走 manage 搬（不繞圈）。"""
+        text = (ROOT / "skills" / "ingest" / "references" / "commands.md").read_text(encoding="utf-8")
+        line = next(ln for ln in text.splitlines() if "先搬走再拿掉這列" in ln)
+        self.assertIn("實體換型別用 kb entity，夾裡的散檔問她要不要幫她搬（走 manage）", line)
 
 
 class RepoClaudeMd(unittest.TestCase):

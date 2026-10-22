@@ -111,7 +111,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 `apply` 印 `已套用客戶設定檔：…；建了資料夾 X；N 份回到待製卡`（拿掉的型別夾是空的會一起拿掉，印在「型別 -1（拿掉了空夾 X）」），第五節有改多一行 `關於你：登記了 X`（或「「X」改記成你自己；…」），照著講；有「回到待製卡」就照 ingest 骨架，從 `cards todo --json` 起做。你不直接改 `系統/客戶設定檔.md`，要改就用上面的 `add`／`remove`／`type`。`--json`：`{"state","diff","error","unlisted","to_create","removed_empty","removed_nonempty"}`，`apply` 多 `applied`、`created_dirs`、`removed_dirs`、`unskipped`。拒絕（exit 3）：
 
 - `客戶設定檔讀不懂：第 N 節第 M 列…`（`check` 也是 exit 3）→ 照句子告訴客戶哪一列要改，改好再說一次。
-- `型別「X」底下還有 N 項，先搬走再拿掉這列` → 照講；夾裡的東西要搬，問她要不要幫她搬（走 manage）。
+- `型別「X」底下還有 N 項，先搬走再拿掉這列` → 照講；實體換型別用 kb entity，夾裡的散檔問她要不要幫她搬（走 manage）。
 - `「X」已經有同名的檔，不能建成型別夾；先改名或搬走` → 照講。
 - `等不到鎖，沒有寫入` → 等一下再跑一次。
 - `設定檔已改好，但後面沒做完（…）；跑 kb profile apply 會補上` → 設定檔已經改了，再跑一次 `profile apply` 補完。

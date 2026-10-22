@@ -15,7 +15,11 @@
 6. 工作日誌：changed 與 note 裡指到那夾的路徑換「（已排除）」，有指到的回合 result 整欄換掉，prompt 不動（journal.scrub）；
 7. ledger.tsv 與 hook-errors.log 裡指到那夾的路徑換「（已排除）」。
 先改目前的狀態（備進這一回合），再清全部回合（含這一回合剛備的），最後是暫存、日誌與留痕。
+第一輪修（測試報告）：範圍（卡編號、office 副本檔名的雜湊）第一次就記進那條排除（purge_ids、purge_names），
+重跑照記下的清（舊版清過之後就算不出來了）；哪一項沒清掉（檔開著、鎖等不到）就留著 pending、回還剩什麼，全部清完才標完成、
+拿掉記的範圍。遮罩只換完整路徑（uri、別名/相對、檔案索引/別名/相對、磁碟上的絕對路徑），前後都要是路徑的邊界，不做子字串。
 """
+import hashlib
 import json
 import os
 import re
@@ -91,6 +95,53 @@ def target(vault, alias, spec):
     return {"ids": ids, "names": {n for n in names if n}}
 
 
+def name_hash(name):
+    """office 副本檔名記雜湊，不把那夾的檔名寫進 sources.json。"""
+    return hashlib.sha256(str(name).casefold().encode("utf-8")).hexdigest()[:16]
+
+
+def _row(vault, alias, spec):
+    """sources.json 裡那條排除（原始 dict）；沒有回 {}。"""
+    for src in sources_lib.load_raw(vault)["sources"]:
+        if str(src.get("alias", "")).casefold() == alias.casefold():
+            for ex in src.get("excludes") or []:
+                if ex.get("spec") == spec:
+                    return ex
+    return {}
+
+
+def scope(vault, alias, spec):
+    """這次要清的範圍：算得出來的加上記在那條排除裡的。回 {"ids", "hashes"}。"""
+    got = target(vault, alias, spec)
+    row = _row(vault, alias, spec)
+    return {"ids": got["ids"] | {i for i in row.get("purge_ids") or [] if isinstance(i, str)},
+            "hashes": {name_hash(n) for n in got["names"]} | {h for h in row.get("purge_names") or [] if isinstance(h, str)}}
+
+
+def _write_row(vault, alias, spec, turn_id, change):
+    """改那條排除（呼叫端持 sources.json 的鎖）：change(row) 回真才備份、寫。回有沒有寫。"""
+    raw = sources_lib.load_raw(vault)
+    for src in raw["sources"]:
+        if str(src.get("alias", "")).casefold() != alias.casefold():
+            continue
+        for ex in src.get("excludes") or []:
+            if ex.get("spec") == spec and change(ex):
+                turn.backup(vault, sources_lib.SOURCES_REL, turn_id)
+                write_json_atomic(Path(vault) / sources_lib.SOURCES_REL, raw)
+                return True
+    return False
+
+
+def record_scope(vault, alias, spec, sc, turn_id):
+    def change(ex):
+        ids, names = sorted(sc["ids"]), sorted(sc["hashes"])
+        if ex.get("purge_ids") == ids and ex.get("purge_names") == names:
+            return False
+        ex["purge_ids"], ex["purge_names"] = ids, names
+        return True
+    return _write_row(vault, alias, spec, turn_id, change)
+
+
 def _refs(text, ids):
     """綜合卡檔頭「整理到」有沒有引用 ids。"""
     try:
@@ -147,7 +198,7 @@ def _titles(vault, ids):
 
 def pending_detail(vault, alias, spec):
     """cards todo 的 purge_pending 一項：要重寫的綜合卡（名稱、路徑、引用了哪幾張那夾的卡與標題）。只讀。"""
-    ids = target(vault, alias, spec)["ids"]
+    ids = scope(vault, alias, spec)["ids"]
     titles = _titles(vault, ids) if ids else {}
     try:
         data = entities.load(vault)
@@ -168,10 +219,10 @@ def pending_detail(vault, alias, spec):
     return {"name": f"{alias}/{spec}", "alias": alias, "spec": spec, "synthesis": rows}
 
 
-def masker(vault, alias, spec, root, names):
-    """回 mask(text)：指到那夾的路徑（uri、別名/相對、磁碟上的絕對路徑，兩種斜線、大小寫不分）連同後面的檔名換「（已排除）」，
-    那夾原檔的檔名單獨出現也換。"""
-    forms = {folder_uri(alias, spec), f"{alias}/{spec}", str(root)}
+def masker(vault, alias, spec, root):
+    """回 mask(text)：指到那夾的完整路徑（uri、別名/相對、檔案索引/別名/相對、磁碟上的絕對路徑，兩種斜線、大小寫不分）
+    連同後面的檔名換「（已排除）」。前面要是開頭或分隔的字、後面要是結尾或路徑分隔，不換子字串（第一輪修）。"""
+    forms = {folder_uri(alias, spec), f"{alias}/{spec}", f"{cards.CARDS_DIR}/{alias}/{spec}", str(root)}
     try:
         real = os.path.realpath(str(root))
         forms |= {real, real.replace("\\", "/"), real.replace("/", "\\")}
@@ -180,16 +231,13 @@ def masker(vault, alias, spec, root, names):
     forms |= {f.replace("/", "\\") for f in list(forms) if not f.startswith("file://")}
     forms = sorted((f for f in forms if f), key=len, reverse=True)
     stop = re.escape(_STOP)
-    rx = re.compile("(?:" + "|".join(re.escape(f) for f in forms) + rf")(?=$|[/\\{stop}\s])(?:[/\\][^{stop}]*)?",
-                    re.IGNORECASE)
-    words = sorted((n for n in names if len(n) >= 2), key=len, reverse=True)
-    wx = re.compile("|".join(re.escape(n) for n in words), re.IGNORECASE) if words else None
+    rx = re.compile(rf"(?<![^\s{stop}])(?:" + "|".join(re.escape(f) for f in forms)
+                    + rf")(?=$|[/\\{stop}\s])(?:[/\\][^{stop}]*)?", re.IGNORECASE)
 
     def mask(text):
         if not isinstance(text, str):
             return text
-        out = rx.sub(PURGED, text)
-        return wx.sub(PURGED, out) if wx else out
+        return rx.sub(PURGED, text)
     return mask
 
 
@@ -281,21 +329,27 @@ def _current_state(vault, ids, turn_id, counts):
         n = drop_pending(data, ids)
         items[:] = data["items"]
         return n
-    if (Path(vault) / pending.PENDING_POSIX).exists():
-        pending._edit(vault, turn_id, p_change)
-    if (Path(vault) / agenda.AGENDA_POSIX).exists():
-        agenda._mutate(vault, turn_id, lambda data: (None, drop_agenda(data, ids)))
-    if (Path(vault) / rulings.RULINGS_POSIX).exists():
-        rulings._mutate(vault, turn_id, lambda data: (None, drop_rulings(data, ids)))
-    if (Path(vault) / findings.FINDINGS_POSIX).exists():
-        def f_change(data):
-            n = drop_findings(data, ids)
-            return n, bool(n)
-        counts["findings"] += findings._mutate(vault, turn_id, f_change)
+    def f_change(data):
+        n = drop_findings(data, ids)
+        return n, bool(n)
+    parts = ((pending.PENDING_POSIX, lambda: pending._edit(vault, turn_id, p_change)),
+             (agenda.AGENDA_POSIX, lambda: agenda._mutate(vault, turn_id, lambda data: (None, drop_agenda(data, ids)))),
+             (rulings.RULINGS_POSIX, lambda: rulings._mutate(vault, turn_id, lambda data: (None, drop_rulings(data, ids)))),
+             (findings.FINDINGS_POSIX, lambda: counts.__setitem__(
+                 "findings", counts["findings"] + findings._mutate(vault, turn_id, f_change))))
+    for rel, act in parts:
+        if (Path(vault) / rel).exists():
+            try:
+                act()
+            except (OSError, ValueError):
+                counts["left"]["state"] += 1
     for cid, group in cards._scan_groups(vault)[0].items():
         if cid in ids:
             for c in group:
-                cards.remove_card(vault, c["path"], turn_id)
+                try:
+                    cards.remove_card(vault, c["path"], turn_id)
+                except OSError:
+                    counts["left"]["state"] += 1
             counts["card_ids"].add(cid)
 
 
@@ -339,6 +393,14 @@ def _is_link(path):
 
 
 def _scrub_version(vault, vdir, ids, prefix, mask, counts):
+    """一個回合夾；鎖等不到、寫不了的那幾份算進還剩的。"""
+    try:
+        _scrub_version_locked(vault, vdir, ids, prefix, mask, counts)
+    except OSError:
+        counts["left"]["backups"] += 1
+
+
+def _scrub_version_locked(vault, vdir, ids, prefix, mask, counts):
     """一個回合夾：卡與綜合卡舊版刪、狀態檔舊版改寫、md 舊版重渲染、總目錄舊版拿掉那些行、manifest 標 purged、moves.jsonl 遮。"""
     files = vdir / "files"
     manifest = vdir / "manifest.jsonl"
@@ -386,7 +448,11 @@ def _scrub_version(vault, vdir, ids, prefix, mask, counts):
                     write_text_atomic(f, "".join(kept))
                     counts["backups"] += 1
             if gone:
-                f.unlink()
+                try:
+                    f.unlink()
+                except OSError:
+                    counts["left"]["backups"] += 1
+                    continue
                 row["action"], row["path"] = "purged", PURGED
                 counts["backups"] += 1
                 dirty = True
@@ -442,76 +508,96 @@ def _scrub_version(vault, vdir, ids, prefix, mask, counts):
                 write_text_atomic(moves, new)
 
 
-def _temp(vault, ids, names):
-    """.system/temp 的轉出檔與 office 工作區的同名副本。回刪了幾份。"""
+def _temp(vault, ids, hashes, counts):
+    """.system/temp 的轉出檔與 office 工作區的同名副本（檔名照記的雜湊比）。刪不掉的算進還剩的。回刪了幾份。"""
     root = Path(vault) / TEMP_POSIX
     if not root.is_dir() or _is_link(root):
         return 0
     n = 0
+    hits = []
     for p in root.iterdir():
         m = _PNG.match(p.name)
         stem = p.name[:-3] if p.name.endswith(".md") else (m.group("id") if m else None)
-        if p.is_file() and stem in ids:
-            p.unlink()
-            n += 1
+        if stem in ids and p.is_file():
+            hits.append(p)
     office = root / OFFICE
     if office.is_dir() and not _is_link(office):
-        low = {x.casefold() for x in names}
         for dirpath, dirnames, filenames in os.walk(office):
             dirnames[:] = [d for d in dirnames if not _is_link(os.path.join(dirpath, d))]  # 連結與 junction 不跟
-            for f in filenames:
-                if f.casefold() in low:
-                    os.remove(os.path.join(dirpath, f))
-                    n += 1
+            hits += [Path(dirpath) / f for f in filenames if name_hash(f) in hashes]
+    for p in hits:
+        try:
+            p.unlink()
+            n += 1
+        except OSError:
+            counts["left"]["temp"] += 1
     return n
 
 
 def _scrub_text(vault, rel, mask):
+    """ledger.tsv、hook-errors.log：鎖住讀改寫（hook 追加時不掉行）。檔不在回 True；寫不了回 False。"""
     p = Path(vault) / rel
+    if not p.exists():
+        return True
     try:
-        text = p.read_text(encoding="utf-8")
+        with FileLock(p):
+            text = p.read_text(encoding="utf-8")
+            new = "\n".join(mask(ln) for ln in text.split("\n"))
+            if new != text:
+                write_text_atomic(p, new)
     except (OSError, UnicodeDecodeError):
-        return
-    new = "\n".join(mask(ln) for ln in text.split("\n"))
-    if new != text:
-        write_text_atomic(p, new)
+        return False
+    return True
+
+
+LEFT_WORDS = (("state", "狀態檔 {n} 個"), ("backups", "備份 {n} 份"), ("temp", "暫存 {n} 份"),
+              ("journal", "工作日誌 {n} 個月"), ("logs", "留痕 {n} 個"))
+
+
+def remaining_text(left):
+    return "還沒清完：" + "、".join(w.format(n=left[k]) for k, w in LEFT_WORDS if left.get(k))
 
 
 def purge(vault, alias, spec, root, turn_id):
     """清那夾的殘留（呼叫端持 sources.json 的鎖、已確認是 pending 的 hidden 排除）。還有綜合卡引用就丟 Blocked。
-    回 {"cards","backups","temp","journal","findings"}（數字）。"""
-    got = target(vault, alias, spec)
-    ids, names = got["ids"], got["names"]
+    先把範圍記進那條排除，再清；回 {"cards","backups","temp","journal","findings","remaining"}，remaining 有東西就是沒清完
+    （呼叫端不標完成）。"""
+    sc = scope(vault, alias, spec)
+    ids = sc["ids"]
     names_blocking = blocking(vault, ids)
     if names_blocking:
         raise Blocked(names_blocking)
-    counts = {"card_ids": set(), "backups": 0, "temp": 0, "journal": 0, "findings": 0}
+    record_scope(vault, alias, spec, sc, turn_id)
+    counts = {"card_ids": set(), "backups": 0, "temp": 0, "journal": 0, "findings": 0,
+              "left": {k: 0 for k, _w in LEFT_WORDS}}
     prefix = folder_uri(alias, spec)
-    mask = masker(vault, alias, spec, root, names)
+    mask = masker(vault, alias, spec, root)
     _current_state(vault, ids, turn_id, counts)
     for vdir in _version_dirs(vault):
         _scrub_version(vault, vdir, ids, prefix, mask, counts)
-    counts["temp"] = _temp(vault, ids, names)
-    counts["journal"] = journal.scrub(vault, mask)
-    _scrub_text(vault, ledger.LEDGER_REL, mask)
-    _scrub_text(vault, ledger.ERROR_LOG_REL, mask)
+    counts["temp"] = _temp(vault, ids, sc["hashes"], counts)
+    try:
+        counts["journal"] = journal.scrub(vault, mask)
+    except OSError:
+        counts["left"]["journal"] += 1
+    for rel in (ledger.LEDGER_REL, ledger.ERROR_LOG_REL):
+        if not _scrub_text(vault, rel, mask):
+            counts["left"]["logs"] += 1
     return {"cards": len(counts["card_ids"]), "backups": counts["backups"], "temp": counts["temp"],
-            "journal": counts["journal"], "findings": counts["findings"], "ids": sorted(ids)}
+            "journal": counts["journal"], "findings": counts["findings"],
+            "remaining": {k: v for k, v in counts["left"].items() if v}}
 
 
 def mark_done(vault, alias, spec, turn_id):
-    """那條排除的 purge 改成今天（呼叫端持 sources.json 的鎖）；先備進回合。回有沒有寫。"""
-    raw = sources_lib.load_raw(vault)
-    for src in raw["sources"]:
-        if str(src.get("alias", "")).casefold() != alias.casefold():
-            continue
-        for ex in src.get("excludes") or []:
-            if ex.get("spec") == spec and ex.get("purge") == sources_lib.PURGE_PENDING:
-                ex["purge"] = date.today().isoformat()
-                turn.backup(vault, sources_lib.SOURCES_REL, turn_id)
-                write_json_atomic(Path(vault) / sources_lib.SOURCES_REL, raw)
-                return True
-    return False
+    """全部清完：那條排除的 purge 改成今天、拿掉記的範圍（呼叫端持 sources.json 的鎖）；先備進回合。回有沒有寫。"""
+    def change(ex):
+        if ex.get("purge") != sources_lib.PURGE_PENDING:
+            return False
+        ex["purge"] = date.today().isoformat()
+        ex.pop("purge_ids", None)
+        ex.pop("purge_names", None)
+        return True
+    return _write_row(vault, alias, spec, turn_id, change)
 
 
 def find(vault, sources, target_text, cwd):

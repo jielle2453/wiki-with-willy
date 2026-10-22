@@ -177,3 +177,72 @@ note 上次的「不該觸發 7／30」不見了（1／30）；沒有退步。**
 2. M-1、M-2（`output link` 進回合帳、同網址不覆蓋）、M-3（`_CELL` regex）、M-6（轉檔前清舊 PDF）。
 3. M-4、M-5 與 skill-reviewer 的必修 1～4（改 SKILL／make.md／answer 一句，要新舊版對照）。
 4. 低項併入 backlog（L-1 長路徑、L-2 驗 import、L-6 併 B-401「密碼與守門」）。
+
+---
+
+# 第二輪（測試後修正裁定 12～20）
+日期：2026-10-22
+被測：HEAD `2253fc7`（在第一輪報告 commit `06450a1` 之後）。範圍照裁定 22：只驗 12～20 加無退步；code-review 只看 `06450a1..2253fc7`，12 動了守門另做 security-review（子代理只讀碼，繞過輸入我自己用 `kb guard decide` 實跑）；第 17 條在**新庫**（`ingest-check` 重新複製成 `produce-test\base2`，沒有 `.system/temp/office/`，沒動 `ingest-check`）重跑 (b)(c)(d) 的 skill 版，(b) 另跑「客戶自己說做成線上文件」；路由 `produce.json` 三次、`answer.json` 一次。
+
+## 結論
+
+**裁定 12～20：9 條全部做到（H-1、M-1～M-3、M-4、M-6 都修好並實跑確認），M-5 只修了一半（作者變成「AI」不是「AI 助理」）。無退步：`python -m unittest discover tests` exit 0（Ran 1875，OK，skipped=1，391 秒，樹乾淨）、`claude plugin validate` 通過（同樣只有 icon 與 README 安裝行兩則既有警告）。**
+- **H-1 已解**：新庫（沒有工作區夾）(c) Excel 與 (d) PDF 完整走通，不再被守門擋。
+- 路由：produce 100%／97%／100%（平均 **99%**，89／90），不該觸發 0／90；answer 30／30、0／30。
+- 新發現：中低 1（LibreOffice profile 搬到 `%TEMP%` 後失去守門保護）、低 6，沒有擋發行的。
+- **環境注意**：我 12:39 跑完第一批第二輪路由時用量上限停了，那批 `produce.json` 只有 17～23%（`claude -p` 失敗被算成沒觸發），作廢（`ev-void2`）；12:46 換帳號、確認 `claude -p` 正常後全部重跑，以下以重跑為準。willy-probe 干擾（第一輪）此時已不在。
+
+## 逐條
+
+| 裁定 | 結果 | 證據 |
+|---|---|---|
+| 12 H-1 | 過 | `<V>` 沒有 `.system/temp/office/`（`g2`）：`guard decide --tool Write --path <V>/.system/temp/office/<回合>/build.js` → `allow Z7 工作區`（也含多層、`./`、`\` 混用、大寫 `OFFICE`、本機 UNC `\localhost\C$\…`、`\?\C:\…` 前綴，都 allow）；`officeX/…`、`office/../x.js`、`office/..\x.js`、`office/../../../inventory.json`、`office` 與 `office/` 本身、`office /`、`office./`、`office/a /b.js`、`office/a./b.js`、`_lo_profile/…`（含大寫、結尾空白、結尾點）、`off~1`、`.system/temp/f.md`、`office::$DATA`、Bash `echo > …/office/t/a.js` 全 deny（Z7）。連結：`.system/temp` 是 junction 指到庫外（office 不存在）、`office` 本身是 junction、`office/j` 是 junction 指庫外 → 都回 `pass`（不是 allow：落在庫外 Z11，不表態）。Read／Edit／NotebookEdit 行為不變。真環境第 17 條 (c)(d)(b) 的 `Write …/office/<回合>/make_*.py|js` 全部成功。security-review 的疑點見下。 |
+| 13 M-1 | 過 | A 回合 `output save`、B 回合 `output link … --entity 王宅 --basis f-…`、C 回合 `versions revert` → `已退回 …（問：「B 連結」）：還原 1`，B 的 link 不見、A 的 `a.xlsx` 還在 active。`versions list` 現在列出 B（`modify：.system/inventory.json`）。 |
+| 14 M-2 | 過 | 同網址再 link → `這個網址已經登記過了：連結B`，exit 3，第一筆的 title／type／entities／basis 沒變。 |
+| 15 M-3 | 過 | `formula_report` 對 `<c s="1"/><c t="e">…#DIV/0!…` 回 `(2, [('sheet1','B1','#DIV/0!')])`；不帶自閉合格仍對。 |
+| 16 M-6 | 過 | 把 soffice 結果換成替身（結束碼 0 沒產出、結束碼 1 沒輸出），工作區已有同名舊 PDF：兩種都 exit 3，舊 PDF 先被刪（`舊 pdf 還在: False`），訊息 `轉不出 PDF（LibreOffice）：沒有訊息`／`…：LibreOffice 沒有執行成功`（L-1 的新說法）。真轉換（`good.docx`）正常。小：刪舊檔在檢查有沒有轉換器之前（N-3）。 |
+| 17 M-4 | 過 | 見第 17 條。(b) 第一回合的問句：「內容這樣可以嗎？可以我就做成線上文件。它存在你自己的 claude.ai 帳號，不在電腦的資料夾裡，預設只有你看得到，要 Word 或 PDF 時從那頁下載。你要直接做 Word 檔也可以。」三件事在第一回合就講，第二回合「就這樣」才叫 Docs（`batch`），在建之前。 |
+| 18 M-5 | **只過一半** | `make.md` 有範例＋「用 Grep 數」；實跑 (a)：修訂作者是 **`AI`**（不是範例的 `AI 助理`；第一輪是 `Claude`）；回答仍先試了 `python -I -c` 數修訂（被守門擋），之後才改 Grep，最後回答寫「沒驗到的部分：打包後我想數一次修訂標記，這個檢查被擋下來」——Grep 其實有成功。見 N-5。 |
+| 19 skill 必修 | 過 | 描述 142 字（≤150）、換成「剛才那個表存成檔」「草稿可以了，定稿」；`answer/SKILL.md` 「做成文件、Excel 檔、簡報」；`draft.md` 有 `kb tally --row "<卡編號> <數字> [位置]"` 範例（(c) 實跑 3 次 `tally`，格式沒錯）；`make.md` Docs 匯出改「請她下載到下載夾再 `output save --link`」；範本從 `kb profile show --json` 的 `範本` 節讀（該節確實存在）；SKILL 原則「用檔案工具（Write）寫草稿」；拒絕句補「只收工作區或 AI 產出裡的檔」。SKILL 本文 2918 字、references 59／80 行。 |
+| 20 低項 | 過（有 N-1） | **L-1** profile 放 `%TEMP%\wiki-with-willy\lo`（168 字元長路徑的庫轉 PDF 成功，exit 0）；非 0 又沒輸出 → 「LibreOffice 沒有執行成功」。**L-2** `setup` 成功才寫 `tools\ready.json`（`{"python": true, "node": true}`），`check` 之前說「沒裝」（只有空夾）→ `setup` 3.5 秒 → `check` 裝好了 → 再 `setup` 說「工具已經裝好了，不用再裝」。**L-3** `output save` 來源 `.system/temp/converted.txt` → `只收工作區或知識庫外的檔，這份在知識庫裡`；`office/` 裡的檔可放；`unpack --to …/_lo_profile/…`、`_LO_Profile`、`_lo_profile `（尾空白）→ 拒絕，一般子夾可。**L-4** `--title 'x$(id)'`、``x`id` `` → `標題不能有 $ 或 ` 這兩種字元`。**L-5** 「Node.js：有（v24）；沒有 npm（Node.js 裝得不完整）」「不行：…（要重裝 Node.js）」。**L-9** 唯讀原檔 `office copy` 後副本屬性只剩 `A`，`recalc` 2.6 秒成功（第一輪卡 60 秒）。 |
+
+## 第 17 條：新庫重跑 (b)(c)(d)（skill 版，`base2`，plugin＝`2253fc7`）
+
+- **(b)**（`q-b`）：`produce` → `lookup` → Read `draft.md` → 收資料 → `convert`×2 核對 → Write `AI 產出/報告/2026-10-22 內湖李 進度報告（草稿）.md` → `asks` → `turn note`。回答列草稿重點、請她先確認三件事（報價第四版是不是內湖李的、案子狀態擱置、進度內容少），最後**推薦線上文件並一句講三件事**（存在 claude.ai 帳號、預設只有你看得到、要 Word／PDF 從那頁下載）再問，也提「你要直接做 Word 檔也可以」。第二回合「內容可以，就這樣」→ Read `make.md` → 直接叫 Claude Docs `batch`（被權限擋，這個 headless 測試沒開）→ 照實說沒建成、草稿沒動、給兩個選項。**通過 M-4**。
+- **(b) 客戶自己說「做成線上文件」**（`q-b3`，一句：「幫我做一份內湖李的進度報告，做成線上文件」）：Read `draft.md`、`make.md` → 收資料 → 寫草稿 → 回答最後「內容這樣可以嗎？可以我就做成線上文件：存在你自己的 claude.ai 帳號、不在電腦的資料夾，預設只有你看得到，要 Word 或 PDF 時從那一頁下載。還是你要直接做 Word 檔？」——三件事在建之前講了；但沒有「接著建」，而是先給草稿再問（新做的先草稿，D-163），結尾又問「還是你要 Word」。裁定 17 寫「客戶自己說做成線上文件：先用一句講三件事、不再問，接著建」，這裡做成「先草稿再問」，我認為仍合理（內容還沒給她看），但跟字面不同，列為 N-6 交設計判斷。
+- **(c)**（`q-c`，新庫）：草稿階段 `lookup`、`convert`、`tally`×3（每版一次）→ Write 草稿 → 回答兩處原檔矛盾並列、問裝工具；第二回合 `office check` → **Write 腳本到工作區（allow，不再被擋）** → `office run` → `office recalc`×2（第二次是改過）→ 讀回來比 → `output save --draft` → `asks` → `turn note`。成品 `AI 產出/報價/2026-10-22 大安陳 報價整理.xlsx`：三張表，公式 4＋2 個、快取值都在；manifest：create xlsx、delete 草稿；草稿收起來。回答：成品不附出處、說退回會拿掉、出處在回答裡列。**通過**。
+- **(d)**（`q-d`，新庫）：草稿（`agenda list`、`convert` 核對）→ 第二回合 Write `make.js`（allow）→ `office run` → `office pdf` → `office render` → Read PNG 看 → 改 5 次（欄寬、字級）→ 重做 → `render` → Read → `output save --draft`。回答：「A4 橫式一頁、我轉成圖看過、日期不會換行」、「10/23、10/25 是我推出來的日期」、「草稿已收起來，說退回會把 PDF 拿掉」，沒有貼編號。**通過**。
+- 另外 (a)（新庫、`q-a`）：副本→unpack→Edit→pack→`output save --from` 走通，修訂作者 `AI`（見 18）。
+
+## 路由（裁定 22，無其他負載）
+
+| 檔 | 該觸發 | 不該觸發 |
+|---|---|---|
+| `produce.json` 第 1 輪 | 30／30（100%） | 0／30 |
+| `produce.json` 第 2 輪 | 29／30（97%；「做一份設計提案簡報給業主…」2／3） | 0／30 |
+| `produce.json` 第 3 輪 | 30／30（100%） | 0／30 |
+| **produce 平均** | **89／90（98.9%）** | **0／90** |
+| `answer.json` | 30／30 | 0／30 |
+
+上一輪的弱點句「剛才那個表幫我存成檔案」這次 9／9（描述改成「剛才那個表存成檔」＋「草稿可以了，定稿」見效）。
+
+## 疑點（新）
+
+### 中低
+- **N-1 LibreOffice profile 搬到 `%TEMP%` 後失去守門保護**（security-review #1，我實跑確認）：`guard.py:472` 擋的 `_lo_profile` 現在沒有對象；`%TEMP%\wiki-with-willy\lo\user\basic\Standard\Module1.xba`、`…\registrymodifications.xcu` 用 `guard decide` 的 Write 與 Bash 都回 `pass`（不表態＝交預設權限，客戶端沒放行 Write 時會問）。`recalc` 會把巨集寫進這個 profile，下次轉檔載入。profile 現在是整台共用、路徑固定可預測。影響取決於 B-401（AI 能經 `office run` 跑任意腳本）；建議併 B-401，或 profile 用隨機名／加到守門（`%TEMP%\wiki-with-willy\` 一律 Z7 同級）。另一個副作用：兩個知識庫同時轉檔會搶同一個 profile（讀碼推論，沒測）。
+
+### 低
+- **N-2** `office.py` 的 `_why` 不看用了誰：走 Office（COM）轉 PDF／重算失敗又沒輸出，會寫「轉不出 PDF（Word）：LibreOffice 沒有執行成功」。（這台沒有 Office，讀碼。）
+- **N-3** `to_pdf` 刪同名舊 PDF 發生在確認有沒有轉換器之前：沒有任何轉換器時，先刪舊 PDF 再報「這台沒有能轉 PDF…」。
+- **N-4** `output link` 的 `turn.backup(inventory.json)` 在清冊鎖外面（`output.py:244`），同檔其他寫清冊處都在鎖裡備份；鎖外重複檢查也一樣。極端並行時退回會連別人剛寫的登記一起還原。
+- **N-5 M-5 沒修乾淨**：範例寫了 `w:author="AI 助理"`，模型實跑 1 次寫成 `AI`（第一輪 `Claude` 2／2）；而且仍先用 `python -I -c` 驗（被擋），回答因此說「沒驗到」其實 Grep 已驗過。建議範例直接要求「作者屬性逐字照抄」，並在 SKILL／make.md 把「不用 `python -c`」放在「驗修訂」的第一句。
+- **N-6 (b3)**：見上，字面與裁定 17 不同（先草稿再問、結尾又問要不要 Word），交設計判斷。
+- **N-7** `ready.json` 沒有在重裝前清掉：舊記號 true 後若套件夾被刪或 pip 中途失敗，`check` 仍說裝好（security-review／code-review 都指出，讀碼）；`pdfium_ok()` 仍只看 `pylib/pypdfium2` 夾在不在。
+- **N-8（security-review 的低度項，沒實跑）**：`unpack --to`／`run` 範圍仍是整個 `.system/temp/`（`_lo_profile` 排除成死碼）；`_URL` 用 `$` 結尾，`https://claude.ai/x\n` 可能通過、標題沒擋換行；工作區 Write 不限副檔名（`.ps1`、`.bat` 可寫，Bash 執行它們不含寫入動詞，守門 `pass`）——B-401 同類。
+- 守門的其他讀碼意見（junction 在 `office` 以下、懸空連結、POSIX `..` 先折疊）：Windows 磁碟路徑我實跑 junction 三種（`.system/temp`、`office`、`office/j`）都是 `pass` 不是 allow，沒有找到多放；UNC／POSIX 情境沒測。
+
+## 建議
+1. N-1 併 B-401 或加保護；N-5 在 make.md 把修訂範例改成逐字照抄、驗證指示放前面。
+2. N-2～N-4、N-7 低項併入 backlog。
+3. N-6 決定要不要讓「客戶自己說做成線上文件」在內容明確時直接建。
+4. Office（COM）路徑仍**未確認**（這台沒有 Office）。

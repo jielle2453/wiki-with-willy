@@ -47,7 +47,7 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - 綜合卡：整批做完後到門檻的綜合卡由主對話寫還是交給子代理（例句 13）。
 - 做完回到主對話：子代理回報什麼（做了幾份、哪幾份沒做成與原因、帶出的名字），主對話怎麼接著問客戶（D-134、D-135）。
 
-### 要先 spike 的（任務檔放 `llm-wiki-test\card-maker-spike\`，跑之前跟 a2 錯開）
+### 要先 spike 的（任務檔 `llm-wiki-test` 底下 `card-maker-spike/card-maker-spike-任務.md`，跑之前跟 a2 錯開）
 1. 子代理拿不拿得到 `rules/core.md`：SubagentStart hook 能不能注入同一段（B-032）；不能就看 agent 本文指路徑讀得到。
 2. 子代理用檔案工具寫卡：守門（PreToolUse）、回合備份、PostToolUse 驗卡照不照跑；備份算進哪個回合、`versions revert` 退不退得掉。
 3. 幾份一批、一份多久、用量多少；並行幾個子代理會不會互搶鎖（`總目錄.md`、清冊、實體清單）。
@@ -58,3 +58,4 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - 2026-10-22：使用者選先談 card-maker；列例句 20 句，待定範圍。
 - 2026-10-22：使用者指出 card-maker 不是 skill、客戶的話不會叫到它；例句「去哪」改寫 ingest 或 build，另開「card-maker 怎麼被派」一節，邊界句標不在這題（使用者說好）。
 - 2026-10-22：例句範圍定（使用者說好）：5、9 等 spike 結果再定收不收，13 收、誰寫放下一節，20 不收。
+- 2026-10-22：查官方文件（子代理與 hook），寫 spike 任務檔九題加桌面版三步；文件沒寫死要實測的：SubagentStart 塞的規則子代理看不看得到、子代理裡 PostToolUse 打回回不回得去、背景子代理回報會不會觸發 UserPromptSubmit（會的話 turn hook 多開回合）、按停止與關視窗時子代理停不停。等 a2 排時間。

@@ -670,7 +670,8 @@ class WithRealVault(unittest.TestCase):
 
     OLD_KEYS = {"new", "stale", "moved", "duplicates", "orphans", "unreadable", "missing", "skipped", "broken", "pdf_restored",
                 "unlinked", "missing_types", "profile_missing", "profile", "synthesis_new", "synthesis_stale",
-                "synthesis_broken", "entity_drift", "entities", "agenda_recheck", "agenda_unscanned", "agenda_counts"}
+                "synthesis_broken", "entity_drift", "entities", "agenda_recheck", "agenda_unscanned", "agenda_counts",
+                "unbacked"}
 
     def setUp(self):
         self.tmp, self.V, self.raw = E.make_entity_vault(with_entities=True)
@@ -840,6 +841,45 @@ class RulingAsks(Base):
         got = self.build(missing=[missing])["asks"]
         self.assertEqual([a["id"] for a in got], ["missing:p-1a2b3c4d", "ruling:r-1a2b3c4d", "overdue:a-5e6f7a8b"])
         self.assertEqual([r["n"] for a in got for r in a["results"]], list(range(1, 1 + sum(len(a["results"]) for a in got))))
+
+
+class ProduceAsks(Base):
+    """produce 第 5 點：asks 多 draft（AI 產出裡的（草稿）.md，這一回合才寫的不問），排在 close 之後、名字確認之前；
+    tell 多 unbacked 那句。"""
+
+    def draft(self, name="2026-10-21 內湖李 進度報告（草稿）.md", sub="報告"):
+        d = self.V / "AI 產出" / sub
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text("草稿\n", encoding="utf-8")
+        return f"AI 產出/{sub}/{name}"
+
+    def test_draft_ask(self):
+        rel = self.draft()
+        (ask,) = self.build()["asks"]
+        self.assertEqual((ask["id"], ask["kind"], ask["question"]),
+                         (f"draft:{rel}", "draft", "內湖李 進度報告 的草稿還在等你看"))
+        self.assertEqual([(r["n"], r["label"], r["do"], r["strict"]) for r in ask["results"]],
+                         [(1, "定稿", [], False), (2, "再改", [], False),
+                          (3, "不要了", [f'kb output drop-draft "{rel}"'], True)])
+
+    def test_draft_written_this_turn_not_asked(self):
+        t = turn.start(self.V, "sid", "寫草稿")["turn"]
+        rel = "AI 產出/報告/x（草稿）.md"
+        turn.backup(self.V, rel, t)
+        self.draft("x（草稿）.md")
+        self.assertEqual(self.build()["asks"], [])
+
+    def test_order_after_close_before_name(self):
+        put_entities(self.V)
+        put_pending(self.V, close_item())
+        self.draft()
+        new = {"entity_id": "e-0f3e9a21", "name": "王宅", "confirmed": False, "question": "Q-name"}
+        got = self.build(synthesis_new=[new])["asks"]
+        self.assertEqual([a["kind"] for a in got], ["close", "draft", "name"])
+
+    def test_unbacked_tell(self):
+        self.assertIn("AI 產出有 2 份沒經程式放進來，這幾份退回拿不掉", self.build(unbacked=2)["tell"])
+        self.assertFalse(any("沒經程式" in x for x in self.build(unbacked=0)["tell"]))
 
 
 if __name__ == "__main__":

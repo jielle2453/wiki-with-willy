@@ -124,8 +124,20 @@ def _split(uri):
     return alias, rel
 
 
+LINK_DIR = "線上"  # link 條目沒給型別時卡放的夾（produce 第 5 點）
+DRAFT_SUFFIX = "（草稿）.md"
+
+
+def is_draft(uri):
+    """AI 產出裡的草稿（D-163）：檔名以（草稿）.md 結尾。todo 不列它製卡。"""
+    alias, rel = _split(uri)
+    return alias == "AI 產出" and rel.endswith(DRAFT_SUFFIX)
+
+
 def card_dir(entry):
-    """檔案索引/<別名>/<主位置相對夾>（保留別名照字面）。"""
+    """檔案索引/<別名>/<主位置相對夾>（保留別名照字面）；link 條目放 檔案索引/AI 產出/<型別>（沒給型別放 線上）。"""
+    if entry.get("kind") == "link":
+        return f"{CARDS_DIR}/AI 產出/{entry.get('type') or LINK_DIR}"
     alias, rel = _split(entry["locations"][0].get("uri", ""))
     parent = rel.rpartition("/")[0]
     return f"{CARDS_DIR}/{alias}" + (f"/{parent}" if parent else "")
@@ -140,7 +152,10 @@ def open_link(path):
 
 
 def entry_link(vault, sources, entry):
+    """開原檔：主位置的 file: 連結；link 條目是網址本身。"""
     from kb._lib import inventory
+    if entry.get("kind") == "link":
+        return entry["locations"][0].get("uri", "")
     path = inventory.path_of(vault, sources, entry["locations"][0].get("uri", ""))
     return open_link(path) if path is not None else ""
 
@@ -166,9 +181,18 @@ def filename_ok(name, entry_id, title, max_chars):
 
 def prefill_entities(entry, ent_data):
     """原檔主位置在知識庫實體夾裡（file://知識庫/<型別>/<名稱>/…）且 <名稱> 是登記的 active 實體（型別也對）→ [<名稱>]，
-    否則 []（D-043：位置決定掛哪個）。"""
+    否則 []（D-043：位置決定掛哪個）。link 條目取 output link 給的 --entity 裡還登記著的（produce 第 5 點）。"""
     from kb._lib import entities
     from kb._lib.inventory import KNOWLEDGE
+    if entry.get("kind") == "link":
+        if ent_data is None:
+            return []
+        out = []
+        for name in entry.get("entities") or []:
+            found, _hit = entities.find(ent_data, name)
+            if found is not None and found.get("status") == "active" and found["name"] not in out:
+                out.append(found["name"])
+        return out
     alias, rel = _split((entry.get("locations") or [{}])[0].get("uri", ""))
     parts = rel.split("/")
     if alias != KNOWLEDGE or len(parts) < 3 or ent_data is None:
@@ -188,6 +212,17 @@ def _entities_or_none(vault):
         return None
 
 
+NO_FP = "-"  # link 條目還沒有下載的檔、沒有指紋時卡上寫的（空值會被讀成清單）
+
+
+def current_fp(entry):
+    """卡上「指紋」該是的值：現行指紋的 sha256；link 條目還沒有指紋回 -。"""
+    fp = (entry.get("fingerprints") or [{}])[-1]
+    if not fp.get("sha256") and entry.get("kind") == "link":
+        return NO_FP
+    return fp.get("sha256", "")
+
+
 def header_for(vault, sources, entry, today=None, ent_data=False):
     """印給製卡者照抄的檔頭：機器欄位填好，製卡者欄位放（填）；實體 預填實體夾的那個、待補型別 空。
     today 是 YYYY-MM-DD，沒給用今天；ent_data 是 entities.load 的結果（沒給自己讀）。"""
@@ -198,11 +233,12 @@ def header_for(vault, sources, entry, today=None, ent_data=False):
         "編號": entry["id"],
         "出處": ORIGIN_TEXT.get(entry.get("origin"), entry.get("origin", "")),
         "原檔": [loc.get("uri", "") for loc in entry.get("locations") or []],
-        "指紋": fp.get("sha256", ""),
+        "指紋": current_fp(entry),
     }
     if fp.get("text_sha256"):
         front["內容指紋"] = fp["text_sha256"]
-    front.update({"標題": FILL, "卡型": FILL, "實體": prefill_entities(entry, ent_data), "待補型別": [],
+    title = safe_title(entry.get("title"), config.get(vault, "card_title_max_chars")) if entry.get("kind") == "link" else None
+    front.update({"標題": title or FILL, "卡型": FILL, "實體": prefill_entities(entry, ent_data), "待補型別": [],
                   "文件日期": DATE_FILL, "讀取": READ_FILL,
                   "製卡日期": today or date.today().isoformat(),
                   "範本版本": TEMPLATE_VERSION, "敏感資料種類": [], "開原檔": entry_link(vault, sources, entry)})
@@ -296,7 +332,7 @@ def problems(vault, rel, front, entries_by_id, sources=None, ent_data=False, pro
     out = []
     fp = (entry.get("fingerprints") or [{}])[-1]
     text_fp = front.get("內容指紋")
-    if front["指紋"] != fp.get("sha256") and not (text_fp and text_fp == fp.get("text_sha256")):
+    if front["指紋"] != current_fp(entry) and not (text_fp and text_fp == fp.get("text_sha256")):
         out.append(("fingerprint", "指紋不是現行的，重跑 kb cards todo 拿新檔頭"))
     want = ORIGIN_TEXT.get(entry.get("origin"), entry.get("origin"))
     if front["出處"] != want:
@@ -421,7 +457,9 @@ def _profile_or_default(vault):
 def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, deadline=None):
     """todo 的檔案分桶（new、stale、moved、duplicates、broken、orphans、unreadable、missing、skipped、unlinked、missing_types）：
     回 (out, groups, 設定檔)。light 給 unsorted：new、stale 只放 {"id"}、不印 header（份數照算，跟 todo 第一行同一個數）；
-    deadline（time.monotonic 的時刻）過了丟 TimeoutError（開場 hook 有時限）。不寫檔。"""
+    deadline（time.monotonic 的時刻）過了丟 TimeoutError（開場 hook 有時限）。不寫檔。
+    produce 第 5 點：AI 產出的（草稿）.md 不列；link 條目的 new 項 kind 是 link、path 是 None、多 url；
+    unbacked 是 new 裡掃描補登記的 AI 產出份數（給 tell）。"""
     import time
     from kb._lib import entities, extract, inventory, pending
 
@@ -446,7 +484,7 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
     groups, broken = _scan_groups(vault, deadline)
     out = {"new": [], "stale": [], "moved": [], "duplicates": [], "orphans": [], "unreadable": [], "missing": [],
            "skipped": dict({k: 0 for k in SKIPPED_READS}, skipped=0), "broken": list(broken), "pdf_restored": restored,
-           "unlinked": [], "missing_types": {}}
+           "unlinked": [], "missing_types": {}, "unbacked": 0}
     data, out["profile_missing"] = _profile_or_default(vault)
     out["profile"] = profile.card_types_for_todo(data)
     have_types = {entities.key(t["name"]) for t in data.get("types") or []}
@@ -455,13 +493,16 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
     def work_item(entry, card):
         if light:
             return {"id": entry["id"]}
-        path = inventory.path_of(vault, sources, entry["locations"][0]["uri"])
-        return {"id": entry["id"], "uri": entry["locations"][0]["uri"], "path": str(path) if path else None,
-                "origin": entry.get("origin"), "kind": extract.kind_by_name(entry["locations"][0]["uri"]),
-                "dir": card_dir(entry), "filename_pattern": f"<標題>-{short_id(entry['id'])}.md",
-                "existing_card": card["path"] if card else None,
-                "created": _created_date(entry),
-                "header": header_for(vault, sources, entry, today, ent_data)}
+        link = entry.get("kind") == "link"
+        path = None if link else inventory.path_of(vault, sources, entry["locations"][0]["uri"])
+        extra = {"url": entry["locations"][0]["uri"]} if link else {}  # link 條目沒有檔可轉，內容照網址讀
+        return dict({"id": entry["id"], "uri": entry["locations"][0]["uri"], "path": str(path) if path else None,
+                     "origin": entry.get("origin"),
+                     "kind": "link" if link else extract.kind_by_name(entry["locations"][0]["uri"]),
+                     "dir": card_dir(entry), "filename_pattern": f"<標題>-{short_id(entry['id'])}.md",
+                     "existing_card": card["path"] if card else None,
+                     "created": _created_date(entry),
+                     "header": header_for(vault, sources, entry, today, ent_data)}, **extra)
 
     def broken_item(entry, card, reason):
         """編號對得到 active 條目的壞卡：多帶 id 與 header，製卡者照它整張寫回 path（審閱後補）。"""
@@ -537,8 +578,12 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
             out["unreadable"].append({"id": eid, "uri": entry["locations"][0]["uri"], "reason": item.get("reason"),
                                       "pending_id": item["id"]})
             continue
+        if is_draft(entry["locations"][0].get("uri", "")):
+            continue  # 草稿還在改，定稿才製卡（produce 第 5 點）
         if entry.get("read") == "ok" and eid not in carded and eid not in unreadable_skip:
             out["new"].append(work_item(entry, None))
+            if entry.get("unbacked"):
+                out["unbacked"] += 1
     return out, groups, data
 
 
@@ -599,7 +644,7 @@ def card_state(vault, entry, card):
     front = card["front"]
     fp = (entry.get("fingerprints") or [{}])[-1]
     text_fp = front.get("內容指紋")
-    if front.get("指紋") != fp.get("sha256") and not (text_fp and text_fp == fp.get("text_sha256")):
+    if front.get("指紋") != current_fp(entry) and not (text_fp and text_fp == fp.get("text_sha256")):
         return "changed"
     return None
 

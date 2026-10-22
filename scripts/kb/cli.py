@@ -30,6 +30,9 @@ COMMANDS = {
     "lookup": ("kb.lookup_cli", "查一個實體：只讀，一次給齊綜合卡、檔案卡、口述、裁示、推算、日程與還沒整理的份數"),
     "finding": ("kb.finding_cli", "推算：add 記一筆（--replaces 改舊的），withdraw 收回，list 列出"),
     "tally": ("kb.tally_cli", "加總：只讀，收每一筆（卡、數字、位置），回逐筆表、筆數、合計、平均"),
+    "office": ("kb.office_cli", "做文件的工具：check 看這台有什麼，setup 裝工具，run 跑工作區的腳本，copy 拿原檔副本，"
+                                "unpack／pack 解開與打包，pdf 轉 PDF，recalc 重算 Excel，render 轉每頁的圖"),
+    "output": ("kb.output_cli", "成品：save 把做好的檔放進 AI 產出（登記、退回拿得掉），link 登記線上文件，drop-draft 收掉草稿"),
 }
 
 

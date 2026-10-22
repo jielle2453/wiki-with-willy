@@ -295,5 +295,81 @@ class SynthesisCardNotInventoried(unittest.TestCase):
         self.assertIn("file://知識庫/案子/王宅/子夾/x.md", self.uris())
 
 
+class Produce(unittest.TestCase):
+    """produce 第 4 點：選填欄 kind link、derived_from、unbacked；AI 產出裡沒登記的新檔掃描時照 AI 產出登記、標 unbacked；
+    link 條目不走訪、不算不見，folders exclude／remove 也不動它。"""
+
+    def setUp(self):
+        from tests import _cards
+        from tests.test_lib_inventory_scan import make_inv_vault
+        self.tmp, self.V, self.raw = make_inv_vault()
+        self.scan_apply = _cards.scan_apply
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def entry(self, uri):
+        return inventory.entry_for(self.V, uri)
+
+    def test_unlisted_file_in_output_is_unbacked(self):
+        (self.V / "AI 產出" / "報價").mkdir()
+        (self.V / "AI 產出" / "報價" / "a.xlsx").write_bytes(b"PK fake")
+        self.scan_apply(self.V)
+        e = self.entry("file://AI 產出/報價/a.xlsx")
+        self.assertEqual((e["origin"], e["status"], e.get("unbacked")), ("ai_output", "active", True))
+        raw = self.entry("file://客戶案件/大安陳/會議紀錄_1.docx")
+        self.assertNotIn("unbacked", raw)
+
+    def test_registered_output_not_unbacked_and_derived_from_kept(self):
+        t = turn.start(self.V, SID, "做報價")["turn"]
+        create_in_turn(self.V, "AI 產出/b.xlsx", t, "x")
+        e = inventory.register_output(self.V, "AI 產出/b.xlsx", t, derived_from="f-12345678")
+        self.assertEqual(e["derived_from"], "f-12345678")
+        self.scan_apply(self.V)
+        got = self.entry("file://AI 產出/b.xlsx")
+        self.assertEqual(got["id"], e["id"])
+        self.assertNotIn("unbacked", got)
+        self.assertEqual(got["derived_from"], "f-12345678")
+
+    def test_link_entry_survives_scan_and_reconcile(self):
+        from kb._lib import sources as sources_lib
+        t = turn.start(self.V, SID, "做線上文件")["turn"]
+        url = "https://claude.ai/artifact/abc"
+        e = inventory.register_link(self.V, url, t, title="內湖李進度報告", type_="報告", entities=["內湖李"],
+                                    basis=["f-12345678"])
+        self.assertEqual((e["kind"], e["origin"], e["status"]), ("link", "ai_output", "active"))
+        self.assertEqual(e["locations"], [{"uri": url}])
+        self.assertEqual(e["fingerprints"], [])
+        self.assertEqual((e["title"], e["type"], e["entities"], e["basis"]),
+                         ("內湖李進度報告", "報告", ["內湖李"], ["f-12345678"]))
+        self.scan_apply(self.V)
+        self.assertEqual(self.entry(url)["status"], "active")
+        inventory.reconcile(self.V, sources_lib.load(self.V), t)
+        self.assertEqual(self.entry(url)["status"], "active")
+        self.assertEqual(self.entry(url)["locations"], [{"uri": url}])
+
+    def test_attach_location_to_link(self):
+        t = turn.start(self.V, SID, "也給我 Word")["turn"]
+        url = "https://claude.ai/artifact/abc"
+        e = inventory.register_link(self.V, url, t, title="報告")
+        create_in_turn(self.V, "AI 產出/報告.docx", t, "docx")
+        got = inventory.attach_location(self.V, e["id"], "AI 產出/報告.docx", t)
+        self.assertEqual([loc["uri"] for loc in got["locations"]], [url, "file://AI 產出/報告.docx"])
+        self.assertEqual(len(got["fingerprints"]), 1)
+        self.scan_apply(self.V)
+        again = self.entry(url)
+        self.assertEqual((again["id"], again["status"]), (e["id"], "active"))
+        self.assertEqual(len(again["locations"]), 2)
+        self.assertEqual(len([x for x in inventory.load(self.V)["entries"]
+                              if any(l["uri"] == "file://AI 產出/報告.docx" for l in x["locations"])]), 1)
+
+    def test_attach_location_refuses_non_link(self):
+        t = turn.start(self.V, SID, "x")["turn"]
+        create_in_turn(self.V, "AI 產出/c.md", t, "x")
+        e = inventory.register_output(self.V, "AI 產出/c.md", t)
+        with self.assertRaises(KeyError):
+            inventory.attach_location(self.V, e["id"], "AI 產出/c.md", t)
+
+
 if __name__ == "__main__":
     unittest.main()

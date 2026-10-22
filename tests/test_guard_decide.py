@@ -9,6 +9,9 @@ from kb import guard  # noqa: E402
 from kb._lib.paths import normalize as paths_normalize  # noqa: E402
 
 
+KB_WORDS = {"kb", "office", "copy", "output", "save"}
+
+
 class DecideBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -33,7 +36,8 @@ class DecideBase(unittest.TestCase):
             if decision == "deny":
                 # 理由句全中文、一句、沒有英文代碼（「AI 產出」是資料夾名，准）
                 self.assertTrue(d.reason, d)
-                self.assertEqual(set(re.findall(r"[A-Za-z_]+", d.reason)) - {"AI"}, set(), d.reason)
+                # produce：指到 kb office copy、kb output save 的指令名准（理由要說可以怎麼做）
+                self.assertEqual(set(re.findall(r"[A-Za-z_]+", d.reason)) - {"AI", "PDF"} - KB_WORDS, set(), d.reason)
                 self.assertEqual(len(d.ledger_rows), 1, d)
             if decision == "allow":
                 self.assertEqual(d.ledger_rows, [], d)
@@ -193,14 +197,14 @@ class Shell(DecideBase):
         v = str(self.V).replace("\\", "/")
         d = self.expect("Bash", f"echo hi > {v}/案子/信義王/信義王.md", "deny", "Z1", "shell_write")
         self.assertIn("用指令改的退不回來", d.reason)
-        self.expect("Bash", f'echo hi > "{v}/AI 產出/x.md"', "deny", "Z3", "shell_write")  # 有空白的路徑要加引號，shell 也是這樣
+        self.expect("Bash", f'echo hi > "{v}/AI 產出/x.md"', "deny", "Z3", "output_shell")  # produce：AI 產出讀寫都擋
         self.expect("Bash", f'sed -i s/a/b/ "{v}/檔案索引/x.md"', "deny", "Z5", "shell_write")
         self.expect("PowerShell", f'Set-Content "{v}/檔案索引/x.md" x', "deny", "Z5", "shell_write")
 
     def test_shell_read_of_backed_up_zones_still_pass(self):
         v = str(self.V).replace("\\", "/")
         self.expect("Bash", f"cat {v}/案子/信義王/信義王.md", "pass")
-        self.expect("Bash", f'cat "{v}/AI 產出/x.md"', "pass")
+        self.expect("Bash", f'cat "{v}/AI 產出/x.md"', "deny", "Z3", "output_shell")  # produce：讀 AI 產出用 Read
         self.expect("Bash", f'cat "{v}/檔案索引/x.md"', "pass")
 
     def test_write_without_parsable_path_deny_unparsed(self):
@@ -349,13 +353,13 @@ class Round1(DecideBase):
 
     def test_28_b3_non_path_tokens(self):
         v = str(self.V).replace("\\", "/")
-        self.expect("Bash", f'sed -i s/a/b/ "{v}/AI 產出/x.md"', "deny", "Z3", "shell_write")  # 事務層：由 pass 改 deny
-        self.expect("Bash", f'echo 2026/10/12 > "{v}/AI 產出/x.md"', "deny", "Z3", "shell_write")
+        self.expect("Bash", f'sed -i s/a/b/ "{v}/AI 產出/x.md"', "deny", "Z3", "output_shell")  # produce：由 shell_write 改
+        self.expect("Bash", f'echo 2026/10/12 > "{v}/AI 產出/x.md"', "deny", "Z3", "output_shell")
         self.expect("Bash", f"sed -i s/a/b/ {self.raw}/客戶案件/a.txt", "deny", "Z9", "readonly_source")
 
     def test_30_r1_z9_reason(self):
         d = self.decide("Write", self.raw / "客戶案件" / "a.txt")
-        self.assertEqual(d.reason, "客戶原檔只讀。要改內容我用檔案工具另存一份")
+        self.assertEqual(d.reason, "客戶原檔只讀；要改先用 kb office copy 拿一份副本")  # produce 改
 
 
 

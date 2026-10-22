@@ -10,6 +10,7 @@ add／remove：note 在對話裡改一節的一列（profile.edited）→ render
 md 有手改未套用時一律拒絕、不動檔、給結果清單（D-110 補）；偏好的條數與字數上限在 edited 擋（D-137）。
 type rename／merge／remove：會搬夾的型別操作（D-139、D-143）；--check 只算影響、回問題與結果清單，不寫任何檔；
 不帶 --check 才做，中途出錯照 entities._Undo 還原，夾的動作做完才記進資料夾帳。
+範本（produce 第 6 點，D-167）：add 範本 文件=<名> 底=<卡編號或卡標題> 先把底換成清冊 active 的卡編號，找不到拒絕。
 鎖 profile.json 30 秒。終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
 import argparse
@@ -42,7 +43,7 @@ def add_arguments(sub):
     ad = subs.add_parser("add", help="加或改一列", description="加一列；主鍵已有就改那一列。寫前先備份。")
     rm = subs.add_parser("remove", help="拿掉一列", description="照主鍵拿掉一列。寫前先備份。")
     for p in (ad, rm):
-        p.add_argument("section", help="節：型別、卡型、不整理與敏感、每類段落、關於你、偏好")
+        p.add_argument("section", help="節：型別、卡型、不整理與敏感、每類段落、關於你、偏好、範本")
         p.add_argument("fields", nargs="*", help="欄=值（例：偏好=回答先講結論）")
     ty = subs.add_parser("type", help="型別改名、合併、拿掉", description="會搬資料夾的型別操作；先 --check 看影響。")
     tys = ty.add_subparsers(dest="type_command", metavar="<動作>", required=True)
@@ -87,6 +88,9 @@ def _detail_lines(st):
     lines += [f"- 關於你 {n} 改了" for n in d["about"]["changed"]]
     lines += [f"- 偏好 多了 {n}" for n in d["preferences"]["added"]]
     lines += [f"- 偏好 少了 {n}" for n in d["preferences"]["removed"]]
+    lines += [f"- 範本 多了 {n}" for n in d["templates"]["added"]]
+    lines += [f"- 範本 少了 {n}" for n in d["templates"]["removed"]]
+    lines += [f"- 範本 {n} 換了底" for n in d["templates"]["changed"]]
     return lines
 
 
@@ -321,12 +325,15 @@ def _show(vault, as_json):
     data = st["data"]
     lim = _limits(vault)
     if as_json:
-        print(json.dumps({"sections": profile.sections_schema(data, lim["preference_max"], lim["preference_max_chars"]),
+        titles = profile.card_titles(vault, data)
+        print(json.dumps({"sections": profile.sections_schema(data, lim["preference_max"], lim["preference_max_chars"],
+                                                              titles),
                           "pending_edit": _pending_edit(st)}, ensure_ascii=False))
         return 0
     lines = []
+    titles = profile.card_titles(vault, data)
     for number, (num, title, head) in enumerate(SECTION_HEADS, 1):
-        rows = profile.flat_rows(data, number)
+        rows = profile.flat_rows(data, number, titles)
         cols = (("序號",) if number == 6 else ()) + head
         lines += [f"## {num}、{title}", profile._row(cols), "|" + "---|" * len(cols)]
         lines += [profile._row([r.get(c, "") for c in cols]) for r in rows]
@@ -369,14 +376,19 @@ def _edit_locked(vault, op, args, as_json, conversation):
     fields = _fields(args.fields)
     old = st["data"]
     lim = _limits(vault)
+    if section == "範本" and op == "add" and str(fields.get("底") or "").strip():
+        fields["底"] = _template_card(vault, fields["底"].strip())
     try:
         sections, res = profile.edited(old, section, op, fields, **lim)
         if not res["changed"]:
             _out(as_json, [res["message"]], {"applied": False, "section": section, "op": op, "row": res["row"],
                                             "message": res["message"], "created_dirs": [], "unskipped": 0})
             return 0
-        new = profile.parse_md(profile.render_text(dict(old, **sections)), config.get(vault, "card_title_max_chars"),
-                               known_types=[t["name"] for t in old["types"]], **lim)
+        merged = dict(old, **sections)
+        new = profile.parse_md(profile.render_text(merged, profile.card_titles(vault, merged)),
+                               config.get(vault, "card_title_max_chars"),
+                               known_types=[t["name"] for t in old["types"]], **lim,
+                               resolve=profile.template_resolver(vault, merged))
     except profile.ProfileError as e:
         raise Refused(e.message) from e
     turn_id = turn.current(vault)["turn"]
@@ -395,6 +407,19 @@ def _edit_locked(vault, op, args, as_json, conversation):
     _out(as_json, [message] + about_lines, {"applied": True, "section": section, "op": op, "row": res["row"],
                                             "message": message, "created_dirs": created, "unskipped": len(unskipped)})
     return 0
+
+
+NO_CARD = "找不到這張卡：{base}"
+
+
+def _template_card(vault, base):
+    """kb profile add 範本 的「底」：卡編號或卡標題 → 清冊 active、寫好卡的那張的編號（D-167）；找不到、同名多張丟 Refused。"""
+    resolve = profile.template_resolver(vault)
+    try:
+        return resolve("", base, 0)
+    except profile.ProfileError as e:
+        line = NO_CARD.format(base=base) if "找不到" in e.message else e.message.split("的以哪份為底", 1)[-1]
+        raise Refused(line) from e
 
 
 class _written:

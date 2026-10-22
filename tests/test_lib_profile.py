@@ -55,8 +55,8 @@ def message(text, **kw):
 class Defaults(unittest.TestCase):
     def test_shape(self):
         d = profile.defaults(DAY)
-        self.assertEqual((d["schema_version"], d["applied"], d["md_sha256"], d["types"]), (3, None, None, []))
-        self.assertEqual((d["synthesis_sections"], d["about"], d["preferences"]), ([], [], []))
+        self.assertEqual((d["schema_version"], d["applied"], d["md_sha256"], d["types"]), (4, None, None, []))
+        self.assertEqual((d["synthesis_sections"], d["about"], d["preferences"], d["templates"]), ([], [], [], []))
         self.assertEqual([c["name"] for c in d["card_types"]],
                          ["報價", "合約", "會議紀錄", "型錄", "進度表", "範本", "說明", "其他"])
         for c in d["card_types"]:
@@ -118,7 +118,7 @@ class Parse(unittest.TestCase):
     def test_three_sections_empty_is_ok(self):
         self.assertEqual(profile.parse_md(md_with(cards=[], exclusions=[])),
                          {"types": [], "card_types": [], "exclusions": [], "synthesis_sections": [], "about": [],
-                          "preferences": []})
+                          "preferences": [], "templates": []})
 
     def test_missing_section(self):
         text = md_with().replace("## 二、卡型與段落", "## 卡型與段落")
@@ -513,7 +513,7 @@ class SchemaOneMigration(unittest.TestCase):
         p = self.V / ".system" / "profile.json"
         before = p.read_bytes()
         data = profile.load(self.V)
-        self.assertEqual(data["schema_version"], 3)
+        self.assertEqual(data["schema_version"], 4)
         self.assertEqual([(s["type"], [x["name"] for x in s["sections"]], s["source"]) for s in data["synthesis_sections"]],
                          [("案子", ["時程", "金額"], "inferred")])
         self.assertEqual((data["about"], data["preferences"]), ([], []))
@@ -620,7 +620,7 @@ class SchemaTwoLoad(unittest.TestCase):
     def test_load_adds_preferences_in_memory(self):
         before = (self.V / ".system" / "profile.json").read_bytes()
         data = profile.load(self.V)
-        self.assertEqual((data["schema_version"], data["preferences"]), (3, []))
+        self.assertEqual((data["schema_version"], data["preferences"], data["templates"]), (4, [], []))
         self.assertEqual((self.V / ".system" / "profile.json").read_bytes(), before)
         self.assertEqual(profile.stored_schema(self.V), 2)
         self.assertEqual(profile.status(self.V)["state"], "ok")
@@ -732,7 +732,7 @@ class Edited(unittest.TestCase):
         self.assertEqual((got3["about"], res["message"]), ([], "已拿掉關於你：林美華"))
 
     def test_bad_section_and_column(self):
-        self.assertEqual(self.err("偏好啦", "add", 偏好="x"), "沒有「偏好啦」這一節；節是 型別、卡型、不整理與敏感、每類段落、關於你、偏好")
+        self.assertEqual(self.err("偏好啦", "add", 偏好="x"), "沒有「偏好啦」這一節；節是 型別、卡型、不整理與敏感、每類段落、關於你、偏好、範本")
         self.assertEqual(self.err("偏好", "add", 名稱="x"), "「偏好」這一節沒有「名稱」欄；欄是 偏好")
         self.assertEqual(self.err("卡型", "remove", 提示="x"), "「卡型」這一節沒有「提示」欄；欄是 卡型、段落")
 
@@ -744,7 +744,9 @@ class SectionsSchema(unittest.TestCase):
         d["preferences"] = [pref("回答先講結論")]
         got = profile.sections_schema(d)
         self.assertEqual([s["name"] for s in got], list(profile.SECTION_NAMES))
-        types, cards, ex, synth, about, prefs = got
+        types, cards, ex, synth, about, prefs, templates = got
+        self.assertEqual((templates["key"], templates["add"], templates["remove"]),
+                         (["文件"], "kb profile add 範本 文件={文件} 底={底}", "kb profile remove 範本 文件={文件}"))
         self.assertEqual((types["number"], types["key"], types["remove"]), (1, ["名稱"], None))
         self.assertEqual(types["columns"][1], {"name": "大類", "choices": ["對象", "事", "物", "主題"]})
         self.assertTrue(types["columns"][0]["rule"].startswith("知識庫第一層的資料夾名"))
@@ -764,6 +766,85 @@ class SectionsSchema(unittest.TestCase):
                                  "columns": [{"name": "偏好", "rule": "一句白話，不含 \" $ ` \\ 這四種字元"}],
                                  "rows": [{"序號": 1, "偏好": "回答先講結論", "來源": "糾正", "日期": DAY}],
                                  "add": "kb profile add 偏好 偏好={偏好}", "remove": "kb profile remove 偏好 序號={序號}"})
+
+
+
+SECTION7 = ("\n## 七、做文件用的範本\n" + profile.PROMPTS[6] + "\n\n| 文件 | 以哪份為底 | 來源 | 日期 |\n|---|---|---|---|\n")
+
+
+def tpl(doc, card, source="corrected", date=DAY):
+    return {"doc": doc, "card": card, "source": source, "date": date}
+
+
+class SchemaFour(unittest.TestCase):
+    """produce 第 6 點（D-167）：第七節做文件用的範本，JSON 存卡編號、md 顯示卡標題；schema 3 在記憶體補空清單。"""
+
+    def test_render_shows_title_and_parse_back_id(self):
+        d = profile.defaults(DAY)
+        d["templates"] = [tpl("報價單", "f-1a2b3c4d")]
+        text = profile.render_text(d, {"f-1a2b3c4d": "報價單範本"})
+        self.assertIn(SECTION7 + "| 報價單 | 報價單範本 | 糾正 | 2026-10-19 |\n", text)
+        self.assertEqual(profile.parse_md(text, resolve=lambda doc, base, m: {"報價單範本": "f-1a2b3c4d"}[base])["templates"],
+                         [tpl("報價單", "f-1a2b3c4d")])
+        self.assertIn("| 報價單 | f-1a2b3c4d |", profile.render_text(d), "查不到標題顯示編號")
+        self.assertEqual(profile.parse_md(profile.render_text(d))["templates"], [tpl("報價單", "f-1a2b3c4d")])
+
+    def test_schema3_md_without_section_seven(self):
+        text = (PROFILE / "schema3.md").read_text(encoding="utf-8")
+        self.assertEqual(message(text), "少了第 7 節（## 七、…）")
+        self.assertIsNone(profile.parse_md(text, legacy=3)["templates"])
+
+    def test_template_errors(self):
+        base = profile.render_text(profile.defaults(DAY))
+        cases = [
+            (["|  | f-1a2b3c4d |"], "第 7 節第 1 列的文件是空的"),
+            (["| 報價單 |  |"], "第 7 節第 1 列的以哪份為底是空的"),
+            (["| 報價$單 | f-1a2b3c4d |"], '第 7 節第 1 列的文件不能有 " $ ` \\ 這四種字元'),
+            (["| 報價單 | f-1a2b3c4d |", "| 報價單 | f-2a2b3c4d |"], "第 7 節第 2 列跟第 1 列重複（報價單）"),
+            (["| 報價單 | 不知道哪張 |"], "第 7 節第 1 列的以哪份為底找不到這張卡：不知道哪張"),
+            (["| 報價單 |"], "第 7 節第 1 列欄數不對（要 2 欄或 4 欄）"),
+        ]
+        for rows, want in cases:
+            with self.subTest(want=want):
+                self.assertEqual(message(with_rows(base, "七", rows)), want)
+
+    def test_diff_merge_summary(self):
+        old = profile.defaults(DAY)
+        old["templates"] = [tpl("報價單", "f-1a2b3c4d")]
+        new = profile.parse_md(with_rows(profile.render_text(old), "七", ["| 合約 | f-99999999 |"]).replace(
+            "| 報價單 | f-1a2b3c4d |", "| 報價單 | f-2a2b3c4d |"))
+        d = profile.diff(old, new)
+        self.assertEqual(d["templates"], {"added": ["合約"], "removed": [], "changed": ["報價單"]})
+        self.assertEqual(profile.summary_short(d), "範本 +1 ~1")
+        merged = profile.merge(old, new, today="2026-10-22")
+        self.assertEqual(merged["templates"], [tpl("合約", "f-99999999", "confirmed", "2026-10-22"),
+                                               tpl("報價單", "f-2a2b3c4d", "confirmed", "2026-10-22")])
+
+    def test_edited_add_change_remove(self):
+        d = profile.defaults(DAY)
+        out, res = profile.edited(d, "範本", "add", {"文件": "報價單", "底": "f-1a2b3c4d"}, today=DAY)
+        self.assertEqual((out["templates"], res["message"]), ([tpl("報價單", "f-1a2b3c4d")], "已加範本：報價單"))
+        d["templates"] = out["templates"]
+        self.assertEqual(profile.edited(d, "範本", "add", {"文件": "報價單", "底": "f-1a2b3c4d"})[1]["changed"], False)
+        out, res = profile.edited(d, "範本", "add", {"文件": "報價單", "底": "f-2a2b3c4d"}, today="2026-10-22")
+        self.assertEqual((out["templates"], res["message"]), ([tpl("報價單", "f-2a2b3c4d", date="2026-10-22")], "已改範本：報價單"))
+        out, res = profile.edited(d, "範本", "remove", {"文件": "報價單"})
+        self.assertEqual((out["templates"], res["message"]), ([], "已拿掉範本：報價單"))
+        with self.assertRaises(profile.ProfileError) as c:
+            profile.edited(d, "範本", "add", {"文件": "合約"})
+        self.assertEqual(c.exception.message, "少了「底」；這一節要給 文件、底")
+
+    def test_load_schema3_adds_templates_in_memory(self):
+        tmp, V, _raw = make_inv_vault()
+        try:
+            shutil.copy2(PROFILE / "schema3.json", V / ".system" / "profile.json")
+            shutil.copy2(PROFILE / "schema3.md", V / "系統" / "客戶設定檔.md")
+            data = profile.load(V)
+            self.assertEqual((data["schema_version"], data["templates"]), (4, []))
+            self.assertEqual(profile.stored_schema(V), 3)
+            self.assertEqual(profile.status(V)["state"], "ok")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

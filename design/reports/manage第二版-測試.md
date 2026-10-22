@@ -578,3 +578,22 @@ manage 該觸發從第二輪的 83／90（92.2%）升到 89／90，兩個擺盪�
 1. **發行前要修**：結論 1（不同回合的備份殘留）與結論 2（排除那一句免換）；順手修子代理 2（終端機不記回合）。這三件修完，我只重測：不同回合 grep 卡標題／卡編號 0、排除被擋換回合 purge 兩句都不換、終端機跑 purge 不免換無關回合。
 2. 子代理 4～8：記 backlog；5（型別錯噴 traceback）建議順手包 `try/except`。
 3. 確認第 7 步若照 `manage2-補確認-任務.md` 做，排除與 purge 若落在不同回合（綜合卡要先重寫、又換了 session），就會踩到結論 1、2；修完前不要用那個流程判過。
+
+---
+
+# 第九輪（重測 5c0f1b0）
+
+日期：2026-10-23
+對象：worktree 同一分支，commit `5c0f1b0`（樹乾淨）。範圍：a2 列的三件（不同回合 grep、排除被擋換回合 purge 兩句的「問」、終端機跑 purge）。沒改任何程式，沒重跑 run_eval，沒再派 security-review（只動 `purge.py` 53 行與 `folders.py` 1 行）。
+
+## 結論（第九輪）：**三件都過，可以發行。**
+
+- 單元測試 `python -m unittest discover tests`：**exit 0**（Ran 2022，OK，skipped=1）。前幾輪 19 支腳本輸出與上一輪逐行相同，沒有退步。
+
+| 項目 | 結果 | 證據（已重現（我）） |
+|---|---|---|
+| 1. 排除與 purge 不同回合，grep 卡標題、卡編號 0 | 過 | 回合 A 排除（被擋）、回合 B 重寫綜合卡並 purge：全庫（含 `.system/versions/*/files/`）grep 卡標題 `[]`、卡編號 `[]`、機密字串 `[]`；`.system/purge-pending.json` 本身刪掉。purge 回合的備份還在，但內容已洗過：`versions/<B>/files/.system/purge-pending.json` 是 `{"schema_version": 1, "items": {}}`，`versions/<B>/files/.system/sources.json` 的排除列只剩 `{'purge': 'pending'}`（`purge_ids`、`purge_names`、標題都拿掉）。「排除→被擋的 purge→重寫→purge」三個回合的版本也一樣乾淨。夾路徑除 `sources.json` 外只剩排除、purge 那幾句自己的問與工作日誌（設計如此）。 |
+| 2. 排除被擋、換回合才 purge，兩句的「問」都留著 | 過 | 句子的路徑後面接空白與標點。排除那一句（`請排除 客戶案件/私人 ，我不想讓你看到`）與 purge 那一句（`好了，請清 客戶案件/私人 。`）在工作日誌 `prompt`、`.system/turns/sid-T*.json` 的 `prompt_head`、`.system/versions/<回合>/turn.json` 的 `prompt_head` 三處都沒被換。三回合版（排除、先被擋的 purge、重寫後 purge）三句都留著。沒有被過度免換：另一個也提到標題＋路徑、但不是排除／purge 那一句的回合，三處都換成「（已排除）」。 |
+| 3. 終端機跑 purge，不把最近一個對話回合當成免換 | 過 | 最近一個已完成的對話回合說「你剛說王家心情 的資料在 客戶案件/私人 ，這對嗎」，之後在終端機（沒有開著的回合）跑 `exclude`、`purge`：該回合的 `prompt` 與 `turns/sid-LAST.json` 的 `prompt_head` 都換成「（已排除）」，全庫 grep 卡標題 `[]`、卡編號 `[]`。對照：在對話裡（開著的回合）跑，該回合的問留著，更早那個無關回合照換。 |
+
+仍開著、不擋發行（a2 已記 B-420 與先前項目）：路徑遮罩左邊沒有邊界、`purge-pending.json` 型別錯會噴 traceback、`turns/*.json` 的鎖只有 purge 這邊拿、推算 id 先拿掉才記、舊版備份裡只有 `c-` 編號的綜合卡；隨身碟的 `trash` 只用替身驗過；B-414、B-410。

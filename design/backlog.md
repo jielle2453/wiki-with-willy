@@ -139,7 +139,7 @@
 | B-105 | 2026-10-11 | deferred | 索引過大拆年份 | kb reindex |
 | B-106 | 2026-10-11 | deferred | 客戶設定檔加了格式調整後，舊卡補欄位 | lint 檢查項、kb batch 標重做 |
 | B-107 | 2026-10-11 | deferred | API 製卡執行器：到時才加 config 鍵與 kb/executors/，規則檔不動（D-053） | kb/executors/ |
-| B-108 | 2026-10-11 | deferred | 額度與時間估算更準、建置分天 | kb inventory、build-cards |
+| B-108 | 2026-10-11 | deferred | 額度與時間估算更準、建置分天（時間照 spike 改、用量一句話、不另設計分天，D-199；剩「用量講得更準」等讀得到方案用量再說） | kb inventory、build-cards |
 | B-109 | 2026-10-11 | deferred | 回答末尾建議問題、交付速查卡 | rules/next-step.md、build-finish |
 | B-110 | 2026-10-11 | deferred | 守門誤擋率、失敗訊息白話化。骨架與來源登記第八輪起已知誤擋：整條指令被判寫入就全部路徑套寫入欄，`grep -r X . \| tee /tmp/h`、`cat CLAUDE.md > /tmp/c.md`、`curl … > /tmp/x`（網址當路徑）、`tar czf` 在總資料夾裡都被擋；憑證走訪的「範圍太大」；`ls C:/` 沒排除夾時被擋 | guard.py、rules/core.md |
 | B-111 | 2026-10-11 | deferred | Mac | _lib/paths、envcheck |

@@ -63,6 +63,12 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - **只整理一部分（例句 3）**：`dispatch --source <別名>` 只從那個來源的項目切批；synthesis 不受 `--source` 限制但照樣等 cards 都做完。
 - **估時（D-199）**：`plan.py` 的 `BATCH_SECONDS` 拿掉，改讀 `card_seconds_per_file` 與 `card_batch_overhead_seconds`：秒數 = 份數 × 每份秒數 + 準備秒數；不到 60 秒說「一兩分鐘」。
 - **B-412**：開場有「還有 N 份沒整理完」（門檻內）時 AI 沒照 D-161 直接整理。開場指示照 D-196 改寫（見要做的事 8）；實作先用 `claude -p` 在測試知識庫重現（19 份沒整理、說「你好」跑 5 次），找出原因再改，改完同法再跑 5 次（驗收 14）。
+- **跟密碼與守門、manage 第二版的交界**（a2 10-22 看過 spec 後提，兩題發行後都在 main）：
+  1. **加密檔**：背景子代理不能問客戶，`convert` 一律不帶 `--password`、`--saved`；`dispatch` 切批時排除清冊或待處理已記成讀不到（含有密碼）的條目，留給主對話照 `plan`／`asks`（`unlock_same_kind` 等）問客戶。第一次遇到、還不知道有密碼的，子代理 `convert` 失敗照記讀不到、回報沒做成，下次 dispatch 就排除。
+  2. **密碼顯示過的回合（`secret_shown`）**：`refresh_changed` 與 `job_result` 照 `agent_turn` 找到的回合，回合檔記了 `secret_shown` 就不寫結果（跟 `stop.py` 同一條規矩），只更新改了。
+  3. **守門的順序**：`updatedInput` 只加在 `scripts/kb/guard.py` 的判斷已經放行、而且是單一 kb 呼叫的指令上；排在密碼與守門加的 `onFailure: block` 與「shell 工具內部出錯也擋」之後；插進去的值照 `plan.py` 那套加引號（`shell_arg`）；PowerShell 裡有彎引號的 kb 指令照 manage 第二版擋下，不改寫。`is_single_plugin_call` 照它發行後的介面（多 `tool` 參數）。
+  4. **plan 的順序**：manage 第二版排除時的兩步（`purge: "pending"` 先重寫綜合卡、再 `folders purge`）排最前面、不算門檻；`dispatch` 排在它們後面，而且不把 `purge: "pending"` 那夾的條目切進批次。
+  5. **不讀的夾**：子代理用 Glob、Read 走訪來源會被守門擋（manage 第二版因此加了 `kb folders find`）；card-maker 的 `tools` 本來就沒有 Glob、Grep，清單一律由 `cards batch` 給，不自己找檔。
 - **舊程式對照**：舊 `plugin/agents/card-maker.md` 的回報只給數量與檔名、不回報內容（照用：D-022），一次一個指令寫完整路徑（照用）；它自己改設定檔、試讀寫推測（不要：設定檔只經 kb，抽樣歸第 (5) 題）。
 
 ## 要做的事
@@ -153,6 +159,7 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 
 1. [ ] `cards todo --json` 的 `plan`：有新檔時是 `[sync?, dispatch]`；45 份時 `asks` 第一題是先問題（句子一字不差）、`then` 是 `[sync, dispatch]`；10 份時 `announce` 一字不差、秒數照 config 算。
 2. [ ] `cards dispatch --json`（回合在對話裡）：45 份 → 3 批（20、20、5）、`prompt` 含 `cards batch <批次>` 與完整前綴；再跑一次 → 不建新批（都被認領）、`running` 3；終端機（current.json 沒 session_id）跑 → 拒絕一字不差。
+2b. [ ] 交界：清冊記成讀不到（有密碼）的條目不進批次；`purge: "pending"` 那夾的條目不進批次、`plan` 裡 purge 兩步排在 `dispatch` 前面；job 回合記了 `secret_shown` 時 `refresh_changed` 與 `job_result` 不寫結果。
 3. [ ] 認領：把一批改 `done` 再 dispatch → 只從沒卡、沒認領的切；把批次 `created` 改成 31 分鐘前 → 當放掉、項目回來；換一個 session 的 current 跑 → 舊 session 的 open 批次不算。
 4. [ ] 順序：還有 cards 時不建 synthesis 批次；cards 全做完（替身寫卡）後才建，大小照 `synthesis_batch_size`；`--source` 只切那個來源。
 5. [ ] 大改動：job 回合的 `ai_synthesis` 已 9 張、這次 synthesis_stale 3 張 → 不派、回 `approval`（`--turn` 是 job 回合）；`turn approve --turn <回合>` 後再 dispatch → 派。
@@ -211,3 +218,4 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-22：停止——選 A，寫 D-200，改 D-156。I-116 grep：「按停止」在 `scripts/kb/_lib/plan.py` 的 `ANNOUNCE` 與模組說明、`hooks/turn.py` 說明、`scripts/kb/cards.py` 註解、`skills/ingest/references/commands.md` 的 announce 說明，寫 spec 時一起列進可以動。
 - 2026-10-22：整理「本題釐清」六點（規則注入、權限、回合與日誌、一個或兩個子代理、舊程式對照、B-412）。
 - 2026-10-22：寫完整 spec 草稿（使用者說寫 spec）。查官方文件補兩件：Bash 子行程沒有 session／agent 的環境變數，子代理身分只能從 hook 拿；PreToolUse 的 `updatedInput` 可改 Bash 指令並同時 allow。據此定回合歸屬的做法（job、agents 對照、守門插 `--turn`）、認領防重做、日誌補記、停、大改動、估時；一個子代理三種工作；例句 5、9 照 spike 改收，15 照 D-196 改收。I-116 grep：core.md、其他 skill 沒有相反的整理做法（answer 的 `unsorted`、note 的 `agenda scanned` 照用）。等使用者看過。
+- 2026-10-22：a2 看過 spec，補「跟密碼與守門、manage 第二版的交界」五點（加密檔不進批次、secret_shown、守門順序與引號、plan 排在 purge 兩步後、不讀的夾不走訪）與驗收 2b。

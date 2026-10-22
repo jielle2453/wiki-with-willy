@@ -211,7 +211,7 @@ llm-wiki-j/
 │  └─ manage/SKILL.md + references/{sources,files,ops}.md
 ├─ commands/                          全部 disable-model-invocation
 │  ├─ build.md                        建置五步一個指令（D-190）
-│  └─ upgrade.md  backup.md  restore.md  relocate.md  migrate.md  account.md
+│  └─ upgrade.md  migrate.md          升級那份 spec 定；備份、還原、搬家、換帳號不做指令（D-203、D-205、D-206、D-210）
 ├─ hooks/{hooks.json,session.py,turn.py,guard.py,output_log.py}
 ├─ agents/card-maker.md
 ├─ scripts/

@@ -96,7 +96,7 @@ llm-wiki-j/
 
 | 項目 | 約定 |
 |---|---|
-| 目標環境 | 客戶用 Claude Code 桌面版，Windows；plugin 由本機 marketplace 載入（做法在 B-008）。開發、實作、測試用 CLI 或 VS Code；確認 session 一律用桌面版 |
+| 目標環境 | 客戶用 Claude Code 桌面版，Windows；plugin 由公開清單網址的 marketplace 裝在整台電腦（D-171、D-172）。開發、實作、測試用 CLI 或 VS Code；確認 session 用桌面版，plugin 用本機快照市集只裝在測試知識庫（local 範圍，process 六、B-093） |
 | Python | 3.10 以上 |
 | 相依 | 核心只用標準函式庫。唯一選配是 `pypdfium2`（PDF 抽文字與掃描頁轉圖，D-099 修訂），缺了降級並明講；不用 markitdown、pdfplumber、poppler |
 | 編碼 | 我們自己的檔（JSON、md、設定、腳本輸出）一律 UTF-8，讀寫帶 `encoding=`；腳本開頭 `sys.stdout.reconfigure(encoding="utf-8")`。客戶原檔由 `kb convert` 偵測：整份試 UTF-8，再試 cp950，都不行標「讀不到：編碼」明講，不靜默取代字元（I-003）。另存的純文字一律 UTF-8，CSV 帶 BOM 給 Excel |

@@ -104,7 +104,7 @@
 | B-090 | 2026-10-21 | open | 低（note 改知識確認落差 4～9）：改既有的事 AI 只查口述清單、沒看卡上原本寫的（第 2 步）；口述句尾 AI 自己加「（日期（週三）客戶口述）」跟日期欄重複；登記新實體的問法沒照「<名稱> 是新的案子／對象嗎？」、登記後仍待確認；`cards mount` 後 removed 項 `title` 是 null；憑證那題 AI 先 Glob 找含「密碼」的檔名（沒讀）；原檔寫的名稱跟實體不同時先問再 mount（合理，多一回合） | note 改知識確認 |
 | B-091 | 2026-10-21 | open | 推算清單（`findings.json`）掛的實體名稱不跟著 `entity rename`／`merge` 換（answer 題 `entities.py` 不能動）；現在查的時候照 `entities.find` 轉到現名（舊名進別名、合併轉址）。下一次動 `entities.py` 的題目在 rename／merge 裡跟換（同口述與裁示的做法） | answer 實作回報裁定 5 |
 | B-092 | 2026-10-21 | deferred | answer 測試第一輪讀碼低項（未重現）：多視窗共用 `current.json` 時 A 的 `cards todo` 可能把 `ingest` 標到 B 的回合；`lookup` 的 `mentions` 讀卡正文沒有大小上限、不帶 ruled_out／stale；`findings.stale` 不看清冊狀態（依據卡被排除時不判過期）；`journal.changed_text` 遇壞行 AttributeError；`check_text` 不擋控制字元與 markdown（口述同）；`turn.mark` 有鎖但 Stop 的 `set_done`（`_set`）沒拿同一把，同時寫仍可能互蓋 | answer 測試 F-9、F-10、第二輪疑義 1；第二輪 G-7：按停止後沒新句就 compact 指示照印（ingest_stopped 要等下一句才寫）、寫入失敗也印讀不到、tally 前導零 16 位誤判太大、很小的平均顯示 0、回顯沒濾控制字元；answer 確認：AI 說「這件已在待處理」但沒有這筆（模型編的；候選 verify.md 加「沒看到 pending add 成功句不說已記」）、`journal recent --find` 先取 n 段再篩（今天的句子擠掉要找的，要先篩再取）、確認環境資料落差待查（2 張卡在檔案索引清冊沒有、信義王報價第四版掛在內湖李、請款單不整理卻有卡、lookup 大安陳 null 但 todo 有、手寫推算與推算清單並存無重複偵測） | answer 測試 F-9、F-10、第二輪疑義 1、確認 |
-| B-093 | 2026-10-22 | open | spike：桌面版用網址加 marketplace 裝假 plugin（archive zip，D-171、D-172），看有新版怎麼顯示、自動更新開關；真 plugin 用本機 marketplace 在桌面版跑全部 hook（開場、回合、守門、驗卡、工作日誌、摺疊）；移除再裝回知識庫照留。任務檔 llm-wiki-test 的 install-spike 夾 B-093-任務.md；公開測試 repo jielle2453/wiki-with-willy-spike 驗完由設計 session 刪 | 桌面版安裝與發行 |
+| B-093 | 2026-10-22 | done（報告 reports/B-093-spike.md、B-093-官方文件.md） | spike：桌面版用網址加 marketplace 裝假 plugin（archive zip，D-171、D-172），看有新版怎麼顯示、自動更新開關；真 plugin 用本機 marketplace 在桌面版跑全部 hook（開場、回合、守門、驗卡、工作日誌、摺疊）；移除再裝回知識庫照留。任務檔 llm-wiki-test 的 install-spike 夾 B-093-任務.md；公開測試 repo jielle2453/wiki-with-willy-spike 驗完由設計 session 刪 | 桌面版安裝與發行 |
 | B-094 | 2026-10-22 | open | 低：repo `CLAUDE.md` 地圖第 27、35、59 列（entity.py、profile_cli.py、_lib/profile.py）說明裡有沒跳脫的直線 `|`，會把表格切壞（answer 測試第三輪 H-3，早就存在）；下一個動 CLAUDE.md 的題順手改 | answer 測試 H-3 |
 | B-095 | 2026-10-22 | done（報告 reports/B-095-spike.md） | spike：OneDrive「只在雲端」的檔：開場快速比對與 `inventory scan` 算指紋會不會把檔下載下來；同一個 OneDrive 裡搬夾、改檔名會不會下載；丟資源回收筒進哪個回收筒、會不會連別台一起刪（D-173、D-175、D-176）。用使用者個人 OneDrive 的測試夾、亂數假檔，做完刪 | manage 第二版 |
 | B-096 | 2026-10-22 | open | 客戶在檔案總管搬 OneDrive「只在雲端」的檔（沒有指紋），`kb changes` 報成「新增＋不見」，卡會被問「是不是刪了」再重做；候選：檔名＋大小＋修改時間配對、或在開場把同時出現的新增與不見同名同大小的配成搬動 | B-095 spike |
@@ -121,6 +121,7 @@
 | B-406 | 2026-10-22 | deferred | 解加密的 Word、Excel、PowerPoint（D-182 這版只解 PDF）：候選純 Python 寫 AES 與 OLE 拆檔、或選配 msoffcrypto-tool 跟 produce 的工具一起裝（要驗智慧型應用程式控制擋不擋） | 密碼與守門 |
 | B-407 | 2026-10-22 | open | 中：answer 統計題（「今年報價總共多少」）走 `cards list` 逐份加，看不到客戶口述的更正（10/21「第五版 124 萬、原檔 142 萬不對」），合計用錯（726 萬，應 708 萬），之後 AI 自己更正。候選：`cards list` 對有口述或裁示的實體帶一句、或 verify.md 寫「合計前對每個實體查 `lookup` 的口述」 | produce 確認第 4 步 |
 | B-408 | 2026-10-22 | open | 低：produce 確認看到的：模型兩次叫 `cards todo --json --brief`（沒有這個旗標，repo 也沒有任何文件寫到，模型自己編的），被 argparse 拒後自己改；線上文件 link 還沒做卡時 `lookup` 只說「還沒整理 1 份」沒有標題，問「剛才那份在哪」要靠 `cards todo`、`journal recent` 找 | produce 確認第 2 步重跑 |
+| B-409 | 2026-10-22 | open | 第 (6) 題（備份、還原、升級與換電腦）寫 spec 時先讀 `reports/B-093-spike.md`「升級那題要知道的」：App 不會自己發現新版、檢查更新藏在市集名後的「⋯」、約 7 下加「會覆寫本機變更」假警報（`.in_use` 標記造成）、畫面沒有自動更新開關、更新不用重開；user 範圍 uninstall 刪 data 留 cache、畫面移除相反 | B-093 spike |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

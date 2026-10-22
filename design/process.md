@@ -133,7 +133,7 @@ plugin 在 CLI 與 VS Code 用 `claude --plugin-dir "C:\Users\Jie\Desktop\llm-wi
 確認 session：
 
 ```
-你在 C:\Users\Jie\Desktop\llm-wiki-test\總資料夾，plugin 由 --plugin-dir 載入。
+你在 C:\Users\Jie\Desktop\llm-wiki-test\總資料夾，plugin 由 --plugin-dir 載入。（CLI）。桌面版確認時 plugin 一律只裝在測試知識庫那個夾（B-093）：在知識庫夾裡跑 `claude plugin marketplace add "<worktree 的快照市集>" --scope local`、`claude plugin install <plugin>@<市集> --scope local`，確認 `~\.claude\settings.json` 沒有多東西；不要用畫面上的「為專案安裝」（裝到外掛頁資料夾鈕那個夾）；做完用 `claude plugin uninstall … --scope local` 與 `marketplace remove … --scope local` 清（畫面移除不清 `settings.local.json`，hook 會照跑）。local 範圍跟著工作目錄生效，cd 進知識庫就開始管。改了 worktree 的程式要重做快照、重裝。權限模式用預設（不是 auto），才看得到 kb 有沒有跳允許詢問。使用者範圍的 plugin 會跑進這台每個 Claude，不准用。
 - 先確認「來源」已從 來源.zip 還原。確認環境先停用舊的 llm-wiki plugin：先試在測試 vault 的 `.claude/settings.json` 寫 `"enabledPlugins": {"llm-wiki@llm-wiki": false}`（project 層覆寫，未驗證）；沒效就 `claude plugin disable llm-wiki@llm-wiki` 全域停，跑 I-070 的路由 eval 時再 enable。plugin 啟用是使用者層的，資料夾本身沒有東西可關。
 - 終端機畫面上的開場訊息、/plugin、/help 你看不到，這幾步請使用者看一眼補驗，報告標「人眼」。
 - 讀 C:\Users\Jie\Desktop\llm-wiki-j\design\specs\<題目>.md 的「確認情境」，用客戶會說的話實際操作，記每一步的實際輸出與落差。

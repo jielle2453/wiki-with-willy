@@ -1269,7 +1269,7 @@
 ## D-171 發行管道：公開 GitHub repo 放清單與 zip，客戶的 Claude 用網址加 marketplace（修訂 D-072 的安裝那一半）
 - 日期：2026-10-21
 - 選了：另開一個公開 repo 只放發行版：一份 `marketplace.json`（清單：plugin 名、版本、下載網址、sha256），每一版的 zip 放在 Releases；plugin 來源用 archive（https 的 zip 帶 sha256）。客戶的 Claude 用清單的 https 網址加 marketplace（url 來源），不用 `owner/repo`。開發用的 repo 照舊私有，zip 照 D-072 從 tag 打、排除 `design/` 與 `tests/`。服務人員第一次安裝時把清單網址與「啟用 wiki-with-willy」寫進客戶的 Claude 使用者設定（`extraKnownMarketplaces`、`enabledPlugins`），或在桌面版畫面貼網址；怎麼寫、自動更新開不開（marketplace 的 `autoUpdate`）分別在本題 spec 與升級那題定。這題的 spike 在桌面版實際走一次。
-- 為什麼：官方文件（2026-10-21 查）：網址上的 `marketplace.json` 與 archive 來源都不用 Git，客戶不用裝 Git、不用 GitHub 帳號（D-023）；`owner/repo` 與 git 網址要 Git，私有 repo 還要在客戶電腦設認證；桌面版畫面收 https 網址、不收本機路徑（B-008）。免費，D-072 已接受程式碼公開下載。
+- 為什麼：官方文件（2026-10-21 查，`reports/B-093-官方文件.md`）：網址上的 `marketplace.json` 與 archive 來源都不用 Git，客戶不用裝 Git、不用 GitHub 帳號（D-023）；`owner/repo` 與 git 網址要 Git，私有 repo 還要在客戶電腦設認證；桌面版畫面收 https 網址、不收本機路徑（B-008）。免費，D-072 已接受程式碼公開下載。
 - 放棄了：自己的網站放清單與 zip（機制相同，要網域與維護主機，客戶多了再搬，只換網址）；服務人員帶 zip 用本機路徑加 marketplace（客戶要另裝 CLI、每版都要人到場）；私有 repo 加認證（D-072 已放棄）；`owner/repo` 的公開 repo（客戶要裝 Git）。
 - 重談條件：spike 在桌面版走不通（畫面不收這個網址、archive 裝不起來）；客戶的公司網路擋 GitHub；archive 要求的 Claude Code 版本（2.1.224 以上）客戶達不到。
 
@@ -1279,6 +1279,7 @@
 - 為什麼：小程式要代寫 Claude 自己的使用者設定檔，寫壞了會弄壞客戶其他的 Claude 設定，比點畫面麻煩；服務人員自己會裝，不用手冊。版本門檻有兩個：archive 要 2.1.224（不夠時安裝當場失敗、看得到）、hook 的 `onFailure` 要 2.1.295（不夠時多半默默略過）；但 Claude 版本只會往上（2026-10-21 已是 2.1.306），裝之前更新到最新就都過，之後只會更新，偵測是多做的。
 - 放棄了：安裝小程式（查版本、備份、只合併兩段設定）；畫面截圖手冊；開場從對話紀錄讀版本號提醒太舊（紀錄的 `version` 欄不是文件寫明的介面）。
 - 重談條件：遇到客戶電腦擋 Claude 自己更新、停在舊版；或服務人員多到要統一步驟。
+- **2026-10-22 補**（B-093 spike 實測，`reports/B-093-spike.md`）：照做可以，步驟改三處：(1) 「說明」選單在新版已下載好時沒有「檢查更新」，那格變「重新啟動以更新」，兩種都按；桌面版更新不會順便更新**內建的** Claude Code，版本門檻以內建的為準（實測 2.1.304，已過 2.1.224 與 2.1.295）。(2) 裝完**不用重開**，開一個新對話就有開場（舊對話下一句就生效）。(3) 「安裝」按卡片的「＋」或「安裝 ⌄」裡的「為我安裝」，是整台電腦（user 範圍），給客戶就是這個；「為專案安裝」裝到的是外掛頁資料夾鈕那個夾，不要選。Claude 不能用 computer use 代點自己的畫面（固定規則），裝、更新、移除只能人點或用 CLI。
 
 ## D-173 manage 幫忙刪原檔：先講後果、明確確認，丟進資源回收筒
 - 日期：2026-10-22

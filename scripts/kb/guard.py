@@ -46,6 +46,15 @@ OUTPUT_SHELL = ("deny", "output_shell", "AI 產出的檔用 kb output save 放�
 SOURCE_WRITE_REASON = "客戶原檔只讀；要改先用 kb office copy 拿一份副本"
 WORKSPACE_POSIX = ".system/temp/office"  # kb office 的工作區：檔案工具寫放行（實作回報裁定 1）
 WORKSPACE_TOOLS = ("Write", "Edit", "MultiEdit")
+LO_PROFILE_DIR = "_lo_profile"  # kb office 固定的 LibreOffice 設定夾（office.LO_PROFILE），不算工作區
+
+
+def _odd_segments(target):
+    """路徑中間有段結尾是空白或點（.system /temp）：normalize 會修掉，Windows 卻會建出另一個夾，不給工作區例外。"""
+    segs = str(target).replace("\\", "/").split("/")[:-1]
+    return any(seg not in ("", ".", "..") and not seg.endswith(":") and seg != seg.rstrip(" .") for seg in segs)
+
+
 ZONES = {
     "Z1": {"name": "綜合卡", "read": ("allow", "", "綜合卡"), "write": ("allow", "", "綜合卡"), "shell_write": SHELL_WRITE},
     "Z2": {"name": "實體夾原檔", "read": ("allow", "", "實體夾原檔"),
@@ -459,6 +468,8 @@ def in_workspace(path, vault_n):
     root = vault_n.rstrip("/") + "/" + WORKSPACE_POSIX
     if path == root or not inside(path, root):
         return False
+    if path[len(root) + 1:].split("/", 1)[0] == LO_PROFILE_DIR:
+        return False  # LibreOffice 的設定（巨集、信任路徑）不給檔案工具改（收尾 security-review）
     cur, tail = path, []
     while not os.path.exists(cur):
         head, name = cur.rsplit("/", 1) if "/" in cur else ("", cur)
@@ -476,7 +487,7 @@ def _file_tool(tool, target, cwd, vault, sources):
     path = normalize(target, cwd)
     vault_n = normalize(vault, None)
     zone, alias = classify(path, vault_n, sources)
-    if tool in WORKSPACE_TOOLS and zone == "Z7" and in_workspace(path, vault_n):
+    if tool in WORKSPACE_TOOLS and zone == "Z7" and not _odd_segments(target) and in_workspace(path, vault_n):
         return Decision("allow", zone, "", "工作區", [], vault)  # 實作回報裁定 1：不經回合備份（hook 只備 Z1／Z3／Z5）
     seg = credential_hit(path, zone, vault_n, sources)
     if seg is not None:  # 憑證第一道先於區（D-079 補）
@@ -538,7 +549,10 @@ def _touches_output(command, cwd, vault_n, sources, tool):
             if not tok:
                 continue
             value = [tok.split("=", 1)[1]] if "=" in tok else []
+            if tok[:1] in "-/" and ":" in tok:  # PowerShell 的 -Path:值、Windows 程式的 /out:值
+                value.append(tok.split(":", 1)[1])
             forms = value if tok.startswith("-") and not expect_cd else [tok] + value  # --out=值 只看值
+            forms += [cmdparse._ESCAPE.sub("", f) for f in forms]  # bash 把 AI\ 產出 讀成 AI 產出（同 cmdparse 的 N-c）
             for form in forms:
                 if not form or form[0] in "$%":
                     continue
@@ -613,8 +627,11 @@ def _shell_tool(tool, command, cwd, vault, sources):
             return deny(zone, code, reason)
 
     # produce：抽出的路徑、萬用字元展開、或任何 token 解析後落在 AI 產出，讀寫都擋（單一 kb 呼叫在 decide 最前面已放行）
-    if any(zone == "Z3" for _p, zone, _alias in classified + glob_classified) or _touches_output(command, cwd, vault_n,
-                                                                                                    sources, tool):
+    try:
+        touched = _touches_output(command, cwd, vault_n, sources, tool)
+    except Exception:  # noqa: BLE001  hook 對指令出錯不表態（會變成放行），這裡寧可擋（收尾 security-review）
+        touched = True
+    if touched or any(zone == "Z3" for _p, zone, _alias in classified + glob_classified):
         _d, code, reason = OUTPUT_SHELL
         return deny("Z3", code, reason)
 

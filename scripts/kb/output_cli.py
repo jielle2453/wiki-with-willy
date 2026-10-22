@@ -1,7 +1,7 @@
 """kb output save／link／drop-draft（produce 第 2 點，D-164、D-168、D-170）：成品進知識庫唯一的路，本體在 _lib/output。
 
 成功句與拒絕句一字不差（拒絕 exit 3、第一行就是原因）；人讀輸出不印清冊編號，要編號取 --json。
-終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進那一句的回合。鎖等 30 秒，等不到「等不到鎖，沒有寫入」exit 3。
+總資料夾只從 cwd 往上找（不收 --vault）。終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進那一句的回合。鎖等 30 秒，等不到「等不到鎖，沒有寫入」exit 3。
 """
 import argparse
 import json
@@ -35,8 +35,7 @@ def add_arguments(sub):
     lk.add_argument("--basis", action="extend", nargs="+", default=[], help="依據的檔案卡編號（f-…），可以多個")
     dd = subs.add_parser("drop-draft", help="草稿不要了", description="草稿備進回合後拿掉；說退回會回來。")
     dd.add_argument("draft", help="AI 產出裡的（草稿）.md")
-    for p in (sv, lk, dd):
-        p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
+    for p in (sv, lk, dd):  # 不收 --vault：同 convert，假的知識庫會讓真知識庫的檔變成「外面」被複製出去（收尾 security-review）
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
 

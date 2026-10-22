@@ -312,6 +312,14 @@ class Convert(FakeEnv):
                 office.parse_pages(bad, 20)
 
 
+class ComSecurity(unittest.TestCase):
+    def test_macros_forced_off_before_open(self):
+        for script in list(office._PS_PDF.values()) + [office._PS_RECALC]:
+            with self.subTest(script=script[:40]):
+                self.assertIn("AutomationSecurity=3", script)
+                self.assertLess(script.index("AutomationSecurity=3"), script.index(".Open("))
+
+
 class NoNode(unittest.TestCase):
     def test_js_without_node(self):
         tmp, V, _raw = make_inv_vault()

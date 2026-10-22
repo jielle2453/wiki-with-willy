@@ -126,6 +126,36 @@ class Save(Base):
         self.assertEqual(sorted(p.relative_to(self.V).as_posix() for p in (self.V / "AI 產出").rglob("*")), before)
 
 
+class SaveSources(Base):
+    """收尾 security-review：知識庫外的來源照 convert 同一套擋——排除的、檔名像密碼的拒絕，客戶原檔要先 office copy；
+    --to 不收冒號（NTFS 資料流）；output 不收 --vault（同 convert，會把檔案內容帶給 AI）。"""
+
+    def test_excluded_credential_and_originals_refused(self):
+        run_kb("folders", "exclude", str(self.raw / "公司行政" / "舊檔"), "--kind", "unused", cwd=self.V)
+        self.assertEqual(self.refused("save", str(self.raw / "公司行政" / "舊檔" / "Big5備忘.txt"), "--to", "AI 產出/a.txt"),
+                         "這個位置你說過不讀")
+        self.assertEqual(self.refused("save", str(self.raw / "公司行政" / "薪資" / "網銀密碼.txt"), "--to", "AI 產出/a.txt"),
+                         "這個檔名像密碼或金鑰，不放")
+        key = self.tmp / "ssh" / "id_rsa"
+        key.parent.mkdir()
+        key.write_text("x", encoding="utf-8")
+        self.assertEqual(self.refused("save", str(key), "--to", "AI 產出/notes.txt"), "這個檔名像密碼或金鑰，不放")
+        self.assertEqual(self.refused("save", str(self.raw / "報價與合約" / "合約範本.txt"), "--to", "AI 產出/a.txt"),
+                         "客戶原檔先用 kb office copy 拿副本")
+        self.assertFalse((self.V / "AI 產出" / "a.txt").exists())
+        self.assertFalse((self.V / "AI 產出" / "notes.txt").exists())
+
+    def test_colon_in_destination_refused(self):
+        src = self.work()
+        for to in ("AI 產出/r.md::$DATA", "AI 產出/a.docx:s"):
+            with self.subTest(to=to):
+                self.assertEqual(self.refused("save", str(src), "--to", to), "檔名不能有冒號")
+
+    def test_no_vault_flag(self):
+        r = self.kb("save", str(self.work()), "--to", "AI 產出/a.xlsx", "--vault", str(self.V))
+        self.assertEqual(r.returncode, 2)
+
+
 class Draft(Base):
     def test_draft_not_carded_and_asked_after_turn(self):
         rel = self.draft()

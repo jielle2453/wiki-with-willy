@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -61,6 +62,7 @@ def _call(argv, timeout, env=None, cwd=None):
     """跑外部程式，回 (結束碼, 輸出文字)；輸出合併 stdout 與 stderr，一律用 UTF-8 解（壞字元換掉，不靠系統編碼）。
     找不到程式丟 FileNotFoundError，逾時丟 subprocess.TimeoutExpired。"""
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    cwd = cwd or tempfile.gettempdir()  # 不在對話的目錄跑：那裡放的同名程式或模組不會被先找到（收尾 security-review）
     p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=cwd,
                          creationflags=flags, stdin=subprocess.DEVNULL)
     try:
@@ -85,6 +87,7 @@ _clock = time.monotonic
 
 
 def _which(name):
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"  # Windows 找程式不先找目前目錄
     return shutil.which(name)
 
 
@@ -476,15 +479,16 @@ def pack(vault, folder, to, like=None):
 
 # ---------- 轉 PDF、重算、轉圖 ----------
 
+# AutomationSecurity=3（強制關巨集）：客戶的檔或 AI 寫的檔用 COM 打開時不跑裡面的 VBA（收尾 security-review）
 _PS_PDF = {
-    "word": "$a=New-Object -ComObject Word.Application;$a.Visible=$false;$d=$a.Documents.Open($env:KB_IN,$false,$true);"
+    "word": "$a=New-Object -ComObject Word.Application;$a.AutomationSecurity=3;$a.Visible=$false;$d=$a.Documents.Open($env:KB_IN,$false,$true);"
             "$d.ExportAsFixedFormat($env:KB_OUT,17);$d.Close($false);$a.Quit()",
-    "excel": "$a=New-Object -ComObject Excel.Application;$a.DisplayAlerts=$false;$b=$a.Workbooks.Open($env:KB_IN,0,$true);"
+    "excel": "$a=New-Object -ComObject Excel.Application;$a.AutomationSecurity=3;$a.DisplayAlerts=$false;$b=$a.Workbooks.Open($env:KB_IN,0,$true);"
              "$b.ExportAsFixedFormat(0,$env:KB_OUT);$b.Close($false);$a.Quit()",
-    "powerpoint": "$a=New-Object -ComObject PowerPoint.Application;$p=$a.Presentations.Open($env:KB_IN,$true,$false,$false);"
+    "powerpoint": "$a=New-Object -ComObject PowerPoint.Application;$a.AutomationSecurity=3;$p=$a.Presentations.Open($env:KB_IN,$true,$false,$false);"
                   "$p.SaveAs($env:KB_OUT,32);$p.Close();$a.Quit()",
 }
-_PS_RECALC = ("$a=New-Object -ComObject Excel.Application;$a.DisplayAlerts=$false;$b=$a.Workbooks.Open($env:KB_IN);"
+_PS_RECALC = ("$a=New-Object -ComObject Excel.Application;$a.AutomationSecurity=3;$a.DisplayAlerts=$false;$b=$a.Workbooks.Open($env:KB_IN);"
               "$a.CalculateFull();$b.Save();$b.Close($true);$a.Quit()")
 RECALC_MACRO = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">

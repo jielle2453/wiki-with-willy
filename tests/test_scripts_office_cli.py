@@ -58,6 +58,9 @@ class Check(Base):
         self.assertEqual(set(data["env"]), {"office", "soffice", "node", "node_version", "npm", "node_packages",
                                             "py_missing", "pdfium", "tools"})
         self.assertEqual(set(data["capabilities"]), {"can", "after_setup", "cannot", "setup"})
+        self.assertEqual(data["workspace"], str(self.ws))
+        self.assertEqual(lines[-1], f"工作區：{self.ws}（腳本與做出來的檔放這裡）")
+        self.assertFalse(self.ws.exists(), "check 不建工作區")
         self.assertEqual(self.files(), before)
 
 
@@ -107,9 +110,21 @@ class Run(Base):
         script.write_text("import os\nprint('OUT=' + os.environ['OUT_DIR'])\nraise SystemExit(int(os.sys.argv[1]))\n",
                           encoding="utf-8")
         lines = self.ok("run", str(script), "0")
-        self.assertEqual(lines, [f"OUT={self.ws}", "結束碼：0"])
+        self.assertEqual(lines, [f"工作區：{self.ws}", f"OUT={self.ws}", "結束碼：0"])
         r = self.kb("run", str(script), "4")
         self.assertEqual((r.returncode, r.stdout.strip().splitlines()[-1]), (3, "結束碼：4"))
+
+
+class NoVaultFlag(Base):
+    """收尾 security-review：office 除了 check 都不收 --vault（同 copy 與 convert，只信 cwd 的知識庫）。"""
+
+    def test_refused(self):
+        self.assertEqual(self.kb("run", "--vault", str(self.V), "x.py").returncode, 2, "run 的腳本之後的參數交給腳本")
+        for args in (("pdf", "x.docx"), ("render", "x.docx"), ("recalc", "x.xlsx"), ("unpack", "x.docx"),
+                     ("pack", "d", "--to", "x.docx")):
+            with self.subTest(args=args):
+                self.assertEqual(self.kb(*args, "--vault", str(self.V)).returncode, 2)
+        self.assertEqual(self.kb("check", "--vault", str(self.V)).returncode, 0)
 
 
 @unittest.skipUnless(HAS_LO, "這台沒有 LibreOffice")

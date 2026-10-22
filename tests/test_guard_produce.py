@@ -42,6 +42,8 @@ class ShellOutput(Base):
                           ("Bash", 'cat "AI 產出"/*.docx'),
                           ("Bash", 'cd "AI 產出" && node build.js out.docx'),
                           ("Bash", 'node build.js --out="AI 產出/新夾/x.docx"'),
+                          ("Bash", "node build.js AI\\ 產出/新夾/x.docx"),
+                          ("Bash", 'OUT="AI 產出/x.docx" node build.js'),
                           ("PowerShell", 'node build.js "AI 產出\\新夾\\x.docx"'),
                           ("PowerShell", f'Get-Content "{v}/AI 產出/a.docx"'),
                           ("Bash", f'python x.py "{v}/AI 產出/a.xlsx" && echo done'),
@@ -137,6 +139,41 @@ class Workspace(Base):
                                                 guard.normalize(str(self.V), None)))
         finally:
             os.rmdir(link)
+
+
+
+class SecurityReview(Base):
+    """收尾 security-review 的修正：_lo_profile 不算工作區；路徑中間的段結尾有空白或點不算；PowerShell 的 -Param:值 與 /out:值；
+    _touches_output 出錯一律擋。"""
+
+    def test_lo_profile_not_writable(self):
+        for target in (self.V / ".system/temp/office/_lo_profile/user/registrymodifications.xcu",
+                       self.V / ".system/temp/office/_lo_profile/user/basic/Standard/Module1.xba"):
+            with self.subTest(target=target):
+                d = self.decide("Write", target)
+                self.assertEqual((d.decision, d.zone), ("deny", "Z7"))
+
+    def test_trailing_space_or_dot_segment_not_workspace(self):
+        v = self.V.as_posix()
+        for target in (f"{v}/.system /temp/office/t/x.js", f"{v}/.system/temp. /office/t/x.js",
+                       f"{v}/.system/temp/office./t/x.js"):
+            with self.subTest(target=target):
+                self.assertNotEqual(self.decide("Write", target).reason, "工作區")
+
+    def test_param_colon_forms(self):
+        v = self.V.as_posix()
+        for tool, cmd in (("PowerShell", f'Get-Content -Path:"{v}/AI 產出/a.docx"'),
+                          ("PowerShell", 'node b.js -Out:"AI 產出/x.docx"'),
+                          ("Bash", 'tool.exe /out:"AI 產出/x.docx"')):
+            with self.subTest(cmd=cmd):
+                d = self.decide(tool, cmd)
+                self.assertEqual((d.decision, d.reason_code), ("deny", "output_shell"))
+
+    def test_exception_in_output_scan_denies(self):
+        from unittest import mock
+        with mock.patch.object(guard, "_touches_output", side_effect=RuntimeError("壞了")):
+            d = self.decide("Bash", "node b.js")
+        self.assertEqual((d.decision, d.reason_code), ("deny", "output_shell"))
 
 
 if __name__ == "__main__":

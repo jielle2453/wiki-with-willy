@@ -2,8 +2,8 @@
 
 只管工具與副本，不寫知識庫：輸出都在這一回合的工作區 .system/temp/office/<回合>/（照 temp_keep_hours 清）。
 check 只讀；setup 裝到 %LOCALAPPDATA%\\wiki-with-willy\\tools\\（AI 叫之前照 SKILL 先問客戶）；run 只跑工作區（.system/temp/）裡的腳本，
-cwd 與 OUT_DIR 是工作區；copy 照 kb convert 同一套判斷（排除、憑證名、Z11、只收清冊 active 的），跟 convert 一樣不收 --vault、
-只從 cwd 找知識庫（實作回報裁定 5：會把原檔內容帶給 AI）；pdf、recalc、render 沒有工具回 exit 3 與固定句。
+cwd 與 OUT_DIR 是工作區；copy 照 kb convert 同一套判斷（排除、憑證名、Z11、只收清冊 active 的）；除了 check 都不收 --vault、只從 cwd 找知識庫
+（實作回報裁定 5：會把原檔內容帶給 AI；收尾 security-review 擴到其他子指令：假的知識庫會讓真知識庫的檔變成「外面」）；pdf、recalc、render 沒有工具回 exit 3 與固定句。
 拒絕與做不到一律 exit 3、第一行就是原因；人讀輸出不印清冊編號，要編號取 --json。
 """
 import argparse
@@ -49,8 +49,8 @@ def add_arguments(sub):
     rd = subs.add_parser("render", help="轉成每頁的圖", description="轉 PDF 再轉每頁 PNG，印路徑給 Read 看版面。")
     rd.add_argument("file", help="工作區或 AI 產出裡的檔")
     rd.add_argument("--pages", help="哪幾頁，例 1-5")
-    for p in (ck, st, rn, up, pk, pd, rc, rd):
-        p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
+    # 只有 check 收 --vault（只用來印工作區）；其他跟 copy、convert 一樣只信 cwd 的知識庫（收尾 security-review）
+    ck.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找（只用來印工作區）")
     for p in (ck, st, rn, cp, up, pk, pd, rc, rd):
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -73,10 +73,24 @@ def _turn_id(vault):
 
 # ---------- check、setup（不需要知識庫） ----------
 
-def _check(as_json):
+def _current_workspace(args):
+    """在知識庫裡跑 check 時，這一回合的工作區在哪（只讀：不開回合、不建夾）；不在知識庫或還沒有回合回 None。"""
+    vault = find_vault(args)
+    if vault is None:
+        return None
+    data = turn._read_turn(turn._current_file(vault))
+    try:
+        return office.workspace(vault, data["turn"], make=False) if data else None
+    except office.Refused:
+        return None
+
+
+def _check(args, as_json):
     env = office.detect()
     cap = office.capabilities(env)
-    _out(as_json, office.check_lines(env), {"ok": True, "env": env, "capabilities": cap})
+    ws = _current_workspace(args)
+    lines = office.check_lines(env) + ([f"工作區：{ws}（腳本與做出來的檔放這裡）"] if ws else [])
+    _out(as_json, lines, {"ok": True, "env": env, "capabilities": cap, "workspace": str(ws) if ws else None})
     return 0
 
 
@@ -156,7 +170,7 @@ def _run(vault, args, as_json):
     if rest[:1] == ["--"]:
         rest = rest[1:]
     code, tail, ws = office.run_script(vault, args.script, rest, _turn_id(vault))
-    _out(as_json, tail + [f"結束碼：{code}"], {"ok": code == 0, "exit_code": code, "tail": tail, "workspace": str(ws)})
+    _out(as_json, [f"工作區：{ws}"] + tail + [f"結束碼：{code}"], {"ok": code == 0, "exit_code": code, "tail": tail, "workspace": str(ws)})
     return 0 if code == 0 else 3
 
 
@@ -215,7 +229,7 @@ def run(args):
     kio.LOCK_TIMEOUT = CLI_LOCK_TIMEOUT
     try:
         if command == "check":
-            return _check(as_json)
+            return _check(args, as_json)
         if command == "setup":
             return _setup(as_json)
         if command == "copy":

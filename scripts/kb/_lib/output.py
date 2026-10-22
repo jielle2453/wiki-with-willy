@@ -2,7 +2,8 @@
 
 save：目的地要在 AI 產出底下、不是 .md（md 用檔案工具寫，hook 會備份登記）、檔名不像密碼或金鑰；同名加「 (2)」。
 來源（實作回報裁定 2）：工作區（.system/temp/）的檔用搬的；知識庫外的檔（下載夾、Docs 匯出）用複製的、不動原處；
-知識庫裡工作區以外的檔一律拒絕。turn.backup（create）→ 搬或複製 → 清冊登記（register_output，--from 記 derived_from；
+知識庫裡工作區以外的檔一律拒絕；知識庫外的來源照守門同一套判斷（收尾 security-review）：排除的、檔名像密碼或金鑰的拒絕，
+登記的來源裡的客戶原檔要先 kb office copy。--to 的檔名不收冒號（NTFS 資料流會繞過 .md 與同名檢查）。turn.backup（create）→ 搬或複製 → 清冊登記（register_output，--from 記 derived_from；
 --link 掛到那筆 link 條目）→ --draft 把草稿備進回合（delete）後拿掉、清冊那筆改 deleted。清冊不另備份：退回照 manifest
 的 create 把成品改 turn_reverted，草稿照 delete 還原、對帳回 active（versions 既有的帳就夠）。
 link：只收 https://claude.ai/ 的網址，清冊記一筆 kind link（不算指紋、掃描不走），實體要登記過、依據要是寫好卡的。
@@ -28,6 +29,9 @@ NO_TITLE = "要給標題（--title）"
 BAD_TYPE = "型別要是一個資料夾名，不含 \\ / : * ? \" < > |：{name}"
 NO_ENTITY = "實體清單沒有「{name}」，先 kb entity add"
 NO_SOURCE = "找不到這份原檔：{target}"
+EXCLUDED = "這個位置你說過不讀"
+ORIGINAL = "客戶原檔先用 kb office copy 拿副本"
+COLON = "檔名不能有冒號"
 _URL = re.compile(r"^https://claude\.ai/[^\s\"'`$\\]+$")
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f$`]')
 
@@ -98,11 +102,24 @@ def check_url(url):
 
 
 def source_mode(vault, src):
-    """來源在哪：工作區回 move、知識庫外回 copy、知識庫裡其他地方拒絕。"""
+    """來源在哪：工作區回 move、知識庫外回 copy、知識庫裡其他地方拒絕。知識庫外的照守門判斷：排除的（Z10、Z10b）、
+    檔名像密碼或金鑰的（守門第一道）拒絕，登記的來源（Z9）要先 kb office copy。"""
     if _inside(src, Path(vault) / ".system" / "temp") and _real(src) != _real(Path(vault) / ".system" / "temp"):
         return "move"
     if _inside(src, vault):
         raise Refused(IN_VAULT)
+    from kb import guard
+    from kb._lib import sources as sources_lib
+    from kb._lib.paths import normalize
+    sources = sources_lib.load(vault)
+    path_n, vault_n = normalize(os.path.realpath(str(src)), None), normalize(str(vault), None)
+    zone, _alias = guard.classify(path_n, vault_n, sources)
+    if zone in ("Z10", "Z10b"):
+        raise Refused(EXCLUDED)
+    if guard.credential_hit(path_n, zone, vault_n, sources) is not None:
+        raise Refused(CREDENTIAL)
+    if zone == "Z9":
+        raise Refused(ORIGINAL)
     return "copy"
 
 
@@ -152,6 +169,8 @@ def _drop(vault, rel, turn_id):
 def save(vault, src, to, turn_id, cwd, from_=None, draft=None, link=None):
     """回 {"path", "id", "mode", "from", "from_label", "draft", "link"}。驗完才動檔。"""
     rel = output_rel(vault, to, cwd)
+    if ":" in rel:
+        raise Refused(COLON)
     if Path(rel).suffix.lower() == ".md":
         raise Refused(NO_MD)
     if credentials.match_segment(rel.split("/")[1:]) is not None:

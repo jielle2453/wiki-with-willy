@@ -19,6 +19,7 @@
 重跑照記下的清（舊版清過之後就算不出來了）；哪一項沒清掉（檔開著、鎖等不到）就留著 pending、回還剩什麼，全部清完才標完成、
 拿掉記的範圍。遮罩只換完整路徑（uri、別名/相對、檔案索引/別名/相對、磁碟上的絕對路徑），前後都要是路徑的邊界，不做子字串。
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -27,9 +28,9 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from kb._lib import agenda, cards, entities, findings, inventory, journal, ledger, pending, rulings, turn
+from kb._lib import agenda, cards, entities, findings, inventory, journal, ledger, pending, rulings, synthesis, turn
 from kb._lib import sources as sources_lib
-from kb._lib.io import FileLock, write_json_atomic, write_text_atomic
+from kb._lib.io import FileLock, read_json, write_json_atomic, write_text_atomic
 from kb._lib.paths import normalize
 
 PURGED = journal.PURGED_TEXT
@@ -345,7 +346,9 @@ def _current_state(vault, ids, turn_id, counts):
         items[:] = data["items"]
         return n
     def f_change(data):
+        before = {c.get("id") for c in data.get("findings") or [] if isinstance(c, dict)}
         n = drop_findings(data, ids)
+        counts["finding_ids"] |= before - {c.get("id") for c in data["findings"] if isinstance(c, dict)}
         return n, bool(n)
     parts = ((pending.PENDING_POSIX, lambda: pending._edit(vault, turn_id, p_change)),
              (agenda.AGENDA_POSIX, lambda: agenda._mutate(vault, turn_id, lambda data: (None, drop_agenda(data, ids)))),
@@ -366,6 +369,61 @@ def _current_state(vault, ids, turn_id, counts):
                 except OSError:
                     counts["left"]["state"] += 1
             counts["card_ids"].add(cid)
+
+
+def _drop_synced(vault, gone, turn_id, counts):
+    """目前的綜合卡檔頭「整理到」拿掉指到清掉的卡與推算的行（第七輪：AI 照 todo 重寫時推算還在，清完就成了懸空的行）；
+    改前備進回合（程式改的）。改不了算進還剩的狀態檔。"""
+    if not gone:
+        return
+    for rels in entities.synthesis_files(vault).values():
+        for rel in rels:
+            p = Path(vault) / rel
+            try:
+                text = p.read_text(encoding="utf-8")
+                lines = cards.parse_front(text).get("整理到")
+            except ValueError:
+                continue
+            except (OSError, UnicodeDecodeError):
+                counts["left"]["state"] += 1
+                continue
+            if not isinstance(lines, list):
+                continue
+            keep = [x for x in lines if str(x).split(" ")[0] not in gone]
+            if len(keep) == len(lines):
+                continue
+            try:
+                turn.backup(vault, rel, turn_id, by="program")
+                write_text_atomic(p, synthesis.replace_front(text, {"整理到": keep}))
+            except OSError:
+                counts["left"]["state"] += 1
+
+
+def _scrub_prompts(vault, words, keep, counts):
+    """回合檔（turns/*.json）與回合夾的 turn.json：「問」提到那些卡的編號、標題、那夾路徑的整欄換「（已排除）」，note 照字詞換
+    （第七輪）；keep 裡的回合（排除那一句、清那一句）不動。回合檔在它自己的鎖裡改。"""
+    targets = [(p, "state") for p in sorted((Path(vault) / turn.TURNS_REL).glob("*.json"))]
+    targets += [(d / "turn.json", "backups") for d in _version_dirs(vault)]
+    for p, kind in targets:
+        if not p.is_file():
+            continue
+        try:
+            with FileLock(p) if kind == "state" else contextlib.nullcontext():
+                data = read_json(p)
+                if not isinstance(data, dict) or {data.get("turn"), data.get("journal_turn")} & keep:
+                    continue
+                new = dict(data)
+                head = data.get("prompt_head")
+                if isinstance(head, str) and words(head) != head:
+                    new["prompt_head"] = PURGED
+                if isinstance(data.get("note"), str):
+                    new["note"] = words(data["note"])
+                if new != data:
+                    write_json_atomic(p, new)
+        except ValueError:
+            continue
+        except (OSError, UnicodeDecodeError):
+            counts["left"][kind] += 1
 
 
 def _is_synthesis(rel):
@@ -679,6 +737,8 @@ def _scrub_text(vault, rel, mask):
 
 TEXT_SUFFIXES = (".md", ".txt", ".json", ".jsonl", ".tsv", ".csv")
 PENDING_POSIX = ".system/purge-pending.json"  # 還沒清完的那幾條排除的卡標題（不寫進 sources.json，清完刪掉；第六輪）
+# 一條記的東西：卡標題（第六輪）、排除那一句與清那一句的回合代號（「問」不換）、清掉的推算編號（「整理到」照拿掉；第七輪）
+PENDING_KEYS = ("titles", "turns", "findings")
 
 
 def load_pending(vault):
@@ -692,25 +752,44 @@ def load_pending(vault):
     return data
 
 
-def recorded_titles(vault, alias, spec):
+def recorded(vault, alias, spec, what="titles"):
     item = load_pending(vault)["items"].get(f"{alias}/{spec}") or {}
-    return {t for t in item.get("titles") or [] if isinstance(t, str)}
+    return {t for t in item.get(what) or [] if isinstance(t, str)}
 
 
-def record_titles(vault, alias, spec, titles, turn_id, undo=None):
-    """卡標題跟範圍一起留到清完（重跑時卡與舊版可能已經刪了，標題就取不到）。有變才備進回合、寫。"""
+def recorded_titles(vault, alias, spec):
+    return recorded(vault, alias, spec, "titles")
+
+
+def record(vault, alias, spec, what, values, turn_id, undo=None):
+    """記到那一條的 what（PENDING_KEYS 之一），跟範圍一起留到清完（重跑時卡、舊版、推算可能已經刪了，就取不到）。
+    有變才備進回合、寫。"""
     data = load_pending(vault)
     key = f"{alias}/{spec}"
-    have = set((data["items"].get(key) or {}).get("titles") or [])
-    want = sorted(have | {t for t in titles if t})
+    item = data["items"].get(key) if isinstance(data["items"].get(key), dict) else {}
+    have = set(item.get(what) or [])
+    want = sorted(have | {v for v in values if v})
     if want == sorted(have) and key in data["items"]:
         return False
-    data["items"][key] = {"titles": want}
+    data["items"][key] = dict(item, **{what: want})
     if undo is not None:
         undo.file(PENDING_POSIX)
     turn.backup(vault, PENDING_POSIX, turn_id)
     write_json_atomic(Path(vault) / PENDING_POSIX, data)
     return True
+
+
+def record_titles(vault, alias, spec, titles, turn_id, undo=None):
+    return record(vault, alias, spec, "titles", titles, turn_id, undo)
+
+
+def own_turns(vault, turn_id):
+    """這一句的回合代號與它在工作日誌那行的 key（退回自己這句時接著原回合）。"""
+    try:
+        cur = turn.current(vault)
+    except (OSError, ValueError):
+        cur = {}
+    return {turn_id, turn.journal_key(cur) if cur.get("turn") else turn_id}
 
 
 def clear_titles(vault, alias, spec, turn_id):
@@ -810,17 +889,22 @@ def purge(vault, alias, spec, root, turn_id):
     record_scope(vault, alias, spec, sc, turn_id)
     titles = recorded_titles(vault, alias, spec) | (set(_titles(vault, ids).values()) if ids else set())
     record_titles(vault, alias, spec, titles, turn_id)  # 重跑時卡與舊版已經刪了，標題靠記下的
-    counts = {"card_ids": set(), "backups": 0, "temp": 0, "journal": 0, "findings": 0, "undecodable": 0,
-              "left": {k: 0 for k, _w in LEFT_WORDS}}
+    record(vault, alias, spec, "turns", own_turns(vault, turn_id), turn_id)
+    keep = recorded(vault, alias, spec, "turns")  # 排除那一句、清那一句：「問」不換
+    counts = {"card_ids": set(), "finding_ids": set(), "backups": 0, "temp": 0, "journal": 0, "findings": 0,
+              "undecodable": 0, "left": {k: 0 for k, _w in LEFT_WORDS}}
     prefix = folder_uri(alias, spec)
     mask = masker(vault, alias, spec, root)  # 備份、ledger、hook-errors 只換路徑（第六輪）
-    words = word_masker(mask, ids, word_titles(vault, titles))  # 工作日誌的 result、note 另比編號與標題
+    words = word_masker(mask, ids, word_titles(vault, titles))  # 工作日誌與回合檔的「問」、result、note 另比編號與標題
     _current_state(vault, ids, turn_id, counts)
+    record(vault, alias, spec, "findings", counts["finding_ids"], turn_id)
+    _drop_synced(vault, set(ids) | recorded(vault, alias, spec, "findings"), turn_id, counts)
     for vdir in _version_dirs(vault):
         _scrub_version(vault, vdir, ids, prefix, mask, counts)
+    _scrub_prompts(vault, words, keep, counts)
     counts["temp"] = _temp(vault, ids, sc["hashes"], counts)
     try:
-        counts["journal"] = journal.scrub(vault, words, mention=lambda text: words(text) != text)
+        counts["journal"] = journal.scrub(vault, words, mention=lambda text: words(text) != text, keep=keep)
     except OSError:
         counts["left"]["journal"] += 1
     for rel in (ledger.LEDGER_REL, ledger.ERROR_LOG_REL):

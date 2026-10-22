@@ -512,10 +512,11 @@ PURGED_TEXT = "（已排除）"
 _MONTH_NAME = re.compile(r"^\d{4}-\d{2}$")
 
 
-def scrub(vault, mask, mention=None):
+def scrub(vault, mask, mention=None, keep=()):
     """kb folders purge（manage 第二版第 7 點，D-174）：每個月的工作日誌，changed 裡 mask 改得動的路徑整個換成「（已排除）」、
     note 照 mask 換；changed 有換到的、或 result／note 讓 mention 說有提到的回合行，result 整欄換成「（已排除）」
-    （第五輪：回答裡列了那些卡的標題、編號的回合也算）；prompt 不動（客戶自己的話）。
+    （第五輪：回答裡列了那些卡的標題、編號的回合也算）；prompt 讓 mention 說有提到的整欄換（第七輪：客戶會把 AI 的話貼回來），
+    keep 裡的回合（排除那一句、清那一句）的 prompt 不動。
     鎖住讀改寫、壞行照舊留著，改到的月重渲染（_locked_edit）。mask(text) 回換過的字串。回改到幾段。"""
     root = Path(vault) / JOURNAL_REL
     if not root.is_dir():
@@ -545,6 +546,9 @@ def scrub(vault, mask, mention=None):
                         row["result"] = PURGED_TEXT
                 if isinstance(row.get("note"), str):
                     row["note"] = mask(row["note"])
+                if (mention is not None and row.get("kind") == "turn" and row.get("turn") not in keep
+                        and isinstance(row.get("prompt"), str) and mention(row["prompt"])):
+                    row["prompt"] = PURGED_TEXT
                 if row != obj:
                     items[i] = (None, row)
                     hits.append(i)

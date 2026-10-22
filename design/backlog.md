@@ -115,6 +115,7 @@
 | B-401 | 2026-10-22 | open | 中（接受的風險）：`kb office run` 守門照單一 kb 呼叫 allow，AI 在工作區寫的腳本跑起來不跳權限，腳本讀寫哪裡守門管不到（原檔、排除夾、AI 產出都碰得到）。使用者 10-22 選維持免問（客戶不被打擾），produce 本文要求腳本只碰副本與 `OUT_DIR`。候選：「密碼與守門」題再看要不要改 pass、或跑完比對原檔指紋 | produce 實作疑義 A、裁定 7 |
 | B-402 | 2026-10-22 | open | 低：`versions revert --delete-outputs` 刪到 link 條目掛的下載檔時，`_reconcile` 把整筆 link（含網址位置）改 deleted；應只拿掉檔案那個位置（versions.py 不在 produce 可動範圍） | produce 實作疑義 I |
 | B-403 | 2026-10-22 | open | 低：`kb output save` 算同名加 (2) 到複製之間沒鎖，兩個對話同時存同名檔可能互蓋 | produce security-review |
+| B-404 | 2026-10-22 | open | 低：produce 測試第一輪 skill-reviewer 與 code-review 剩下的：note 沒有「以後報價單照這份做」（設範本）的路，客戶這樣說要靠 produce 自己判；新建 `AI 產出/<型別>/` 夾沒記資料夾帳（空夾會被 delete-outputs 收掉，目前沒有後果） | produce 測試第一輪、裁定 19、21 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

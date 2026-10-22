@@ -531,3 +531,50 @@ manage 該觸發從第二輪的 83／90（92.2%）升到 89／90，兩個擺盪�
 1. 可以派補確認第 7、9 步。
 2. 觀察 2 決定要不要記 backlog 或寫進確認的例外清單。
 3. 仍未驗：隨身碟的 `trash`（只用替身）；B-414、B-410。
+
+---
+
+# 第八輪（重測 620d280）
+
+日期：2026-10-23
+對象：worktree 同一分支，commit `620d280`（樹乾淨）；規則見 D-174 的 2026-10-23 補與 spec 最後兩條。補確認報告 `manage第二版-補確認.md` 第 7 步。
+做法：a2 列的 5 項各自重現（「問」也遮、綜合卡「整理到」、S-16／S-23、清完全庫 grep、單元測試與前幾輪腳本）；`17cd3f8..620d280` 的 security-review（子代理，唯讀）；補確認那種資料（使用者把 AI 的回答貼回來當問題，內含卡標題、檔案索引路徑、金額）。沒重跑 run_eval，沒改任何程式。
+
+## 結論（第八輪）
+
+- 單元測試 `python -m unittest discover tests`：**exit 0**（Ran 2017，OK，skipped=1）。前幾輪 16 支腳本輸出與上一輪逐行相同（只差日期從 10-22 變 10-23）。
+- 核心修法都有效：「問」會被遮、綜合卡「整理到」的懸空行會拿掉、S-16／S-23 有補例外。
+- **但「能不能發行」：還不能，有兩件要先修**（都是我重現的，都在「排除與 purge 不在同一個回合」這個情況；補確認第 7 步剛好是這個情況）：
+  1. **清完全庫 grep 卡標題、卡編號不是 0**：排除（回合 A）與 purge（回合 B）不同回合時，B 回合的備份底下留著 `.system/versions/<B>/files/.system/purge-pending.json`（**明碼卡標題**）與 `.system/versions/<B>/files/.system/sources.json`（`purge_ids`，**卡編號**）。同一回合做完則全是 0。這正是 a2 擔心的那件，上一輪只驗了同一回合所以沒看到。
+  2. **「排除那一句」不是永遠免換**：排除被擋（綜合卡還引用）、換回合才 purge 時，排除那一句的 `prompt`、`prompt_head`（`turns/*.json`、`versions/*/turn.json`）被換成「（已排除）」，只有 purge 那一句留著。程式只在 `purge()` 裡記要免換的回合，`exclude` 被擋時沒記（子代理與我都重現）。
+- 另有 1 件建議一起修（中低）：**終端機直接跑 purge 會把最近一個無關的對話回合當成免換**（`turn.current` 讀 `current.json`，終端機不開回合），那回合的 `prompt` 就不換、仍帶卡標題。
+- 其餘（低）見最後。修完上面 1、2（和 3）之後，我只需要再驗那三條。
+
+## 逐項
+
+| 項目 | 結果 | 證據（已重現（我）） |
+|---|---|---|
+| 1a. 提到卡編號、標題、夾完整路徑的回合，`prompt` 整欄換 | 過 | 補確認那種資料：「你剛說：報價表 王家心情 總價 1,280,000 元，檔案在 檔案索引/客戶案件/私人/王家心情-ab12.md，這對嗎？」→ `（已排除）`；只寫 `〔f-xxxxxxxx〕這張卡是什麼` → `（已排除）`；含標題字面的「我想要王家心情好一點…」→ `（已排除）`（「提到就換」）；`你剛說王家心情 的資料在 客戶案件/私人 ，這對嗎` → `（已排除）`。無關的留著：「幫我看今天的日程」、2 字詞「合約的付款條件是什麼」、`客戶案件/私人資料夾那個…私人行程在週五`（後面接字，不是完整路徑）都沒動。範圍：工作日誌 jsonl 與月檔（`王家心情`、卡編號、`1,280,000` 都 0）、`.system/turns/*.json`（含 `current.json`）的 `prompt_head`、`.system/versions/*/turn.json` 的 `prompt_head` 都換了。 |
+| 1b. 排除那一句、purge 那一句不換 | **部分** | 同一回合做完（排除＋purge）：那一句留著（`請排除 客戶案件/私人 ，我不想讓你看到`）✓。排除被擋、換回合再 purge：**排除那一句被換成「（已排除）」**，purge 那一句留著 ✗（見結論 2）。注意：我第一次重現時用的句子是「…客戶案件/私人那夾」「…私人清乾淨」，路徑後面直接接中文字、根本沒被比對到，所以看起來「免換成功」，是假的；改用路徑後面有空白或標點的句子才露出問題。 |
+| 2. 綜合卡「整理到」懸空行 | 過 | 排除之後 AI 照 todo 重寫綜合卡（檔頭有 `c-…` 推算行：一條是被清的「日記推出來的」、一條是別張卡的「估價推出來的」）；purge 後被清的那條 `c-06f7247b -` 拿掉，`c-d3afdd53 -`、`f-…`、`r-…` 都留著；內文（含字面 `f-xxxx` 的備註）沒被動；`cards todo` 的 `synthesis_stale`／`synthesis_broken` 是 0、`plan` 沒有 `purge_synthesis`；第一次 purge 中途失敗（`journal.scrub` 丟 `OSError`）、重跑後也乾淨；再跑一次 purge 綜合卡不再被改。改前備份：同一回合內 `turn.backup` 只備第一次，所以我造的情境裡備份是 AI 重寫前那一份；真實流程 AI 重寫時 hook 會先備。 |
+| 3. S-16、S-23 補 hidden 例外 | 過 | diff：S-16 加「例外：來源的夾排除成不想讓 AI 看到（`purge_synthesis`），那夾的卡的紀事要刪。」S-23 同義一句。`test_rules_synthesis` 在全測試裡綠。 |
+| 4. 清完全庫 grep | **不過（不同回合）／過（同一回合）** | 同一回合：卡標題 0、卡編號 0、機密字串 0、夾路徑只剩 `sources.json` 與排除、purge 那一句。不同回合：卡標題 → `.system/versions/<B>/files/.system/purge-pending.json`；卡編號 → `.system/versions/<B>/files/.system/sources.json`；夾路徑另在日誌與 `turns/*.json` 的排除／purge 那句與不相干的 `私人資料夾` 那句（這些是設計）。原因：purge 最後 `clear_titles`、`mark_done` 改這兩個檔時，才把改之前的版本備進 B 回合，而這時版本備份的清理已經跑完，沒人再清它們（子代理同結論）。 |
+| 5. 單元測試與前幾輪腳本 | 過 | 見結論 |
+
+## security-review 子代理的發現（`17cd3f8..620d280`；我自己重現的標「已重現（我）」）
+
+1. **中**（已重現（我））排除那一句在「排除被擋、換回合再 purge」時不免換。見上。修法：`folders.exclude` 在記 `purge_ids`／標題的同一處也記「回合」，且被擋的 `purge` 在 raise 之前記自己的回合。
+2. **中低**（子代理已重現）終端機跑 purge 時 `own_turns` 讀 `turn.current`＝最近一個對話回合，把它誤當成免換。修法：只在 `journal_cli.in_conversation(vault)` 為真時記；同時開兩個視窗時 `current.json` 可能是別的 session 的回合，也會免換錯。
+3. **中**（已重現（我））purge-pending.json、sources.json 在 purge 回合的備份留著標題與卡編號。見上。修法：先 `clear_titles`、`mark_done`，再跑版本備份的清理；或把 `purge-pending.json` 與含 `purge_ids` 的 `sources.json` 備份列入清理。
+4. **低**（子代理重現）路徑遮罩左邊沒有邊界：`舊客戶案件/私人 的檔案還在嗎`、`D:/x/客戶案件/私人` 也被整欄換；別名很短（例如 `A`）時會誤中 `DATA/私人`。卡標題 3 字以上是子字串比對，通用詞（「合約書」）會誤換含它的無關問題（spec 已接受）。偽造的 `purge_ids:["a"]` 會讓含 "a" 的 prompt 全換，要先能寫 `sources.json`。
+5. **低**（子代理重現）`purge-pending.json` 型別錯（`{"turns":[{"a":1}]}`、`{"turns":5}`）或日誌某列 `turn` 是不可雜湊的值時，purge 噴未攔截的 `TypeError`／`AttributeError`；需要先能寫 `.system`。建議包 `try/except` 並算進「還剩」。
+6. **低**（讀碼）`_scrub_prompts` 對 `turns/*.json` 拿的鎖，`turn.start`／`set_done` 等並不拿，兩個視窗同時動時有毫秒級的 lost-update。
+7. **低**（讀碼）`_current_state` 先從 `findings.json` 拿掉推算、之後才 `record(..."findings")`，兩者之間被殺掉會漏掉 id，綜合卡的 `c-…` 懸空行就清不掉（只有 id、沒內容）。先記再拿較穩。
+8. **低**（讀碼）備份裡只有 `c-` 編號的綜合卡舊版不在 `ids` 範圍內，之後 `versions revert` purge 那回合可能還原出懸空的 `c-` 行。
+- 乾淨：`_drop_synced` 改檔頭在 LF／CRLF／BOM／內文含 `f-xxxx` 字面與 `\x0c` 時只動「整理到」該拿掉的行，改完 `synthesis.validate` 仍通過，不認得的編碼跳過、不算沒清完，`synthesis_files` 不跟符號連結；詞比對用字面交替，3000 個編號＋3000 個標題掃 2000 個 prompt 只要 0.14 秒、無 ReDoS，空標題與空編號被濾掉；`alias/spec` 當 `purge-pending.json` 的 key 不會當檔案路徑用；鎖順序一致；`rules/synthesis.md` 新句沒有注入面。
+
+## 建議（請 a2 定）
+
+1. **發行前要修**：結論 1（不同回合的備份殘留）與結論 2（排除那一句免換）；順手修子代理 2（終端機不記回合）。這三件修完，我只重測：不同回合 grep 卡標題／卡編號 0、排除被擋換回合 purge 兩句都不換、終端機跑 purge 不免換無關回合。
+2. 子代理 4～8：記 backlog；5（型別錯噴 traceback）建議順手包 `try/except`。
+3. 確認第 7 步若照 `manage2-補確認-任務.md` 做，排除與 purge 若落在不同回合（綜合卡要先重寫、又換了 session），就會踩到結論 1、2；修完前不要用那個流程判過。

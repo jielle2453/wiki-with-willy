@@ -47,6 +47,14 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - 綜合卡：整批做完後到門檻的綜合卡由主對話寫還是交給子代理（例句 13）。
 - 做完回到主對話：子代理回報什麼（做了幾份、哪幾份沒做成與原因、帶出的名字），主對話怎麼接著問客戶（D-134、D-135）。
 
+### 本題釐清、不改 D 的點（設計 session 10-22 整理，寫 spec 時展開）
+- **規則給子代理（B-032）**：`hooks/hooks.json` 加 `SubagentStart`，matcher `^wiki-with-willy:card-maker$`，`additionalContext` 帶 `rules/core.md` 全文（跟開場注入同一段來源）；不帶 matcher 會連內建子代理也注入，不要（spike 第 1 題）。
+- **權限**：背景子代理遇到要人按允許的指令會被自動拒絕（spike「對設計的影響」第 7 點）。card-maker 只用 kb 指令與檔案工具（Read、Write、Edit），kb 呼叫由守門放行（D-073）；每批清單由程式直接給（D-197），不需要臨時 python 或 `PYTHONIOENCODING=…` 這類指令；kb 輸出自己設好 UTF-8。a2 歸給這題的 `PYTHONIOENCODING` 問題照此解。
+- **回合與日誌**：`hooks/turn.py` 的不開回合清單補 `<agent-message`（桌面版 D2）；子代理的寫入與 kb 呼叫照 `agent_id` 算回派它的回合（D-195）；日誌「改了」不能只在 Stop 那刻算（桌面版 D3）。
+- **一個子代理還是兩個**：做卡（含抽日程）與寫綜合卡用同一個 `agents/card-maker.md` 帶工作種類，或另開一個，寫 spec 時照 plugin-dev:agent-development 定（D-198）。
+- **舊程式對照**：third party 舊 `plugin` 的 `agents/card-maker.md`。
+- **B-412**：開場「還有 N 份沒整理完」時 AI 沒照 D-161 直接整理；開場指示因 D-196（一律派 card-maker）本來就要重寫，一起查為什麼沒照做。
+
 ### 要先 spike 的（任務檔 `llm-wiki-test` 底下 `card-maker-spike/card-maker-spike-任務.md`，跑之前跟 a2 錯開）
 1. 子代理拿不拿得到 `rules/core.md`：SubagentStart hook 能不能注入同一段（B-032）；不能就看 agent 本文指路徑讀得到。
 2. 子代理用檔案工具寫卡：守門（PreToolUse）、回合備份、PostToolUse 驗卡照不照跑；備份算進哪個回合、`versions revert` 退不退得掉。
@@ -69,3 +77,4 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - 2026-10-22：日程與綜合卡誰做——使用者追問 ingest 做什麼（更正：分辨哪句歸誰是各 skill 描述的事，ingest 只在被叫錯時交回）、ingest 對綜合卡多知道什麼（查證後幾乎沒有，B 的好處是我講重了）；選 A，寫 D-198。（note 糾正後單張綜合卡：查 note 的 correction.md，note 只列待更新、下次整理時重寫，已在 D-198 範圍內，D-198 那句改掉。）
 - 2026-10-22：例句 2 估算——選 A（只講時間、用量一句話），寫 D-199，B-108 改寫。
 - 2026-10-22：停止——選 A，寫 D-200，改 D-156。I-116 grep：「按停止」在 `scripts/kb/_lib/plan.py` 的 `ANNOUNCE` 與模組說明、`hooks/turn.py` 說明、`scripts/kb/cards.py` 註解、`skills/ingest/references/commands.md` 的 announce 說明，寫 spec 時一起列進可以動。
+- 2026-10-22：整理「本題釐清」六點（規則注入、權限、回合與日誌、一個或兩個子代理、舊程式對照、B-412）。

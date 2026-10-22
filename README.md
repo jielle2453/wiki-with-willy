@@ -109,7 +109,7 @@ answer 只讀；要把剛才算好的答案留下來，說「把剛才的答案�
 要一份東西直接說（produce）：
 
 - 「幫我把王宅的報價整理成 Excel」：AI 先在 `AI 產出/` 寫一份草稿（md，每個數字標出處、回原檔核對過，合計由程式加），你說可以才做成 Excel，有公式的會重算過再核一次。
-- 「王宅合約的付款條件改成 30 天」：AI 拿一份副本、用修訂標記改（作者「AI 助理」），存進 `AI 產出/`，原檔不動；說「退回上一版」會拿掉。
+- 「王宅合約的付款條件改成 30 天」：AI 拿一份副本、用修訂標記改（作者「AI 助理」），存進 `AI 產出/`，原檔不動；說「退回上一版」可以退這一步，做好的檔先留著，要刪再說。
 - 「幫我做一份內湖李的進度報告給業主」：草稿你看過後，AI 會推薦做成線上文件，講清楚存在你的 claude.ai 帳號、預設只有你看得到、要 Word 怎麼拿；你要本機檔也可以。
 - 「做一份設計提案簡報給業主」：同樣先推薦線上簡報；你說要 PowerPoint 檔就本機做，做完轉成圖看過版面。
 
@@ -138,7 +138,7 @@ answer 只讀；要把剛才算好的答案留下來，說「把剛才的答案�
 - `kb statement add|withdraw|list`：記一條客戶口述（`--replaces` 改舊的）、收回、列出；`kb ruling add|remove|recheck|list`：記一條裁示（口述為準、不採用）、收回、原檔新版看過了照舊、列出（最後一行是條數），重寫 `系統/裁示.md`。都先備份，說「退回上一版」救得回。
 - `kb finding add|withdraw|list`：記一筆推算（`--entity`、`--text` 結果、`--how` 算法、`--basis` 依據的卡，`--replaces` 取代舊的）、收回、列出（依據變了的標「待重算」）；寫前先備份。
 - `kb office check|setup`：看這台電腦有什麼做文件的工具（Office、LibreOffice、Node.js、套件）、裝工具到 `%LOCALAPPDATA%\wiki-with-willy\tools\`；`kb office copy <編號或路徑>`：拿一份原檔的副本到工作區（`.system/temp/office/`），原檔不動；`kb office run|unpack|pack|pdf|recalc|render`：跑工作區的做檔腳本、解開與打包 Office 檔、轉 PDF、重算 Excel、轉成每頁的圖。都不寫知識庫。
-- `kb output save <檔> --to "AI 產出/<型別>/<檔名>"`：把做好的檔放進 AI 產出（工作區的搬、知識庫外的複製），先備份、登記，說「退回上一版」會拿掉；`--from` 記改自哪份、`--draft` 收掉草稿、`--link` 掛到線上文件。`kb output link <網址> --title …`：登記一份線上文件（Claude artifact），下次整理做卡；`kb output drop-draft <草稿>`：草稿不要了。
+- `kb output save <檔> --to "AI 產出/<型別>/<檔名>"`：把做好的檔放進 AI 產出（工作區的搬、知識庫外的複製），先備份、登記，說「退回上一版」時成品先留著、要刪再說；`--from` 記改自哪份、`--draft` 收掉草稿、`--link` 掛到線上文件。`kb output link <網址> --title …`：登記一份線上文件（Claude artifact），下次整理做卡；`kb output drop-draft <草稿>`：草稿不要了。
 - `kb profile add 範本 文件=<文件> 底=<卡標題或編號>`：記哪種文件以哪份為底（設定檔第七節）；`kb profile remove 範本 文件=<文件>` 拿掉。
 - `kb journal recent`：最近幾段工作日誌，每段帶你說的、結果、做了、改了；`--changed` 只列有改動的、`--find <詞>` 找說過的、`--since <YYYY-MM-DD>` 某天以後，可疊加。
 

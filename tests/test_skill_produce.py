@@ -162,6 +162,14 @@ class Round2(unittest.TestCase):
         self.assertIn("kb profile show --json", self.make)
         self.assertIn("只收工作區或 AI 產出裡的檔", self.make)
 
+    def test_revert_keeps_output(self):
+        """確認後裁定 27：退回照 D-074 成品先留著，要刪再說；不說「退回會拿掉」。"""
+        for name, text in (("SKILL.md", self.body), ("make.md", self.make)):
+            with self.subTest(file=name):
+                self.assertNotIn("會拿掉", text)
+                self.assertNotIn("退回才拿得掉", text)
+                self.assertIn("先留著", text)
+
     def test_answer_says_excel_file(self):
         answer = (ROOT / "skills" / "answer" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("做成文件、Excel 檔、簡報", answer)

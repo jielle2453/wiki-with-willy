@@ -14,14 +14,14 @@ from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
 CLI_LOCK_TIMEOUT = 30
 LOCK_BUSY = "等不到鎖，沒有寫入"
-SAVED = "已放進 {shown}{extra}（說「退回」會拿掉）"
+SAVED = "已放進 {shown}{extra}（說「退回」可以退回這一步；這份檔會先留著，要刪再跟我說）"  # 退回照 D-074 成品留著（確認後裁定 27）
 LINKED = "已登記線上文件「{title}」（下次整理會做卡）"
 DROPPED = "草稿收起來了：{name}（說「退回」會回來）"
 
 
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="output_command", metavar="<子子命令>", required=True)
-    sv = subs.add_parser("save", help="把做好的檔放進 AI 產出", description="工作區的檔用搬的、知識庫外的用複製的；先備份、登記，退回拿得掉。")
+    sv = subs.add_parser("save", help="把做好的檔放進 AI 產出", description="工作區的檔用搬的、知識庫外的用複製的；先備份、登記，退回時成品先留著、要刪再刪。")
     sv.add_argument("file", help="工作區或知識庫外的檔")
     sv.add_argument("--to", required=True, help="放到哪：AI 產出/<型別>/<檔名>")
     sv.add_argument("--from", dest="source", help="改自哪份原檔（卡編號、uri 或路徑）")

@@ -71,7 +71,7 @@ class Save(Base):
     def test_save_from_workspace(self):
         src = self.work()
         out = self.ok("save", str(src), "--to", "AI 產出/報價/a.xlsx", "--from", self.fid)
-        self.assertEqual(out, "已放進 AI 產出\\報價\\a.xlsx，改自「王宅合約」（說「退回」會拿掉）")
+        self.assertEqual(out, "已放進 AI 產出\\報價\\a.xlsx，改自「王宅合約」（說「退回」可以退回這一步；這份檔會先留著，要刪再跟我說）")
         self.assertFalse(src.exists(), "工作區的檔用搬的")
         self.assertEqual((self.V / "AI 產出/報價/a.xlsx").read_bytes(), b"PK xlsx")
         self.assertEqual(self.manifest()["AI 產出/報價/a.xlsx"], "create")
@@ -103,7 +103,7 @@ class Save(Base):
     def test_same_name_gets_2(self):
         self.ok("save", str(self.work()), "--to", "AI 產出/報價/a.xlsx")
         out = self.ok("save", str(self.work()), "--to", "AI 產出/報價/a.xlsx")
-        self.assertEqual(out, "已放進 AI 產出\\報價\\a (2).xlsx（說「退回」會拿掉）")
+        self.assertEqual(out, "已放進 AI 產出\\報價\\a (2).xlsx（說「退回」可以退回這一步；這份檔會先留著，要刪再跟我說）")
         self.assertTrue((self.V / "AI 產出/報價/a (2).xlsx").is_file())
 
     def test_refusals_exact(self):
@@ -172,7 +172,7 @@ class Draft(Base):
     def test_save_with_draft_then_revert(self):
         rel = self.draft()
         out = self.ok("save", str(self.work()), "--to", "AI 產出/報價/2026-10-21 內湖李 報價.xlsx", "--draft", rel)
-        self.assertEqual(out, "已放進 AI 產出\\報價\\2026-10-21 內湖李 報價.xlsx，草稿收起來了（說「退回」會拿掉）")
+        self.assertEqual(out, "已放進 AI 產出\\報價\\2026-10-21 內湖李 報價.xlsx，草稿收起來了（說「退回」可以退回這一步；這份檔會先留著，要刪再跟我說）")
         self.assertFalse((self.V / rel).exists())
         self.assertEqual(self.manifest()[rel], "delete")
         self.assertTrue((self.V / ".system" / "versions" / self.t / "files" / rel).is_file(), "草稿備進回合")

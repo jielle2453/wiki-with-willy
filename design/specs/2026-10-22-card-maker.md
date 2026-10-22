@@ -62,6 +62,7 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - **大改動（D-075）**：子代理不能問客戶，所以 `dispatch` 派 synthesis 批次前先算：這個 job 回合已改的既有綜合卡（`ai_synthesis`）加這次要派的 `synthesis_stale` 張數超過 `big_change_synthesis_max`、回合沒 approve → 不派 synthesis，回 `approval`（問句與 `kb turn approve --turn <回合>`；`turn approve` 收 `--turn`），主對話問客戶、說好才 approve 再 dispatch。
 - **只整理一部分（例句 3）**：`dispatch --source <別名>` 只從那個來源的項目切批；synthesis 不受 `--source` 限制但照樣等 cards 都做完。
 - **估時（D-199）**：`plan.py` 的 `BATCH_SECONDS` 拿掉，改讀 `card_seconds_per_file` 與 `card_batch_overhead_seconds`：秒數 = 份數 × 每份秒數 + 準備秒數；不到 60 秒說「一兩分鐘」。
+- **B-412 的其他資料與 B-415（a2 轉來 manage 第二版確認第 0～0c 節，10-22）**：三次開場兩次照做，沒照做的那次第一句是一大段接手指示（任務書），AI 先處理那段才整理——B-412 重現時也要試「第一句很長」的情況。另外兩件併進這題：(1) 開場的數字要對：`cards.unsorted` 只算 `dispatch` 真的派得出去的（讀不到的、包括 produce 連結型條目打不開的，記進待處理後不再算，B-415），另外把要跟著原檔搬的卡算出來，開場行改成「還有 N 份沒整理完、M 張卡要跟著搬」（0 的那半不印）；(2) 連結型條目讀不到時 `convert` 記 unreadable，原因「線上文件打不開」，`plan.py` 的 `UNREADABLE_ADVICE` 加一句怎麼辦（到 claude.ai 確認那份還在、有分享給這個帳號，或跟我說先跳過）。確認時另記：主對話有沒有英文自言自語（a2 看到「Carding says to run `convert`.」，R-10）。
 - **B-412**：開場有「還有 N 份沒整理完」（門檻內）時 AI 沒照 D-161 直接整理。開場指示照 D-196 改寫（見要做的事 8）；實作先用 `claude -p` 在測試知識庫重現（19 份沒整理、說「你好」跑 5 次），找出原因再改，改完同法再跑 5 次（驗收 14）。
 - **跟密碼與守門、manage 第二版的交界**（a2 10-22 看過 spec 後提，兩題發行後都在 main）：
   1. **加密檔**：背景子代理不能問客戶，`convert` 一律不帶 `--password`、`--saved`；`dispatch` 切批時排除清冊或待處理已記成讀不到（含有密碼）的條目，留給主對話照 `plan`／`asks`（`unlock_same_kind` 等）問客戶。第一次遇到、還不知道有密碼的，子代理 `convert` 失敗照記讀不到、回報沒做成，下次 dispatch 就排除。
@@ -171,7 +172,8 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 11. [ ] 日誌：派工那句 Stop 時「改了」是無；子代理寫 3 張卡後跑 `subagent.py stop` → 那句的「改了」有 3 張卡；job 關掉後主對話下一次 Stop → 那句的結果換成最後回答，再一次 Stop 不換。
 12. [ ] `cards stop --json`：open 批次改 released、job 關、目前回合記 `ingest_stopped`、輸出 agents 與份數；之後同一 session 的 `cards todo` 開場指示不印（D-156 那套）。
 13. [ ] 退回：一個 job 寫了 20 張卡、中途客戶開了新回合（只讀）→ `versions revert` 一次退掉 20 張（卡、總目錄、實體清單回來）。
-14. [ ] B-412：測試知識庫 19 份沒整理，`claude -p --plugin-dir <ROOT>` 說「你好」跑 5 次，至少 4 次開始整理（跑了 `cards dispatch`）；報告寫 5 次各自的開頭。
+13b. [ ] 開場數字：清冊有 2 份讀不到（一份有密碼、一份連結型 404）、3 份新、5 張卡要搬 → 開場行「還有 3 份沒整理完、5 張卡要跟著搬」；連結型那份的 `tell` 是新加的那句。
+14. [ ] B-412：測試知識庫 19 份沒整理，`claude -p --plugin-dir <ROOT>` 說「你好」跑 5 次、第一句是一段 300 字的指示再跑 5 次，各至少 4 次開始整理（跑了 `cards dispatch`）；報告寫 5 次各自的開頭。
 15. [ ] card-maker 本文與 SubagentStart 注入過 `test_budget`；`claude plugin validate` 通過、`plugin-dev:plugin-validator` 沒有錯。
 16. [ ] 全部測試 `python -m unittest discover tests` exit 0（commit 之後跑，I-112）。
 
@@ -220,3 +222,4 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-22：寫完整 spec 草稿（使用者說寫 spec）。查官方文件補兩件：Bash 子行程沒有 session／agent 的環境變數，子代理身分只能從 hook 拿；PreToolUse 的 `updatedInput` 可改 Bash 指令並同時 allow。據此定回合歸屬的做法（job、agents 對照、守門插 `--turn`）、認領防重做、日誌補記、停、大改動、估時；一個子代理三種工作；例句 5、9 照 spike 改收，15 照 D-196 改收。I-116 grep：core.md、其他 skill 沒有相反的整理做法（answer 的 `unsorted`、note 的 `agenda scanned` 照用）。等使用者看過。
 - 2026-10-22：a2 看過 spec，補「跟密碼與守門、manage 第二版的交界」五點（加密檔不進批次、secret_shown、守門順序與引號、plan 排在 purge 兩步後、不讀的夾不走訪）與驗收 2b。
 - 2026-10-22：使用者說可以，狀態改 approved。
+- 2026-10-22（approved 後）：a2 轉來 manage 第二版確認的開場三次（兩次照做、第一句是長指示那次沒照做）；B-415（連結型讀不到每次都算進還有 N 份）與開場沒算要搬的卡，併進 B-412 那條；驗收加 13b、14 多試長指示。範圍跟開場整理同一處，不另開題。

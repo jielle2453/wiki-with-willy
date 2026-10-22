@@ -25,6 +25,7 @@ NAME_RULE = "一個名字，不含 \" $ ` \\ 這四種字元；有空白就加�
 DATE_RULE = "YYYY-MM-DD"
 AGENDA_RECHECK = "agenda_recheck"
 AGENDA_UNSCANNED = "agenda_unscanned"
+PURGE_STEPS = ("purge_synthesis", "purge")
 BATCH_SECONDS = 10  # 一份抓 10 秒（D-100）
 ANNOUNCE = "有 {n} 份要整理，大約{how_long}；要停的話按停止"  # 門檻內開始前先說（D-100 修訂）：整理中打字要等回合結束，停止鈕才停得下來
 UNREADABLE_LISTED = 5
@@ -75,7 +76,7 @@ def build(out, vault, config, tell_all=True):
     full = _plan(out)
     asks = _asks(out, vault, config, full)
     batch = bool(asks) and asks[0]["id"] == "batch"
-    steps = [s for s in full if s["step"] == "sync"] if batch else full
+    steps = [s for s in full if s["step"] in ("sync",) + PURGE_STEPS] if batch else full  # 清殘留批次時也留（疑義第 8 條）
     if not tell_all:
         return {"plan": steps, "asks": _number(asks), "tell": agenda.tell_lines(vault) + _conflict_tell(vault)}
     waiting = _waiting(out)
@@ -104,7 +105,7 @@ def _synthesis_rules():
 
 
 def _plan(out):
-    steps = []
+    steps = _purge_steps(out)
     sync = len(out.get("moved") or []) + len(out.get("duplicates") or [])
     if sync:
         steps.append(_step("sync", sync, SYNC, None))
@@ -124,6 +125,19 @@ def _plan(out):
     confirmed = [i for i in out.get("synthesis_new") or [] if i.get("confirmed")]
     if confirmed:
         steps.append(_step("synthesis_new", len(confirmed), "照清單寫綜合卡（synthesis_new）", _synthesis_rules()))
+    return steps
+
+
+def _purge_steps(out):
+    """manage 第二版（D-174）：有還沒清的「不想讓 AI 看到」排除時排最前面：先重寫引用那些卡的綜合卡，再 kb folders purge；
+    不算進 ingest_auto_max。"""
+    pend = out.get("purge_pending") or []
+    steps = []
+    rewrite = [s for p in pend for s in p.get("synthesis") or []]
+    if rewrite:
+        steps.append(_step("purge_synthesis", len(rewrite), "照清單重寫綜合卡，拿掉那夾的卡的內容（purge_pending）",
+                           _synthesis_rules()))
+    steps += [_step("purge", 1, cmd("folders", "purge", p["name"]), None) for p in pend]
     return steps
 
 

@@ -506,3 +506,45 @@ def render(vault, month):
     p = md_path(vault, month)
     p.parent.mkdir(parents=True, exist_ok=True)
     write_text_atomic(p, "\n\n".join(parts) + "\n")
+
+
+PURGED_TEXT = "（已排除）"
+_MONTH_NAME = re.compile(r"^\d{4}-\d{2}$")
+
+
+def scrub(vault, mask):
+    """kb folders purge（manage 第二版第 7 點，D-174）：每個月的工作日誌，changed 裡 mask 改得動的路徑整個換成「（已排除）」、
+    note 照 mask 換；changed 有換到的回合行，result 整欄換成「（已排除）」；prompt 不動（客戶自己的話）。
+    鎖住讀改寫、壞行照舊留著，改到的月重渲染（_locked_edit）。mask(text) 回換過的字串。回改到幾段。"""
+    root = Path(vault) / JOURNAL_REL
+    if not root.is_dir():
+        return 0
+    total = 0
+    for p in sorted(root.glob("*.jsonl")):
+        if not _MONTH_NAME.match(p.stem):
+            continue
+        hits = []
+
+        def edit(items):
+            for i, (_raw, obj) in enumerate(items):
+                if obj is None:
+                    continue
+                row, hit = dict(obj), False
+                changed = []
+                for c in row.get("changed") or []:
+                    if isinstance(c, dict) and isinstance(c.get("path"), str) and mask(c["path"]) != c["path"]:
+                        c, hit = dict(c, path=PURGED_TEXT), True
+                    changed.append(c)
+                if hit:
+                    row["changed"] = changed
+                    if row.get("kind") == "turn" and "result" in row:
+                        row["result"] = PURGED_TEXT
+                if isinstance(row.get("note"), str):
+                    row["note"] = mask(row["note"])
+                if row != obj:
+                    items[i] = (None, row)
+                    hits.append(i)
+            return bool(hits)
+        _locked_edit(vault, p.stem, edit)
+        total += len(hits)
+    return total

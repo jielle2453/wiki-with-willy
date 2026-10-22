@@ -36,6 +36,8 @@ TEMPLATE_VERSION = "2"
 OLD_TEMPLATE_VERSION = "1"  # 第一版的卡只補掛載（D-116），不算檔頭有問題
 SKIPPED_READS = ("credential", "placeholder", "too_large", "error")  # error 也列份數（裁定 29）
 REDO_REASON = "客戶說卡讀錯了"
+# orphans 的原因（B-059）：其他狀態（missing、turn_reverted、superseded）照填狀態名（疑義第 7 條）
+ORPHAN_REASONS = {None: "not_in_inventory", "excluded": "excluded", "deleted": "deleted"}
 INDEX_HEAD = ("# 總目錄\n"
               "這是什麼：你的檔案都在這裡，點進去是那份檔的卡，卡裡有開原檔的連結。\n"
               "怎麼用：可以摺疊；找不到的就問我。\n"
@@ -520,8 +522,9 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
     for cid, group in groups.items():
         check_time()
         entry = by_id.get(cid)
-        if entry is None or entry.get("status") != "active":
-            out["orphans"].extend(c["path"] for c in group)
+        if entry is None or entry.get("status") != "active":  # B-059：帶原因，排除夾的卡不會被說成原檔不見
+            reason = ORPHAN_REASONS.get(None if entry is None else entry.get("status"), (entry or {}).get("status"))
+            out["orphans"].extend({"path": c["path"], "reason": reason} for c in group)
             continue
         carded.add(cid)
         codes_of = {c["path"]: safe_problems(vault, c["path"], c["front"], by_id, sources, ent_data, data) for c in group}
@@ -602,6 +605,7 @@ def todo(vault, sources, tell_all=True):
     entries = inventory.load(vault)["entries"]
     out, groups, data = _sort_files(vault, sources, ent_data, entries, restored)
     out.update(synthesis.buckets(vault, ent_data, entities.mounts(vault, ent_data), data))
+    out["purge_pending"] = _purge_pending(vault, sources)
     matters = {entities.key(t["name"]) for t in data.get("types") or [] if t.get("category") == "matter"}
     # 狀態只在事類顯示：事類併進別的大類後 progress 留在實體清單、不再顯示（D-143）
     out["entities"] = [dict({"name": e["name"], "type": e.get("type"), "aliases": list(e.get("aliases") or []),
@@ -619,6 +623,20 @@ def todo(vault, sources, tell_all=True):
         out["agenda_recheck"], out["agenda_unscanned"] = [], []
         out["agenda_counts"] = {"overdue": 0, "today": 0, "upcoming": 0}
     out.update(plan.build(out, vault, config, tell_all=tell_all))
+    return out
+
+
+def _purge_pending(vault, sources):
+    """還沒清的「不想讓 AI 看到」排除（manage 第二版，D-174）：每條帶要重寫的綜合卡；沒有就是空清單。"""
+    from kb._lib import ledger, purge
+    from kb._lib import sources as sources_lib
+    out = []
+    for p in sources_lib.pending_purges(sources):
+        try:
+            out.append(purge.pending_detail(vault, p["alias"], p["spec"]))
+        except Exception as e:  # noqa: BLE001  算不出來不擋整理；照樣列 purge 那步，purge 自己會擋
+            ledger.log_error(vault, f"purge_pending 算不出來：{type(e).__name__}: {e}", source="cards")
+            out.append({"name": f"{p['alias']}/{p['spec']}", "alias": p["alias"], "spec": p["spec"], "synthesis": []})
     return out
 
 

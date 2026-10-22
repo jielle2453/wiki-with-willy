@@ -155,7 +155,7 @@
 | B-208 | 2026-10-11 | deferred | 主動推送：會前背景、逾期承諾，外部排程跑 `kb agenda brief` | 模式加輸出 |
 | B-209 | 2026-10-11 | deferred | 排程健檢 | 模式 |
 | B-210 | 2026-10-11 | deferred | 起草 PowerPoint、輸出 Google 文件 | 輸出去處 |
-| B-211 | 2026-10-11 | deferred | 既有 wiki 接入 | build-setup 分支 |
+| B-211 | 2026-10-11 | deferred | 既有 wiki 接入（舊 llm-wiki vault 併進 build 題，D-193；其他種類的 wiki 照舊延後） | build-setup 分支 |
 
 ## 從 llm-wiki 延後的想法
 

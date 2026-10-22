@@ -8,7 +8,7 @@
   {"query": "幫我做一份內湖李的進度報告給業主，講到哪些完工、哪些還在做", "should_trigger": true},
   {"query": "剛才那個表幫我存成檔案", "should_trigger": true},
   {"query": "做一份設計提案簡報給業主，大概五頁，要有平面圖那張", "should_trigger": true},
-  {"query": "草稿可以了，定稿吧", "should_trigger": true},
+  {"query": "內湖李那份進度報告的草稿可以了，幫我定稿", "should_trigger": true},
   {"query": "以後報價單一律附報價日期", "should_trigger": false},
   {"query": "大安陳報價多少", "should_trigger": false},
   {"query": "幫我寄給王先生", "should_trigger": false},

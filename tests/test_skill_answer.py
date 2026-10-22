@@ -76,6 +76,7 @@ class Body(unittest.TestCase):
         for want in ("現在怎樣", "在哪", "數字", "比", "這週", "改了什麼", "聊過", "要我確認", "一般知識"):
             with self.subTest(want=want):
                 self.assertIn(want, part)
+        self.assertIn("草稿還在等的歸 produce", part, "produce 實作回報後裁定 10：asks 的 draft 歸 produce")
         for want in ("note", "ingest", "manage", "produce"):
             with self.subTest(hand_off=want):
                 self.assertIn(want, part)

@@ -91,6 +91,9 @@ class Body(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertIn(code, part)
         self.assertIn("工作區用檔案工具寫", part, "實作回報裁定 1：明寫，免得模型照 R-01 不敢寫")
+        for want in ("只讀副本", "只寫 OUT_DIR", "不碰原檔與其他位置", "B-401"):
+            with self.subTest(want=want):
+                self.assertIn(want, part, "實作回報後裁定 7：office run 免問，腳本的範圍要寫明")
 
     def test_skeleton_points_to_programs_and_references(self):
         part = self.section("## 骨架", "## 共通")

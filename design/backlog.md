@@ -119,6 +119,7 @@
 | B-405 | 2026-10-22 | open | 低：produce 測試第二輪剩下的：修訂作者實跑寫成「AI」（規定「AI 助理」、第一輪是 Claude），驗修訂仍先試 `python -c` 被擋（N-5）；`_why` 不看用了誰，Office 失敗也說 LibreOffice 沒有執行成功（N-2）；`to_pdf` 先刪舊 PDF 才檢查有沒有轉換器（N-3）；`output link` 的備份在清冊鎖外（N-4）；重裝前沒清 `ready.json`（N-7）；`unpack`／`run` 的範圍仍是整個 `.system/temp`、`_URL` 用 `$` 可能放過結尾換行（N-8，未實跑） | produce 測試第二輪 |
 | B-406 | 2026-10-22 | deferred | 解加密的 Word、Excel、PowerPoint（D-182 這版只解 PDF）：候選純 Python 寫 AES 與 OLE 拆檔、或選配 msoffcrypto-tool 跟 produce 的工具一起裝（要驗智慧型應用程式控制擋不擋） | 密碼與守門 |
 | B-407 | 2026-10-22 | open | 中：answer 統計題（「今年報價總共多少」）走 `cards list` 逐份加，看不到客戶口述的更正（10/21「第五版 124 萬、原檔 142 萬不對」），合計用錯（726 萬，應 708 萬），之後 AI 自己更正。候選：`cards list` 對有口述或裁示的實體帶一句、或 verify.md 寫「合計前對每個實體查 `lookup` 的口述」 | produce 確認第 4 步 |
+| B-408 | 2026-10-22 | open | 低：produce 確認看到的：模型兩次叫 `cards todo --json --brief`（沒有這個旗標，repo 也沒有任何文件寫到，模型自己編的），被 argparse 拒後自己改；線上文件 link 還沒做卡時 `lookup` 只說「還沒整理 1 份」沒有標題，問「剛才那份在哪」要靠 `cards todo`、`journal recent` 找 | produce 確認第 2 步重跑 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

@@ -39,7 +39,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 ## 骨架
 
 - **加資料夾**：`folders add "<路徑>" --check` → 報份數、提醒；有憑證樣式的檔就說「檔名像密碼或金鑰的預設不讀，這版還不能開放，之後會有」→ 問別名 → `add`；加完問要不要整理成卡，要就照 ingest。
-- **不讀某夾**：`folders find "<夾名>"` 在登記的資料夾底下找（不用 Glob，會被守門擋）；找到多個就問是哪一個，都找不到才說本來就沒在讀、請她貼路徑。問兩種、只認明確的選擇 → `exclude "<找到的別名/相對路徑>"`（在不在來源裡由它判）；hidden 照輸出做原則 4。
+- **不讀某夾**：`folders find "<夾名>" --json` 在登記的資料夾底下找（不用 Glob，會被守門擋）；找到多個就問是哪一個，都找不到才說本來就沒在讀、請她貼路徑。問兩種、只認明確的選擇 → 照那一筆 `exclude` 給的現成指令跑（`hidden` 或 `unused`），不自己拼引號；`exclude` 是 null 的照 `note` 說；hidden 照輸出做原則 4。
 - **拿掉來源、恢復讀、列出**：`remove`（明確確認後）、`include`、`list`。
 - **搬家改名了**：`folders relocate "<別名>" "<新路徑>" --check` → 照實講 → 她說要才去掉 `--check` 再跑。
 - **搬、改名**：`source-edit move "<檔或夾>" --to "<夾>"`（`--to` 直接收 `where` 印的「別名/相對路徑」）、`source-edit rename "<檔>" "<新名字>"`；整個夾先 `--check`，要不要先問我自己判斷。

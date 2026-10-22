@@ -163,6 +163,13 @@ class Purge(unittest.TestCase):
                 self.assertNotIn(DIARY, str(row.get(k, "")), row)
             for c in row.get("changed") or []:
                 self.assertNotIn("私人", c["path"])
+        # 第三輪修：夾名與卡標題也查；夾名只准留在登記表（含它的舊版）與那一句的「問」
+        def prompt_place(h):
+            return (h.startswith((".system/journal/", "系統/工作日誌/", ".system/turns/"))
+                    or (h.startswith(".system/versions/") and h.endswith("/turn.json")))
+        folder = [h for h in hits(V, "私人") if not h.endswith(".system/sources.json") and not prompt_place(h)]
+        self.assertEqual(folder, [])
+        self.assertEqual(hits(V, "王家心情"), [])
         prompts = [r.get("prompt") for r in journal.read_lines(V, journal.month_of(turn.current(V)["turn"]))]
         self.assertIn(f"幫我看 {DIARY}", prompts)
         # manifest 的行改 purged、path 換掉；退回印那句

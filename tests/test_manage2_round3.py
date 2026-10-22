@@ -103,7 +103,8 @@ class Find(Base):
         code, out = kb("folders", "find", "私人", "--json", "--vault", str(self.V))
         self.assertEqual(code, 0, out)
         got = json.loads(out)
-        self.assertEqual(sorted(got["found"]), ["報價與合約/信義王/私人", "客戶案件/私人", "知識庫/案子/信義王/私人"])
+        self.assertEqual(sorted(f["path"] for f in got["found"]),
+                         ["報價與合約/信義王/私人", "客戶案件/私人", "知識庫/案子/信義王/私人"])
         code, out = kb("folders", "find", "私人", "--vault", str(self.V))
         self.assertEqual(out.splitlines()[0], "找到 3 個叫「私人」的夾：")
         self.assertIn("- 客戶案件/私人", out)

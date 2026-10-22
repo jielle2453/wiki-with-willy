@@ -93,7 +93,8 @@ class Body(unittest.TestCase):
         self.assertIn('folders find "<夾名>"', line)  # 第二輪修：Glob 會被守門擋，改用 kb 自己找
         self.assertIn("找到多個就問", line)
         self.assertIn("都找不到才說本來就沒在讀", line)
-        self.assertIn("由它判", line)
+        self.assertIn("--json", line)  # 第三輪修：照 find --json 給的現成 exclude 指令跑，不自己拼引號
+        self.assertIn("不自己拼引號", line)
         self.assertNotIn("查它在不在來源裡", line)
 
     def test_principles_3_and_8_merged(self):

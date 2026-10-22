@@ -46,6 +46,8 @@ NOTHING_TO_PURGE = "「{name}」沒有要清的"
 PURGE_BLOCKED = "還有綜合卡寫著那夾的內容：{names}（先重寫再清）"
 RESERVED_RELOCATE = "「{alias}」是知識庫自己的，不用換位置"
 HIDDEN_LOST = "不想讓 AI 看到的「{spec}」在新位置找不到；先說它現在叫什麼，或重新設不讀，再換過去"
+KB_IN_VAULT = "知識庫裡的夾不能設成不讀；要不讓 AI 看到，先搬到登記的來源夾再設"  # B-413
+FIND_NO_CMD = "夾名有引號一類的特殊符號，指令給不出來；請她先在檔案總管改名"
 PURGE_AGAIN = "{left}；關掉開著的檔再跑一次 {cmd}"
 ALIAS_BAD_CHARS = '<>:"/\\|?*'
 # Windows 保留裝置名（N7）：當夾名會建不出來或指到裝置
@@ -378,11 +380,24 @@ def _raw_entry(raw, best):
     return None
 
 
+def _target(vault, text):
+    """exclude、include 的對象：kb folders find 印的「別名/相對路徑」（跟 source-edit move --to 同一個解法），否則照路徑。"""
+    from kb._lib import source_edit
+    text = str(text).strip()
+    if not os.path.isabs(text) and not text.startswith("file://"):
+        p = source_edit._alias_form(vault, sources_lib.load(vault), text)
+        if p is not None:
+            return Path(os.path.realpath(str(p))) if os.path.exists(p) else Path(p)
+    return Path(text).resolve()
+
+
 def _exclude(vault, args, as_json):
-    t = Path(args.path).resolve()
+    t = _target(vault, args.path)
     if not t.exists():
         return _reject(f"找不到 {t}；排除的對象要真的存在")
     tn = normalize(str(t), None)
+    if inside(tn, normalize(str(vault), None)):  # 知識庫、AI 產出、收件匣裡的夾這版不能設成不讀（B-413）
+        return _reject(KB_IN_VAULT)
     with FileLock(_sources_path(vault)):
         raw = sources_lib.load_raw(vault)
         resolved = sources_lib.Sources(vault, raw)
@@ -479,7 +494,7 @@ def _remove(vault, args, as_json):
 
 
 def _include(vault, args, as_json):
-    t = Path(args.path).resolve()
+    t = _target(vault, args.path)
     tn = normalize(str(t), None)
     with FileLock(_sources_path(vault)):
         raw = sources_lib.load_raw(vault)
@@ -758,16 +773,29 @@ def find_folders(vault, name, limit):
     return sorted(found), False
 
 
+def _find_item(path):
+    """find --json 的一筆：現成的 exclude 指令（照 plan.shell_arg）；知識庫裡的、給不出指令的 exclude 是 null、帶 note。"""
+    in_vault = path.split("/", 1)[0].casefold() in {a.casefold() for a in sources_lib.RESERVED_ALIASES}
+    if in_vault:
+        return {"path": path, "in_vault": True, "exclude": None, "note": KB_IN_VAULT}
+    arg = plan.shell_arg(path)
+    if arg is None:
+        return {"path": path, "in_vault": False, "exclude": None, "note": FIND_NO_CMD}
+    return {"path": path, "in_vault": False,
+            "exclude": {k: f"kb folders exclude {arg} --kind {k}" for k in ("hidden", "unused")}}
+
+
 def _find(vault, name, as_json):
     shown = name.strip()
     found, truncated = find_folders(vault, shown, config.get(vault, "credential_scan_max_entries"))
+    items = [_find_item(f) for f in found]
     if as_json:
-        print(json.dumps({"name": shown, "found": found, "truncated": truncated}, ensure_ascii=False))
+        print(json.dumps({"name": shown, "found": items, "truncated": truncated}, ensure_ascii=False))
         return 0
     if found:
         print(f"找到 {len(found)} 個叫「{shown}」的夾：")
-        for f in found:
-            print(f"- {f}")
+        for it in items:
+            print(f"- {it['path']}" + ("（知識庫裡的夾，不能設成不讀）" if it["in_vault"] else ""))
     else:
         print(f"登記的資料夾裡沒有叫「{shown}」的夾")
     if truncated:

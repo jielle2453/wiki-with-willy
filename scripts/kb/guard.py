@@ -403,6 +403,7 @@ def _original_segment(target, seg):
 
 UNPARSED_REASON = "看不出這個指令會寫到哪，請用檔案工具或告訴我路徑。"
 KB_CALL_REASON = "知識庫腳本"
+CURLY_REASON = "指令裡有彎引號，PowerShell 會拆開；夾名有彎引號請她先改名"
 ERROR_REASON = "守門出錯，這次不放行。說「檢查」我看原因"
 
 
@@ -686,6 +687,9 @@ def decide(payload):
         command = ti.get("command") or ""
         root = str(plugin_root())  # 以自己的 __file__ 為準，不信 CLAUDE_PLUGIN_ROOT（S1）
         sources = sources_lib.load(vault) if vault is not None else None  # 先讀：sources.json 壞掉時 kb.py 也不自動放行
+        if cmdparse.CURLY_QUOTES & set(command) and cmdparse.KB_SCRIPT.rsplit("/", 1)[-1] in command.casefold():
+            # 彎引號被 PowerShell 當引號：叫 kb.py 的指令拆得開就能夾帶別的陳述式，直接擋（manage 第二版第三輪）
+            return Decision("deny", "", "curly_quote", CURLY_REASON, [_row(tool, "deny", "", "curly_quote", command)], vault)
         if cmdparse.is_single_plugin_call(command, root, cwd):
             return Decision("allow", "", "", KB_CALL_REASON, [], vault)
         if vault is None:

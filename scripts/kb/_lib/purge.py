@@ -51,12 +51,23 @@ def _in_folder(uri, prefix):
     return inventory.uri_key(uri) == inventory.uri_key(prefix) or inventory._under(uri, prefix) is not None
 
 
+def _is_reparse(path):
+    """存在而且是連結或 junction；不存在回 False（只有 moves.jsonl、沒有 files/ 的回合夾照掃，第三輪修）。"""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & inventory.REPARSE_POINT)
+
+
 def _version_dirs(vault):
     """versions 底下的回合夾；連結與 junction 跳過、不跟（第二輪修：跟進去會刪到庫外的檔）。"""
     root = Path(vault) / turn.VERSIONS_REL
-    if not root.is_dir() or _is_link(root):
+    if not root.is_dir() or _is_reparse(root):
         return []
-    return sorted(p for p in root.iterdir() if p.is_dir() and not _is_link(p) and not _is_link(p / "files"))
+    return sorted(p for p in root.iterdir() if p.is_dir() and not _is_reparse(p) and not _is_reparse(p / "files"))
 
 
 def _read_json(path):
@@ -437,12 +448,59 @@ def _scrub_version_locked(vault, vdir, ids, prefix, mask, counts):
         _scrub_moves(vdir, prefix, counts)
 
 
+_NODE = re.compile(r"^( *)- (.*?)\r?\n?$")
+
+
+def _drop_index_node(lines, path):
+    """總目錄（巢狀清單，兩個空白一層）裡那夾的樹節點連同底下全部拿掉（第三輪修：「 - 私人」那行也帶夾名）。"""
+    want = [p.casefold() for p in path]
+    out, stack, skip_at = [], [], None
+    for ln in lines:
+        m = _NODE.match(ln)
+        if not m:
+            skip_at = None
+            out.append(ln)
+            continue
+        depth = len(m.group(1)) // 2
+        if skip_at is not None:
+            if depth > skip_at:
+                continue
+            skip_at = None
+        del stack[depth:]
+        label = m.group(2)
+        stack.append(label.casefold())
+        if not label.startswith("[") and stack == want:
+            skip_at = depth
+            continue
+        out.append(ln)
+    return out
+
+
+def _drop_empty_nodes(lines):
+    """拿掉卡之後空掉的夾節點（不是連結、底下沒有更深一層的行）。"""
+    while True:
+        out = []
+        for i, ln in enumerate(lines):
+            m = _NODE.match(ln)
+            if m and not m.group(2).startswith("["):
+                nxt = next((x for x in lines[i + 1:] if x.strip()), "")
+                n = _NODE.match(nxt)
+                if not n or len(n.group(1)) <= len(m.group(1)):
+                    continue
+            out.append(ln)
+        if out == lines:
+            return out
+        lines = out
+
+
 def _card_row(rel, shorts):
     """manifest 這行是那些卡的路徑嗎（檔已經不在了也認得：檔名結尾 -<短編號>.md）。"""
     return rel.startswith(cards.CARDS_DIR + "/") and any(rel.endswith(f"-{s}.md") for s in shorts)
 
 
 def _scrub_rows(vault, files, rows, ids, prefix, mask, counts, shorts, datas, state):
+    alias, spec = inventory.split_uri(prefix)
+    card_dir = f"{cards.CARDS_DIR}/{alias}/{spec}/".casefold()
     for row in rows:
         if not isinstance(row, dict) or row.get("action") == "purged" or not isinstance(row.get("path"), str):
             continue
@@ -450,10 +508,22 @@ def _scrub_rows(vault, files, rows, ids, prefix, mask, counts, shorts, datas, st
         f = files / rel
         if not _under_files(files, f):
             continue  # 紀錄不信（B-080）：解出來不在這個回合的 files/ 底下就不碰
+        if _card_row(rel, shorts) or rel.casefold().startswith(card_dir):
+            # 那些卡的每一行（create 也算）都換掉：路徑本身就帶夾名與卡標題（第三輪修）
+            try:
+                if f.is_file():
+                    cid = _card_id(f)
+                    if cid in ids:
+                        counts["card_ids"].add(cid)
+                    f.unlink()
+                    counts["backups"] += 1
+            except OSError:
+                counts["left"]["backups"] += 1
+                continue
+            row["action"], row["path"] = "purged", PURGED
+            state["dirty"] = True
+            continue
         if not f.is_file():
-            if _card_row(rel, shorts):  # 上次刪了檔、帳沒改到：這次補標
-                row["action"], row["path"] = "purged", PURGED
-                state["dirty"] = True
             continue
         try:
             _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state)
@@ -479,8 +549,12 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state):
             counts["backups"] += 1
     elif rel == cards.INDEX_POSIX:
         text = f.read_text(encoding="utf-8")
-        kept = [ln for ln in text.splitlines(keepends=True) if not any(f"-{s}.md)" in ln for s in shorts)]
-        if len(kept) != len(text.splitlines(keepends=True)):
+        lines = text.splitlines(keepends=True)
+        alias, spec = inventory.split_uri(prefix)
+        kept = _drop_index_node(lines, [alias] + spec.split("/"))
+        kept = [ln for ln in kept if not any(f"-{s}.md)" in ln for s in shorts)]
+        kept = _drop_empty_nodes(kept)
+        if kept != lines:
             write_text_atomic(f, "".join(kept))
             counts["backups"] += 1
     if gone:
@@ -500,8 +574,8 @@ def _scrub_md(vault, files, rows, mask, counts, datas, state):
     """待處理.md、日程.md、裁示.md 的舊版：同一回合有 JSON 舊版就照改過的重渲染，沒有而內容指到那夾就刪掉、標 purged。"""
     for json_rel, md_rel, render in MD_RENDERS:
         md = files / md_rel
-        if not md.is_file():
-            continue
+        if not _under_files(files, md) or not md.is_file():
+            continue  # files/ 底下巢狀的 junction 不跟（第三輪修）
         try:
             _scrub_one_md(vault, md, md_rel, json_rel, render, rows, mask, counts, datas, state)
         except (OSError, UnicodeDecodeError):

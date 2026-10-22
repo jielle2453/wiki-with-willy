@@ -71,7 +71,8 @@ REMOVABLE = "隨身碟或網路磁碟"
 DEVICE_NAME = "這種名字 Windows 不收，換個名字"
 CURLY_QUOTES = frozenset(chr(c) for c in range(0x2018, 0x2020))
 # Windows 保留裝置名（帶副檔名也算）：建得出來卻打不開、刪不掉
-DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+DEVICE_NAMES = ({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {f"COM{i}" for i in range(1, 10)}
+                | {f"LPT{i}" for i in range(1, 10)} | {f"{p}{s}" for p in ("COM", "LPT") for s in "¹²³"})
 DRIVE_FIXED = 3
 # 已知副檔名（kb 認得的加上常見的 Office、圖、影音）：新名字的尾巴是這些之一又跟原本不同，才算要換副檔名（拒絕）
 KNOWN_EXTS = {

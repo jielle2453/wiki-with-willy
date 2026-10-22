@@ -119,8 +119,15 @@ class RevertMoves(Base):
             "file://知識庫/.system/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/.system/x.pdf），什麼都沒動",
             "/abs/x.pdf": "退不回去：回合紀錄的搬動路徑不對（/abs/x.pdf），什麼都沒動",
             "file://客戶案件/（已排除）": "退不回去：那一回合搬過的檔在清掉的不讀夾裡，什麼都沒動",
+            # security-review：段中間的磁碟代號會變成另一顆磁碟的相對路徑（D:Secret/x），不能被當成在根底下
+            "file://知識庫/a/D:/Secret/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/a/D:/Secret/x.pdf），什麼都沒動",
+            "file://客戶案件/a/D:/Secret/x.pdf": "退不回去：回合紀錄的搬動路徑不對（file://客戶案件/a/D:/Secret/x.pdf），什麼都沒動",
+            "file://知識庫/系統./x/y.pdf": "退不回去：回合紀錄的搬動路徑不對（file://知識庫/系統./x/y.pdf），什麼都沒動",
         }
         self.assertTrue(excluded.is_dir())
+        here = os.getcwd()
+        os.chdir(self.V)  # 真的 kb 從知識庫裡跑：磁碟相對路徑會接到 cwd（security-review 那條要在這個條件下才重現）
+        self.addCleanup(os.chdir, here)
         for uri, text in cases.items():
             with self.subTest(uri=uri):
                 self.tamper(uri)

@@ -313,7 +313,7 @@ class Exclude(Base):
         # hidden 不留痕（審閱裁定 40）；清冊題第二行；行政三個 0 位元組檔是同一筆；沒有受影響的綜合卡就接著清（manage 第二版）
         self.assertEqual(r.stdout.splitlines(), ["已排除「行政/薪資」（不想讓 AI 看到）。卡拿掉 0 張。",
                                                  "清冊：0 份已拿掉",
-                                                 "清好了：卡 0 張、備份 0 份、暫存 0 份、工作日誌 0 段；"
+                                                 "清好了：卡 0 張、備份 0 份、暫存 0 份、工作日誌 1 段；"  # 剛記的那一段排除
                                                  "之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉"])
         ex = self.sources()["sources"][0]["excludes"]
         today = date.today().isoformat()
@@ -673,7 +673,9 @@ class FoldersJournal(Base):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         rows = self.program_rows()
         self.assertEqual(len(rows), 2)
-        self.assertEqual((rows[1]["command"], rows[1]["note"]), ("folders exclude", r.stdout.splitlines()[0]))
+        # hidden、沒有綜合卡要重寫：同一個指令接著清，這一段的夾名也遮掉（manage 第二版，D-174）
+        self.assertEqual((rows[1]["command"], rows[1]["note"]),
+                         ("folders exclude", "已排除「（已排除）」（不想讓 AI 看到）。卡拿掉 0 張。"))
         self.assertEqual(rows[1]["changed"], BOTH_CHANGED)
 
     def test_remove_and_include_write_program_lines(self):

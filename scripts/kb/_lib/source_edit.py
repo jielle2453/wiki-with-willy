@@ -231,6 +231,14 @@ def _credential(sources, path):
     return credentials.match_segment(segs) is not None
 
 
+def credential_inside(vault, path):
+    """夾底下有檔名像密碼或金鑰的檔或夾（走訪有上限，走不完也算有）：整個夾搬進知識庫前查，
+    因為知識庫裡不查憑證樣式（D-081），搬進去守門就不擋了（收尾 security-review）。"""
+    from kb._lib import config
+    hit, truncated = credentials.scan_dir(path, config.get(vault, "credential_scan_max_entries"))
+    return hit is not None or truncated
+
+
 def check_from(vault, sources, path):
     """要動的檔或夾在准許的位置嗎；不行丟 Refused。"""
     path = Path(path)
@@ -464,6 +472,8 @@ def plan_move(vault, sources, target, cwd, dest=None, new_name=None):
     moved_ex = excludes_under(vault, src) if folder else []
     if moved_ex and dparts is not None:  # 夾裡有不讀的子夾，搬進知識庫就沒有排除守著了
         raise Refused(EXCLUDED.format(name=moved_ex[0][2].rpartition("/")[2]))
+    if folder and dparts is not None and _parts(vault, src) is None and credential_inside(vault, src):
+        raise Refused(CREDENTIAL)  # 同理：知識庫裡不查憑證樣式
     try:
         if _dev(src.parent) != _dev(dest_dir):
             raise Refused(OTHER_DISK.format(src=_real(src.parent), dst=_real(dest_dir)))
@@ -640,7 +650,7 @@ TRASH_THIRD = {None: "說「退回上一版」救不回來，刪錯要從資源�
 
 
 def trash_lines(plan):
-    second = "那張卡會拿掉" if plan["card"] else "這份沒有卡"
+    second = "同一份內容在別處還有，卡留著" if plan["others"] else ("那張卡會拿掉" if plan["card"] else "這份沒有卡")
     if plan["synthesis"]:
         second += "；綜合卡要更新：" + "、".join(plan["synthesis"])
     return [f"要丟進資源回收筒：{plan['name']}（{plan['where']}）", second, TRASH_THIRD[plan["onedrive"]]]

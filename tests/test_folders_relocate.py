@@ -12,14 +12,17 @@ from unittest import mock
 from tests import _cards, _entities
 from kb import cli, folders, versions
 from kb._lib import cards, turn  # noqa: E402
+from kb._lib import io as kio  # noqa: E402
 
 ID_LIKE = re.compile(r"\b[aefsrcp]-[0-9a-f]{8}\b")
 
 
 def kb(*args):
+    saved = kio.LOCK_TIMEOUT
     out = io.StringIO()
     with contextlib.redirect_stdout(out), mock.patch.object(folders, "system_dirs", return_value=[]):
         code = cli.main(list(args))
+    kio.LOCK_TIMEOUT = saved  # CLI 把鎖等待調成 30 秒，不留給後面的測試
     return code, out.getvalue()
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from tests import _cards, _entities
 from kb import cli, versions
 from kb._lib import agenda, cards, entities, findings, journal, ledger, pending, rulings, synthesis, turn  # noqa: E402
+from kb._lib import io as kio  # noqa: E402
 from kb._lib import sources as sources_lib  # noqa: E402
 
 SECRET = "紫色大象UNIQ42"
@@ -21,9 +22,11 @@ SID = "test-purge-sid"
 
 
 def kb(*args):
+    saved = kio.LOCK_TIMEOUT
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         code = cli.main(list(args))
+    kio.LOCK_TIMEOUT = saved  # CLI 把鎖等待調成 30 秒，不留給後面的測試
     return code, out.getvalue()
 
 

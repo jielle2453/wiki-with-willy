@@ -322,6 +322,22 @@ JSON_DROPS = {
 }
 
 
+def _under_files(files, f):
+    try:
+        real, base = os.path.realpath(str(f)), os.path.realpath(str(files))
+    except (OSError, ValueError):
+        return False
+    return os.path.normcase(real).startswith(os.path.normcase(base).rstrip("\\/") + os.sep)
+
+
+def _is_link(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return True
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & inventory.REPARSE_POINT)
+
+
 def _scrub_version(vault, vdir, ids, prefix, mask, counts):
     """一個回合夾：卡與綜合卡舊版刪、狀態檔舊版改寫、md 舊版重渲染、總目錄舊版拿掉那些行、manifest 標 purged、moves.jsonl 遮。"""
     files = vdir / "files"
@@ -344,8 +360,8 @@ def _scrub_version(vault, vdir, ids, prefix, mask, counts):
                 continue
             rel = row["path"]
             f = files / rel
-            if not f.is_file():
-                continue
+            if not _under_files(files, f) or not f.is_file():
+                continue  # 紀錄不信（B-080）：解出來不在這個回合的 files/ 底下就不碰
             gone = False
             if rel.startswith(cards.CARDS_DIR + "/") and rel.endswith(".md"):
                 cid = _card_id(f)
@@ -429,7 +445,7 @@ def _scrub_version(vault, vdir, ids, prefix, mask, counts):
 def _temp(vault, ids, names):
     """.system/temp 的轉出檔與 office 工作區的同名副本。回刪了幾份。"""
     root = Path(vault) / TEMP_POSIX
-    if not root.is_dir() or os.path.islink(root):
+    if not root.is_dir() or _is_link(root):
         return 0
     n = 0
     for p in root.iterdir():
@@ -439,10 +455,10 @@ def _temp(vault, ids, names):
             p.unlink()
             n += 1
     office = root / OFFICE
-    if office.is_dir() and not os.path.islink(office):
+    if office.is_dir() and not _is_link(office):
         low = {x.casefold() for x in names}
         for dirpath, dirnames, filenames in os.walk(office):
-            dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
+            dirnames[:] = [d for d in dirnames if not _is_link(os.path.join(dirpath, d))]  # 連結與 junction 不跟
             for f in filenames:
                 if f.casefold() in low:
                     os.remove(os.path.join(dirpath, f))

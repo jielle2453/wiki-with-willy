@@ -56,6 +56,7 @@ MOVE_TAKEN = "退不回去：「{folder}」裡已經有「{name}」了，什麼�
 MOVE_NO_PARENT = "退不回去：原本的夾「{folder}」不見了，什麼都沒動"
 MOVE_OPEN = "退不回去：「{name}」裡有檔案正開著，什麼都沒動；關掉再說一次退回"
 MOVE_FAILED = "退不回去：{why}，什麼都沒動"
+MOVE_CREDENTIAL = "退不回去：「{name}」裡有檔名像密碼或金鑰的檔，不搬進知識庫，什麼都沒動"
 PURGED_MARK = "（已排除）"
 FILE_OPEN = "退不回去：「{rel}」正開著（檔案總管、Office 或記事本），什麼都沒動；關掉再說一次退回"
 UNEXPECTED = "退不回去：{why}；可能只退了一部分，先別再說退回，請服務人員看一下"
@@ -409,23 +410,36 @@ def _move_path(vault, sources, uri):
         return None, MOVE_BAD.format(uri=text)
     alias, _sep, rel = text[len("file://"):].partition("/")
     segs = re.split(r"[\\/]", rel)
+    # 段裡的冒號（磁碟代號、資料流）與結尾的點或空白（Windows 會吃掉，「系統.」就是「系統」）一律不收（收尾 security-review）
     if (not rel or rel.startswith(("/", "\\")) or _DRIVE.match(rel) or Path(rel).is_absolute()
-            or any(seg in ("", ".", "..") for seg in segs)):
+            or any(seg in ("", ".", "..") or ":" in seg or seg.endswith((".", " ")) for seg in segs)):
         return None, MOVE_BAD.format(uri=text)
     root = _move_root(vault, sources, alias)
     if root is None:
         return None, MOVE_UNREGISTERED.format(alias=alias)
-    if alias.casefold() == inventory.KNOWLEDGE.casefold() and (
-            len(segs) < 3 or segs[0].startswith(".") or segs[0].casefold() in inventory.VAULT_RESERVED_DIRS):
-        return None, MOVE_BAD.format(uri=text)
     full = root.joinpath(*segs)
-    rn, fn = normalize(str(root), None), normalize(str(full), None)
+    # 照作業系統真的會用的路徑驗：同一顆磁碟、realpath 後在根底下（短檔名、連結都展開）
+    real_root = os.path.realpath(str(root))
+    real = os.path.realpath(os.path.abspath(str(full)))
+    if full.drive.casefold() != root.drive.casefold() or os.path.normcase(real) == os.path.normcase(real_root) \
+            or not os.path.normcase(real).startswith(os.path.normcase(real_root).rstrip("\\/") + os.sep):
+        return None, MOVE_BAD.format(uri=text)
+    parts = os.path.relpath(real, real_root).split(os.sep)
+    if alias.casefold() == inventory.KNOWLEDGE.casefold() and (
+            len(parts) < 3 or parts[0].startswith(".") or parts[0].casefold() in inventory.VAULT_RESERVED_DIRS):
+        return None, MOVE_BAD.format(uri=text)
+    rn, fn = normalize(real_root, None), normalize(real, None)
     if fn == rn or not inside(fn, rn):
         return None, MOVE_BAD.format(uri=text)
     status, _src = sources.lookup(fn)
     if status == "excluded":
         return None, MOVE_EXCLUDED.format(name=segs[-1])
     return full, None
+
+
+def credential_inside(vault, path):
+    from kb._lib.source_edit import credential_inside as inside_
+    return inside_(vault, path)
 
 
 def _move_steps(vault, sources, rows):
@@ -457,6 +471,9 @@ def _move_steps(vault, sources, rows):
             return None, MOVE_TAKEN.format(folder=folder, name=_uri_name(m["from"]))
         if not exists(src.parent):
             return None, MOVE_NO_PARENT.format(folder=folder)
+        if (m["kind"] == "folder" and str(m["from"]).casefold().startswith("file://" + inventory.KNOWLEDGE.casefold() + "/")
+                and os.path.isdir(dst) and credential_inside(vault, dst)):
+            return None, MOVE_CREDENTIAL.format(name=name)  # 搬回知識庫裡守門就不查憑證樣式了
         state[os.path.normcase(str(dst))], state[os.path.normcase(str(src))] = False, True
         steps.append({"op": m["op"], "kind": m["kind"], "src": src, "dst": dst, "from_uri": m["from"], "to_uri": m["to"]})
     return steps, None

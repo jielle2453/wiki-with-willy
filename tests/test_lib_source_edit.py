@@ -267,6 +267,18 @@ class MoveFolder(Base):
         self.assertEqual(d.decision, "deny")
         self.assertEqual(entry(self.V, self.fid)["locations"][0]["uri"], "file://報價與合約/內湖李/估價單.pdf")
 
+    def test_folder_with_credential_file_into_vault_refused(self):
+        """security-review：知識庫裡不查憑證樣式（D-081），整個夾搬進實體夾會把 .env、id_rsa 帶進來，先擋。"""
+        proj = self.raw / "客戶案件" / "內湖李"
+        (proj / ".env").write_text("KEY=1", encoding="utf-8")
+        dest = Path(self.V) / "案子" / "內湖李"
+        dest.mkdir(parents=True, exist_ok=True)
+        self.assertEqual(self.refuse(self.plan, str(proj), dest=str(dest)), "這個檔名像密碼或金鑰，不動")
+        (proj / ".env").unlink()
+        (proj / "子").mkdir()
+        (proj / "子" / "網銀密碼.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(self.refuse(self.plan, str(proj), dest=str(dest)), "這個檔名像密碼或金鑰，不動")
+
     def test_folder_with_hidden_into_vault_refused(self):
         lee = self.raw / "客戶案件" / "內湖李"
         (lee / "私人").mkdir()
@@ -311,6 +323,15 @@ class Trash(Base):
         self.assertEqual(se.trash_lines(p), ["要丟進資源回收筒：估價單.pdf（客戶案件\\內湖李）",
                                              "那張卡會拿掉；綜合卡要更新：內湖李",
                                              "說「退回上一版」救不回來，刪錯要從資源回收筒拿"])
+
+    def test_check_when_same_content_elsewhere(self):
+        """同一份內容在別處還有：卡留著，第二行不能說這份沒有卡（skill-reviewer）。"""
+        import shutil as sh
+        sh.copy2(self.raw / ESTIMATE, self.raw / "報價與合約" / "估價單.pdf")
+        _cards.scan_apply(self.V)
+        with mock.patch.object(se, "recycle_room", return_value=(0, 10 ** 9)):
+            p = se.plan_trash(self.V, sources_lib.load(self.V), str(self.raw / "報價與合約" / "估價單.pdf"), self.V)
+        self.assertEqual(se.trash_lines(p)[1], "同一份內容在別處還有，卡留著")
 
     def test_too_big_and_unavailable(self):
         with mock.patch.object(se, "recycle_room", return_value=(100, 120)):

@@ -344,3 +344,80 @@ manage 該觸發從第二輪的 83／90（92.2%）升到 89／90，兩個擺盪�
 3. **purge 補洞**：manifest 裡 `create` 列的 path（夾名、卡標題）換成「（已排除）」；`總目錄.md` 舊版拿掉該夾的標題行（現在只拿掉卡那幾行）；`_version_dirs` 只在路徑存在且是 reparse point 時才跳過（沒有 `files/` 的回合夾也要掃 `moves.jsonl`）；`_scrub_md` 加 `_under_files`。
 4. 低：`COM¹ ² ³`、`LPT¹ ² ³`、`CONIN$`、`CONOUT$`；先還原 sources 再倒回檔；`find` 做 NFKC 比對；`profile_cli` 處理 `plan.cmd` 的 `None`；遮罩對短別名過度遮罩；暫名檔先記一行；`purge_names` 加鹽。
 5. 隨身碟的 `trash` 還是要找一支實測。
+
+---
+
+# 第四輪（重測 d7eb8e2）
+
+日期：2026-10-22
+對象：worktree 同一分支，commit `d7eb8e2`（樹乾淨；修的內容見 spec「討論進度」最後兩條）
+做法：第三輪列的 3 件與順手修的 3 項照原本的重現做法再跑；a2 補充的格式（`find --json` 每筆 `{path, in_vault, exclude}`、守門 `reason_code: curly_quote`）照著驗；第三輪以前的驗收腳本再跑一遍逐行比對；run_eval 跑 manage 一輪；驗收 19 第 4 句 10 次。沒改任何程式。這輪沒再派 security-review 子代理（範圍只有三件），守門與 purge 的新行為我自己測。模型同前：`sonnet`＝`claude-sonnet-5-5`。
+
+## 結論（第四輪）
+
+- 單元測試 `python -m unittest discover tests`：**exit 0**（Ran 1991，OK，skipped=1）。
+- 第三輪要修的 3 件 **都修好了**；順手修的 3 項也修好了；第三輪以前的驗收腳本輸出與上一輪逐行相同，沒有退步。
+- run_eval：manage 29／30（96.7%；「剛做好的定稿要放哪？你決定就好」2／3），不該觸發 0／30。
+- 驗收 19 第 4 句 10 次：**10／10 載 manage、10／10 用 `folders find`、10／10 完整做完（exclude → 重寫綜合卡 → purge）、0／10 說「本來就沒在讀」**（上一輪是 7／10）。其他三句行為正常，沒有動檔。
+- **新發現 1 件（中）**：守門的彎引號規則擋得太寬，見下。其他都是低。
+- **能不能進確認：可以進。** 上一輪我說要修的 3 件已經修好，驗收 19 第 4 句從 7／10 到 10／10。新發現的守門過寬建議同時修（見建議 1），但它不擋 D-174 的主流程（驗收 19 的 10 次全程沒有碰到），確認情境若要照做，注意：**所有送進 `kb` 的文字參數（`turn note`、`statement add`、`agenda add`、`ruling add`…）別帶 `“ ” ‘ ’`**，不然會被擋；用 `「 」` 沒事。隨身碟的 `trash` 仍只用替身驗過（a2 已記錄使用者沒有隨身碟）。
+
+## 上一輪 3 件、順手修 3 項
+
+| 項目 | 結果 | 證據 |
+|---|---|---|
+| 1. `exclude`（兩種）與 `include` 收「別名/相對路徑」 | 修好 | 已重現（我）：`exclude 客戶案件/私人 --kind unused`，cwd 在知識庫、cwd 在別處加 `--vault` 兩種都 exit 0 `已排除「客戶案件/私人」（用不到）。卡拿掉 0 張。`，`include 客戶案件/私人`（兩種 cwd）都 `已取消排除…`；`hidden` 同；`客戶案件/私人/../大安陳` 解成 `客戶案件/大安陳`；逃逸型輸入 `客戶案件/../.system`、`客戶案件/../../x`、`不存在別名/x`、`收件匣/x`、`客戶案件`（整個來源，回 `整個來源用 folders remove 客戶案件`）全部 exit 3、沒動。 |
+| 1b. `find --json` 每筆帶現成指令 | 修好 | 已重現（我）：`{"path": "客戶案件/私人", "in_vault": false, "exclude": {"hidden": "kb folders exclude 客戶案件/私人 --kind hidden", "unused": "…--kind unused"}}`，照著跑（`kb` 換成 `python kb.py`）成功；夾名 `Q3$x` → 指令用單引號；夾名含彎引號或同時有 `'` 與 `$` → `"exclude": null` ＋ `note: 夾名有引號一類的特殊符號，指令給不出來；請她先在檔案總管改名`；人讀輸出同樣標「（知識庫裡的夾，不能設成不讀）」。`find` 仍只讀（前後快照無差異）。 |
+| 1c. 三區裡的夾這版拒絕（B-413） | 修好 | 已重現（我）：`find` 對 `知識庫/案子/信義王/私人` 標 `in_vault: true`、`exclude: null`、`note: 知識庫裡的夾不能設成不讀；要不讓 AI 看到，先搬到登記的來源夾再設`；`exclude`（unused、hidden）該夾、`知識庫/.system`、`AI 產出` 都 exit 3 `知識庫裡的夾不能設成不讀；要不讓 AI 看到，先搬到登記的來源夾再設`。（`include 知識庫形式` 回「不在任何登記的來源裡」，可接受。） |
+| 2. 守門擋彎引號 | 修好；但範圍過寬（見下新發現） | 已重現（我）：PowerShell 與 Bash 對含 U+201C／201D、U+2019／2018、U+201E 的 kb 指令（含上輪的注入案例 `exclude "客戶案件/a“; calc; “b" --kind unused`、`x$’; calc; ‘y`）都 `deny curly_quote  指令裡有彎引號，PowerShell 會拆開；夾名有彎引號請她先改名`；與 kb 無關的 `echo “hi”` 仍 `pass`（不干涉）；無彎引號的分號案例 `"客戶案件/a; calc"` 仍 `allow`（雙引號內的分號安全）；含 `$(` 仍 `pass`（使用者會被問）；`Read` 檔案工具帶彎引號路徑不受影響。 |
+| 3. purge 清 create 列、樹節點、只有 `moves.jsonl` 的回合 | 修好 | 已重現（我）：一次正常 purge（外加一個只有 `moves.jsonl`、`turn.json`、空 `manifest.jsonl` 的回合夾、和一個巢在 `files/系統` 的 junction 指向庫外）之後，全庫 grep：機密字串 0、`秘密檔` 0、`王家心情`（卡標題）0、卡檔名 0、**`私人` 只剩 `.system/sources.json`**（上一輪另有 manifest 的 create 列與總目錄舊版的 ` - 私人`）；`moves.jsonl` 的 `from` 變 `（已排除）`；庫外巢狀 junction 裡的檔還在、內容沒被改；純 `OSError` 中斷再重跑的情境，`私人` 同樣 0 個殘留（`manifest`／總目錄舊版都處理了）；`versions revert` 退到 purged 的回合仍印 `那一版因為不讀的夾清掉了，退不回`。 |
+| 順手修：裝置名 | 修好 | 已重現（我）：`COM¹ ² `、`LPT³`、`COM².pdf`、`LPT¹.txt`、`CONIN$`、`CONOUT$`、`conin$.txt` 與 `NUL`、`con`、`COM1`、`LPT9` 全部 `這種名字 Windows 不收，換個名字`；`ＣＯＮ`、`Console`、`com10`、`COM0`、`CLOCK$`、`con².pdf`（`os.path.isreserved` 也說不是保留名）、`報價` 正常放行。 |
+| 順手修：巢狀 junction | 修好 | 見上，`files/系統` 指向庫外的 `待處理.md`，purge 之後庫外檔還在、內容未改。 |
+| 順手修：`profile_cli` 接 `plan.cmd` 的 `None` | 修好（讀 diff＋`plan.cmd` 驗證） | `plan.cmd("profile","apply","x“y")` → `None`；`profile_cli._result` 現在遇到 `None` 回 `{"do": [], "note": plan.NO_CMD_NOTE, …}`。我沒用真的型別名含彎引號端對端跑（型別名另有名稱檢查擋彎引號以外的字元，沒試出能放進去的名字）。 |
+| 第三輪以前的驗收腳本 | 無退步 | `a02b、a03_06、a05、a06、a07g、a08、a09、a10、a12、a14、a16、a21` 輸出與上一輪逐行相同；`b03`（倒回）、`b04`（purge 範圍與同回合先掃描）、`c04`（中途失敗重跑）句子與結果一致。 |
+
+## 新發現：守門的彎引號規則擋太寬（中）
+
+已重現（我）。`guard.decide` 對 PowerShell／Bash 的 kb 指令，只要指令字串裡任何地方有 U+2018～U+201F 就 `deny curly_quote`，不分是不是夾名、不分在不在引號裡：
+
+| 指令（`python kb.py …`） | 結果 |
+|---|---|
+| `turn note "把“舊備忘”搬到 2026"` | `deny curly_quote` |
+| `statement add --entity 信義王 --text "客戶說「付款」改“30 天”"` | `deny curly_quote` |
+| `agenda add --kind 提醒 --date 2026-12-01 --text "王先生’s 簽約"` | `deny curly_quote` |
+| `turn note "把舊備忘搬到 2026"`（無彎引號） | `allow` |
+
+中文裡 `“ ”` 很常見（模型寫備註、口述、日程文字時常用），這些指令是 note／manage 每個回合都會跑的（`SKILL.md` 骨架每件事結束叫 `turn note`）。被擋時給的理由「夾名有彎引號請她先改名」對這些情況是錯的，模型不一定知道只要拿掉引號重打。驗收 19 的 40 個以上對話裡這條沒觸發過（模型的 `turn note` 都用直引號或不用引號），所以不擋主流程，但真實客戶的口述、日程可能撞到。
+
+建議：規則只套在「會被當成路徑／夾名用」的子命令（`folders`、`source-edit`、`convert`、`office copy`…）的引數，或只擋出現在引號內且前後緊接 `;`、換行、`|`、`&` 的彎引號；`turn note`、`statement`、`agenda`、`ruling`、`finding`、`pending add` 的 `--text` 之類純文字參數放行（那些參數進 `kb` 的 argv 之後不會再被 shell 解讀，真正的風險只在 PowerShell 拆分指令那一步，而那一步只有在彎引號「前面有一個直引號開著」的時候才拆）。至少把理由句改成「指令裡有彎引號（“ ” ‘ ’），請拿掉再試」。
+
+## run_eval（d7eb8e2）
+
+| 檔 | 該觸發（10 句×3） | 不該觸發（10 句×3） |
+|---|---|---|
+| `manage.json` | 29／30（96.7%；「剛做好的定稿要放哪？你決定就好」2／3） | 0／30 |
+
+這輪 a2 只要求 manage 一輪，produce、ingest 沒重跑（描述沒動）。模型 `sonnet`＝`claude-sonnet-5-5`。
+
+## 驗收 19 第 4 句（d7eb8e2，10 次）
+
+| 版本 | 載 manage | 說「本來就沒在讀」 | 完整做完 exclude＋重寫綜合卡＋purge |
+|---|---|---|---|
+| `1f009a4`（5 次） | 5／5 | 5／5 | 0／5 |
+| `460df19`（5 次） | 3／5 | 3／3 | 0／5 |
+| `d7b3f23`（13 次） | 9／13 | 0／9 | 1／13 |
+| `2276aca`（10 次） | 10／10 | 0／10 | 7／10 |
+| **`d7eb8e2`（10 次）** | **10／10** | **0／10** | **10／10** |
+
+10 次都是 `folders find "私人"` → 照 `--json` 的現成指令 `folders exclude 客戶案件/私人 --kind hidden`（一次成功，沒有再先試錯一次）→ `cards todo --json` → 重寫信義王綜合卡 → `folders purge "客戶案件/私人"` → `turn note`；回答都講：卡拿掉 1 張、綜合卡已重寫、備份 14 份、暫存 3 份、推算 1 條、工作日誌已處理，並提醒送過雲端的清不掉。
+
+同一輪另外三句，沒有動檔、沒有錯：
+- 「這份估價單搬到 2026」：載 manage，`source-edit move "f-…" --to "客戶案件/2026"` 一次做完，記 `turn note`，回答說明依檔名只對到內湖李那份，搬錯說「退回」。
+- 「舊備忘幫我刪掉」：`trash --check`，講後果（回收筒、卡拿掉、退回救不回來），等明確「刪」或「丟掉」才做。
+- 「報價夾搬到 E 槽了」：`folders list`，請她貼完整路徑，說會先預覽再問。
+
+## 建議（請 a2 定）
+
+1. 守門的彎引號規則縮窄（見上），至少改理由句。
+2. 低、仍未修（B-414 範圍）：遮罩對很短的別名／規格會過度遮罩；`find` 沒做 NFKC、走訪上限只數夾；ledger 鎖等滿 2 秒；rollback 先 rename 回去再還原 sources 的順序；`purge_names` 沒加鹽；被殺掉時留下的 `.kb-move-xxxx`；B-410。
+3. 隨身碟的 `trash` 只用替身驗過，請在發行說明或確認報告註明。

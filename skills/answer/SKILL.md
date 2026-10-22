@@ -48,6 +48,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 - 讀綜合卡與需要的那幾張卡；原檔改過還沒重做的卡，照原檔答。
 - 有數字：工具之間先說一句粗估、標明還沒核對；逐份 `kb convert` 讀卡上〔位置〕那頁對過，再交 `kb tally` 加總、附逐筆表（`references/verify.md`）。要核的份數超過程式給的門檻先問。
 - 對不上：卡抄錯用 `kb cards redo`，兩份原檔寫法不同用 `kb pending add`，說法看 `references/verify.md`。
+- 問密碼：`references/find.md` 第八節。
 - 回答：句尾短標、講範圍；找不到講查了哪裡。
 - 末尾跑 `kb asks --json`（問的就是有沒有要我確認的就不再跑），照 `asks` 補問（加上自己的問題一次最多 3 個，D-135），`tell` 原樣貼；有程式查得到的下一步才補一句建議。
 - 這句話有寫入（標重做、記待處理）才在送出最終回答前跑 `kb turn note "<白話一句>"`（R-13）。

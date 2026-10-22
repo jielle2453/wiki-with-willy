@@ -176,7 +176,7 @@ answer 只讀；要把剛才算好的答案留下來，說「把剛才的答案�
 
 ## 環境需求
 
-只支援 Windows。要有 Python 3.10 以上，而且 PATH 上打 `python` 要能跑到它（Windows 商店的空殼不算）：守門與備份是 hook，`python` 找不到或跑太久時 Claude Code 會當作沒有 hook，照常放行。
+只支援 Windows。要有 Python 3.10 以上，而且 PATH 上打 `python` 要能跑到它（Windows 商店的空殼不算）：守門與備份是 hook，`python` 找不到、出錯或跑太久時守門一律擋下（`onFailure: block`），而且外掛裝在整台電腦：Python 壞了時，連別的專案的 Claude 也動不了；先修 Python，或在外掛畫面暫時停用 wiki-with-willy。
 
 要讀 PDF 請 `pip install pypdfium2`（選配，沒裝 PDF 會列在待處理）。
 

@@ -1376,7 +1376,7 @@
 - 為什麼：B-024 三次誤擋（heredoc 寫知識庫外的報告、唯讀的 `python - <<EOF`、`awk '$0 >= "…"'`）同一個原因：在猜哪些字是要寫的路徑。shell 的導向語法是固定的，照語法拆不是再疊一條猜測（I-106 說的那種），同一類一起解決。
 - 放棄了：個別補 heredoc 與 awk 兩種；不改守門、規則叫 AI 先寫成檔再跑（D-132 說的補丁）。
 - 重談條件：測試找到照語法拆之後能寫進保護區的繞法。
-- **2026-10-22 補**（produce 發行後，使用者說聽我的）：produce 加的「Bash／PowerShell 指令裡出現 AI 產出的路徑讀寫一律擋」，照語法拆之後改成只擋寫：引號外的導向目標、寫入動詞的路徑參數、`-c` 參數與 heredoc 內文裡有寫檔程式碼（`WRITE_CODE`）的，落在 AI 產出就擋；heredoc 內文與引號裡只是提到 AI 產出路徑的當成讀、放行。那時全擋是因為分不清讀寫（produce 釐清），分得清之後讀不必擋。已通知另一個設計 session。
+- **2026-10-22 補**（produce 發行後，使用者說聽我的）：produce 加的「Bash／PowerShell 指令裡出現 AI 產出的路徑讀寫一律擋」，照語法拆之後改成只擋寫：引號外的導向目標、寫入動詞的路徑參數、`-c` 參數與 heredoc 內文裡有寫檔程式碼（`WRITE_CODE`）的，落在 AI 產出就擋；heredoc 內文與引號裡只是提到 AI 產出路徑的當成讀、放行。那時全擋是因為分不清讀寫（produce 釐清），分得清之後讀不必擋。已通知另一個設計 session。另一個設計 session 提醒後補清楚（同日）：「不是寫入動詞、沒有導向、但程式會寫那個參數」的判不出（`node build.js "AI 產出/x.docx"`、`python x.py …`、`soffice --convert-to …`，B-081 spike 第 9 題），所以 AI 產出路徑出現在**任何非 kb 執行檔的參數**（node、python 腳本、soffice、`powershell -File` 這類），或餵給直譯器的 heredoc 內文（`python - <<EOF`、`node <<EOF`）裡，照擋；只有已知只讀指令（`cat`、`type`、`grep`、`Get-Content`、`head`、`tail` 這類）的參數、`echo`／`printf` 的字串、餵給 `cat`／`tee` 寫知識庫外報告的 heredoc 內文裡提到，才當讀放行。
 
 ## D-187 遮值改成只遮值本身：程式認得出的遮掉，認不出的由 AI 判斷後補遮（收 B-047、B-087）
 - 日期：2026-10-22

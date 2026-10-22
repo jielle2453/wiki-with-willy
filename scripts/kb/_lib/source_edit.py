@@ -443,8 +443,13 @@ def onedrive_roots():
 
 
 def in_onedrive(path):
+    return onedrive_root(path) is not None
+
+
+def onedrive_root(path):
+    """path 所在的 OneDrive 根（個人、公司各一個）；不在任何 OneDrive 裡回 None。"""
     pn = normalize(str(path), None)
-    return any(inside(pn, r) for r in onedrive_roots())
+    return next((r for r in sorted(onedrive_roots(), key=len, reverse=True) if inside(pn, r)), None)
 
 
 def cloud_only(path):
@@ -562,8 +567,10 @@ def plan_move(vault, sources, target, cwd, dest=None, new_name=None):
             "excludes": [rest for _s, _e, rest in moved_ex], "_moved_ex": moved_ex,
             "signs": [Path(f).name for f in _files_under(src) if Path(f).name.startswith("~$")][:SIGNS_MAX]}
     plan["download"] = None
-    plan["cloud_only"] = not folder and cloud_only(src)
-    if in_onedrive(src) and not in_onedrive(dest_dir):
+    src_root, dst_root = onedrive_root(src), onedrive_root(dest_dir)
+    # 只在雲端、而且兩邊在同一個 OneDrive 根才說搬不會下載（第六輪：Dropbox 一類、個人與公司兩個根之間不算）
+    plan["cloud_only"] = not folder and src_root is not None and src_root == dst_root and cloud_only(src)
+    if src_root is not None and src_root != dst_root:
         n, size = cloud_download(src)
         if n:
             plan["download"] = {"files": n, "bytes": size}

@@ -106,7 +106,9 @@ class CloudNoRead(Base):
         self.assertEqual(e["fingerprints"], [])
 
     def test_single_file_check_cloud_line(self):
-        with mock.patch.object(se, "cloud_only", return_value=True):
+        root = str(self.raw).replace("\\", "/").lower()  # 第六輪起要兩邊在同一個 OneDrive 根
+        with mock.patch.object(se, "cloud_only", return_value=True), \
+                mock.patch.object(se, "onedrive_roots", return_value=[root]):
             p = self.plan(self.fid, dest=str(self.raw / "報價與合約"))
         self.assertIn("這份只在雲端；同一個 OneDrive 裡搬不會下載", se.check_lines(p, "move"))
 

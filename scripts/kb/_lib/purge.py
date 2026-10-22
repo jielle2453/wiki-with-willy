@@ -539,11 +539,8 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state, mask=None
         if cid in ids:
             counts["card_ids"].add(cid)
             gone = True
-        elif mask is not None:  # 別張卡的舊版：「原檔」行等文字裡那夾的路徑換掉（第五輪）
-            text = f.read_text(encoding="utf-8")
-            if mask(text) != text:
-                write_text_atomic(f, mask(text))
-                counts["backups"] += 1
+        elif mask is not None:  # 別張卡的舊版：「原檔」行等文字裡那夾的路徑換掉（第五輪；第六輪起只換路徑）
+            _mask_file(f, mask, counts)
     elif _is_synthesis(rel):
         gone = _refs(f.read_text(encoding="utf-8"), ids)
     elif rel in JSON_DROPS:
@@ -564,12 +561,8 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state, mask=None
             counts["backups"] += 1
     elif mask is not None and rel != sources_lib.SOURCES_REL and f.suffix.casefold() in TEXT_SUFFIXES \
             and not any(rel == md for _j, md, _r in MD_RENDERS):
-        # 別的檔的舊版（別張卡的「原檔」行、其他文字檔）：文字裡那夾的路徑、那些卡的編號與標題換掉（第五輪）
-        text = f.read_text(encoding="utf-8")
-        new = mask(text)
-        if new != text:
-            write_text_atomic(f, new)
-            counts["backups"] += 1
+        # 別的檔的舊版（其他文字檔）：文字裡那夾的路徑換掉；字詞（編號、標題）只套工作日誌（第六輪）
+        _mask_file(f, mask, counts)
     if gone:
         f.unlink()
         row["action"], row["path"] = "purged", PURGED
@@ -685,6 +678,102 @@ def _scrub_text(vault, rel, mask):
 
 
 TEXT_SUFFIXES = (".md", ".txt", ".json", ".jsonl", ".tsv", ".csv")
+PENDING_POSIX = ".system/purge-pending.json"  # 還沒清完的那幾條排除的卡標題（不寫進 sources.json，清完刪掉；第六輪）
+
+
+def load_pending(vault):
+    try:
+        with open(Path(vault) / PENDING_POSIX, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {"schema_version": 1, "items": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("items"), dict):
+        return {"schema_version": 1, "items": {}}
+    return data
+
+
+def recorded_titles(vault, alias, spec):
+    item = load_pending(vault)["items"].get(f"{alias}/{spec}") or {}
+    return {t for t in item.get("titles") or [] if isinstance(t, str)}
+
+
+def record_titles(vault, alias, spec, titles, turn_id, undo=None):
+    """卡標題跟範圍一起留到清完（重跑時卡與舊版可能已經刪了，標題就取不到）。有變才備進回合、寫。"""
+    data = load_pending(vault)
+    key = f"{alias}/{spec}"
+    have = set((data["items"].get(key) or {}).get("titles") or [])
+    want = sorted(have | {t for t in titles if t})
+    if want == sorted(have) and key in data["items"]:
+        return False
+    data["items"][key] = {"titles": want}
+    if undo is not None:
+        undo.file(PENDING_POSIX)
+    turn.backup(vault, PENDING_POSIX, turn_id)
+    write_json_atomic(Path(vault) / PENDING_POSIX, data)
+    return True
+
+
+def clear_titles(vault, alias, spec, turn_id):
+    """清完：拿掉那一條；空了整個檔刪掉（先備進回合）。"""
+    p = Path(vault) / PENDING_POSIX
+    data = load_pending(vault)
+    if data["items"].pop(f"{alias}/{spec}", None) is None:
+        return
+    if data["items"]:
+        turn.backup(vault, PENDING_POSIX, turn_id)
+        write_json_atomic(p, data)
+    elif p.exists():
+        turn.backup(vault, PENDING_POSIX, turn_id, action="delete")
+        p.unlink()
+
+
+def word_titles(vault, titles):
+    """當字詞比的卡標題：3 字以上，而且不是設定檔的卡型名、不是實體的名稱或別名（第六輪：「報價單」「信義王」這種標題
+    當字詞比會把無關的回合整欄換掉，這種只靠編號與路徑認）。"""
+    from kb._lib import profile
+    skip = set()
+    try:
+        prof = profile.load(vault) or {}
+        skip |= {str(c.get("name", "")).casefold() for c in prof.get("card_types") or []}
+    except ValueError:
+        pass
+    try:
+        for e in entities.load(vault)["entities"]:
+            skip |= {str(w).casefold() for w in [e.get("name")] + list(e.get("aliases") or []) if w}
+    except ValueError:
+        pass
+    return {t for t in titles if t and len(t) >= TITLE_MIN and t.casefold() not in skip}
+
+
+def _read_any(f):
+    """先 UTF-8、再 cp950；都解不開回 (None, None)（第六輪：讀不懂的備份跳過，不算沒清完）。"""
+    raw = f.read_bytes()
+    for enc in ("utf-8", "cp950"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    return None, None
+
+
+def _write_enc(f, text, enc):
+    if enc == "utf-8":
+        write_text_atomic(f, text)
+        return
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_bytes(text.encode(enc))
+    os.replace(tmp, f)
+
+
+def _mask_file(f, mask, counts):
+    text, enc = _read_any(f)
+    if text is None:
+        counts["undecodable"] += 1
+        return
+    new = mask(text)
+    if new != text:
+        _write_enc(f, new, enc)
+        counts["backups"] += 1
 TITLE_MIN = 3  # 太短的標題（兩個字）當字詞比對會誤遮一大片，不比
 
 
@@ -719,24 +808,26 @@ def purge(vault, alias, spec, root, turn_id):
     if names_blocking:
         raise Blocked(names_blocking)
     record_scope(vault, alias, spec, sc, turn_id)
-    counts = {"card_ids": set(), "backups": 0, "temp": 0, "journal": 0, "findings": 0,
+    titles = recorded_titles(vault, alias, spec) | (set(_titles(vault, ids).values()) if ids else set())
+    record_titles(vault, alias, spec, titles, turn_id)  # 重跑時卡與舊版已經刪了，標題靠記下的
+    counts = {"card_ids": set(), "backups": 0, "temp": 0, "journal": 0, "findings": 0, "undecodable": 0,
               "left": {k: 0 for k, _w in LEFT_WORDS}}
     prefix = folder_uri(alias, spec)
-    titles = set(_titles(vault, ids).values()) if ids else set()  # 卡與舊版還在的時候先取（清完就認不出來）
-    mask = word_masker(masker(vault, alias, spec, root), ids, titles)
+    mask = masker(vault, alias, spec, root)  # 備份、ledger、hook-errors 只換路徑（第六輪）
+    words = word_masker(mask, ids, word_titles(vault, titles))  # 工作日誌的 result、note 另比編號與標題
     _current_state(vault, ids, turn_id, counts)
     for vdir in _version_dirs(vault):
         _scrub_version(vault, vdir, ids, prefix, mask, counts)
     counts["temp"] = _temp(vault, ids, sc["hashes"], counts)
     try:
-        counts["journal"] = journal.scrub(vault, mask, mention=lambda text: mask(text) != text)
+        counts["journal"] = journal.scrub(vault, words, mention=lambda text: words(text) != text)
     except OSError:
         counts["left"]["journal"] += 1
     for rel in (ledger.LEDGER_REL, ledger.ERROR_LOG_REL):
         if not _scrub_text(vault, rel, mask):
             counts["left"]["logs"] += 1
     return {"cards": len(counts["card_ids"]), "backups": counts["backups"], "temp": counts["temp"],
-            "journal": counts["journal"], "findings": counts["findings"],
+            "journal": counts["journal"], "findings": counts["findings"], "undecodable": counts["undecodable"],
             "remaining": {k: v for k, v in counts["left"].items() if v}}
 
 
@@ -749,7 +840,9 @@ def mark_done(vault, alias, spec, turn_id):
         ex.pop("purge_ids", None)
         ex.pop("purge_names", None)
         return True
-    return _write_row(vault, alias, spec, turn_id, change)
+    done = _write_row(vault, alias, spec, turn_id, change)
+    clear_titles(vault, alias, spec, turn_id)
+    return done
 
 
 def find(vault, sources, target_text, cwd):

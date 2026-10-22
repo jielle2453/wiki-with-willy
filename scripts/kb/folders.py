@@ -261,25 +261,57 @@ def _gone(before, after):
                   if st in ("active", "missing") and (i not in after or after[i] == "excluded"))
 
 
-def _drop_cards(vault, ids, turn_id):
-    """D-174：那些條目的檔案卡拿掉（備進回合）、重寫總目錄與綜合卡快取。回 (拿掉的卡路徑, 標題, changed)。"""
+def _drop_cards(vault, ids, turn_id, undo):
+    """D-174：那些條目的檔案卡拿掉（備進回合）、重寫總目錄與綜合卡快取；undo 記下改之前的內容（第六輪：失敗整段倒回）。
+    回 (拿掉的卡路徑, 標題, changed)。"""
+    from kb._lib import source_edit
     groups = cards._scan_groups(vault)[0]
     group = [c for cid in ids for c in groups.get(cid, [])]
     removed, titles, changed = [], [], []
     for c in group:
+        undo.file(c["path"])
         cards.remove_card(vault, c["path"], turn_id)
         removed.append(c["path"])
         titles.append(cards._title(c))
         changed.append({"path": c["path"], "action": "delete"})
     # 同一份內容還在別處讀得到的條目：卡的「原檔」當場改成還在讀的位置，不等下次 sync（第五輪）
-    got = cards.sync(vault, sources_lib.load(vault), turn_id)
+    got = cards.sync(vault, sources_lib.load(vault), turn_id, undo)
     changed += got["changed"]
     if removed or got["moved"] or got["updated"] or got["dropped"]:
+        undo.file(cards.INDEX_POSIX)
         cards.render_index(vault, turn_id)
         changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
-        changed += [{"path": rel, "action": "modify"}
-                    for rel in cards.refresh_synthesis(vault, cards.entity_names_of(group) + got["touched"], turn_id)]
+        names = cards.entity_names_of(group) + got["touched"]
+        for rel in source_edit._synthesis_rels(vault, names):
+            undo.file(rel)
+        changed += [{"path": rel, "action": "modify"} for rel in cards.refresh_synthesis(vault, names, turn_id)]
     return removed, titles, changed
+
+
+def _guarded_drop(vault, ids, turn_id, original, inv_before, before_write=None):
+    """拿掉卡＋當場 sync＋總目錄與綜合卡快取，整段跟 sources.json、清冊一起倒回（第六輪）：失敗就把 sources.json 寫回原文、
+    清冊寫回改之前的、照 undo 還原改過的卡與總目錄，丟 _Undone（「沒有動：…」）。before_write(undo) 是之前要先做的記帳。"""
+    from kb._lib import entities
+    undo = entities._Undo(vault)
+    try:
+        if before_write is not None:
+            before_write(undo)
+        return _drop_cards(vault, ids, turn_id, undo)
+    except Exception as e:  # noqa: BLE001  任何一步不行就整段倒回
+        for step in (lambda: _restore_sources(vault, original),
+                     lambda: inv_before is not None and kio.write_text_atomic(
+                         Path(vault) / inventory.INVENTORY_REL, inv_before.decode("utf-8")),
+                     undo.rollback):
+            try:
+                step()
+            except Exception as again:  # noqa: BLE001
+                from kb._lib import ledger
+                ledger.log_error(vault, f"folders 倒回沒還原完：{type(again).__name__}: {again}", source="folders")
+        raise _Undone(getattr(e, "strerror", None) or type(e).__name__) from e
+
+
+class _Undone(Exception):
+    """拿掉卡那一段失敗、已整段倒回：照「沒有動：…」說。"""
 
 
 def purge_cmd(name):
@@ -296,8 +328,11 @@ def _left_line(got, name):
 
 def _purge_sentence(got):
     found = f"、推算 {got['findings']} 條" if got["findings"] else ""
-    return (f"清好了：卡 {got['cards']} 張、備份 {got['backups']} 份、暫存 {got['temp']} 份{found}、"
+    line = (f"清好了：卡 {got['cards']} 張、備份 {got['backups']} 份、暫存 {got['temp']} 份{found}、"
             f"工作日誌 {got['journal']} 段；{PURGE_TAIL}")
+    if got.get("undecodable"):  # 讀不懂編碼的備份跳過、不算沒清完（第六輪）
+        line += f"\n有 {got['undecodable']} 份備份讀不懂編碼，沒動"
+    return line
 
 
 def _new_locations(report):
@@ -428,16 +463,27 @@ def _exclude(vault, args, as_json):
         entry.setdefault("excludes", []).append(row)
         before = _snapshot_status(vault)
         before_entries = inventory.load(vault)["entries"]
+        inv_before = _inventory_bytes(vault)
         turn_id, original = _backup_then_write(vault, raw)
         result, inv_changed = _inventory_step(vault, original, _reconcile, vault, raw, turn_id)
         ids = _gone(before, _snapshot_status(vault))
-        if args.kind == "hidden":  # 範圍當場記下：同一回合先掃描再排除時，回合裡的清冊備份沒有這些條目（第一輪修）
+
+        def record(undo):
+            if args.kind != "hidden":
+                return
+            # 範圍當場記下：同一回合先掃描再排除時，回合裡的清冊備份沒有這些條目（第一輪修）；標題另記（第六輪）
             gone = set(ids)
             names = {loc.get("uri", "").rpartition("/")[2] for e in before_entries if e.get("id") in gone
                      for loc in e.get("locations") or [] if isinstance(loc, dict)}
             purge.record_scope(vault, best["alias"], rel,
                                {"ids": gone, "hashes": {purge.name_hash(n) for n in names if n}}, turn_id)
-        removed, titles, card_changed = _drop_cards(vault, ids, turn_id)
+            groups = cards._scan_groups(vault)[0]
+            purge.record_titles(vault, best["alias"], rel, {cards._title(c) for cid in gone for c in groups.get(cid, [])},
+                                turn_id, undo)
+        try:
+            removed, titles, card_changed = _guarded_drop(vault, ids, turn_id, original, inv_before, record)
+        except _Undone as e:
+            return _reject(f"沒有動：{e}")
         name = f"{best['alias']}/{rel}"
         first = f"已排除「{name}」（{KIND_TEXT[args.kind]}）。卡拿掉 {len(removed)} 張。"
         _journal(vault, first, "folders exclude", inv_changed, card_changed)  # 先記：接著清的時候這段也一起遮
@@ -465,6 +511,8 @@ def _exclude(vault, args, as_json):
         print(f"接著要重寫的綜合卡：{'、'.join(rewrite)}（{what}），" + (f"寫完跑 {cmd}" if cmd else plan.PURGE_NO_CMD))
     elif purged is not None and purged["remaining"]:
         print(_left_line(purged, name))
+        if purged.get("undecodable"):
+            print(f"有 {purged['undecodable']} 份備份讀不懂編碼，沒動")
     elif purged is not None:
         print(_purge_sentence(purged))
     return 0
@@ -482,9 +530,14 @@ def _remove(vault, args, as_json):
             return _reject(f"沒有叫「{wanted}」的來源")
         raw["sources"].remove(entry)
         before = _snapshot_status(vault)
+        inv_before = _inventory_bytes(vault)
         turn_id, original = _backup_then_write(vault, raw)
         result, inv_changed = _inventory_step(vault, original, _reconcile, vault, raw, turn_id)
-        removed, _titles, changed = _drop_cards(vault, _gone(before, _snapshot_status(vault)), turn_id)
+        try:
+            removed, _titles, changed = _guarded_drop(vault, _gone(before, _snapshot_status(vault)), turn_id, original,
+                                                      inv_before)
+        except _Undone as e:
+            return _reject(f"沒有動：{e}")
     alias = entry.get("alias", "")
     first = f"已拿掉來源「{alias}」；你的檔案沒動，從現在起不讀它；卡拿掉 {len(removed)} 張；說「退回上一版」救得回。"
     _journal(vault, first, "folders remove", inv_changed, changed)

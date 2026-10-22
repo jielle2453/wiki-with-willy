@@ -1,5 +1,7 @@
 """留痕：守門事件帳 .system/ledger.tsv（一行一事件，只記 deny、unparsed、unresolved、guard_error）、
 guard-status 一機一檔每日一次、hook-errors.log。所有寫入失敗都吞掉，留痕不能讓守門本身掛掉。
+ledger.tsv 與 hook-errors.log 的追加跟 kb folders purge 的讀改寫用同一把鎖（<檔>.lock，manage 第二版第二輪修），
+追加這邊只等 APPEND_LOCK_WAIT 秒，等不到照樣追加（hook 有時限；那時 purge 剛好在改寫，最多掉這一行，跟沒鎖時一樣）。
 """
 import json
 import os
@@ -15,6 +17,27 @@ ERROR_LOG_REL = ".system/hook-errors.log"
 FALLBACK_ERROR_LOG = "wiki-with-willy-hook-errors.log"
 HEADER = ["time", "tool", "decision", "zone", "reason_code", "path_or_command_head"]
 HEAD_MAX = 120
+APPEND_LOCK_WAIT = 2
+
+
+def _append_line(target, text, header=None):
+    """拿鎖（等不到就不拿）後追加一行；header 給了且檔不存在先寫表頭。失敗丟 OSError 給呼叫端吞。"""
+    from kb._lib.io import FileLock
+    lock = FileLock(target, timeout=APPEND_LOCK_WAIT)
+    try:
+        lock.__enter__()
+        held = True
+    except OSError:
+        held = False
+    try:
+        new = not target.exists()
+        with open(target, "a", encoding="utf-8", newline="\n") as f:
+            if header and new:
+                f.write(header + "\n")
+            f.write(text + "\n")
+    finally:
+        if held:
+            lock.__exit__(None, None, None)
 
 
 _LINE_BREAKS = re.compile("[\t\r\n\x0b\x0c\x1c\x1d\x1e\x85  ]")  # str.splitlines 會斷的全部（L1）
@@ -37,8 +60,7 @@ def log_error(vault, text, source="guard"):
     target = (Path(vault) / ERROR_LOG_REL) if vault else fallback_error_log()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "a", encoding="utf-8", newline="\n") as f:
-            f.write(f"{_now()}\t{_clean(source)}\t{_clean(text)[:200]}\n")
+        _append_line(target, f"{_now()}\t{_clean(source)}\t{_clean(text)[:200]}")
     except OSError:
         pass
 
@@ -52,11 +74,7 @@ def append(vault, row):
     ])
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        new = not target.exists()
-        with open(target, "a", encoding="utf-8", newline="\n") as f:
-            if new:
-                f.write("\t".join(HEADER) + "\n")
-            f.write(line + "\n")
+        _append_line(target, line, "\t".join(HEADER))
     except OSError as e:
         log_error(vault, f"{type(e).__name__}: 寫 ledger 失敗 {e}")
 

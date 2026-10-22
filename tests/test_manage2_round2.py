@@ -307,7 +307,7 @@ class Small(Base):
         self.assertEqual(mask("改了 客戶案件/私人/日記.txt。"), "改了 （已排除）。")
         self.assertEqual(mask("日記.txt 跟 data"), "日記.txt 跟 data")
         self.assertEqual(mask("舊客戶案件/私人2"), "舊客戶案件/私人2")
-        self.assertEqual(mask("x客戶案件/私人"), "x客戶案件/私人")
+        self.assertEqual(mask("x客戶案件/私人"), "x（已排除）")  # 第二輪修：完整路徑不看左邊界
 
     def test_ledger_rewrite_takes_lock(self):
         taken = []

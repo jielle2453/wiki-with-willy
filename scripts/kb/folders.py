@@ -17,6 +17,8 @@ add 第一行的份數與憑證清單從同一個 scan 取（清冊審閱裁定 
 manage 第二版（D-174、D-177）：exclude（兩種）與 remove 在清冊對帳之後把那些條目的檔案卡拿掉（備進回合）、重寫總目錄與綜合卡快取，
 成功句接「卡拿掉 N 張」；hidden 那條排除記 purge: pending，列出接著要重寫的綜合卡（「整理到」引用那些卡的），
 沒有受影響的綜合卡就在同一個指令裡接著清殘留（kb folders purge，本體在 _lib/purge）。
+find <名>（manage 第二版第二輪修）：在登記的根（含知識庫、AI 產出、收件匣）底下找夾名，只列「別名/相對路徑」，
+跳過排除的、憑證樣式的、. 開頭與隱藏的夾、連結；走訪上限照 credential_scan_max_entries；只讀。
 relocate <別名> <新路徑>：資料夾搬家只換登記的位置（別名、排除、清冊 uri 不動），新路徑照 add 的拒絕條件查（跟自己不算重疊），
 從清冊抽樣到新位置比對、照實回報；--check 只印，不帶就改 spec、掃描、搬卡、重寫總目錄，先備進回合，退回回到舊位置。
 """
@@ -73,7 +75,10 @@ def add_arguments(sub):
     pg = subs.add_parser("purge", help="清「不想讓 AI 看到」那夾的殘留",
                          description="排除成「不想讓 AI 看到」之後，清卡的舊版、備份、暫存與工作日誌裡那夾的東西。")
     pg.add_argument("path", help="那條排除（「別名/相對路徑」或路徑）")
-    for p in (a, e, rm, inc, ls, rl, pg):
+    fd = subs.add_parser("find", help="在登記的資料夾裡找某個夾（只讀）",
+                         description="在登記的資料夾底下找夾名，列出「別名/相對路徑」；排除的、檔名像密碼的夾不看。")
+    fd.add_argument("name", help="夾名（也可以是「上層/夾名」）")
+    for p in (a, e, rm, inc, ls, rl, pg, fd):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -696,6 +701,80 @@ def _relocate(vault, args, as_json):
     return 0
 
 
+FIND_HIDDEN = 0x2 | 0x4 | 0x400  # 隱藏、系統、重解析點（連結、junction）
+
+
+def _find_roots(vault, sources):
+    vault_s = str(vault)
+    out = [(s["alias"], s["root"], [ex["root"] for ex in s["excludes"]]) for s in sources.entries]
+    out.append((inventory.KNOWLEDGE, vault_s, []))
+    out += [(a, os.path.join(vault_s, a), []) for a in (inventory.INBOX, inventory.OUTPUT)]
+    return out
+
+
+def find_folders(vault, name, limit):
+    """在登記的根底下找夾名：回 (["別名/相對路徑"], 有沒有走到上限)。name 有「/」就比路徑的尾巴。"""
+    want = name.strip().replace("\\", "/").strip("/").casefold()
+    sources = sources_lib.load(vault)
+    vault_n = normalize(str(vault), None)
+    found, seen = [], 0
+    for alias, root, skips in _find_roots(vault, sources):
+        if not os.path.isdir(root):
+            continue
+        stack = [""]
+        while stack:
+            rel = stack.pop()
+            here = os.path.join(root, *rel.split("/")) if rel else root
+            try:
+                with os.scandir(here) as it:
+                    items = sorted(it, key=lambda i: i.name)
+            except OSError:
+                continue
+            subdirs = []
+            for item in items:
+                try:
+                    if not item.is_dir(follow_symlinks=False):
+                        continue
+                    attrs = getattr(item.stat(follow_symlinks=False), "st_file_attributes", 0)
+                except OSError:
+                    continue
+                seen += 1
+                if seen > limit:
+                    return sorted(found), True
+                nm = item.name
+                if nm.startswith(".") or attrs & FIND_HIDDEN or credentials.match_segment((nm,)) is not None:
+                    continue
+                if alias == inventory.KNOWLEDGE and not rel and nm.casefold() in inventory.VAULT_RESERVED_DIRS:
+                    continue
+                full = normalize(item.path, None)
+                if full == vault_n or any(inside(full, s) for s in skips):
+                    continue  # 總資料夾本身、排除的夾整棵不看
+                child = f"{rel}/{nm}" if rel else nm
+                low = child.casefold()
+                if ("/" in want and (low == want or low.endswith("/" + want))) or nm.casefold() == want:
+                    found.append(f"{alias}/{child}")
+                subdirs.append(child)
+            stack.extend(reversed(subdirs))
+    return sorted(found), False
+
+
+def _find(vault, name, as_json):
+    shown = name.strip()
+    found, truncated = find_folders(vault, shown, config.get(vault, "credential_scan_max_entries"))
+    if as_json:
+        print(json.dumps({"name": shown, "found": found, "truncated": truncated}, ensure_ascii=False))
+        return 0
+    if found:
+        print(f"找到 {len(found)} 個叫「{shown}」的夾：")
+        for f in found:
+            print(f"- {f}")
+    else:
+        print(f"登記的資料夾裡沒有叫「{shown}」的夾")
+    if truncated:
+        print("（資料夾太多，只找了一部分；找不到就請她從檔案總管貼路徑）")
+    return 0
+
+
 def _vault(args):
     found = guard.find_vault(args.vault or os.getcwd())
     return Path(os.path.realpath(str(found))) if found is not None else None
@@ -708,7 +787,7 @@ def run(args):
         return 3
     kio.LOCK_TIMEOUT = CLI_LOCK_TIMEOUT
     as_json = getattr(args, "json", False)
-    if args.folders_command != "list":
+    if args.folders_command not in ("list", "find"):
         try:  # 清冊讀不到先擋，sources.json 一行都不改（I-046、清冊審閱裁定 4）
             inventory.load(vault)
         except ValueError as e:
@@ -727,6 +806,8 @@ def run(args):
             return _relocate(vault, args, as_json)
         if args.folders_command == "purge":
             return _purge(vault, args, as_json)
+        if args.folders_command == "find":
+            return _find(vault, args.name, as_json)
         return _list(vault, as_json)
     except _InventoryLagged as e:  # 清冊階段失敗、登記表也寫不回去（審閱裁定 36）
         print(f"來源已改、清冊沒跟上：{e}，請跑 kb inventory scan")

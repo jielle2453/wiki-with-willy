@@ -56,10 +56,15 @@ class Slot(str):
         return str.__new__(cls, "{" + name + "}")
 
 
+CURLY_QUOTES = frozenset(chr(c) for c in range(0x2018, 0x2020))  # ‘’‚‛“”„‟：PowerShell 也當引號（第二輪修）
+
+
 def shell_arg(arg):
     """指令參數：安全字元（含中文）照寫，有空白或特殊字元加雙引號、裡面的 " \\ 前面加反斜線；有 $ 或反引號改用單引號
     （雙引號裡 PowerShell 會展開，manage 第二版測試）；同時又有單引號就給不出來，回 None。"""
     arg = str(arg)
+    if CURLY_QUOTES & set(arg):  # 彎引號比照「有單引號」：單雙引號都包不住，不給指令
+        return None
     if "$" in arg or "`" in arg:
         return None if "'" in arg else f"'{arg}'"
     if _SAFE.fullmatch(arg):
@@ -78,7 +83,11 @@ def quote(arg):
 
 
 def cmd(*parts):
-    return "kb " + " ".join(quote(p) for p in parts)
+    """kb 指令字串；有參數給不出引號（shell_arg 回 None）就回 None，呼叫端那一項不給指令、帶 note（第二輪修）。"""
+    try:
+        return "kb " + " ".join(quote(p) for p in parts)
+    except ValueError:
+        return None
 
 
 def build(out, vault, config, tell_all=True):
@@ -165,8 +174,15 @@ def _fill(name, rule):
     return {"name": name, "rule": rule}
 
 
+NO_CMD_NOTE = "名字裡有引號一類的特殊符號，指令給不出來；請她先在檔案總管改名，或照這個結果用白話說給她聽"
+
+
 def _result(label, do=(), strict=False, fill=(), **extra):
-    return dict({"n": 0, "label": label, "do": list(do), "strict": strict, "fill": list(fill)}, **extra)
+    do = list(do)
+    if any(d is None for d in do):  # 給不出指令：這一項不跑指令，帶 note（kb asks、cards todo 不能因此 exit 3）
+        do = []
+        extra = dict(extra, note=extra.get("note") or NO_CMD_NOTE)
+    return dict({"n": 0, "label": label, "do": do, "strict": strict, "fill": list(fill)}, **extra)
 
 
 def _ask(ask_id, kind, question, results):

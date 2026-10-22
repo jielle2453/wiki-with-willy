@@ -52,8 +52,11 @@ def _in_folder(uri, prefix):
 
 
 def _version_dirs(vault):
+    """versions 底下的回合夾；連結與 junction 跳過、不跟（第二輪修：跟進去會刪到庫外的檔）。"""
     root = Path(vault) / turn.VERSIONS_REL
-    return sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    if not root.is_dir() or _is_link(root):
+        return []
+    return sorted(p for p in root.iterdir() if p.is_dir() and not _is_link(p) and not _is_link(p / "files"))
 
 
 def _read_json(path):
@@ -231,7 +234,8 @@ def masker(vault, alias, spec, root):
     forms |= {f.replace("/", "\\") for f in list(forms) if not f.startswith("file://")}
     forms = sorted((f for f in forms if f), key=len, reverse=True)
     stop = re.escape(_STOP)
-    rx = re.compile(rf"(?<![^\s{stop}])(?:" + "|".join(re.escape(f) for f in forms)
+    # 都是含分隔符的完整路徑：左邊不看邊界（「已搬好：客戶案件/私人/…」也要遮，第二輪修），右邊要是結尾或路徑分隔
+    rx = re.compile("(?:" + "|".join(re.escape(f) for f in forms)
                     + rf")(?=$|[/\\{stop}\s])(?:[/\\][^{stop}]*)?", re.IGNORECASE)
 
     def mask(text):
@@ -401,7 +405,8 @@ def _scrub_version(vault, vdir, ids, prefix, mask, counts):
 
 
 def _scrub_version_locked(vault, vdir, ids, prefix, mask, counts):
-    """一個回合夾：卡與綜合卡舊版刪、狀態檔舊版改寫、md 舊版重渲染、總目錄舊版拿掉那些行、manifest 標 purged、moves.jsonl 遮。"""
+    """一個回合夾：卡與綜合卡舊版刪、狀態檔舊版改寫、md 舊版重渲染、總目錄舊版拿掉那些行、manifest 標 purged、moves.jsonl 遮。
+    每一份各自 try（寫不了的算進還剩的），manifest 不管中途怎樣都在最後寫（第二輪修：刪了檔、帳卻沒改，重跑就認不出來）。"""
     files = vdir / "files"
     manifest = vdir / "manifest.jsonl"
     shorts = {cards.short_id(i) for i in ids}
@@ -416,77 +421,117 @@ def _scrub_version_locked(vault, vdir, ids, prefix, mask, counts):
                 rows.append(json.loads(ln) if ln.strip() else None)
             except ValueError:
                 rows.append(None)
-        dirty, datas = False, {}
-        for row in rows:
-            if not isinstance(row, dict) or row.get("action") == "purged" or not isinstance(row.get("path"), str):
-                continue
-            rel = row["path"]
-            f = files / rel
-            if not _under_files(files, f) or not f.is_file():
-                continue  # 紀錄不信（B-080）：解出來不在這個回合的 files/ 底下就不碰
-            gone = False
-            if rel.startswith(cards.CARDS_DIR + "/") and rel.endswith(".md"):
-                cid = _card_id(f)
-                if cid in ids:
-                    counts["card_ids"].add(cid)
-                    gone = True
-            elif _is_synthesis(rel):
+        state = {"dirty": False}
+        datas = {}
+        try:
+            _scrub_rows(vault, files, rows, ids, prefix, mask, counts, shorts, datas, state)
+            _scrub_md(vault, files, rows, mask, counts, datas, state)
+        finally:
+            if state["dirty"]:
                 try:
-                    gone = _refs(f.read_text(encoding="utf-8"), ids)
-                except (OSError, UnicodeDecodeError):
-                    gone = False
-            elif rel in JSON_DROPS:
-                data = _read_json(f)
-                datas[rel] = data
-                if data is not None and JSON_DROPS[rel](data, ids, prefix):
-                    write_json_atomic(f, data)
-                    counts["backups"] += 1
-            elif rel == cards.INDEX_POSIX:
-                text = f.read_text(encoding="utf-8")
-                kept = [ln for ln in text.splitlines(keepends=True) if not any(f"-{s}.md)" in ln for s in shorts)]
-                if len(kept) != len(text.splitlines(keepends=True)):
-                    write_text_atomic(f, "".join(kept))
-                    counts["backups"] += 1
-            if gone:
-                try:
-                    f.unlink()
+                    write_text_atomic(manifest, "".join(
+                        (json.dumps(row, ensure_ascii=False) if row is not None else ln) + "\n"
+                        for row, ln in zip(rows, lines) if ln.strip()))
                 except OSError:
                     counts["left"]["backups"] += 1
-                    continue
+        _scrub_moves(vdir, prefix, counts)
+
+
+def _card_row(rel, shorts):
+    """manifest 這行是那些卡的路徑嗎（檔已經不在了也認得：檔名結尾 -<短編號>.md）。"""
+    return rel.startswith(cards.CARDS_DIR + "/") and any(rel.endswith(f"-{s}.md") for s in shorts)
+
+
+def _scrub_rows(vault, files, rows, ids, prefix, mask, counts, shorts, datas, state):
+    for row in rows:
+        if not isinstance(row, dict) or row.get("action") == "purged" or not isinstance(row.get("path"), str):
+            continue
+        rel = row["path"]
+        f = files / rel
+        if not _under_files(files, f):
+            continue  # 紀錄不信（B-080）：解出來不在這個回合的 files/ 底下就不碰
+        if not f.is_file():
+            if _card_row(rel, shorts):  # 上次刪了檔、帳沒改到：這次補標
                 row["action"], row["path"] = "purged", PURGED
+                state["dirty"] = True
+            continue
+        try:
+            _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state)
+        except (OSError, UnicodeDecodeError):
+            counts["left"]["backups"] += 1
+
+
+def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state):
+    """manifest 一行：那些卡的舊版、引用它們的綜合卡舊版刪掉並標 purged；狀態檔舊版拿掉那些條目；總目錄舊版拿掉那些行。"""
+    gone = False
+    if rel.startswith(cards.CARDS_DIR + "/") and rel.endswith(".md"):
+        cid = _card_id(f)
+        if cid in ids:
+            counts["card_ids"].add(cid)
+            gone = True
+    elif _is_synthesis(rel):
+        gone = _refs(f.read_text(encoding="utf-8"), ids)
+    elif rel in JSON_DROPS:
+        data = _read_json(f)
+        datas[rel] = data
+        if data is not None and JSON_DROPS[rel](data, ids, prefix):
+            write_json_atomic(f, data)
+            counts["backups"] += 1
+    elif rel == cards.INDEX_POSIX:
+        text = f.read_text(encoding="utf-8")
+        kept = [ln for ln in text.splitlines(keepends=True) if not any(f"-{s}.md)" in ln for s in shorts)]
+        if len(kept) != len(text.splitlines(keepends=True)):
+            write_text_atomic(f, "".join(kept))
+            counts["backups"] += 1
+    if gone:
+        f.unlink()
+        row["action"], row["path"] = "purged", PURGED
+        counts["backups"] += 1
+        state["dirty"] = True
+
+
+MD_RENDERS = ((pending.PENDING_POSIX, pending.MD_POSIX, lambda vault, data: _pending_md(data)),
+              (agenda.AGENDA_POSIX, agenda.MD_POSIX, lambda vault, data: agenda.render_text(vault, data)),
+              (rulings.RULINGS_POSIX, rulings.MD_POSIX,
+               lambda vault, data: rulings.render_text(data, agenda.card_titles(vault))))
+
+
+def _scrub_md(vault, files, rows, mask, counts, datas, state):
+    """待處理.md、日程.md、裁示.md 的舊版：同一回合有 JSON 舊版就照改過的重渲染，沒有而內容指到那夾就刪掉、標 purged。"""
+    for json_rel, md_rel, render in MD_RENDERS:
+        md = files / md_rel
+        if not md.is_file():
+            continue
+        try:
+            _scrub_one_md(vault, md, md_rel, json_rel, render, rows, mask, counts, datas, state)
+        except (OSError, UnicodeDecodeError):
+            counts["left"]["backups"] += 1
+
+
+def _scrub_one_md(vault, md, md_rel, json_rel, render, rows, mask, counts, datas, state):
+    text = md.read_text(encoding="utf-8")
+    data = datas.get(json_rel)
+    if isinstance(data, dict):
+        try:
+            new = render(vault, data)
+        except Exception:  # noqa: BLE001  舊版的 JSON 形狀不對：照下一條（提到就刪）
+            new = None
+        if new is not None:
+            if new != text:
+                write_text_atomic(md, new)
                 counts["backups"] += 1
-                dirty = True
-        for json_rel, md_rel, render in ((pending.PENDING_POSIX, pending.MD_POSIX, _pending_md),
-                                         (agenda.AGENDA_POSIX, agenda.MD_POSIX,
-                                          lambda data: agenda.render_text(vault, data)),
-                                         (rulings.RULINGS_POSIX, rulings.MD_POSIX,
-                                          lambda data: rulings.render_text(data, agenda.card_titles(vault)))):
-            md = files / md_rel
-            if not md.is_file():
-                continue
-            text = md.read_text(encoding="utf-8")
-            data = datas.get(json_rel)
-            if isinstance(data, dict):
-                try:
-                    new = render(data)
-                except Exception:  # noqa: BLE001  舊版的 JSON 形狀不對：照下一條（提到就刪）
-                    new = None
-                if new is not None:
-                    if new != text:
-                        write_text_atomic(md, new)
-                        counts["backups"] += 1
-                    continue
-            if mask(text) != text:
-                md.unlink()
-                for row in rows:
-                    if isinstance(row, dict) and row.get("path") == md_rel:
-                        row["action"], row["path"] = "purged", PURGED
-                counts["backups"] += 1
-                dirty = True
-        if dirty:
-            write_text_atomic(manifest, "".join(
-                (json.dumps(row, ensure_ascii=False) if row is not None else ln) + "\n"
-                for row, ln in zip(rows, lines) if ln.strip()))
+            return
+    if mask(text) != text:
+        md.unlink()
+        for row in rows:
+            if isinstance(row, dict) and row.get("path") == md_rel:
+                row["action"], row["path"] = "purged", PURGED
+        counts["backups"] += 1
+        state["dirty"] = True
+
+
+def _scrub_moves(vdir, prefix, counts):
+    try:
         moves = vdir / "moves.jsonl"
         if moves.is_file():
             text = moves.read_text(encoding="utf-8")
@@ -506,6 +551,8 @@ def _scrub_version_locked(vault, vdir, ids, prefix, mask, counts):
             new = "".join(x + "\n" for x in out)
             if new != text:
                 write_text_atomic(moves, new)
+    except (OSError, UnicodeDecodeError):
+        counts["left"]["backups"] += 1
 
 
 def _temp(vault, ids, hashes, counts):

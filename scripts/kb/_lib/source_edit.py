@@ -68,6 +68,10 @@ PARTIAL = "已搬好，但後面沒做完；說「退回」可以退回"
 REPLACED_NOT_MOVED = "原本的「{name}」已經丟進資源回收筒，要從那裡拿回來；這份沒搬過去（{why}），還在原位"
 REPLACED_STUCK = "原本的「{name}」已經丟進資源回收筒，要從那裡拿回來；這份搬到一半，請服務人員看"
 REMOVABLE = "隨身碟或網路磁碟"
+DEVICE_NAME = "這種名字 Windows 不收，換個名字"
+CURLY_QUOTES = frozenset(chr(c) for c in range(0x2018, 0x2020))
+# Windows 保留裝置名（帶副檔名也算）：建得出來卻打不開、刪不掉
+DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
 DRIVE_FIXED = 3
 # 已知副檔名（kb 認得的加上常見的 Office、圖、影音）：新名字的尾巴是這些之一又跟原本不同，才算要換副檔名（拒絕）
 KNOWN_EXTS = {
@@ -118,8 +122,10 @@ def _drive_type(path):
 
 
 def shell_arg(text):
-    """給 AI 跑的指令裡的一個參數：一般用雙引號；有 $ 或反引號改單引號；同時又有單引號回 None（給不出來）。"""
+    """給 AI 跑的指令裡的一個參數：一般用雙引號；有 $ 或反引號改單引號；同時又有單引號、或有彎引號（PowerShell 當引號）回 None。"""
     text = str(text)
+    if set(text) & CURLY_QUOTES:
+        return None
     if "$" in text or "`" in text:
         return None if "'" in text else f"'{text}'"
     return f'"{text}"'
@@ -570,6 +576,8 @@ def _check_name(src, new_name, folder):
         raise Refused(BAD_NAME)
     if _unread_name(name):
         raise Refused(HIDDEN_NAME)
+    if name.split(".")[0].strip().upper() in DEVICE_NAMES:
+        raise Refused(DEVICE_NAME)
     if folder:
         return name
     old_ext = src.suffix
@@ -725,23 +733,42 @@ def do_move(vault, plan, turn_id, op, replace=False):
             undo.file(cards.INDEX_POSIX)
             cards.render_index(vault, turn_id)
             changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
+        for rel in _synthesis_rels(vault, got["touched"]):  # 綜合卡快取也收進倒回的範圍（第二輪修）
+            undo.file(rel)
+        changed += [{"path": rel, "action": "modify"} for rel in cards.refresh_synthesis(vault, got["touched"], turn_id)]
     except Exception as e:  # noqa: BLE001  改名之後的任何失敗都要倒回去或說實話
         try:
             _rename(dst, src)
         except Exception:  # noqa: BLE001
             raise Refused(PARTIAL) from e
-        try:
-            undo.rollback()
-            restore_sources()
-        except Exception as again:  # noqa: BLE001  檔已在原位；清冊下次掃描會對上
-            from kb._lib import ledger
-            ledger.log_error(vault, f"source-edit 倒回時紀錄沒還原完：{type(again).__name__}: {again}", source="source-edit")
+        from kb._lib import ledger
+        for step in (restore_sources, undo.rollback):  # 各自做：一個失敗另一個照做（不讀的夾不能因此變可讀）
+            try:
+                step()
+            except Exception as again:  # noqa: BLE001  檔已在原位；清冊下次掃描會對上
+                ledger.log_error(vault, f"source-edit 倒回時沒還原完：{type(again).__name__}: {again}", source="source-edit")
         if replaced is not None:
             raise Refused(REPLACED_NOT_MOVED.format(name=plan["new_name"], why=_why(e))) from e
         raise Refused(NOT_MOVED.format(why=_why(e))) from e
-    changed += [{"path": rel, "action": "modify"} for rel in cards.refresh_synthesis(vault, got["touched"], turn_id)]
     return {"to_uri": to_uri, "replaced": replaced, "changed": changed,
             "cards_moved": len(got["moved"]) + len(got["updated"])}
+
+
+def _synthesis_rels(vault, names):
+    """這些實體的綜合卡相對路徑（有的才列）。"""
+    from kb._lib import entities, synthesis
+    try:
+        data = entities.load(vault)
+    except ValueError:
+        return []
+    out = []
+    for n in names:
+        e, _hit = entities.find(data, n)
+        if e and e.get("type") and (Path(vault) / synthesis.card_rel(e)).is_file():
+            rel = synthesis.card_rel(e)
+            if rel not in out:
+                out.append(rel)
+    return out
 
 
 def _replace_into(vault, plan, turn_id):

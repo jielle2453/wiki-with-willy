@@ -783,13 +783,42 @@ def record_titles(vault, alias, spec, titles, turn_id, undo=None):
     return record(vault, alias, spec, "titles", titles, turn_id, undo)
 
 
-def own_turns(vault, turn_id):
-    """這一句的回合代號與它在工作日誌那行的 key（退回自己這句時接著原回合）。"""
+def own_turns(vault):
+    """對話裡這一句的回合代號與它在工作日誌那行的 key（退回自己這句時接著原回合）；終端機跑的（current.json 沒有 session_id
+    或已答完）回空的，不讀 turn.current、不開新回合（第八輪）。"""
     try:
-        cur = turn.current(vault)
+        cur = turn._read_turn(turn._current_file(vault))
     except (OSError, ValueError):
-        cur = {}
-    return {turn_id, turn.journal_key(cur) if cur.get("turn") else turn_id}
+        return set()
+    if not (cur and cur.get("session_id") and not cur.get("done") and cur.get("turn")):
+        return set()
+    return {cur["turn"], turn.journal_key(cur)}
+
+
+def _strip_own(vdir, alias, spec):
+    """回合夾裡 sources.json 與 purge-pending.json 的舊版：拿掉那條排除記的範圍（卡編號、檔名雜湊）與記的標題
+    （第八輪：排除與清不在同一回合時，收尾前的舊版留著明碼標題與編號）。改不了丟 OSError。"""
+    key = f"{alias}/{spec}"
+    src = vdir / "files" / sources_lib.SOURCES_REL
+    data = _read_json(src) if src.is_file() else None
+    if isinstance(data, dict):
+        changed = False
+        for s in data.get("sources") or []:
+            if not isinstance(s, dict) or str(s.get("alias", "")).casefold() != alias.casefold():
+                continue
+            for ex in s.get("excludes") or []:
+                if isinstance(ex, dict) and ex.get("spec") == spec:
+                    for k in ("purge_ids", "purge_names"):
+                        if k in ex:
+                            ex.pop(k)
+                            changed = True
+        if changed:
+            write_json_atomic(src, data)
+    pend = vdir / "files" / PENDING_POSIX
+    data = _read_json(pend) if pend.is_file() else None
+    if isinstance(data, dict) and isinstance(data.get("items"), dict) and key in data["items"]:
+        data["items"].pop(key)
+        write_json_atomic(pend, data)
 
 
 def clear_titles(vault, alias, spec, turn_id):
@@ -885,11 +914,12 @@ def purge(vault, alias, spec, root, turn_id):
     ids = sc["ids"]
     names_blocking = blocking(vault, ids)
     if names_blocking:
+        record(vault, alias, spec, "turns", own_turns(vault), turn_id)  # 被擋的這一句也是清那一句（第八輪）
         raise Blocked(names_blocking)
     record_scope(vault, alias, spec, sc, turn_id)
     titles = recorded_titles(vault, alias, spec) | (set(_titles(vault, ids).values()) if ids else set())
     record_titles(vault, alias, spec, titles, turn_id)  # 重跑時卡與舊版已經刪了，標題靠記下的
-    record(vault, alias, spec, "turns", own_turns(vault, turn_id), turn_id)
+    record(vault, alias, spec, "turns", own_turns(vault), turn_id)
     keep = recorded(vault, alias, spec, "turns")  # 排除那一句、清那一句：「問」不換
     counts = {"card_ids": set(), "finding_ids": set(), "backups": 0, "temp": 0, "journal": 0, "findings": 0,
               "undecodable": 0, "left": {k: 0 for k, _w in LEFT_WORDS}}
@@ -900,6 +930,10 @@ def purge(vault, alias, spec, root, turn_id):
     record(vault, alias, spec, "findings", counts["finding_ids"], turn_id)
     _drop_synced(vault, set(ids) | recorded(vault, alias, spec, "findings"), turn_id, counts)
     for vdir in _version_dirs(vault):
+        try:
+            _strip_own(vdir, alias, spec)  # 先拿掉：遮路徑會把記的那條的鍵換掉，之後就認不出來
+        except OSError:
+            counts["left"]["backups"] += 1
         _scrub_version(vault, vdir, ids, prefix, mask, counts)
     _scrub_prompts(vault, words, keep, counts)
     counts["temp"] = _temp(vault, ids, sc["hashes"], counts)
@@ -926,6 +960,13 @@ def mark_done(vault, alias, spec, turn_id):
         return True
     done = _write_row(vault, alias, spec, turn_id, change)
     clear_titles(vault, alias, spec, turn_id)
+    # 收尾這兩步把改前的 sources.json（卡編號）與 purge-pending.json（標題）備進了這一回合：備份清理已經跑過，這裡再拿掉（第八輪）
+    vdir = Path(vault) / turn.VERSIONS_REL / turn_id
+    try:
+        if vdir.is_dir():
+            _strip_own(vdir, alias, spec)
+    except OSError as e:
+        ledger.log_error(vault, f"清完收尾的備份沒拿乾淨：{type(e).__name__}", source="purge")
     return done
 
 

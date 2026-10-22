@@ -257,5 +257,25 @@ class Round28b(Base):
             self.assertDecision("Bash", cmd, "pass")
 
 
+class Round28c(Base):
+    """測試 28 第三輪（報告附錄 B）：<<< 餵殼或直譯器、包一層再跑的動詞（xargs、find -exec、setsid、parallel、watch、stdbuf）、
+    管線前一段的輸出當寫入目標（kb … | xargs rm）。語料同一批。"""
+
+    def test_herestring_wrappers_and_piped_targets(self):
+        v, o = self.V.as_posix(), self.out.as_posix()
+        t = f"{v}/系統/待處理.md"
+        kb = f'python "{ROOT.as_posix()}/scripts/kb.py"'
+        for tool, cmd in (("Bash", f"bash <<< 'rm \"{t}\"'"), ("Bash", f"python <<< \"open('{v}/系統/x','w')\""),
+                          ("Bash", f"echo x | xargs sh -c 'rm {t}'"), ("Bash", f'find "{o}" -maxdepth 0 -exec sh -c "rm {t}" \\;'),
+                          ("Bash", f"setsid sh -c 'rm {t}'"), ("Bash", f"parallel sh -c 'rm {t}' ::: a"),
+                          ("Bash", f"watch -n1 sh -c 'rm {t}'"), ("Bash", f"stdbuf -o0 sh -c 'rm {t}'"),
+                          ("Bash", f"{kb} folders find 信義王 | xargs rm -rf"),
+                          ("PowerShell", f"{kb} folders find 信義王 | Remove-Item -Recurse")):
+            self.assertDecision(tool, cmd, "deny")
+        for tool, cmd in (("Bash", "cat <<< 'rm x'"), ("Bash", 'find . -name "*.md" | xargs grep -l 報價'),
+                          ("PowerShell", f'Get-Content "{o}/a.txt" | Set-Content "{o}/b.txt"')):
+            self.assertDecision(tool, cmd, "pass")
+
+
 if __name__ == "__main__":
     unittest.main()

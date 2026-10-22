@@ -328,15 +328,16 @@ def _plan_stages(command, bodies, powershell=False):
         words = [t for t, _q, _g, _a in toks]
         args = [t for t, _q, _g, a in toks if not a]  # 導向目標以外（只讀動詞數位置參數用，F2-5）
         verb = cmdparse.verb_of(words)
+        runs = cmdparse.inner_verb(verb, words)  # xargs sh -c、find -exec bash -c：照裡面那個殼或直譯器判（測試 28 N1）
         same = by_sub[sub]
         code = ""
-        if verb in cmdparse.INTERPRETERS or verb in cmdparse.SHELL_WRAPPERS:
+        if runs in cmdparse.INTERPRETERS or runs in cmdparse.SHELL_WRAPPERS:
             # 整句的內文都算它的程式碼：here-string／heredoc 可能先放進變數再餵（$c = @'…'@ 換行 $c | python -，測試 28）
             code = "\n".join(bodies)
             code += "\n" + "\n".join(t for s, t in same if s < stage)
         bare = cmdparse.outside_quotes(cmdparse.strip_marks(text), powershell)
-        out.append({"sub": sub, "stage": stage, "text": text, "verb": verb, "words": words,
-                    "kind": cmdparse.stage_kind(verb, cmdparse.strip_marks(text), code, args, powershell),
+        out.append({"sub": sub, "stage": stage, "text": text, "verb": verb, "words": words, "runs": runs,
+                    "kind": cmdparse.stage_kind(runs, cmdparse.strip_marks(text), code, args, powershell),
                     "redirect": bare is None or ">" in bare, "marks": cmdparse.data_marks(text)})
     return out
 
@@ -385,8 +386,11 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         write_verb = stage_write  # 只有寫入那一段才讓隱含的讀取範圍不走訪
         if stage_write or any(a for _t, _q, _g, a in tokens):
             out["has_write"] = True
-        if stage_write and plan["stage"] > 0 and (tool == "PowerShell" or verb in cmdparse.PIPE_ARG_VERBS):
-            sub_write_empty.setdefault(plan["sub"], True)  # | xargs rm x、| Copy-Item -Destination x：前面的路徑也是目標
+        if stage_write and plan["stage"] > 0 and (tool == "PowerShell" or verb in cmdparse.PIPE_ARG_VERBS) \
+                and verb not in cmdparse.CONTENT_SINKS:
+            # 目標從前一段的輸出來（| xargs rm、| Remove-Item、| % { rm $_ }、kb … | xargs rm -rf）：推不出會寫到哪，一律擋，
+            # 前一段是 kb 也一樣（測試 28 N2）。| Set-Content x 這類寫的是內容、目標是點名的檔，照一般判
+            out["unparsed"] = True
         switch_ok = tool == "PowerShell" or verb in cmdparse.SWITCH_VERBS  # X3
         stage_base = base
         if stage_write and stage_base in out["cd_targets"]:
@@ -404,7 +408,7 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
                     p = _norm(raw, stage_base)
                     if p is not None:
                         out["body_reads"].append(p)
-        if stage_write and (verb in cmdparse.INTERPRETERS or verb in cmdparse.SHELL_WRAPPERS):
+        if stage_write and (plan["runs"] in cmdparse.INTERPRETERS or plan["runs"] in cmdparse.SHELL_WRAPPERS):
             for body in bodies:  # 直譯器的程式碼要寫：整句內文裡的路徑都是目標（經變數餵的也算）
                 own.extend(p for p in (_norm(raw, stage_base) for raw in body_paths(body)) if p is not None)
         expect_cd, has_read_path = False, False

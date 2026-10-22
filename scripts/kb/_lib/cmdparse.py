@@ -52,7 +52,12 @@ WRAPPER = re.compile(
 )
 # 密碼與守門（D-186 (c)）：包裝分兩種。殼（引號裡是指令）照舊整段看 > 與寫入動詞；直譯器（引號裡、heredoc 裡是程式碼）只看 WRITE_CODE
 SHELL_WRAPPERS = {"bash", "sh", "zsh", "dash", "ksh", "cmd", "powershell", "pwsh", "eval", "exec", "source", ".",
-                  "iex", "invoke-expression", "start-process", "saps", "start", "wsl", "busybox"}
+                  "iex", "invoke-expression", "start-process", "saps", "start", "wsl", "busybox",
+                  "watch", "parallel"}  # watch、parallel 把後面的字串交給殼跑（測試 28 N1）
+# 包一層再跑後面指令的（測試 28 N1，跟 env、timeout、nohup 一樣）：後面接殼或直譯器時，這一段照那個殼或直譯器判。
+# -exec 這幾個是 find 的動作
+EXEC_WRAPPERS = {"xargs", "setsid", "stdbuf", "env", "timeout", "nohup", "nice", "ionice", "sudo", "doas", "time", "command",
+                 "builtin", "exec", "chrt", "taskset", "flock", "unbuffer", "-exec", "-execdir", "-ok", "-okdir"}
 INTERPRETERS = {"python", "python3", "py", "node", "perl", "ruby", "php", "pythonw", "deno", "bun", "osascript", "cscript",
                 "wscript", "java", "dotnet", "r", "rscript", "lua", "tclsh", "julia"}
 # 已知只讀的指令（D-186 補、D-185）：這一段只有導向才是寫；參數裡出現寫入動詞（grep md、echo rm）是資料
@@ -86,6 +91,8 @@ FIND_LIST_FLAGS = {"-name", "-iname", "-type", "-maxdepth", "-mindepth", "-print
 LIST_ONLY_VERBS = {"ls", "dir", "tree", "find", "gci", "get-childitem"}
 # 寫入那段的參數從管線前面來（xargs、ForEach-Object；PowerShell 的 cmdlet 會把前面的物件綁成 -Path）：管線前面的路徑都算目標
 PIPE_ARG_VERBS = {"xargs", "parallel", "foreach-object", "%", "foreach"}
+# 管線後面寫的是前一段的內容、目標是自己點名的檔（Get-Content a | Set-Content b）：不是拿前一段的輸出當路徑
+CONTENT_SINKS = {"set-content", "sc", "add-content", "ac", "out-file", "tee-object", "tee", "export-csv", "export-clixml"}
 CD_ONLY_VERBS = {"cd", "pushd", "popd", "set-location", "sl", "chdir", "push-location", "pop-location", "pwd", "get-location", "gl"}
 # 指令前綴：後面那個字才是動詞
 VERB_PREFIXES = {"sudo", "time", "nohup", "env", "nice", "command", "builtin", "exec", "timeout", "stdbuf", "ionice", "&", "!",
@@ -133,7 +140,19 @@ def split_bodies(command, powershell=False):
             j = command.find("\n", i)
             i = n if j < 0 else j  # 註解不跑：整段拿掉（註解裡的 << 不是 heredoc，裡面的引號也不能吃掉下一行）
             continue
-        if command.startswith("<<", i) and not command.startswith("<<<", i):
+        if command.startswith("<<<", i):
+            # here-string（測試 28 N1）：跟 heredoc 一樣是餵進去的內文，給殼或直譯器就是程式碼；只有整個單引號包住的不展開 $(…)
+            k = i + 3
+            while k < n and command[k] in " \t":
+                k += 1
+            word, end = _shell_word(command, k)
+            raw = command[k:end]
+            bodies.append(word)
+            bodies.expands.append(not (len(raw) >= 2 and raw[0] == raw[-1] == "'" and raw.count("'") == 2))
+            out.append(" " + DATA_MARK.format(len(bodies) - 1) + " ")
+            i = end
+            continue
+        if command.startswith("<<", i):
             k = i + 2
             strip_tabs = k < n and command[k] == "-"
             k += 1 if strip_tabs else 0
@@ -371,6 +390,27 @@ def verb_of(words):
         base = low.replace("\\", "/").rsplit("/", 1)[-1]
         return base[:-4] if base.endswith(".exe") else base
     return ""
+
+
+def _base(word):
+    """一個字當動詞看：小寫、去路徑與 .exe。"""
+    base = word.lower().replace("\\", "/").rsplit("/", 1)[-1]
+    return base[:-4] if base.endswith(".exe") else base
+
+
+def inner_verb(verb, words):
+    """包一層再跑的（xargs sh -c、find -exec bash -c、setsid、stdbuf -o0 sh -c…）：包的那層後面接殼或直譯器，回那個殼或直譯器；
+    不然回 verb（測試 28 N1）。"""
+    if verb in SHELL_WRAPPERS or verb in INTERPRETERS:
+        return verb
+    wrapped = False
+    for w in words:
+        b = _base(w)
+        if wrapped and (b in INTERPRETERS or (b in SHELL_WRAPPERS and b not in (".", "start", "exec"))):
+            return b
+        if b in EXEC_WRAPPERS:
+            wrapped = True
+    return verb
 
 
 def readonly_writes(verb, args):

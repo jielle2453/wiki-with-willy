@@ -12,6 +12,7 @@ COMMANDS = {
     "turn": ("kb.turn_cli", "目前回合：current 看狀態，approve 解除綜合卡張數上限，note 給這一句的「做了」，redact 換掉這一句的「問」"),
     "init": ("kb.init", "建總資料夾的五區骨架；--check 只看會建什麼"),
     "folders": ("kb.folders", "來源：add 登記一個資料夾，exclude 排除裡面的夾或檔，remove 拿掉一個來源，include 取消排除，list 列出登記表"),
+    "source-edit": ("kb.source_edit", "原檔：move 搬一份檔或一個夾，rename 改名，trash 丟資源回收筒，where 這個實體的檔放在哪，open 開檔案總管"),
     "journal": ("kb.journal_cli", "工作日誌：recent 印最近幾段，render 重寫月檔"),
     "inventory": ("kb.inventory_cli", "清冊：scan 掃描來源與總資料夾，把變動套進清冊"),
     "changes": ("kb.changes", "變動：跟清冊上次掃描比，列新增、修改、搬動、不見；只看不改"),

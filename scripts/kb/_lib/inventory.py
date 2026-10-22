@@ -1022,6 +1022,50 @@ def reconcile(vault, sources, turn_id):
     return {"excluded": excluded, "removed": removed}
 
 
+def _under(uri, base):
+    """uri 在 base 底下（不含 base 本身）：回 base 之後的相對段（正斜線），不在回 None。別名與路徑都不分大小寫。"""
+    a, rel = split_uri(uri)
+    ba, brel = split_uri(base)
+    if a.casefold() != ba.casefold() or not brel:
+        return None
+    parts, bparts = rel.split("/"), brel.split("/")
+    if len(parts) <= len(bparts) or [p.casefold() for p in parts[:len(bparts)]] != [p.casefold() for p in bparts]:
+        return None
+    return "/".join(parts[len(bparts):])
+
+
+def move_locations(vault, old_uri, new_uri, turn_id, folder=False):
+    """kb source-edit 搬了一份檔或一個夾之後（manage 第二版，B-095）：直接把條目的位置換成新的，不靠掃描照指紋認搬動
+    （只在雲端的檔沒有指紋，掃描會認成新增加不見）。檔是位置相同的換掉；夾是在它底下的換前綴。任何 status 都換。
+    有改才在清冊的鎖裡備進回合、寫。回改到的條目編號。"""
+    from kb._lib import turn
+    p = _path(vault)
+    if not p.exists():
+        return []
+    key = uri_key(old_uri)
+    with FileLock(p):
+        data = load(vault)
+        hits = []
+        for e in data["entries"]:
+            hit = False
+            for loc in e.get("locations") or []:
+                uri = loc.get("uri", "")
+                if not is_file_uri(uri):
+                    continue
+                if uri_key(uri) == key:
+                    loc["uri"], hit = new_uri, True
+                elif folder:
+                    rest = _under(uri, old_uri)
+                    if rest is not None:
+                        loc["uri"], hit = f"{new_uri}/{rest}", True
+            if hit:
+                hits.append(e["id"])
+        if hits:
+            turn.backup(vault, INVENTORY_POSIX, turn_id)
+            _write(vault, data["entries"])
+    return hits
+
+
 def uri_of(vault, sources, path):
     """磁碟路徑 → 清冊 uri（file://<別名>/<相對路徑>）。總資料夾裡的先認三區（收件匣、AI 產出、知識庫），
     再找包住它的來源（最長的根）；都不是回 None。相對路徑可能是 normalize 過的小寫：比對一律用 uri_key。"""

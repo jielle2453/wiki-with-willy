@@ -70,6 +70,8 @@ FIND_ACTIONS = re.compile(r"(?:^|\s)-(?:exec|execdir|ok|okdir|delete|fprint\w*|f
 # 列檔名（D-185）：find 只准帶這些
 FIND_LIST_FLAGS = {"-name", "-iname", "-type", "-maxdepth", "-mindepth", "-print"}
 LIST_ONLY_VERBS = {"ls", "dir", "tree", "find", "gci", "get-childitem"}
+# 寫入那段的參數從管線前面來（xargs、ForEach-Object；PowerShell 的 cmdlet 會把前面的物件綁成 -Path）：管線前面的路徑都算目標
+PIPE_ARG_VERBS = {"xargs", "parallel", "foreach-object", "%", "foreach"}
 CD_ONLY_VERBS = {"cd", "pushd", "popd", "set-location", "sl", "chdir", "push-location", "pop-location", "pwd", "get-location", "gl"}
 # 指令前綴：後面那個字才是動詞
 VERB_PREFIXES = {"sudo", "time", "nohup", "env", "nice", "command", "builtin", "exec", "timeout", "stdbuf", "ionice", "&", "!",
@@ -108,14 +110,22 @@ def split_bodies(command, powershell=False):
             out.append(ch)
             i += 1
             continue
+        if ch == "#" and (i == 0 or command[i - 1] in " \t\n;|&("):
+            j = command.find("\n", i)
+            i = n if j < 0 else j  # 註解不跑：整段拿掉（註解裡的 << 不是 heredoc，裡面的引號也不能吃掉下一行）
+            continue
         if command.startswith("<<", i) and not command.startswith("<<<", i):
-            m = _HEREDOC_OP.match(command, i)
-            if m:
-                word = m.group(2) or m.group(3) or m.group(4)
-                pending.append((word, bool(m.group(1)), len(bodies)))
+            k = i + 2
+            strip_tabs = k < n and command[k] == "-"
+            k += 1 if strip_tabs else 0
+            while k < n and command[k] in " \t":
+                k += 1
+            word, end = _shell_word(command, k)
+            if word:
+                pending.append((word, strip_tabs, len(bodies)))
                 bodies.append("")
                 out.append(" " + DATA_MARK.format(len(bodies) - 1) + " ")
-                i = m.end()
+                i = end
                 continue
         if ch == "\n" and pending:
             out.append("\n")
@@ -137,16 +147,69 @@ def split_bodies(command, powershell=False):
     return "".join(out), bodies
 
 
-_HERESTRING = re.compile(r"@(['\"])[ \t]*\r?\n(.*?)\r?\n\1@", re.DOTALL)
+def _shell_word(command, k):
+    """heredoc 的結束字照 bash 的規則：一個 shell 字（到空白或 ; | & < > ( ) 為止），引號與反斜線拿掉再比（<<'E'"O"F 是 EOF）。
+    回 (字, 字結束的位置)；不是字回 ("", k)。"""
+    out, quote, n = [], None, len(command)
+    while k < n:
+        ch = command[k]
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                out.append(ch)
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "\\" and k + 1 < n:
+            k += 1
+            out.append(command[k])
+        elif ch.isspace() or ch in ";|&<>()":
+            break
+        else:
+            out.append(ch)
+        k += 1
+    return "".join(out), k
 
 
 def _split_herestrings(command):
-    bodies = []
-
-    def repl(m):
-        bodies.append(m.group(2))
-        return " " + DATA_MARK.format(len(bodies) - 1) + " "
-    return _HERESTRING.sub(repl, command), bodies
+    """PowerShell：@' … '@、@" … "@ 的內文換成記號。照引號與註解走（字串裡、# 註解裡的 @' 不是 here-string），
+    結束行是開頭就是 '@ 或 "@ 的那一行；沒有結束行就收到最後。"""
+    out, bodies, quote, i, n = [], [], None, 0, len(command)
+    while i < n:
+        ch = command[i]
+        if quote:
+            out.append(ch)
+            if ch == "`" and quote == '"' and i + 1 < n:
+                out.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "'" and command.startswith("''", i):
+                    out.append("'")
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or command[i - 1] in " \t\n;|&({"):
+            j = command.find("\n", i)
+            i = n if j < 0 else j  # 註解不跑：整段拿掉（同 bash）
+            continue
+        m = re.match(r"@(['\"])[ \t]*\r?\n", command[i:])
+        if m:
+            close = "\n" + m.group(1) + "@"
+            start = i + m.end()
+            j = command.find(close, start - 1)
+            body = command[start:j if j >= 0 else n].rstrip("\r")
+            bodies.append(body)
+            out.append(" " + DATA_MARK.format(len(bodies) - 1) + " ")
+            i = (j + len(close)) if j >= 0 else n
+            continue
+        if ch in "\"'":
+            quote = ch
+        out.append(ch)
+        i += 1
+    return "".join(out), bodies
 
 
 def data_marks(text):

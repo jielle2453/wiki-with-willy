@@ -7932,6 +7932,136 @@
    "cwd": "<V>",
    "expect": "pass",
    "來源": "骨架與來源登記-測試.md 第十二輪 含大括號的平常指令"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo hi # <<EOF\nrm -rf \"<RAW>/客戶案件\"\nEOF"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "註解裡的 << 不是 heredoc，下一行照跑"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat <<E@F\nE@F\nrm -rf \"<RAW>/客戶案件\"\n"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "heredoc 結束字照 shell 字整個比"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat <<'E'\"O\"F\nEOF\nrm -rf \"<RAW>/客戶案件\"\n"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "結束字的引號拿掉再比（EOF）"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "# @'\nRemove-Item \"<RAW>/客戶案件/a.txt\"\n'@"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "註解裡的 @' 不是 here-string，引號也不能吃掉下一行"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Write-Host '@'\nRemove-Item \"<RAW>/客戶案件/a.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "字串裡的 @' 不是 here-string"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "find \"<RAW>/行政/請款\" -type f | xargs rm -f \"<OUT>/x\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "xargs 的路徑從管線前面來"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls \"<RAW>/行政/請款\"/* | xargs -I{} cp {} \"<OUT>/\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "xargs cp：前面的路徑是 cp 的來源"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/行政/請款\" | Copy-Item -Destination \"<OUT>\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "PowerShell 管線把前面的物件綁成 -Path"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/行政/請款\" | Remove-Item -Force \"<OUT>/x\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "同上，帶了別的路徑也照擋"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/行政\" && python -c \"print(open('薪資/s.xlsx').read())\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "cd 的 Z10b 豁免只給只切目錄、列檔名的"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/行政\" && wc -c 薪*/*"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "cd 進含排除夾的夾再讀"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/行政\" && ls -d */"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "列到排除夾本身"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/行政\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
+   "note": "只切目錄（B-093 (b)）"
   }
  ]
 }

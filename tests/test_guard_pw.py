@@ -180,5 +180,38 @@ class OutputShell(Base):
             self.assertEqual(d.reason_code, "output_shell", cmd)
 
 
+class SecurityReviewRound(Base):
+    """收尾自己做的 security-review（子代理被安全分類器停下）：拆開之後的三個洞要擋。"""
+
+    def test_heredoc_word_and_comments_cannot_hide_commands(self):
+        src = (self.raw / "客戶案件").as_posix()
+        for tool, cmd in (("Bash", f"echo hi # <<EOF\nrm -rf \"{src}\"\nEOF"),
+                          ("Bash", f"cat <<E@F\nE@F\nrm -rf \"{src}\"\n"),
+                          ("Bash", f"cat <<'E'\"O\"F\nEOF\nrm -rf \"{src}\"\n"),
+                          ("PowerShell", f"# @'\nRemove-Item \"{src}/a.txt\"\n'@"),
+                          ("PowerShell", f"Write-Host '@'\nRemove-Item \"{src}/a.txt\"")):
+            self.assertDecision(tool, cmd, "deny")
+        o = self.out.as_posix()
+        self.assertDecision("Bash", f"cat > \"{o}/r.md\" <<'EOF'\n# 標題 <<X\nEOF", "pass")
+
+    def test_pipeline_writes_that_take_paths_from_stdin(self):
+        src, o = (self.raw / "行政" / "請款").as_posix(), self.out.as_posix()  # 沒有密碼檔的夾，才看得出是寫入欄擋的
+        for tool, cmd in (("Bash", f'find "{src}" -type f | xargs rm -f "{o}/x"'),
+                          ("Bash", f'ls "{src}"/* | xargs -I{{}} cp {{}} "{o}/"'),
+                          ("PowerShell", f'Get-ChildItem "{src}" | Copy-Item -Destination "{o}"'),
+                          ("PowerShell", f'Get-ChildItem "{src}" | Remove-Item -Force -ErrorAction SilentlyContinue "{o}/x"')):
+            self.assertDecision(tool, cmd, "deny")
+        self.assertDecision("Bash", f'cat "{src}/a.txt" | tee "{o}/b.txt"', "pass")
+
+    def test_cd_into_parent_of_excluded_only_for_listing(self):
+        adm = (self.raw / "行政").as_posix()
+        self.assertDecision("Bash", f'cd "{adm}" && ls -d */', "deny")
+        for cmd in (f'cd "{adm}" && python -c "print(open(\'薪資/s.xlsx\').read())"',
+                    f'cd "{adm}" && python "{self.out.as_posix()}/read.py"', f'cd "{adm}" && wc -c 薪*/*'):
+            self.assertDecision("Bash", cmd, "deny")
+        self.assertDecision("Bash", f'cd "{adm}"', "pass")
+        self.assertDecision("Bash", f'cd "{adm}" && pwd', "pass")
+
+
 if __name__ == "__main__":
     unittest.main()

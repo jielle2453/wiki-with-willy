@@ -364,6 +364,8 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         write_verb = stage_write  # 只有寫入那一段才讓隱含的讀取範圍不走訪
         if stage_write or any(a for _t, _q, _g, a in tokens):
             out["has_write"] = True
+        if stage_write and plan["stage"] > 0 and (tool == "PowerShell" or verb in cmdparse.PIPE_ARG_VERBS):
+            sub_write_empty.setdefault(plan["sub"], True)  # | xargs rm x、| Copy-Item -Destination x：前面的路徑也是目標
         switch_ok = tool == "PowerShell" or verb in cmdparse.SWITCH_VERBS  # X3
         stage_base = base
         if stage_write and stage_base in out["cd_targets"]:
@@ -846,9 +848,10 @@ def _shell_tool(tool, command, cwd, vault, sources):
         return None
 
     checked = set()
+    cd_only = info["list_only"]  # cd 的 Z10b 豁免只給整句只切目錄、列檔名的（cd 進去再跑程式照擋）
     for p, zone, alias in classified:  # 照抽出的順序，每個路徑先讀、是寫的目標再寫（理由句跟第八輪以前一樣具體）
         decision, code, reason = _verdict(zone, "read", alias)
-        if decision == "deny" and not (zone == "Z10b" and p in info["cd_targets"] and p not in writes):
+        if decision == "deny" and not (zone == "Z10b" and cd_only and p in info["cd_targets"] and p not in writes):
             return deny(zone, code, reason)
         if p in writes:
             checked.add(p)
@@ -865,7 +868,7 @@ def _shell_tool(tool, command, cwd, vault, sources):
         if zone == "Z11" and sources.unresolved:
             saw_unresolved = True
     for p, zone, alias in glob_classified:
-        if zone == "Z10b" and not (p in info["cd_targets"] and p not in writes):
+        if zone == "Z10b" and not (cd_only and p in info["cd_targets"] and p not in writes):
             _d, code, reason = _verdict(zone, "read", alias)
             return deny(zone, code, reason)
     for _p, zone, alias in implicit:  # 隱含的範圍（cd 進含排除夾的夾再 grep -r、tar .）：cd 本身放行，讀那個範圍照擋

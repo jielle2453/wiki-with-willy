@@ -75,6 +75,8 @@
 
 ## 五、`kb asks`
 
+題目本身帶 `note` 的（`credential_same_kind`）先照它判斷再問，判斷不是就跑它給的「不是同一種」結果、不問。
+
 - `kb asks --json` 回 `asks`（要問客戶的事）與 `tell`（回答末尾要說的話）；不寫任何檔，隨時可以跑。這裡的 `tell` 只有這一回合做了什麼（加進日程、照新版改了），讀不到、不製卡這些整理狀態只在整理時（`cards todo`）才講（D-141）。
 - 每題有 `question`，每個結果有 `n`、`label`、`do`（要跑的指令）、`strict`、`fill`（要客戶給的值）。
 - `fill` 的空格每個都有 `rule`：照 `rule` 寫，名字類不含 `" $ ` \`，日期是 YYYY-MM-DD。

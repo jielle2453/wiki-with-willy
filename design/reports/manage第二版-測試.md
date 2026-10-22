@@ -421,3 +421,22 @@ manage 該觸發從第二輪的 83／90（92.2%）升到 89／90，兩個擺盪�
 1. 守門的彎引號規則縮窄（見上），至少改理由句。
 2. 低、仍未修（B-414 範圍）：遮罩對很短的別名／規格會過度遮罩；`find` 沒做 NFKC、走訪上限只數夾；ledger 鎖等滿 2 秒；rollback 先 rename 回去再還原 sources 的順序；`purge_names` 沒加鹽；被殺掉時留下的 `.kb-move-xxxx`；B-410。
 3. 隨身碟的 `trash` 只用替身驗過，請在發行說明或確認報告註明。
+
+---
+
+# 第五輪（重測 e1484b1，只驗彎引號）
+
+日期：2026-10-22
+對象：worktree 同一分支，commit `e1484b1`（樹乾淨）。範圍：a2 定的「只在 PowerShell 擋彎引號」與 `is_single_plugin_call` 沒給 tool 時當 PowerShell。沒改任何程式，沒重跑 run_eval。
+
+| 項目 | 結果 | 證據（已重現（我），`kb guard decide`） |
+|---|---|---|
+| PowerShell：注入串都擋 | 過 | `folders exclude "客戶案件/a“; calc; “b"`、`x$’; calc; ‘y`、`a„b`，以及 `python kb.py version; Write-Output “PWNED”` 全部 `deny curly_quote` |
+| PowerShell：`turn note` 等文字參數也擋 | 過 | `turn note "把“舊備忘”搬到 2026"`、`statement add … 改“30 天”`、`agenda add … 王先生’s 簽約` 全部 `deny curly_quote` |
+| Bash：同樣的指令都放行 | 過（`version; Write-Output “PWNED”` 那條是 `pass`，不是 deny，使用者會被問） | 上面前六條在 Bash 都 `allow`。用真的 bash 驗過：`"客戶案件/a“; echo PWNED; “b"` 是一個引數，彎引號和分號都只是普通字，不會拆開 |
+| 理由句 | 過 | `PowerShell 會把彎引號（“ ” ‘ ’）當成引號拆開指令；改用「」或直引號，或改用 Bash 再跑` |
+| 沒給 tool 時當 PowerShell | 過 | `cmdparse.is_single_plugin_call(注入串, root, None)` → False、`tool="PowerShell"` → False、`tool="Bash"` → True；`turn note “…”` 沒給 tool → False |
+| 不誤傷 | 過 | 與 kb 無關的 `echo “hi”` 兩邊都 `pass`；正常 `turn note`、含「」的 `turn note`、無彎引號的分號案例兩邊都 `allow` |
+| 沒有退步 | 過 | 單元測試 exit 0（Ran 1994，OK，skipped=1）；`a02b、a05、a07g、a10、a12` 輸出與第四輪逐行相同；`d01`（exclude 收別名/相對路徑、`find --json`）、`d03`（purge 後夾名只剩 `sources.json`、卡標題與機密 0）結果不變 |
+
+**結論：這一條過了，可以派確認 session。** 給確認 session 的注意事項：(1) 確認情境若在 PowerShell 跑 kb，送進去的文字參數不能帶 `“ ” ‘ ’`，帶了會被擋、模型要改用「」或直引號，這是設計；(2) 隨身碟的 `trash` 只用替身驗過；(3) B-414 的低風險項目、B-410 仍在。

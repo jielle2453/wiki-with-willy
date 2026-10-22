@@ -551,5 +551,61 @@ class RewriteEntitiesBlock(unittest.TestCase):
         self.assertEqual(cards.parse_front(new)["實體"], ["王宅", "林小姐室內設計"])
 
 
+class Produce(unittest.TestCase):
+    """produce 第 5 點：todo 不列（草稿）.md；link 條目照常列待製卡、開原檔是網址、卡放 檔案索引/AI 產出/<型別>；
+    unbacked 的待製卡另數一個數給 tell。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+        self.t = turn.start(self.V, "sid-produce", "做文件")["turn"]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def todo(self):
+        return cards.todo(self.V, sources_lib.load(self.V))
+
+    def new_ids(self):
+        return {i["id"] for i in self.todo()["new"]}
+
+    def test_draft_not_listed(self):
+        d = self.V / "AI 產出" / "報告"
+        d.mkdir(parents=True)
+        (d / "2026-10-21 內湖李 進度報告（草稿）.md").write_text("# 草稿\n", encoding="utf-8")
+        (d / "2026-10-21 內湖李 進度報告.md").write_text("# 定稿\n", encoding="utf-8")
+        _cards.scan_apply(self.V)
+        draft = _cards.entry_of(self.V, "AI 產出/報告/2026-10-21 內湖李 進度報告（草稿）.md")
+        final = _cards.entry_of(self.V, "AI 產出/報告/2026-10-21 內湖李 進度報告.md")
+        ids = self.new_ids()
+        self.assertNotIn(draft["id"], ids)
+        self.assertIn(final["id"], ids)
+        self.assertEqual(cards.unsorted(self.V), len(self.todo()["new"]) + len(self.todo()["stale"]))
+
+    def test_link_entry_card(self):
+        url = "https://claude.ai/artifact/PFWe7FqJ"
+        e = inventory.register_link(self.V, url, self.t, title="內湖李進度報告", type_="報告")
+        item = next(i for i in self.todo()["new"] if i["id"] == e["id"])
+        self.assertEqual((item["kind"], item["path"], item["url"]), ("link", None, url))
+        self.assertEqual(item["dir"], "檔案索引/AI 產出/報告")
+        self.assertIn(f"開原檔: {url}", item["header"])
+        self.assertIn("標題: 內湖李進度報告", item["header"])
+        self.assertIn("出處: AI 產出", item["header"])
+        p = _cards.write_card(self.V, item, "內湖李進度報告", kind="說明")
+        rel = p.relative_to(self.V).as_posix()
+        by_id = {x["id"]: x for x in inventory.load(self.V)["entries"]}
+        self.assertEqual(cards.validate(self.V, rel, by_id), (True, ""))
+        self.assertNotIn(e["id"], self.new_ids())
+
+    def test_link_without_type_goes_to_online(self):
+        e = inventory.register_link(self.V, "https://claude.ai/artifact/x", self.t, title="提案")
+        self.assertEqual(cards.card_dir(e), "檔案索引/AI 產出/線上")
+
+    def test_unbacked_counted(self):
+        before = self.todo()["unbacked"]  # fixture 的 AI 產出/x.md 也是沒經程式放進來的
+        (self.V / "AI 產出" / "a.docx").write_bytes(b"x")
+        _cards.scan_apply(self.V)
+        self.assertEqual(self.todo()["unbacked"], before + 1)
+
+
 if __name__ == "__main__":
     unittest.main()

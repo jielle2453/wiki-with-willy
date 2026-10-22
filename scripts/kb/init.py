@@ -28,7 +28,7 @@ HIDDEN_ITEMS = ("CLAUDE.md", ".claude", ".system")
 EMPTY_SOURCES = {"schema_version": 1, "sources": []}
 FILE_ATTRIBUTE_HIDDEN = 0x2
 INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
-UPGRADE_LINES = {1: "設定檔升級：補第四、五、六節", 2: "設定檔升級：補第六節"}  # 磁碟上的舊 schema → 補哪幾節
+UPGRADE_LINES = {1: "設定檔升級：補第四、五、六、七節", 2: "設定檔升級：補第六、七節", 3: "設定檔升級：補第七節"}  # 磁碟上的舊 schema → 補哪幾節
 UPGRADE_BLOCKED = "設定檔有沒套用的改動，先 kb profile apply 再跑 kb init 升級"
 
 
@@ -85,7 +85,7 @@ def _fill_profile(p, have_json, have_md, notes):
 
 
 def _profile_upgrade(p):
-    """兩份設定檔都在、JSON 是 schema 1 或 2：md 沒改過回 upgrade，改過回 blocked；其他回 None。"""
+    """兩份設定檔都在、JSON 是 schema 1、2 或 3：md 沒改過回 upgrade，改過回 blocked；其他回 None。"""
     if not ((p / profile.PROFILE_POSIX).is_file() and (p / profile.MD_POSIX).is_file()):
         return None
     if profile.stored_schema(p) not in UPGRADE_LINES:
@@ -98,7 +98,7 @@ def _profile_upgrade(p):
 
 
 def _upgrade_profile(p):
-    """寫遷移後的 schema 3 JSON、重渲染 md、回填 sha（不開回合、不備份：md 沒改過，內容照 JSON 重寫）。"""
+    """寫遷移後的 schema 4 JSON（produce 第 6 點補第七節）、重渲染 md、回填 sha（不開回合、不備份：md 沒改過，內容照 JSON 重寫）。"""
     data = profile.load(p)
     data["md_sha256"] = profile.sha256_text(profile.render(p, data))
     write_json_atomic(p / profile.PROFILE_POSIX, data)

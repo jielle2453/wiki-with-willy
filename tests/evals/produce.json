@@ -1,0 +1,22 @@
+[
+  {"query": "幫我把王宅的報價整理成 Excel，項目、數量、單價、小計都要有", "should_trigger": true},
+  {"query": "照去年信義王的合約，幫大安陳寫一份新的，付款期別照他報價單那三期", "should_trigger": true},
+  {"query": "用我的報價單範本幫內湖李做一份報價", "should_trigger": true},
+  {"query": "王宅合約的付款條件改成 30 天", "should_trigger": true},
+  {"query": "把這份估價單轉成 PDF，我要傳給業主", "should_trigger": true},
+  {"query": "這週的日程匯出給我，我要印出來貼在牆上", "should_trigger": true},
+  {"query": "幫我做一份內湖李的進度報告給業主，講到哪些完工、哪些還在做", "should_trigger": true},
+  {"query": "剛才那個表幫我存成檔案", "should_trigger": true},
+  {"query": "做一份設計提案簡報給業主，大概五頁，要有平面圖那張", "should_trigger": true},
+  {"query": "內湖李那份進度報告的草稿可以了，幫我定稿", "should_trigger": true},
+  {"query": "以後報價單一律附報價日期", "should_trigger": false},
+  {"query": "大安陳報價多少", "should_trigger": false},
+  {"query": "幫我寄給王先生", "should_trigger": false},
+  {"query": "那份估價單幫我搬到 2026 那個夾", "should_trigger": false},
+  {"query": "那份報價寫錯了，總價是 128 萬", "should_trigger": false},
+  {"query": "我剛存了一份新報價進去", "should_trigger": false},
+  {"query": "今年報價總共多少", "should_trigger": false},
+  {"query": "把剛才的答案記下來，下次問我就直接講", "should_trigger": false},
+  {"query": "內湖李的合約放在哪個資料夾？", "should_trigger": false},
+  {"query": "整理一下，我放了幾份新的合約進去", "should_trigger": false}
+]

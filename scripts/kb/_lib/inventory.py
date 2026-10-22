@@ -5,6 +5,9 @@ locations（[{uri, size, mtime}]，uri 是 file://<來源別名>/<相對路徑>�
 fingerprints（[{sha256, text_sha256?, time, turn}]，最後一筆是現行；text_sha256 只有 OOXML 算得出來才有，D-096）、
 read（ok｜placeholder｜credential｜too_large｜error）、status（active｜missing｜excluded｜turn_reverted｜deleted｜superseded）、
 first_seen、created_turn、missing_since。選填欄 skip_kind、agenda_fp、redo 由各自的 set_ 寫，scan／apply／reconcile 原樣保留；
+produce 第 4 點的三個選填欄同樣保留：kind（只有 "link"：Claude artifact，位置是網址，不算指紋、不走訪、不算不見）、
+derived_from（成品改自哪份原檔的清冊編號）、unbacked（AI 產出裡沒經程式放進來、掃描才看到的檔，退回拿不掉）；
+link 條目另帶 title、type、entities、basis（output link 給的，製卡時預填）。
 redo（note 改知識第 5 點）記的是標記當時卡檔的 sha256 前 12 碼，卡重寫過就不算，下一次寫清冊時拿掉（_drop_stale_redo）。
 load 時把 schema 1 在記憶體遷移成 2（I-049），形狀不對一律丟 ValueError（I-046）；寫一律寫 2。
 
@@ -207,10 +210,11 @@ def _has_location(entry, key):
     return any(uri_key(loc.get("uri", "")) == key for loc in entry.get("locations", []))
 
 
-def register_output(vault, rel, turn_id):
+def register_output(vault, rel, turn_id, derived_from=None):
     """同 location 有 status active 的條目：最後一筆指紋相同就不動，不同就追加一筆（位置大小時間跟著更新），回那一筆。
     沒有 active 條目：這回合 manifest 記 create 才新建；曾登記過（turn_reverted／deleted）又再改也新建；
     從沒登記過的既有檔（modify）不登記、回 None（第一輪 M2／M4）。
+    derived_from（kb output save --from）：新建的條目記原檔的清冊編號；掃描補登記過的（unbacked）經程式再放一次就拿掉那欄。
     """
     uri = "file://" + str(rel).replace("\\", "/")
     key = uri_key(uri)
@@ -226,7 +230,13 @@ def register_output(vault, rel, turn_id):
         if active:
             entry = active[-1]
             fps = entry.setdefault("fingerprints", [])
+            if fps and fps[-1].get("sha256") == digest and not entry.get("unbacked"):
+                return entry
+            entry.pop("unbacked", None)
+            if derived_from:
+                entry["derived_from"] = derived_from
             if fps and fps[-1].get("sha256") == digest:
+                _write(vault, data["entries"])
                 return entry
             fps.append({"sha256": digest, "time": now, "turn": turn_id})
             entry["locations"] = [_loc_of(target, loc["uri"]) if uri_key(loc.get("uri", "")) == key else loc
@@ -250,7 +260,61 @@ def register_output(vault, rel, turn_id):
             "created_turn": turn_id,
             "missing_since": None,
         }
+        if derived_from:
+            entry["derived_from"] = derived_from
         data["entries"].append(entry)
+        _write(vault, data["entries"])
+        return entry
+
+
+LINK = "link"
+
+
+def is_link(entry):
+    return entry.get("kind") == LINK
+
+
+def is_file_uri(uri):
+    return str(uri).startswith("file://")
+
+
+def register_link(vault, url, turn_id, title, type_=None, entities=(), basis=()):
+    """kb output link（D-168）：Claude artifact 記成一筆 AI 產出，位置是網址、沒有指紋；同網址已有 active 的原樣回它、不覆蓋
+    （測試後修正裁定 14，output 先擋）。呼叫端先備份清冊。"""
+    key = uri_key(url)
+    now = _now()
+    p = _path(vault)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(p):
+        data = load(vault)
+        entry = next((e for e in data["entries"] if e.get("status") == "active" and is_link(e) and _has_location(e, key)),
+                     None)
+        if entry is not None:
+            return entry
+        entry = {"id": _new_id({e.get("id") for e in data["entries"]}), "origin": "ai_output", "kind": LINK,
+                 "locations": [{"uri": url}], "fingerprints": [], "read": "ok", "status": "active",
+                 "first_seen": now, "created_turn": turn_id, "missing_since": None,
+                 "title": title, "type": type_, "entities": list(entities), "basis": list(basis)}
+        data["entries"].append(entry)
+        _write(vault, data["entries"])
+        return entry
+
+
+def attach_location(vault, link_id, rel, turn_id):
+    """kb output save --link：下載回來的檔掛到那筆 link 條目，成為第二個位置，並記一筆指紋。不是 active 的 link 丟 KeyError。"""
+    uri = "file://" + str(rel).replace("\\", "/")
+    target = Path(vault) / rel
+    digest = sha256_of(target)
+    p = _path(vault)
+    with FileLock(p):
+        data = load(vault)
+        entry = next((e for e in data["entries"] if e.get("id") == link_id), None)
+        if entry is None or not is_link(entry) or entry.get("status") != "active":
+            raise KeyError(link_id)
+        key = uri_key(uri)
+        entry["locations"] = [loc for loc in entry["locations"] if uri_key(loc.get("uri", "")) != key]
+        entry["locations"].append(_loc_of(target, uri))
+        entry.setdefault("fingerprints", []).append({"sha256": digest, "time": _now(), "turn": turn_id})
         _write(vault, data["entries"])
         return entry
 
@@ -796,6 +860,8 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         }
         if rec["read"] == "error":
             entry["error"] = rec["error"]
+        if rec["root"]["alias"] == OUTPUT:  # AI 產出裡沒經程式放進來的（腳本寫死路徑、升級前的舊成品）：照成品登記、退回拿不掉
+            entry["unbacked"] = True
         taken.add(entry["id"])
         entries.append(entry)
         if digest:
@@ -917,6 +983,9 @@ def reconcile(vault, sources, turn_id):
                 continue
             keep, dormant, hidden = [], [], 0  # dormant：來源拿掉或 unused 排除的位置
             for loc in e.get("locations") or []:
+                if not is_file_uri(loc.get("uri", "")):
+                    keep.append(loc)  # link 的網址不屬於任何來源（produce 第 4 點）
+                    continue
                 alias, rel = split_uri(loc.get("uri", ""))
                 a = alias.casefold()
                 src = by_alias.get(a)

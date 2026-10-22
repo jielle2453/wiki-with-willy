@@ -43,6 +43,10 @@
   "_why_answer_verify_max": "answer 回答數字時要逐份回原檔核對的份數上限，超過先問客戶（D-159）；粗估那句在問之前就給了；同 D-100 的量級，一份約 8 秒，20 份客戶等得起",
   "lookup_mentions_max": 30,
   "_why_lookup_mentions_max": "kb lookup 查沒登記的名稱時最多列幾張提到它的卡（D-153），多的只講份數；AI 只讀需要的，列太多反而整包讀",
+  "office_run_seconds": 120,
+  "_why_office_run_seconds": "kb office run 跑一支做檔腳本最多等幾秒（produce），超過停掉；B-081 spike 新做 Word、簡報 0.2 秒、裝套件 2～20 秒，兩分鐘夠寬",
+  "office_convert_seconds": 60,
+  "_why_office_convert_seconds": "kb office pdf、recalc、render 叫 Office 或 LibreOffice 最多等幾秒（produce）；spike 冷啟動 5～10 秒、熱 2～3 秒，一分鐘留給大檔",
   "agenda_past_days": 30,
   "_why_agenda_past_days": "系統/日程.md 過去區與甘特圖往回看幾天（D-105）：再久的已過去、完成、取消都在 agenda.json 裡，不佔清單"
 }

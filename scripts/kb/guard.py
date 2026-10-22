@@ -11,6 +11,10 @@
 超過 config credential_scan_max_entries 也擋。生效範圍（D-081）：登記來源、含來源或總資料夾的上層夾、知識庫外；
 總資料夾內部（Z1～Z8）不比、不走訪，走訪上層夾時跳過總資料夾整棵；第二道與走訪 cwd 只在效用 cwd 不在總資料夾裡時做。
 kb.py 單一呼叫的放行仍在最前面。
+produce（第 3 點、實作回報裁定 1、3）：Bash／PowerShell 抽出的路徑（含萬用字元展開）落在 Z3、整句不是單一 kb 呼叫 → 讀寫都擋
+（OUTPUT_SHELL；腳本寫死路徑看不到的交清冊掃描補登記）；Z2、Z9 擋寫的理由句指到 kb office copy，Z10／Z10b 照舊；
+檔案工具 Write／Edit／MultiEdit 寫 .system/temp/office/ 底下放行（工作區，不備份不登記）：路徑先 normalize（.. 跳出去照 Z7），
+磁碟上存在的部分再 realpath 一次，連結跳出去的也照 Z7。
 TODO（D-081）：客戶個案裁示「這份密碼檔可以讀」記進 rulings.json 後，三道在這裡讀裁示放行那一份；rulings.json 是 note 題的，這版不做。
 """
 import glob as globlib
@@ -37,10 +41,24 @@ if os.name != "nt":
 # 區 -> {"name", "read": (decision, reason_code, reason), "write": (...)}。理由全中文、一句、說為什麼與可以怎麼做。
 # 有 "shell_write" 的區：Bash／PowerShell 寫入用這欄（指令寫不經回合備份也不經 PostToolUse 登記，D-046 補、I-027）。
 SHELL_WRITE = ("deny", "shell_write", "用指令改的退不回來，請用檔案工具改。")
+# produce：指令碰到 AI 產出一律擋（讀也擋）；成品經 kb output save 放進來、轉 PDF 與看版面經 kb office（D-170）
+OUTPUT_SHELL = ("deny", "output_shell", "AI 產出的檔用 kb output save 放進來；要轉 PDF 或看版面用 kb office")
+SOURCE_WRITE_REASON = "客戶原檔只讀；要改先用 kb office copy 拿一份副本"
+WORKSPACE_POSIX = ".system/temp/office"  # kb office 的工作區：檔案工具寫放行（實作回報裁定 1）
+WORKSPACE_TOOLS = ("Write", "Edit", "MultiEdit")
+LO_PROFILE_DIR = "_lo_profile"  # kb office 固定的 LibreOffice 設定夾（office.LO_PROFILE），不算工作區
+
+
+def _odd_segments(target):
+    """路徑中間有段結尾是空白或點（.system /temp）：normalize 會修掉，Windows 卻會建出另一個夾，不給工作區例外。"""
+    segs = str(target).replace("\\", "/").split("/")[:-1]
+    return any(seg not in ("", ".", "..") and not seg.endswith(":") and seg != seg.rstrip(" .") for seg in segs)
+
+
 ZONES = {
     "Z1": {"name": "綜合卡", "read": ("allow", "", "綜合卡"), "write": ("allow", "", "綜合卡"), "shell_write": SHELL_WRITE},
     "Z2": {"name": "實體夾原檔", "read": ("allow", "", "實體夾原檔"),
-           "write": ("deny", "entity_file", "實體夾裡只有同名的綜合卡能改，其他都是原檔只讀；要改內容我用檔案工具另存一份到 AI 產出。")},
+           "write": ("deny", "entity_file", "實體夾裡只有同名的綜合卡能改；其他是" + SOURCE_WRITE_REASON)},
     "Z3": {"name": "AI 產出", "read": ("allow", "", "AI 產出"), "write": ("allow", "", "AI 產出"), "shell_write": SHELL_WRITE},
     "Z4": {"name": "收件匣", "read": ("allow", "", "收件匣"),
            "write": ("deny", "inbox", "收件匣只收東西、不手寫，要把檔案放進來說「收進來」，我走收件流程。")},
@@ -52,7 +70,7 @@ ZONES = {
     "Z8": {"name": "總資料夾第一層", "read": ("allow", "", "總資料夾第一層"),
            "write": ("deny", "protected", "總資料夾第一層與型別夾根不直接放檔；請寫進 AI 產出或對應的綜合卡。")},
     "Z9": {"name": "登記的來源", "read": ("allow", "", "登記的來源"),
-           "write": ("deny", "readonly_source", "客戶原檔只讀。要改內容我用檔案工具另存一份")},
+           "write": ("deny", "readonly_source", SOURCE_WRITE_REASON)},
     "Z10": {"name": "排除的來源", "read": ("deny", "excluded", "這個夾你說過不讀；要重新納入，跟我說「把它加回來」。"),
             "write": ("deny", "excluded", "這個夾你說過不讀，也不會寫；要重新納入，跟我說「把它加回來」。")},
     "Z10b": {"name": "範圍含排除夾", "read": ("deny", "excluded_inside", "這個範圍底下有你說過不讀的夾，請縮到不含它的子資料夾。"),
@@ -444,11 +462,44 @@ def _unresolved_rows(tool, sources, head):
     return [_row(tool, "pass", "", "unresolved", f"{u['alias']} {u['spec']} {head}") for u in sources.unresolved]
 
 
+def in_workspace(path, vault_n):
+    """normalize 過的 path 在工作區 .system/temp/office/ 底下（不含工作區根本身）：先照字串前綴判（測試後修正裁定 12：
+    新庫還沒有這個夾也要放行）；工作區夾已存在時，磁碟上存在的部分 realpath 後還要在裡面（工作區裡的連結跳出去的不算）；
+    還不存在時，存在的最近上層不能是被連結導走的。"""
+    root = vault_n.rstrip("/") + "/" + WORKSPACE_POSIX
+    if path == root or not inside(path, root):
+        return False
+    if path[len(root) + 1:].split("/", 1)[0] == LO_PROFILE_DIR:
+        return False  # LibreOffice 的設定（巨集、信任路徑）不給檔案工具改（收尾 security-review）
+    if not os.path.exists(root):
+        anc = _nearest_existing(root)
+        return anc is not None and normalize(os.path.realpath(anc), None) == anc
+    cur = _nearest_existing(path)
+    if cur is None:
+        return False
+    real = normalize(os.path.realpath(cur), None)
+    real_root = normalize(os.path.realpath(root), None)
+    return real == real_root or inside(real, real_root)
+
+
+def _nearest_existing(path):
+    """normalize 過的 path 往上找第一個磁碟上存在的；找不到回 None。"""
+    cur = path
+    while not os.path.exists(cur):
+        head = cur.rsplit("/", 1)[0] if "/" in cur else ""
+        if not head or head == cur:
+            return None
+        cur = head
+    return cur
+
+
 def _file_tool(tool, target, cwd, vault, sources):
     column = "read" if tool in READ_TOOLS else "write"
     path = normalize(target, cwd)
     vault_n = normalize(vault, None)
     zone, alias = classify(path, vault_n, sources)
+    if tool in WORKSPACE_TOOLS and zone == "Z7" and not _odd_segments(target) and in_workspace(path, vault_n):
+        return Decision("allow", zone, "", "工作區", [], vault)  # 實作回報裁定 1：不經回合備份（hook 只備 Z1／Z3／Z5）
     seg = credential_hit(path, zone, vault_n, sources)
     if seg is not None:  # 憑證第一道先於區（D-079 補）
         reason = CREDENTIAL_REASON.format(seg=_original_segment(target, seg))
@@ -495,6 +546,39 @@ def _expand_glob(token, hidden=False):
     except (OSError, ValueError, re.error):
         return []
     return [normalize(h, None) for h in hits[:GLOB_HITS_MAX]]
+
+
+def _touches_output(command, cwd, vault_n, sources, tool):
+    """produce：cmdparse 只抽存在（或父夾存在）的相對路徑，「AI 產出/新夾/新檔.docx」抽不到。這裡另走一遍 token：
+    接效用 cwd（cd 會改）解析每個 token（與 x=值 的值），落在 Z3 就算碰到；效用 cwd 本身在 Z3 也算。只多擋、不放行任何東西。"""
+    base = normalize(cwd, None)
+    if classify(base, vault_n, sources)[0] == "Z3":
+        return True
+    for _sub, _stage, text in _stages(cmdparse.DISCARD_OUTPUT.sub(" ", command)):
+        expect_cd = False
+        for tok, _quoted, _glob, _after in _tokens_q(text, globs_in_quotes=(tool == "PowerShell")):
+            if not tok:
+                continue
+            value = [tok.split("=", 1)[1]] if "=" in tok else []
+            if tok[:1] in "-/" and ":" in tok:  # PowerShell 的 -Path:值、Windows 程式的 /out:值
+                value.append(tok.split(":", 1)[1])
+            forms = value if tok.startswith("-") and not expect_cd else [tok] + value  # --out=值 只看值
+            forms += [cmdparse._ESCAPE.sub("", f) for f in forms]  # bash 把 AI\ 產出 讀成 AI 產出（同 cmdparse 的 N-c）
+            for form in forms:
+                if not form or form[0] in "$%":
+                    continue
+                p = _norm(form, base)
+                if p is not None and inside(p, vault_n) and classify(p, vault_n, sources)[0] == "Z3":
+                    return True
+            if expect_cd:
+                if tok.startswith("-"):
+                    continue
+                expect_cd = False
+                base = None if ("$" in tok or "%" in tok) else _norm(tok, base)  # 推不出來：之後只認絕對路徑
+                continue
+            if tok.lower() in _CD_VERBS:
+                expect_cd = True
+    return False
 
 
 def _shell_tool(tool, command, cwd, vault, sources):
@@ -552,6 +636,15 @@ def _shell_tool(tool, command, cwd, vault, sources):
         if zone == "Z10":
             _d, code, reason = _verdict(zone, "read", alias)
             return deny(zone, code, reason)
+
+    # produce：抽出的路徑、萬用字元展開、或任何 token 解析後落在 AI 產出，讀寫都擋（單一 kb 呼叫在 decide 最前面已放行）
+    try:
+        touched = _touches_output(command, cwd, vault_n, sources, tool)
+    except Exception:  # noqa: BLE001  hook 對指令出錯不表態（會變成放行），這裡寧可擋（收尾 security-review）
+        touched = True
+    if touched or any(zone == "Z3" for _p, zone, _alias in classified + glob_classified):
+        _d, code, reason = OUTPUT_SHELL
+        return deny("Z3", code, reason)
 
     # 第八輪：區判斷照守門題原版——整條指令 is_write 為真，所有抽出的路徑都套寫入欄；不分段、不分角色（誤擋併 B-110）。
     # 第九輪 Z1：寫入時萬用字元的展開命中、cd 展開夾與前綴夾也套寫入欄（rm -rf ../客戶*、cd ../客戶* && rm a.txt、sed -i ../客*/a.txt）

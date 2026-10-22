@@ -9,6 +9,7 @@ from tests import _cards
 from tests.test_lib_inventory_scan import make_inv_vault
 from tests.test_scripts_inventory_cli import run_kb
 from kb._lib import inventory, journal, profile, turn  # noqa: E402
+from kb._lib import sources as sources_lib  # noqa: E402
 
 ROW = "| 工地 | 事 | 一個客戶一個裝修案 |"
 ANCHOR = "| 案子 | 事 |  | 推測 | 2026-10-19 |\n"
@@ -336,7 +337,7 @@ class SchemaTwoApply(Base):
         self.drop_line("| 案子 | 金額 |")
         self.apply()
         self.assertNotIn("案子", {s["type"] for s in self.data()["synthesis_sections"]})
-        self.assertEqual(self.data()["schema_version"], 3, "寫的時候寫 3")
+        self.assertEqual(self.data()["schema_version"], 4, "寫的時候寫 4")
 
     def test_drop_type_row_only_applies_and_drops_its_sections(self):
         """實作回報裁定 1：只刪第一節的列，apply 成功，第四節那個型別的列一起拿掉。"""
@@ -398,7 +399,7 @@ class Edit(Base):
         self.assertIn("## 六、偏好", lines)
         self.assertIn("| 案子 | 事 |  | 推測 | 2026-10-19 |", lines)
         data = json.loads(self.kb("show", "--json").stdout)
-        self.assertEqual([s["name"] for s in data["sections"]], ["型別", "卡型", "不整理與敏感", "每類段落", "關於你", "偏好"])
+        self.assertEqual([s["name"] for s in data["sections"]], ["型別", "卡型", "不整理與敏感", "每類段落", "關於你", "偏好", "範本"])
         self.assertIsNone(data["pending_edit"])
         self.assertEqual(data["sections"][5]["limits"], {"count": 10, "chars": 400, "used_count": 0, "used_chars": 0})
         self.assertEqual(data["sections"][0]["add"], "kb profile add 型別 名稱={名稱} 大類={大類} 一句說明={一句說明}")
@@ -408,7 +409,7 @@ class Edit(Base):
         self.assertEqual(self.run_ok("add", "偏好", "偏好=回答先講結論"), ["已加偏好：回答先講結論"])
         data = self.data()
         self.assertEqual((data["schema_version"], data["preferences"]),
-                         (3, [{"text": "回答先講結論", "source": "corrected", "date": self.today}]))
+                         (4, [{"text": "回答先講結論", "source": "corrected", "date": self.today}]))
         self.assertIn(f"## 六、偏好", self.md_text())
         self.assertIn(f"| 回答先講結論 | 糾正 | {self.today} |", self.md_text())
         self.assertEqual(data["md_sha256"], profile.md_sha256(self.V))
@@ -470,7 +471,7 @@ class Edit(Base):
 
     def test_bad_section_column_and_argument(self):
         before = self.hashes()
-        self.assertEqual(self.refused("add", "偏好啦", "偏好=x"), "沒有「偏好啦」這一節；節是 型別、卡型、不整理與敏感、每類段落、關於你、偏好")
+        self.assertEqual(self.refused("add", "偏好啦", "偏好=x"), "沒有「偏好啦」這一節；節是 型別、卡型、不整理與敏感、每類段落、關於你、偏好、範本")
         self.assertEqual(self.refused("add", "偏好", "名稱=x"), "「偏好」這一節沒有「名稱」欄；欄是 偏好")
         self.assertEqual(self.refused("add", "偏好", "回答先講結論"), "「回答先講結論」要寫成 欄=值")
         self.assertEqual(self.refused("remove", "卡型", "卡型=估價單"), "沒有這一列：卡型=估價單")
@@ -545,7 +546,7 @@ class SecondRound(Base):
                 self.assertEqual(self.refused("add", "偏好", f"偏好={text}"), SECRET)
         self.assertEqual(self.hashes(), before)
         self.kb("add", "偏好", "偏好=回答先講結論")  # 有第六節的 md（fixture 是 schema 2）
-        self.hand_add(None, "| 用 password: hunter2 登入 |")
+        self.hand_add("## 七、", "| 用 password: hunter2 登入 |")
         self.assertEqual(self.apply(3), [f"客戶設定檔讀不懂：第 6 節第 2 列：{SECRET}"])
         self.assertNotIn("hunter2", (self.V / ".system" / "profile.json").read_text(encoding="utf-8"))
 
@@ -556,7 +557,7 @@ class SecondRound(Base):
                 self.assertEqual(self.refused("add", "偏好", f"偏好={text}"), CHARS)
         self.assertEqual(self.hashes(), before)
         self.kb("add", "偏好", "偏好=回答先講結論")
-        self.hand_add(None, "| 含$符號 |")
+        self.hand_add("## 七、", "| 含$符號 |")
         self.assertEqual(self.apply(3), [f"客戶設定檔讀不懂：第 6 節第 2 列：{CHARS}"])
 
     def test_names_refuse_shell_chars_and_knowledge(self):
@@ -655,6 +656,76 @@ class SecondRound(Base):
         new = {i["id"] for i in json.loads(run_kb("cards", "todo", "--json", cwd=self.V).stdout)["new"]}
         self.assertTrue(set(ids) <= new)
         self.assertEqual(self.apply(), ["客戶設定檔沒有改，沒有套用"], "冪等：第二次沒有動到就不印")
+
+
+
+class Templates(unittest.TestCase):
+    """produce 第 6 點、驗收 12（D-167）：kb profile add 範本 文件=報價單 底=<卡編號或卡標題> → JSON 存編號、md 第七節顯示標題；
+    卡不在清冊 active 拒絕；人讀輸出不印編號；remove 範本 文件=<名>。"""
+
+    def setUp(self):
+        from tests import _cards
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+        item = next(i for i in __import__("kb._lib.cards", fromlist=["x"]).todo(
+            self.V, sources_lib.load(self.V))["new"] if i["uri"].endswith("會議紀錄_1.docx"))
+        _cards.write_card(self.V, item, "報價單範本", kind="範本")
+        self.fid = item["id"]
+        run_kb("init", str(self.V), cwd=self.tmp)  # fixture 是 schema 2：先升到 4，md 才有第七節
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def kb(self, *args):
+        return run_kb("profile", *args, cwd=self.V)
+
+    def data(self):
+        return json.loads((self.V / ".system" / "profile.json").read_text(encoding="utf-8"))
+
+    def md_text(self):
+        return (self.V / "系統" / "客戶設定檔.md").read_text(encoding="utf-8")
+
+    def test_add_by_id_and_title_then_remove(self):
+        import re
+        today = date.today().isoformat()
+        r = self.kb("add", "範本", "文件=報價單", f"底={self.fid}")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "已加範本：報價單"))
+        self.assertEqual(self.data()["templates"], [{"doc": "報價單", "card": self.fid, "source": "corrected", "date": today}])
+        self.assertEqual(self.data()["schema_version"], 4)
+        self.assertIn(f"| 報價單 | 報價單範本 | 糾正 | {today} |", self.md_text())
+        self.assertEqual(self.data()["md_sha256"], profile.md_sha256(self.V))
+        self.assertEqual(self.kb("check").stdout.strip(), "客戶設定檔沒有改")
+        r = self.kb("add", "範本", "文件=合約", "底=報價單範本")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "已加範本：合約"))
+        self.assertEqual(self.data()["templates"][1]["card"], self.fid)
+        show = self.kb("show").stdout
+        self.assertIn("| 合約 | 報價單範本 |", show)
+        for out in (show, r.stdout):
+            self.assertEqual(re.findall(r"[aefsrcp]-[0-9a-f]{8}", out), [])
+        rows = json.loads(self.kb("show", "--json").stdout)["sections"][6]["rows"]
+        self.assertEqual(rows[0]["底"], self.fid)
+        r = self.kb("remove", "範本", "文件=合約")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "已拿掉範本：合約"))
+        self.assertEqual([t["doc"] for t in self.data()["templates"]], ["報價單"])
+
+    def test_unknown_or_inactive_card_refused(self):
+        before = self.data()
+        r = self.kb("add", "範本", "文件=報價單", "底=沒有這張")
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "找不到這張卡：沒有這張"))
+        r = self.kb("add", "範本", "文件=報價單", "底=f-00000000")
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "找不到這張卡：f-00000000"))
+        from kb._lib import inventory
+        inventory.set_status(self.V, [self.fid], "missing")
+        r = self.kb("add", "範本", "文件=報價單", "底=報價單範本")
+        self.assertEqual((r.returncode, r.stdout.strip()), (3, "找不到這張卡：報價單範本"))
+        self.assertEqual(self.data(), before)
+
+    def test_hand_edit_with_title_applies(self):
+        md = self.V / "系統" / "客戶設定檔.md"
+        md.write_text(self.md_text().rstrip("\n") + "\n| 報價單 | 報價單範本 |\n", encoding="utf-8", newline="\n")
+        r = self.kb("apply")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.data()["templates"][0]["card"], self.fid)
+        self.assertIn("| 報價單 | 報價單範本 | 訪談 |", self.md_text())
 
 
 if __name__ == "__main__":

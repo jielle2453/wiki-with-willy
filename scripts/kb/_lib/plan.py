@@ -2,7 +2,8 @@
 
 plan：照順序要做的事，每步 {"step","items","do","read"}；多量先問時只留 sync。
 asks：排好序、編好號的問題，每題 {"id","kind","question","results":[{"n","label","do","strict","fill"}]}；
-      順序：實體夾或綜合卡不見 → 原檔不見 → 裁示遇到原檔改版（ruling_recheck）→ 逾期、日程有出入、結案 → 名字確認；
+      順序：實體夾或綜合卡不見 → 原檔不見 → 裁示遇到原檔改版（ruling_recheck）→ 逾期、日程有出入、結案 → 草稿還在等（draft，
+      produce）→ 名字確認；
       號碼從 1 一路編下去不管挑哪幾題，do 的指令以 kb 開頭，要客戶給的值寫成 {新名字} 這種空格，fill 列有哪些。
 tell：回答末尾要講的現成句子；kb asks（tell_all 是 False）多一句還有幾件兩份寫法不同的（待處理 conflict，不進 asks，answer 第 6 點）。
 announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先說的一句（份數、大約多久、要停按停止，D-100 修訂），否則 None；
@@ -10,9 +11,11 @@ announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先�
 只讀：不寫任何檔，不開原檔。
 """
 import math
+import os
 import re
+from pathlib import Path
 
-from kb._lib import agenda, cards, entities, inventory, pending, rulings
+from kb._lib import agenda, cards, entities, inventory, pending, rulings, turn
 from kb._lib.paths import plugin_root
 
 SYNC = "kb cards sync"
@@ -149,6 +152,7 @@ def _asks(out, vault, config, full_plan):
     asks.extend(_missing(m) for m in out.get("missing") or [])
     asks.extend(_ruling_asks(vault))  # 「別信」蓋在新版上會讓綜合卡漏掉新內容，排在逾期之前（note 改知識釐清）
     asks.extend(_agenda_asks(vault))
+    asks.extend(_draft_asks(vault))
     asks.extend(_name(i) for i in out.get("synthesis_new") or [] if not i.get("confirmed"))
     return asks
 
@@ -313,6 +317,49 @@ def _close_asks(vault, titles):
     return out
 
 
+# ---------- 草稿還在等（produce 第 5 點，D-163） ----------
+
+DRAFT_QUESTION = "{title} 的草稿還在等你看"
+_DATE_HEAD = re.compile(r"^\d{4}-\d{2}-\d{2}\s+")
+
+
+def drafts(vault):
+    """AI 產出底下的（草稿）.md，回總資料夾相對路徑（照路徑排）；跳過 . 開頭的夾與檔、不跟連結。"""
+    root = Path(vault) / inventory.OUTPUT
+    out = []
+    if not root.is_dir() or os.path.islink(root):
+        return out
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and not os.path.islink(os.path.join(dirpath, d)))
+        for name in sorted(filenames):
+            if name.endswith(cards.DRAFT_SUFFIX) and not name.startswith("."):
+                out.append(Path(dirpath, name).relative_to(vault).as_posix())
+    return sorted(out)
+
+
+def draft_title(rel):
+    """「AI 產出/報告/2026-10-21 內湖李 進度報告（草稿）.md」→「內湖李 進度報告」：去掉（草稿）.md 與開頭的日期。"""
+    name = rel.rsplit("/", 1)[-1][:-len(cards.DRAFT_SUFFIX)]
+    return _DATE_HEAD.sub("", name) or name
+
+
+def _draft_asks(vault):
+    """跨對話的草稿：定稿與再改照 SKILL 做（do 空），不要了交 kb output drop-draft（strict）。
+    這一回合才寫的草稿不問（剛給客戶看的那份不用回答末尾再問一次）；讀不到回合就照列。"""
+    try:  # 只讀 current.json，不開新回合（plan 不寫檔）
+        now = turn._read_turn(turn._current_file(vault))
+        touched = {e.get("path") for e in turn.entries(vault, now["turn"])} if now else set()
+    except (OSError, ValueError):
+        touched = set()
+    out = []
+    for rel in drafts(vault):
+        if rel in touched:
+            continue
+        out.append(_ask(f"draft:{rel}", "draft", DRAFT_QUESTION.format(title=draft_title(rel)), [
+            _result("定稿"), _result("再改"), _result("不要了", [cmd("output", "drop-draft", rel)], strict=True)]))
+    return out
+
+
 def _number(asks):
     n = 0
     for ask in asks:
@@ -346,11 +393,14 @@ def _tell(out, vault):
                      "要加的話在客戶設定檔第一節加一列，下次開對話我會問你要不要套用")
     if out.get("pdf_restored"):
         lines.append(f"PDF 元件裝好了，{out['pdf_restored']} 份 PDF 回到待製卡")
+    if out.get("unbacked"):
+        lines.append(UNBACKED_TELL.format(n=out["unbacked"]))
     lines.extend(agenda.tell_lines(vault))
     return lines
 
 
 CONFLICT_TELL = "還有 {n} 件兩份寫法不同的，在待處理"
+UNBACKED_TELL = "AI 產出有 {n} 份沒經程式放進來，這幾份退回拿不掉"  # produce 第 5 點：只數這次待製卡裡的
 
 
 def _conflict_tell(vault):

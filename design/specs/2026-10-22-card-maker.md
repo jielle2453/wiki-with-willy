@@ -63,3 +63,4 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - 2026-10-22：a2 確認：守門誤擋三則收進密碼與守門（d4153e6）；`PYTHONIOENCODING=… python` 不符合 `Bash(python *)` 是權限規則，歸這題（子代理怎麼叫 kb、或 skeleton 的 allow 規則）；`hooks/turn.py` 可進這題的可動範圍（密碼與守門改 `_lib/turn.py`、`hooks/stop.py`，這題實作在它發行後，照順序不同時跑）。
 - 2026-10-22：兩題實作測試分開、確認與 build 併在一起（D-133 補）；寫本 spec 前先做 spike 的桌面版三步。
 - 2026-10-22：背景還是前景——使用者選背景，寫 D-195；按停止的細節等桌面版三步。舊 plugin（third party 的 `plugin`）有 `agents/card-maker.md` 可當來源對照；本 repo 還沒有，spike 那份只在測試夾的 plugin 副本。
+- 2026-10-22：桌面版三步做完（報告桌面版一節）；B-412（開場還有 N 份沒整理完時沒照 D-161 直接整理）併進這題，跟 a2 談定：開場「先整理再回答」本來就要因 card-maker 重談，`hooks/session.py` 那幾行一起看。

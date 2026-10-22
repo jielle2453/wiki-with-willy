@@ -2,6 +2,7 @@
 
 結果取 payload 的 last_assistant_message，壓成一行、遮值再截（D-061、D-086）；沒有這個鍵（舊版 Claude Code）寫固定句，不解析 transcript。
 回合記了 secret_shown（這句回答給了密碼，密碼與守門）就只記固定句，不碰回答。
+收尾一律刪 .system/temp/*.secret*（「可以讀」的密碼檔的暫存），刪不掉寫 log。
 日誌寫成後才 set_done；md 渲染失敗只寫 log，不擋 set_done。
 做了：模型叫過 kb turn note 就用它（note_by ai），否則程式地板句（note_by program，D-084）；改了：這回合的 manifest。
 只收第一次 Stop：回合檔 done 已是 true 就不做；turns/<sid>.json 不存在也不做，不退到 current.json（會記到別的對話）。
@@ -36,6 +37,7 @@ def main():
         vault = guard.find_vault(payload.get("cwd") or os.getcwd())
         if vault is None:
             return
+        _clean_secrets(vault)
         sid = payload.get("session_id")
         if not sid:
             return
@@ -56,6 +58,19 @@ def main():
         turn.set_done(vault, sid)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
         _log(e, payload)
+
+
+def _clean_secrets(vault):
+    """收尾一律刪 .system/temp/*.secret*（「可以讀」的密碼檔的暫存，密碼與守門）；刪不掉的寫 hook-errors.log，不擋。"""
+    try:
+        from kb import convert
+        from kb._lib import ledger
+
+        failed = convert.clean_secrets(vault)
+        if failed:
+            ledger.log_error(vault, f"密碼檔暫存刪不掉：{len(failed)} 個", source="stop")
+    except BaseException as e:  # noqa: BLE001  刪不掉不能讓 Stop 掛掉
+        _log(e, {"cwd": str(vault)})
 
 
 def _log(e, payload):

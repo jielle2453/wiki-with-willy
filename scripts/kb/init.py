@@ -16,6 +16,7 @@ from pathlib import Path
 
 from kb import guard, journal_cli
 from kb._lib import agenda, profile
+from kb._lib import vault as vault_lib
 from kb._lib import sources as sources_lib
 from kb._lib.io import read_text, write_json_atomic, write_text_atomic
 from kb._lib.paths import plugin_root
@@ -188,6 +189,10 @@ def run(args):
             created.append(agenda.MD_POSIX)
         except ValueError as e:  # agenda.json 壞了：骨架照建，日程.md 之後 kb agenda render 補
             notes.append(f"{agenda.MD_POSIX} 沒補：{e}")
+    try:  # 知識庫編號（密碼與守門）：缺的才補、不算骨架項目、不備進回合；壞檔不覆寫
+        vault_lib.ensure_vault_id(p)
+    except (ValueError, OSError) as e:
+        notes.append(f"知識庫編號沒補：{e}")
     if upgrade == "upgrade":
         _upgrade_profile(p)
         touched = [profile.PROFILE_POSIX, profile.MD_POSIX]

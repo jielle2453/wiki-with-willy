@@ -18,7 +18,7 @@ from kb._lib import pending  # noqa: E402
 
 MEETING_TEXT = ("大安陳第一次會議", "討論廚房動線", "廚具 | L 型")
 JSON_KEYS = {"id", "uri", "path", "kind", "temp", "chars", "parts", "encoding", "pages", "big", "unreadable", "pending_id",
-             "scanned_pages", "images"}
+             "scanned_pages", "images", "ask_save", "unlocked"}  # 密碼與守門：--password 要不要問記住、用哪種密碼開的
 IMG = "客戶案件/平面圖.png"  # 不在清冊、轉換不寫暫存的目標：清理測試用它當「判斷都過的一次 convert」
 PDF_MISSING = "讀不到：還沒裝 PDF 元件（pip install pypdfium2）"
 

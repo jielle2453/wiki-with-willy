@@ -366,23 +366,23 @@ class Tell(Base):
 
     def test_unreadable_each_with_trailer(self):
         got = self.tell(unreadable=[{"id": "f-1", "uri": "file://客戶案件/信義王/合約_加密.pdf", "reason": "有密碼"}])
-        self.assertEqual(got, ["合約_加密.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過；記在 系統/待處理.md"])
+        self.assertEqual(got, ["合約_加密.pdf 讀不到：有密碼；給我密碼就能打開，要我記住也可以；記在 系統/待處理.md"])
 
     def test_unreadable_two(self):
         got = self.tell(unreadable=[{"id": "f-1", "uri": "file://a/甲.pdf", "reason": "有密碼"},
                                     {"id": "f-2", "uri": "file://a/乙.doc", "reason": "舊格式"}])
-        self.assertEqual(got, ["甲.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過",
+        self.assertEqual(got, ["甲.pdf 讀不到：有密碼；給我密碼就能打開，要我記住也可以",
                                "乙.doc 讀不到：舊格式；用 Word／Excel 另存成新格式就讀得到；記在 系統/待處理.md"])
 
     def test_unreadable_five_listed_six_merged(self):
         items = [{"id": f"f-{i}", "uri": f"file://a/{i}.pdf", "reason": "有密碼"} for i in range(6)]
         self.assertEqual(len(self.tell(unreadable=items[:5])), 5)
         got = self.tell(unreadable=items)
-        self.assertEqual(got, [f"{i}.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過" for i in range(5)]
+        self.assertEqual(got, [f"{i}.pdf 讀不到：有密碼；給我密碼就能打開，要我記住也可以" for i in range(5)]
                          + ["另有 1 份讀不到；記在 系統/待處理.md"])
 
     ADVICE = {
-        "有密碼": "另存一份沒密碼的，或跟我說先跳過",
+        "有密碼": "這種檔這版還打不開，用 Office 打開另存一份沒密碼的再放進來",  # 密碼與守門：不是 PDF 的照 Word、Excel 講（D-182）
         "舊格式（.doc）": "用 Word／Excel 另存成新格式就讀得到",
         "不支援的格式（.zip）": "這種格式還讀不了，跟我說先跳過，或換一份檔",
         "只在雲端、還沒下載到電腦": "請在檔案上按右鍵選保留在這台電腦上，我再整理",
@@ -405,7 +405,7 @@ class Tell(Base):
 
     def test_not_carded_counts(self):
         got = self.tell(skipped={"credential": 2, "placeholder": 0, "too_large": 1, "error": 0, "skipped": 0})
-        self.assertEqual(got, ["不製卡：檔名像密碼或金鑰 2、太大 1"])
+        self.assertEqual(got, ["不製卡：檔名像密碼或金鑰 2、太大 1；要讓我讀哪一份跟我說「X 可以讀」"])  # 密碼與守門
 
     def test_cloud_only_adds_sentence(self):
         got = self.tell(skipped={"credential": 0, "placeholder": 3, "too_large": 0, "error": 1, "skipped": 0})
@@ -671,7 +671,7 @@ class WithRealVault(unittest.TestCase):
     OLD_KEYS = {"new", "stale", "moved", "duplicates", "orphans", "unreadable", "missing", "skipped", "broken", "pdf_restored",
                 "unlinked", "missing_types", "profile_missing", "profile", "synthesis_new", "synthesis_stale",
                 "synthesis_broken", "entity_drift", "entities", "agenda_recheck", "agenda_unscanned", "agenda_counts",
-                "unbacked", "purge_pending"}
+                "unbacked", "purge_pending", "unlock_same_kind", "unlock_kinds"}  # 密碼與守門
 
     def setUp(self):
         self.tmp, self.V, self.raw = E.make_entity_vault(with_entities=True)

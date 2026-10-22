@@ -168,12 +168,37 @@ def _source_file(vault, raw):
     return path
 
 
+TOUCHED_LINE = "剛才的程式動到了 {names}，我沒有要動它；說「退回上一版」看救不救得回"
+TOUCHED_SHOWN = 5
+
+
+def _touched(vault, uris, turn_id):
+    """D-188：動到的檔第一行講、記一條 script_touched 待處理（清冊有的用編號，沒有的用 uri）。回那一行或 None。"""
+    from kb._lib import pending
+    if not uris:
+        return None
+    names = [f"「{u.rsplit('/', 1)[-1]}」" for u in uris[:TOUCHED_SHOWN]]
+    more = f"等 {len(uris)} 份" if len(uris) > TOUCHED_SHOWN else ""
+    line = TOUCHED_LINE.format(names="、".join(names) + more)
+    try:
+        entries = inventory.load(vault)["entries"]
+        ids = [(inventory.entry_for(vault, u, entries) or {}).get("id") or u for u in uris]
+        pending.add(vault, "script_touched", ids, f"剛才的程式動到了 {'、'.join(names)}{more}", None, turn_id)
+    except Exception as e:  # noqa: BLE001  待處理沒記到不擋這一行
+        from kb._lib import ledger
+        ledger.log_error(vault, f"script_touched 沒記到：{type(e).__name__}", source="office")
+    return line
+
+
 def _run(vault, args, as_json):
     rest = list(args.args or [])
     if rest[:1] == ["--"]:
         rest = rest[1:]
-    code, tail, ws = office.run_script(vault, args.script, rest, _turn_id(vault))
-    _out(as_json, [f"工作區：{ws}"] + tail + [f"結束碼：{code}"], {"ok": code == 0, "exit_code": code, "tail": tail, "workspace": str(ws)})
+    turn_id = _turn_id(vault)
+    code, tail, ws, touched = office.run_script(vault, args.script, rest, turn_id)
+    first = _touched(vault, touched, turn_id)
+    _out(as_json, ([first] if first else []) + [f"工作區：{ws}"] + tail + [f"結束碼：{code}"],
+         {"ok": code == 0, "exit_code": code, "tail": tail, "workspace": str(ws), "touched": touched})
     return 0 if code == 0 else 3
 
 

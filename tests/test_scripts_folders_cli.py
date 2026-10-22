@@ -239,6 +239,7 @@ class Add(Base):
         self.assertIn("行政/網站密碼.txt", cred[0])
         self.assertIn("行政/secret/k.txt", cred[0])
         self.assertNotIn(".env", cred[0])
+        self.assertTrue(cred[0].endswith("；要讓我讀哪一份跟我說「X 可以讀」"), cred[0])  # 密碼與守門（a2 定）
         (self.V / ".system" / "sources.json").write_text('{"schema_version": 1, "sources": []}', encoding="utf-8")
         r = self.add("../raw/行政", "--json")
         data = json.loads(r.stdout)

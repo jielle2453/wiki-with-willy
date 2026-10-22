@@ -419,9 +419,27 @@ def need_in_temp(vault, path, what="檔"):
 
 # ---------- run ----------
 
+def touched_since(vault, start):
+    """D-188：start 之後修改時間有變的檔（登記的來源、知識庫的型別夾、收件匣、AI 產出；工作區在 .system 底下本來就不看）。
+    只看修改時間、不算指紋，照開場快速比對的時間預算（changes_quick_seconds），時間到就停在那裡。回 uri 清單。"""
+    from kb._lib import config, inventory
+    from kb._lib import sources as sources_lib
+    sources = sources_lib.load(vault)
+    stopper = inventory._Stopper(config.get(vault, "changes_quick_seconds"))
+    roots, _missing, _errors = inventory.roots(vault, sources)
+    hits = []
+    for root in roots:
+        for rel, st, err in inventory._iter_root(root, stopper):
+            if err is None and st is not None and rel and st.st_mtime >= start:
+                hits.append(inventory.make_uri(root["alias"], rel))
+        if stopper.stopped:
+            break
+    return hits
+
+
 def run_script(vault, script, args, turn_id):
     """跑一支做檔腳本：要在 .system/temp/ 底下；cwd 與 OUT_DIR 是這一回合的工作區，NODE_PATH、PYTHONPATH 指工具夾。
-    回 (腳本結束碼, 末 RUN_TAIL 行, 工作區)。"""
+    回 (腳本結束碼, 末 RUN_TAIL 行, 工作區, 動到的檔 uri 清單)：跑完照 touched_since 比一次（D-188）。"""
     script = resolve_arg(script)
     if not in_temp(vault, script):
         raise Refused(f"腳本要放在工作區裡（{workspace(vault, turn_id, make=False)}），這支不在：{script}")
@@ -441,11 +459,18 @@ def run_script(vault, script, args, turn_id):
     env = dict(os.environ)
     env.update(NODE_PATH=str(node_modules()), PYTHONPATH=str(pylib()), OUT_DIR=str(ws), PYTHONIOENCODING="utf-8")
     seconds = config.get(vault, "office_run_seconds")
+    start = time.time()
     try:
         code, out = _call(argv + [str(a) for a in args], seconds, env=env, cwd=str(ws))
     except subprocess.TimeoutExpired:
         raise Unavailable(f"跑超過 {seconds} 秒，停掉了") from None
-    return code, out.splitlines()[-RUN_TAIL:], ws
+    try:
+        touched = touched_since(vault, start)
+    except Exception as e:  # noqa: BLE001  比不了不改腳本的結果；記 log
+        from kb._lib import ledger
+        ledger.log_error(vault, f"跑完比對沒做完：{type(e).__name__}", source="office")
+        touched = []
+    return code, out.splitlines()[-RUN_TAIL:], ws, touched
 
 
 # ---------- 解開、打包 ----------

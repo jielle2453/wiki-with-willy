@@ -3,7 +3,9 @@
 三種 kind：missing_file（原檔不見，照清冊狀態由 sync_missing 開與自動 done）、unreadable（kb convert 讀不到）、
 close（事類實體看起來結案了，等客戶答；entity_ids 帶實體，file_ids 是依據，日程第 3 點、D-127；客戶答了 kb entity progress 自動 done）、
 conflict（兩份原檔寫法不同，answer 核對時發現；file_ids 是那兩張卡、titles 是記的時候的卡標題，同一對不論順序只開一條，
-answer 第 6 點、D-155；不進 asks，客戶說哪個對之後照 note 記完再 resolve）。
+answer 第 6 點、D-155；不進 asks，客戶說哪個對之後照 note 記完再 resolve）、
+script_touched（kb office run 的腳本動到了登記的來源、實體夾、AI 產出或收件匣裡的檔，密碼與守門 D-188；file_ids 是清冊編號，
+不在清冊的放 uri）。
 每次寫都在 pending.json 的 FileLock 裡：先 turn.backup pending.json 與 待處理.md 兩個（退回後客戶看到的要一致），
 再原子寫，寫完重渲染 md。沒有改動就什麼都不寫（不建檔、不備份）。形狀不對的 pending.json 丟 ValueError。
 """
@@ -18,8 +20,10 @@ PENDING_POSIX = ".system/pending.json"
 MD_POSIX = "系統/待處理.md"
 SCHEMA_VERSION = 1
 EMPTY = {"schema_version": SCHEMA_VERSION, "items": []}
-KINDS = ("missing_file", "unreadable", "close", "conflict")
-SECTIONS = (("missing_file", "原檔不見"), ("unreadable", "讀不到"), ("close", "要確認結案的"), ("conflict", "兩份寫法不同的"))
+KINDS = ("missing_file", "unreadable", "close", "conflict", "script_touched")
+SECTIONS = (("missing_file", "原檔不見"), ("unreadable", "讀不到"), ("close", "要確認結案的"), ("conflict", "兩份寫法不同的"),
+            ("script_touched", "程式動到的檔"))
+SCRIPT_TOUCHED_ASK = "我沒有要動它；說「退回上一版」看救不救得回，救不回就從資源回收筒或雲端找。"
 HEADER = ("# 待處理\n"
           "這是什麼：等你回答或處理的事，程式從 .system/pending.json 整理出來。\n"
           "怎麼用：在對話裡直接回答我，處理完會從這裡消失。\n"
@@ -28,7 +32,7 @@ NOTHING = "目前沒有等你決定的事。"
 MISSING_ASK = "是你刪的嗎？是的話我把它的卡一起拿掉；不是的話可以從資源回收筒或雲端找回來。"
 # 讀不到的問法，依 reason 開頭挑；都不是就用最後一句
 UNREADABLE_ASKS = (("還沒裝 PDF 元件", "請服務人員在這台電腦跑 pip install pypdfium2。"),  # 裁定 36
-                   ("有密碼", "另存一份沒密碼的，或跟我說先跳過。"),
+                   ("有密碼", "PDF 給我密碼就能打開（要我記住也可以）；Word、Excel 請另存一份沒密碼的，或跟我說先跳過。"),
                    ("舊格式", "用 Word／Excel 另存成新格式。"),
                    ("只在雲端", "在檔案上按右鍵選保留在這台電腦上。"))
 UNREADABLE_OTHER = "跟我說先跳過，或換一份檔。"
@@ -254,6 +258,8 @@ def ask_of(item):
         return MISSING_ASK
     if item.get("kind") in ("close", "conflict"):
         return ""
+    if item.get("kind") == "script_touched":
+        return SCRIPT_TOUCHED_ASK
     reason = item.get("reason") or ""
     return next((ask for head, ask in UNREADABLE_ASKS if reason.startswith(head)), UNREADABLE_OTHER)
 

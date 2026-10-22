@@ -11,6 +11,10 @@ Z11、Z1／Z6／Z7／Z8 都拒；來源根以下的段像密碼或金鑰也拒�
 找不到原檔（含 status missing）只印一行、不寫待處理（實作疑義裁定 2）。其他讀不到的 exit 3，條目在清冊就寫一條 unreadable。
 原檔被別的程式鎖住、沒權限（OSError）→ 一句話 exit 3、不寫待處理（裁定 18）；--json 時所有失敗都印 JSON。
 任何情況不印檔案內容到終端機（D-022）。
+密碼與守門（D-181、D-182、D-183）：--password「她剛給的」一次性、--saved 憑證管理員那一筆（要授權過的種類或這句明說要試 --explicit）；
+只解加密的 PDF，開成功關掉那份的「讀不到：有密碼」待處理、--saved 開的記進 unlock.json 的 opened、--password 的輸出帶 ask_save；
+密碼錯一行「密碼不對」exit 3、不記待處理。/Encrypt 在但不用密碼開得了（只有擁有者密碼）照一般 PDF 讀。
+gate 的憑證判斷讀「可以讀」裁示（guard.ruled_readable，跟守門同一支）；讀那種檔的回合記 secret_shown。密碼不進任何輸出與檔。
 """
 import argparse
 import hashlib
@@ -44,7 +48,12 @@ LOCKED = "檔案被別的程式開著或沒有權限，關掉 Word／Excel 再�
 BROKEN = "檔案壞了"
 BAD_TEMP = "暫存位置不對"
 JSON_KEYS = ("id", "uri", "path", "kind", "temp", "chars", "parts", "encoding", "pages", "big", "unreadable",
-             "pending_id", "scanned_pages", "images")
+             "pending_id", "scanned_pages", "images", "ask_save", "unlocked")
+WRONG_PASSWORD = extract.PDF_WRONG_PASSWORD
+NOT_ALLOWED = "這組密碼沒說過可以用在別的檔"
+ONE_PASSWORD = "--password 跟 --saved 只能擇一"
+ASK_SAVE_LINE = "這組密碼還沒記住：回答末尾問她要不要記住"
+OPENED_HOW = "給了密碼，打開了"
 # 讀不到的第一行（「讀不到：」後面）與待處理記的 reason
 KIND_REASONS = {
     "legacy_office": ("舊格式（{ext}），請另存成新格式", "舊格式（{ext}）"),
@@ -60,6 +69,9 @@ class Refused(Exception):
 
 def add_arguments(sub):
     sub.add_argument("target", help="清冊編號（f-…）、uri（file://別名/相對路徑）或磁碟路徑；總資料夾從目前目錄往上找")
+    sub.add_argument("--password", help="加密的 PDF：客戶剛給的密碼（一次性，用引號包起來）")
+    sub.add_argument("--saved", help="加密的 PDF：用憑證管理員裡存的那一組（名稱）；要授權過這一種，或加 --explicit")
+    sub.add_argument("--explicit", action="store_true", help="客戶這句明說要試這組密碼（不用授權過的種類）")
     sub.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
 
@@ -125,7 +137,9 @@ def resolve(vault, sources, target, cwd):
 
 
 def gate(vault, sources, entry, path):
-    """守門同一套判斷（實作疑義裁定 8），加清冊的 read 與 status。不過丟 Refused。"""
+    """守門同一套判斷（實作疑義裁定 8），加清冊的 read 與 status。不過丟 Refused。
+    憑證樣式的那份有「可以讀」裁示就放（guard.ruled_readable，排除照擋，D-183、D-184）。回這份是不是靠裁示讀的密碼檔。"""
+    readable = False
     if entry is not None and entry.get("status") == "excluded":
         raise Refused(EXCLUDED, None)
     if entry is not None and entry.get("status") == "missing":
@@ -144,9 +158,13 @@ def gate(vault, sources, entry, path):
         _status, src = sources.lookup(target_n)
         segs = target_n[len(src["root"]):].strip("/").split("/") if src else []
         if credentials.match_segment(segs) is not None:
+            if not guard.ruled_readable(vault, sources, target_n):
+                raise Refused(CREDENTIAL, None)
+            readable = True
+    if entry is not None and entry.get("read") == "credential" and not readable:
+        if entry.get("id") not in guard.readable_ids(vault):
             raise Refused(CREDENTIAL, None)
-    if entry is not None and entry.get("read") == "credential":
-        raise Refused(CREDENTIAL, None)
+        readable = True
     if _attrs(path) & RECALL_ON_DATA_ACCESS:  # 讀前看一次目前的屬性，不靠清冊的 read（B-095：清冊過時會整份下載）
         raise Refused(PLACEHOLDER, PLACEHOLDER)
     if entry is not None and entry.get("read") == "placeholder":
@@ -155,17 +173,39 @@ def gate(vault, sources, entry, path):
         raise Refused(TOO_LARGE, None)
     if not os.path.isfile(long_path(path)):
         raise Refused(NOT_FOUND, None)
+    return readable
 
 
-def _temp_name(entry, path):
-    """編號合 f-／out- 格式才拿來當檔名（清冊可能被改過，裁定 16），否則用指紋前 12 碼。"""
+SECRET_SUFFIX = ".secret"  # 密碼與守門（設計 session 2026-10-23）：「可以讀」的密碼檔的暫存，那一句答完就刪
+
+
+def clean_secrets(vault):
+    """刪 .system/temp/ 裡 *.secret*（密碼檔的暫存與掃描頁的圖）：Stop 收尾一律刪，Stop 沒跑到的下一句開頭刪。
+    不進子夾、不跟連結；回刪不掉的檔名清單（呼叫端寫 hook-errors.log，不擋那一句）。"""
+    d = Path(vault) / TEMP_POSIX
+    failed = []
+    if not d.is_dir() or _is_reparse(d):
+        return failed
+    for p in d.glob("*" + SECRET_SUFFIX + "*"):
+        try:
+            if p.is_file() and not _is_reparse(p):
+                p.unlink()
+        except OSError:
+            failed.append(p.name)
+    return failed
+
+
+def _temp_name(entry, path, secret=False):
+    """編號合 f-／out- 格式才拿來當檔名（清冊可能被改過，裁定 16），否則用指紋前 12 碼。
+    secret（「可以讀」的密碼檔）：<編號>.secret.md，那一句答完就刪。"""
+    tail = SECRET_SUFFIX + ".md" if secret else ".md"
     if entry is not None and isinstance(entry.get("id"), str) and _ID.fullmatch(entry["id"]):
-        return f"{entry['id']}.md"
+        return f"{entry['id']}{tail}"
     h = hashlib.sha256()
     with open(long_path(path), "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
-    return h.hexdigest()[:12] + ".md"
+    return h.hexdigest()[:12] + tail
 
 
 def _extract(vault, kind, path):
@@ -183,19 +223,26 @@ def _extract(vault, kind, path):
     return text.replace("\r\n", "\n").replace("\r", "\n"), None, encoding
 
 
-def convert(vault, sources, entry, path):
-    """回 (result dict, 印給人的行)。讀不到丟 Refused。"""
+def convert(vault, sources, entry, path, password=None, secret=False):
+    """回 (result dict, 印給人的行)。讀不到丟 Refused。password：加密的 PDF 帶密碼開（只有 PDF，D-182）。
+    secret：「可以讀」的密碼檔，暫存叫 <編號>.secret.md。"""
     real = os.path.realpath(str(path))
     result = {"kind": None, "temp": None, "chars": None, "parts": None, "encoding": None, "pages": None,
               "big": False, "path": real, "scanned_pages": None, "images": None}
     kind = extract.probe(path)
-    result["kind"] = kind
     ext = Path(str(path)).suffix.lower() or "沒有副檔名"
+    if kind == "encrypted" and ext == ".pdf":
+        try:
+            if password or extract.pdf_opens_without_password(path):
+                kind = "pdf"  # 帶了密碼，或只有擁有者密碼（不用密碼就能看）
+        except extract.Unreadable as e:
+            raise Refused(str(e), str(e)) from None
+    result["kind"] = kind
     if kind in KIND_REASONS:
         first, reason = KIND_REASONS[kind]
         raise Refused(first.format(ext=ext), reason.format(ext=ext))
     if kind == "pdf":
-        return _convert_pdf(vault, entry, path, result)
+        return _convert_pdf(vault, entry, path, result, password, secret)
     if kind == "image":
         clean_temp(vault)
         return result, [f"圖片：用 Read 看：{real}"]
@@ -203,7 +250,7 @@ def convert(vault, sources, entry, path):
         text, parts, encoding = _extract(vault, kind, path)
     except extract.Unreadable as e:
         raise Refused(str(e), str(e)) from None
-    _d, temp = _temp_target(vault, entry, path)
+    _d, temp = _temp_target(vault, entry, path, secret)
     kio.write_text_atomic(temp, text + ("\n" if text and not text.endswith("\n") else ""))
     chars = len(text)
     truncated = kind == "xlsx" and bool(text) and text.splitlines()[-1].startswith("（只抽到工作表「")
@@ -220,10 +267,10 @@ def convert(vault, sources, entry, path):
     return result, lines
 
 
-def _temp_target(vault, entry, path):
+def _temp_target(vault, entry, path, secret=False):
     """回 (temp 夾, 暫存檔路徑)；判斷都過了才清舊暫存（裁定 17），父夾不是 temp 就拒（裁定 16）。"""
     d = Path(vault) / TEMP_POSIX
-    temp = d / _temp_name(entry, path)
+    temp = d / _temp_name(entry, path, secret)
     clean_temp(vault)
     d.mkdir(parents=True, exist_ok=True)
     if os.path.realpath(str(temp.parent)) != os.path.realpath(str(d)):
@@ -231,16 +278,18 @@ def _temp_target(vault, entry, path):
     return d, temp
 
 
-def _convert_pdf(vault, entry, path, result):
-    """裁定 36：pypdfium2 抽文字層寫暫存檔（每頁頁碼註解），掃描頁轉 PNG（最多 pdf_read_pages_max 頁）。"""
+def _convert_pdf(vault, entry, path, result, password=None, secret=False):
+    """裁定 36：pypdfium2 抽文字層寫暫存檔（每頁頁碼註解），掃描頁轉 PNG（最多 pdf_read_pages_max 頁）。
+    密碼錯不記待處理（密碼與守門：是給錯，不是讀不到）。"""
     try:
-        text, pages, scanned = extract.pdf_pages_text(path, config.get(vault, "pdf_page_min_chars"))
+        text, pages, scanned = extract.pdf_pages_text(path, config.get(vault, "pdf_page_min_chars"), password=password)
     except extract.Unreadable as e:
-        raise Refused(str(e), str(e)) from None
-    d, temp = _temp_target(vault, entry, path)
+        raise Refused(str(e), None if str(e) == WRONG_PASSWORD else str(e)) from None
+    d, temp = _temp_target(vault, entry, path, secret)
     limit = config.get(vault, "pdf_read_pages_max")
     try:
-        images = extract.render_pages(path, scanned, d, temp.stem, config.get(vault, "pdf_render_scale"), limit)
+        images = extract.render_pages(path, scanned, d, temp.stem, config.get(vault, "pdf_render_scale"), limit,
+                                      password=password)
     except extract.Unreadable as e:
         raise Refused(str(e), str(e)) from None
     kio.write_text_atomic(temp, text + ("\n" if text and not text.endswith("\n") else ""))
@@ -271,8 +320,48 @@ def _record_unreadable(vault, entry, uri, reason):
         return None
 
 
+def _password(vault, args):
+    """回 (密碼 或 None, 用的那組名稱 或 None, 授權過的種類 label 或 None)。--saved 照 D-181 驗：要 PDF 密碼、
+    要授權過的種類或 --explicit。拒絕丟 Refused（不寫待處理），憑證管理員的拒絕照它的句子。"""
+    from kb._lib import unlock
+    if args.password and args.saved:
+        raise Refused(ONE_PASSWORD, None)
+    if args.password:
+        return args.password, None, None
+    if not args.saved:
+        return None, None, None
+    try:
+        name = unlock.check_name(args.saved)
+        kind, value = unlock.get(vault, name)
+    except unlock.Refused as e:
+        raise Refused(str(e), None) from None
+    if kind != unlock.KIND_PDF:
+        raise Refused(unlock.NOT_PDF.format(name), None)
+    granted = unlock.kind_for(vault, name)
+    if granted is None and not args.explicit:
+        raise Refused(NOT_ALLOWED, None)
+    return value, name, (granted or {}).get("label") or ""
+
+
+def _after_unlock(vault, entry, saved, label, readable):
+    """開成功之後：關掉「讀不到：有密碼」、--saved 的記進 opened、讀「可以讀」的密碼檔記 secret_shown。失敗只記 log。"""
+    from kb._lib import unlock
+    try:
+        turn_id = turn.current(vault)["turn"]
+        if entry is not None and saved is not None:
+            pending.auto_done(vault, entry["id"], "unreadable", OPENED_HOW, turn_id)
+            unlock.record_opened(vault, entry["id"], label, turn_id)
+        if readable:
+            turn.mark(vault, "secret_shown")
+    except Exception as e:  # noqa: BLE001  後續記錄沒做到不改讀到的結論
+        ledger.log_error(vault, f"開檔後的記錄沒做完：{type(e).__name__}", source="convert")
+
+
 def _fail(out, as_json, line, pid=None):
     """失敗一律 exit 3；--json 時印 JSON（unreadable 是「讀不到：」後面那句），否則印句子。"""
+    if line in ("讀不到：" + WRONG_PASSWORD, "讀不到：" + NOT_ALLOWED, "讀不到：" + ONE_PASSWORD) or (
+            line.startswith("讀不到：這台電腦") or (line.startswith("讀不到：「") and line.endswith("不是 PDF 密碼"))):
+        line = line[len("讀不到："):]  # 密碼的拒絕句照原樣一行（密碼與守門介面）
     out["unreadable"] = line[len("讀不到："):] if line.startswith("讀不到：") else line
     out["pending_id"] = pid
     if as_json:
@@ -298,8 +387,9 @@ def run(args):
             sources = sources_lib.load(vault)
             entry, path, uri = resolve(vault, sources, args.target, os.getcwd())
             out.update(id=entry["id"] if entry else None, uri=uri, path=str(path) if path else None)
-            gate(vault, sources, entry, path)
-            result, lines = convert(vault, sources, entry, path)
+            readable = gate(vault, sources, entry, path)
+            password, saved, label = _password(vault, args)
+            result, lines = convert(vault, sources, entry, path, password, secret=readable)
         except MemoryError:
             raise Refused(TOO_LARGE, TOO_LARGE) from None
         except (zipfile.BadZipFile, ET.ParseError):
@@ -312,6 +402,16 @@ def run(args):
         first, reason = e.args
         return _fail(out, as_json, f"讀不到：{first}", _record_unreadable(vault, entry, uri, reason))
     out.update(result)
+    used = password is not None and result.get("kind") == "pdf"
+    if used and saved is None and entry is not None:
+        try:
+            pending.auto_done(vault, entry["id"], "unreadable", OPENED_HOW, turn.current(vault)["turn"])
+        except Exception as e:  # noqa: BLE001
+            ledger.log_error(vault, f"待處理沒關到：{type(e).__name__}", source="convert")
+    _after_unlock(vault, entry, saved if used else None, label, readable)
+    out.update(ask_save=bool(used and saved is None), unlocked=("saved" if saved else "password") if used else None)
+    if out["ask_save"]:
+        lines.append(ASK_SAVE_LINE)
     if as_json:
         print(json.dumps(out, ensure_ascii=False))
     else:

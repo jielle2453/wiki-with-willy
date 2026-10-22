@@ -122,19 +122,18 @@ class RuleChange(unittest.TestCase):
         self.assertIn("--check --json", self.section("## 骨架", "## 共通"))
 
     def test_credential_line_warns_about_renaming(self):
-        """確認後裁定 11（確認落差 3）：憑證例外那行本文就帶「別改檔名」的提醒，不只靠 ruling.md。"""
-        line = next(ln for ln in self.body.splitlines() if ln.startswith("- **這版記不起來的話**"))
-        self.assertIn("明說沒寫任何檔，提醒不要把檔名改掉來讓程式讀（守門只看檔名，D-145）", line)
+        """確認後裁定 11（確認落差 3）：密碼那行本文就帶「別改檔名」的提醒，不只靠 ruling.md。"""
+        line = next(ln for ln in self.body.splitlines() if ln.startswith("- **密碼的話**"))
+        self.assertIn("提醒不要把檔名改掉來讓程式讀（守門只看檔名，D-145）", line)
 
-    def test_unsupported_left_with_credentials_only(self):
-        """note 改知識驗收 15、answer 第 11 點：「記不起來」只剩憑證例外（存答案這版記得起來了，D-151）。"""
-        line = next(ln for ln in self.body.splitlines() if ln.startswith("- **這版記不起來的話**"))
-        for want in ("密碼檔可以讀", "密碼記下來"):
+    def test_password_line_routes_and_only_login_left_unsupported(self):
+        """密碼與守門第 9 點：「可以讀」記裁示、「記下來」經 kb unlock；記不起來的只剩登入與 API 金鑰（D-179）。"""
+        line = next(ln for ln in self.body.splitlines() if ln.startswith("- **密碼的話**"))
+        for want in ("密碼檔可以讀", "記下來", "references/ruling.md", "references/password.md", "登入", "API 金鑰",
+                     "還記不起來"):
             with self.subTest(want=want):
                 self.assertIn(want, line)
-        for gone in ("加型別", "改型別名", "以後報價一律附日期", "糾正", "裁示", "別名", "決定", "剛才的答案"):
-            with self.subTest(gone=gone):
-                self.assertNotIn(gone, line)
+        self.assertFalse(any(ln.startswith("- **這版記不起來的話**") for ln in self.body.splitlines()))
 
     def test_merge_asks_why_before_check(self):
         """測試第二輪後裁定 27（N-3b）：骨架的型別合併先問一句為什麼要併，再 --check（跟 preference.md 一致）。"""

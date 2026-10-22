@@ -26,7 +26,10 @@ COMMANDS = {
                             "clean 清放錯的綜合卡，list 列出，render 重寫綜合卡快取，progress 事類的進行中、結案、擱置，"
                             "suggest-close 記一條結案待問，alias 加或拿掉別名"),
     "statement": ("kb.statement_cli", "客戶口述：add 記一條（--replaces 改舊的），withdraw 收回，list 列出"),
-    "ruling": ("kb.ruling_cli", "個案裁示：add 記一條（口述為準、不採用），remove 收回，recheck 原檔新版看過了照舊，list 列出"),
+    "ruling": ("kb.ruling_cli", "個案裁示：add 記一條（口述為準、不採用、可以讀），remove 收回，recheck 原檔新版看過了照舊，"
+                               "decline 檔名像密碼的這份不要讀，list 列出"),
+    "unlock": ("kb.unlock", "密碼：save 存進這台電腦的憑證管理員，get 取出，forget 忘掉，list 列名字，"
+                            "authorize 這一種的 PDF 用這組開，revoke 不再自動開"),
     "agenda": ("kb.agenda_cli", "日程：add 加一條，edit 改，done／cancel／reopen 改狀態，recheck 原檔新版看過了，list 列出，render 重寫日程.md"),
     "asks": ("kb.asks_cli", "要問客戶的事：只讀，列出 asks 與 tell（逾期、日程有出入、結案、名字確認…）"),
     "lookup": ("kb.lookup_cli", "查一個實體：只讀，一次給齊綜合卡、檔案卡、口述、裁示、推算、日程與還沒整理的份數"),

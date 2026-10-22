@@ -187,7 +187,7 @@ class Workspace(unittest.TestCase):
         script = self.ws / "make.py"
         script.write_text("import os\nprint('OUT', os.environ['OUT_DIR'])\nprint('PP', os.environ['PYTHONPATH'])\n"
                           "print('CWD', os.getcwd())\nimport sys\nprint('ARG', sys.argv[1])\n", encoding="utf-8")
-        code, tail, ws = office.run_script(self.V, script, ["甲"], "20261022-101010-test")
+        code, tail, ws, _touched = office.run_script(self.V, script, ["甲"], "20261022-101010-test")
         self.assertEqual(code, 0, tail)
         self.assertIn(f"OUT {ws}", tail)
         self.assertIn(f"PP {office.pylib()}", tail)

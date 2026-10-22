@@ -400,7 +400,7 @@ def _add(vault, args, as_json):
     if creds:
         shown = "、".join(f"{alias}/{c}" for c in creds[:CREDENTIAL_LIST_MAX])
         more = f"…還有 {len(creds) - CREDENTIAL_LIST_MAX} 份" if len(creds) > CREDENTIAL_LIST_MAX else ""
-        print(f"- 其中 {len(creds)} 份檔名像密碼或金鑰，不會讀：{shown}{more}")
+        print(f"- 其中 {len(creds)} 份檔名像密碼或金鑰，不會讀：{shown}{more}；要讓我讀哪一份跟我說「X 可以讀」")
     for w in warnings:
         print(f"- 提醒：{w}")
     return 0

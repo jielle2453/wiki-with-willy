@@ -40,6 +40,7 @@ def main():
         vault = guard.find_vault(payload.get("cwd") or os.getcwd())
         if vault is None:
             return
+        _clean_secrets(vault, payload)  # 上一句的 Stop 沒跑到（中斷）時留下的密碼檔暫存，先刪（密碼與守門）
         source = payload.get("source")
         if source is not None and source not in USER_SOURCES:
             return
@@ -83,6 +84,19 @@ def _ingest_stopped(vault, previous):
     out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": STOPPED}}
     sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")
     sys.stdout.flush()
+
+
+def _clean_secrets(vault, payload):
+    """刪 .system/temp/*.secret*；刪不掉的寫 hook-errors.log，不擋這一句。"""
+    try:
+        from kb import convert
+        from kb._lib import ledger
+
+        failed = convert.clean_secrets(vault)
+        if failed:
+            ledger.log_error(vault, f"密碼檔暫存刪不掉：{len(failed)} 個", source="turn")
+    except BaseException as e:  # noqa: BLE001
+        _log(e, payload)
 
 
 def _log(e, payload):

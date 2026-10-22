@@ -165,6 +165,14 @@ def _drop_stale_redo(vault, entries):
             e.pop("redo", None)
 
 
+def _attrs_now(path):
+    """現在的檔案屬性（os.stat 只讀中繼資料，不下載）；讀不到回 0。"""
+    try:
+        return getattr(os.stat(long_path(path)), "st_file_attributes", 0)
+    except OSError:
+        return 0
+
+
 def sha256_of(path, should_stop=None):
     """分塊讀；第一塊之後每讀一塊前問 should_stop，喊停回 None（開場的時間預算，審閱裁定 34）。"""
     h = hashlib.sha256()
@@ -682,8 +690,18 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         """快速模式：每算一個指紋前查剩餘時間（審閱裁定 31）；到了就不再算，這次 incomplete。"""
         return stopper()
 
+    def cloud(rec):
+        """讀內容之前一刻再看一次屬性：只在雲端（RECALL_ON_DATA_ACCESS、OFFLINE…）就不讀，記成 placeholder
+        （manage 第二版第五輪：指紋、內容指紋、快速比對預算都不碰）。"""
+        if _attrs_now(rec["path"]) & PLACEHOLDER_ATTRS:
+            rec["read"] = "placeholder"
+            return True
+        return False
+
     def digest_of(rec):
         size = rec["st"].st_size
+        if cloud(rec):
+            return None
         if out_of_time():
             return None
         if budget["left"] is not None:
@@ -699,7 +717,9 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         return digest  # 算到一半時間到是 None：放棄這個檔，這次 incomplete
 
     def text_of(rec):
-        return None if out_of_time() else content_fp.text_fingerprint(rec["path"], should_stop=stopper)
+        if cloud(rec) or out_of_time():
+            return None
+        return content_fp.text_fingerprint(rec["path"], should_stop=stopper)
 
     def fingerprint(digest, text):
         fp = {"sha256": digest}
@@ -740,11 +760,17 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
                 digest = digest_of(rec)
                 if digest:
                     fps.append(fingerprint(digest, text_of(rec)))
+                elif rec["read"] == "placeholder":
+                    _set_read(e, "placeholder")
             report["unchanged"] += 1
             continue
         digest = digest_of(rec)
         if rec["read"] == "error":
             _set_read(e, "error", rec["error"])
+            continue
+        if rec["read"] == "placeholder":  # 算之前一刻變成只在雲端：不讀，當修改
+            _set_read(e, "placeholder")
+            report["modified"].append(rec["uri"])
             continue
         _set_read(e, "ok")
         if digest is None:  # 讀取預算用完：變了就當修改
@@ -1020,6 +1046,50 @@ def reconcile(vault, sources, turn_id):
             turn.backup(vault, INVENTORY_POSIX, turn_id)
             _write(vault, kept_entries)
     return {"excluded": excluded, "removed": removed}
+
+
+def _under(uri, base):
+    """uri 在 base 底下（不含 base 本身）：回 base 之後的相對段（正斜線），不在回 None。別名與路徑都不分大小寫。"""
+    a, rel = split_uri(uri)
+    ba, brel = split_uri(base)
+    if a.casefold() != ba.casefold() or not brel:
+        return None
+    parts, bparts = rel.split("/"), brel.split("/")
+    if len(parts) <= len(bparts) or [p.casefold() for p in parts[:len(bparts)]] != [p.casefold() for p in bparts]:
+        return None
+    return "/".join(parts[len(bparts):])
+
+
+def move_locations(vault, old_uri, new_uri, turn_id, folder=False):
+    """kb source-edit 搬了一份檔或一個夾之後（manage 第二版，B-095）：直接把條目的位置換成新的，不靠掃描照指紋認搬動
+    （只在雲端的檔沒有指紋，掃描會認成新增加不見）。檔是位置相同的換掉；夾是在它底下的換前綴。任何 status 都換。
+    有改才在清冊的鎖裡備進回合、寫。回改到的條目編號。"""
+    from kb._lib import turn
+    p = _path(vault)
+    if not p.exists():
+        return []
+    key = uri_key(old_uri)
+    with FileLock(p):
+        data = load(vault)
+        hits = []
+        for e in data["entries"]:
+            hit = False
+            for loc in e.get("locations") or []:
+                uri = loc.get("uri", "")
+                if not is_file_uri(uri):
+                    continue
+                if uri_key(uri) == key:
+                    loc["uri"], hit = new_uri, True
+                elif folder:
+                    rest = _under(uri, old_uri)
+                    if rest is not None:
+                        loc["uri"], hit = f"{new_uri}/{rest}", True
+            if hit:
+                hits.append(e["id"])
+        if hits:
+            turn.backup(vault, INVENTORY_POSIX, turn_id)
+            _write(vault, data["entries"])
+    return hits
 
 
 def uri_of(vault, sources, path):

@@ -9,4 +9,4 @@
 - 檔案索引：每份原檔一張檔案卡，位置由程式排。
 - 系統：程式產生的報表與紀錄，客戶可以開。
 
-對話開頭應該有一段「【wiki-with-willy】」開頭的開場段（子代理沒有開場段，這段不適用）。沒有就是程式沒跑起來：告訴客戶，可以幫他查（python --version、where python、py --version），缺的話客戶同意才裝（winget install Python.Python.3.12），裝完請他關掉 Claude Code 重開。在那之前這個對話不改任何檔；查不出或裝不了，請服務人員處理。
+對話開頭應該有一段「【wiki-with-willy】」開頭的開場段（子代理沒有開場段，這段不適用）。沒有就是程式沒跑起來：告訴客戶，可以幫他查（python --version、where python、py --version），缺的話客戶同意才裝（winget install Python.Python.3.12），裝完請他關掉 Claude Code 重開。在那之前這個對話不改任何檔；查不出或裝不了，請服務人員處理。Python 正常就請服務人員看 Claude 的外掛畫面，wiki-with-willy 有沒有裝著、啟用。

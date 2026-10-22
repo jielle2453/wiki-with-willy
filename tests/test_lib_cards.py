@@ -276,7 +276,7 @@ class Todo(Vault):
         orphan.write_text(p.read_text(encoding="utf-8").replace(item["id"], "f-00000000"), encoding="utf-8")
         p.write_text(p.read_text(encoding="utf-8").replace("出處: 客戶原檔", "出處: 別的"), encoding="utf-8")
         todo = self.todo()
-        self.assertEqual(todo["orphans"], ["檔案索引/客戶案件/舊/x-00000000.md"])
+        self.assertEqual(todo["orphans"], [{"path": "檔案索引/客戶案件/舊/x-00000000.md", "reason": "not_in_inventory"}])
         self.assertEqual(len(todo["broken"]), 1)
         self.assertIn("出處該是", todo["broken"][0]["reason"])
         self.assertEqual(todo["broken"][0]["id"], item["id"])  # 製卡者照 header 整張寫回（審閱後補）

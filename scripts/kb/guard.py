@@ -403,6 +403,7 @@ def _original_segment(target, seg):
 
 UNPARSED_REASON = "看不出這個指令會寫到哪，請用檔案工具或告訴我路徑。"
 KB_CALL_REASON = "知識庫腳本"
+CURLY_REASON = "PowerShell 會把彎引號（“ ” ‘ ’）當成引號拆開指令；改用「」或直引號，或改用 Bash 再跑"
 ERROR_REASON = "守門出錯，這次不放行。說「檢查」我看原因"
 
 
@@ -686,7 +687,11 @@ def decide(payload):
         command = ti.get("command") or ""
         root = str(plugin_root())  # 以自己的 __file__ 為準，不信 CLAUDE_PLUGIN_ROOT（S1）
         sources = sources_lib.load(vault) if vault is not None else None  # 先讀：sources.json 壞掉時 kb.py 也不自動放行
-        if cmdparse.is_single_plugin_call(command, root, cwd):
+        if (tool == "PowerShell" and cmdparse.CURLY_QUOTES & set(command)
+                and cmdparse.KB_SCRIPT.rsplit("/", 1)[-1] in command.casefold()):
+            # PowerShell 把彎引號當引號：任何子命令的文字參數都拆得開、能夾帶別的陳述式，直接擋；Bash 裡是普通字，照常認（第四輪）
+            return Decision("deny", "", "curly_quote", CURLY_REASON, [_row(tool, "deny", "", "curly_quote", command)], vault)
+        if cmdparse.is_single_plugin_call(command, root, cwd, tool):
             return Decision("allow", "", "", KB_CALL_REASON, [], vault)
         if vault is None:
             return Decision("pass", "", "", "", [], None)

@@ -310,17 +310,21 @@ class Exclude(Base):
     def test_hidden_with_reason(self):
         r = self.exclude("../raw/行政/薪資", "--kind", "hidden", "--reason", "薪資個資")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.splitlines(), ["已排除「行政/薪資」（不想讓 AI 看到）。之前讀過的已送過雲端；這版還沒有卡和備份要清。",
-                                                 "清冊：0 份已拿掉"])  # hidden 不留痕（審閱裁定 40）  # 清冊題第二行；行政三個 0 位元組檔是同一筆
+        # hidden 不留痕（審閱裁定 40）；清冊題第二行；行政三個 0 位元組檔是同一筆；沒有受影響的綜合卡就接著清（manage 第二版）
+        self.assertEqual(r.stdout.splitlines(), ["已排除「行政/薪資」（不想讓 AI 看到）。卡拿掉 0 張。",
+                                                 "清冊：0 份已拿掉",
+                                                 "清好了：卡 0 張、備份 0 份、暫存 0 份、工作日誌 1 段；"  # 剛記的那一段排除
+                                                 "之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉；以前的回答若沒提到檔名或卡名、只是轉述，認不出來"])
         ex = self.sources()["sources"][0]["excludes"]
-        self.assertEqual(ex, [{"spec": "薪資", "kind": "hidden", "reason": "薪資個資", "added": date.today().isoformat()}])
+        today = date.today().isoformat()
+        self.assertEqual(ex, [{"spec": "薪資", "kind": "hidden", "reason": "薪資個資", "added": today, "purge": today}])
         copies = [d / "files" / ".system" / "sources.json" for d in self.versions_dirs()]
         self.assertTrue(any(c.is_file() for c in copies))
 
     def test_unused_without_reason(self):
         r = self.exclude("../raw/行政/舊檔", "--kind", "unused")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.splitlines()[0], "已排除「行政/舊檔」（用不到）。")
+        self.assertEqual(r.stdout.splitlines()[0], "已排除「行政/舊檔」（用不到）。卡拿掉 0 張。")
         self.assertEqual(self.sources()["sources"][0]["excludes"][0]["reason"], "")
 
     def test_json(self):
@@ -410,7 +414,7 @@ class Remove(Base):
         r = self.remove("客戶案件")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(r.stdout.splitlines()[0],
-                         "已拿掉來源「客戶案件」；你的檔案沒動，從現在起不讀它；說「退回上一版」救得回。")
+                         "已拿掉來源「客戶案件」；你的檔案沒動，從現在起不讀它；卡拿掉 0 張；說「退回上一版」救得回。")
         self.assertEqual([s["alias"] for s in self.sources()["sources"]], ["行政"])
         self.assertTrue((self.raw / "客戶案件" / "a.txt").is_file())
         copies = [d / "files" / ".system" / "sources.json" for d in self.versions_dirs()]
@@ -435,7 +439,7 @@ class Remove(Base):
         r = self.remove("客戶案件", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         data = json.loads(r.stdout)
-        self.assertEqual(set(data), {"id", "alias", "spec", "inventory"})
+        self.assertEqual(set(data), {"id", "alias", "spec", "inventory", "cards_removed"})
         self.assertRegex(data["id"], SRC_ID)
         self.assertEqual((data["alias"], data["spec"]), ("客戶案件", "../raw/客戶案件"))
 
@@ -467,7 +471,7 @@ class Remove(Base):
         r = self.remove(" 客戶案件 ")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(r.stdout.splitlines()[0],
-                         "已拿掉來源「客戶案件」；你的檔案沒動，從現在起不讀它；說「退回上一版」救得回。")
+                         "已拿掉來源「客戶案件」；你的檔案沒動，從現在起不讀它；卡拿掉 0 張；說「退回上一版」救得回。")
         r = self.remove("行政.")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.sources()["sources"], [])
@@ -669,7 +673,9 @@ class FoldersJournal(Base):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         rows = self.program_rows()
         self.assertEqual(len(rows), 2)
-        self.assertEqual((rows[1]["command"], rows[1]["note"]), ("folders exclude", r.stdout.splitlines()[0]))
+        # hidden、沒有綜合卡要重寫：同一個指令接著清，這一段的夾名也遮掉（manage 第二版，D-174）
+        self.assertEqual((rows[1]["command"], rows[1]["note"]),
+                         ("folders exclude", "已排除「（已排除）」（不想讓 AI 看到）。卡拿掉 0 張。"))
         self.assertEqual(rows[1]["changed"], BOTH_CHANGED)
 
     def test_remove_and_include_write_program_lines(self):

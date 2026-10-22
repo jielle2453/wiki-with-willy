@@ -369,6 +369,54 @@ def folders(vault, turn_id):
     return rows
 
 
+MOVE_OPS = ("move", "rename", "trash")
+MOVE_KINDS = ("file", "folder")
+
+
+def record_move(vault, turn_id, op, kind, from_uri, to_uri=None):
+    """kb source-edit 動了客戶的檔或夾（D-175）：versions/<turn>/moves.jsonl 追加一行 {"op","kind","from","to","time"}，
+    記清冊 uri（file://<別名>/<相對路徑>）不記絕對路徑；trash 的 to 是 None。跟 record_folder 同一把 manifest 鎖。"""
+    if op not in MOVE_OPS:
+        raise ValueError(f"搬動只收 {'、'.join(MOVE_OPS)}：{op!r}")
+    if kind not in MOVE_KINDS:
+        raise ValueError(f"搬動的對象只收 {'、'.join(MOVE_KINDS)}：{kind!r}")
+    vdir = turn_dir(vault, turn_id)
+    path = vdir / "moves.jsonl"
+    row = {"op": op, "kind": kind, "from": str(from_uri), "to": str(to_uri) if to_uri else None,
+           "time": _now().strftime("%Y-%m-%dT%H:%M:%S")}
+    with FileLock(vdir / "manifest.jsonl"):
+        lead = ""
+        if path.is_file() and path.stat().st_size > 0:
+            with open(path, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    lead = "\n"
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(lead + json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def moves(vault, turn_id):
+    """讀 moves.jsonl（照記的順序）；壞行跳過並寫一行 hook-errors.log（同 folders）。"""
+    path = Path(vault) / VERSIONS_REL / turn_id / "moves.jsonl"
+    if not path.is_file():
+        return []
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for lineno, ln in enumerate(f, 1):
+            if not ln.strip():
+                continue
+            try:
+                row = json.loads(ln)
+            except ValueError as e:
+                ledger.log_error(vault, f"moves 壞行跳過 {turn_id}:{lineno}: {type(e).__name__}: {e}")
+                continue
+            if isinstance(row, dict) and row.get("op") in MOVE_OPS and row.get("kind") in MOVE_KINDS and row.get("from"):
+                rows.append(row)
+            else:
+                ledger.log_error(vault, f"moves 壞行跳過 {turn_id}:{lineno}: 不是搬動")
+    return rows
+
+
 def zone_of(vault, rel, sources=None):
     """相對路徑落在哪一區，判斷只有這一份（第一輪 L8）；sources 可先載好傳進來，省得每行重讀。"""
     from kb import guard

@@ -34,10 +34,24 @@ class RulesCore(unittest.TestCase):
         line = next(ln for ln in self.text.splitlines() if ln.startswith("- R-13 "))
         self.assertTrue(line.endswith("問最近改了什麼用 kb journal recent --changed 答。"), line)
 
+    def test_r04_trash_through_kb(self):
+        """manage 第二版第 10 點（D-173、I-116）：R-04 刪除改成經 kb 丟資源回收筒，不再請客戶自己刪。"""
+        line = next(ln for ln in self.text.splitlines() if ln.startswith("- R-04 "))
+        self.assertEqual(line, "- R-04 不改客戶原檔。改內容一律另存新檔；搬動、改名走 kb 程式；"
+                               "刪除經 kb 丟資源回收筒，先講後果、她明確說刪才做。")
+
     def test_utf8_lf_single_trailing_newline(self):
         raw = CORE.read_bytes()
         self.assertNotIn(b"\r", raw)
         self.assertTrue(raw.endswith(b"\n") and not raw.endswith(b"\n\n"))
+
+
+
+class SkeletonSentinel(unittest.TestCase):
+    def test_plugin_screen_sentence(self):
+        """manage 第二版第 1 點（B-093 3-3）：哨兵句補「Python 正常就看外掛畫面」那一句。"""
+        text = (ROOT / "skeleton" / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn("Python 正常就請服務人員看 Claude 的外掛畫面，wiki-with-willy 有沒有裝著、啟用", text)
 
 
 if __name__ == "__main__":

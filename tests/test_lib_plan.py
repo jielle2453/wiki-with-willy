@@ -671,7 +671,7 @@ class WithRealVault(unittest.TestCase):
     OLD_KEYS = {"new", "stale", "moved", "duplicates", "orphans", "unreadable", "missing", "skipped", "broken", "pdf_restored",
                 "unlinked", "missing_types", "profile_missing", "profile", "synthesis_new", "synthesis_stale",
                 "synthesis_broken", "entity_drift", "entities", "agenda_recheck", "agenda_unscanned", "agenda_counts",
-                "unbacked"}
+                "unbacked", "purge_pending"}
 
     def setUp(self):
         self.tmp, self.V, self.raw = E.make_entity_vault(with_entities=True)

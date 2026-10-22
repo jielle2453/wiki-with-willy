@@ -295,7 +295,12 @@ def _pending_edit(st):
 
 
 def _result(n, label, do=(), strict=False):
-    return {"n": n, "label": label, "do": list(do), "strict": strict, "fill": []}
+    """plan.cmd 給不出引號時是 None：那一項不給指令、帶 note（同 plan._result）。"""
+    from kb._lib import plan
+    do = list(do)
+    if any(d is None for d in do):
+        return {"n": n, "label": label, "do": [], "strict": strict, "fill": [], "note": plan.NO_CMD_NOTE}
+    return {"n": n, "label": label, "do": do, "strict": strict, "fill": []}
 
 
 def _guard_pending(st, again):

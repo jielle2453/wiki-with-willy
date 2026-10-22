@@ -48,6 +48,12 @@ class Get(unittest.TestCase):
         for key in ("fingerprint_max_bytes", "changes_quick_hash_budget_bytes", "changes_quick_seconds"):
             self.assertTrue(data.get(f"_why_{key}"), key)
 
+    def test_relocate_sample_max(self):
+        """manage 第二版第 9 點：folders relocate 抽樣 40 份，帶 _why。"""
+        data = json.loads((ROOT / "config" / "defaults.json").read_text(encoding="utf-8"))
+        self.assertEqual(config.get(self.vault, "relocate_sample_max"), 40)
+        self.assertTrue(data.get("_why_relocate_sample_max"))
+
     def test_client_override_wins(self):
         (self.vault / ".system" / "config.json").write_text(
             json.dumps({"schema_version": 1, "big_change_synthesis_max": 3}), encoding="utf-8")

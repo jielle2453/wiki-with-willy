@@ -7,6 +7,7 @@ PDF 走選配 pypdfium2（裁定 36）：文字層寫暫存檔，掃描頁轉 PN
 temp 是重解析點就不清（裁定 17）。暫存檔名只用驗過格式的編號，否則用指紋前 12 碼（裁定 16）。
 守門對 kb.py 一律放行，所以抽字前先做守門同一套判斷（實作疑義裁定 8）：guard.classify 是 Z10／Z10b 或條目 excluded、
 Z11、Z1／Z6／Z7／Z8 都拒；來源根以下的段像密碼或金鑰也拒（總資料夾內部豁免，D-081）；這四種不寫待處理。
+讀前看一次目前的屬性：只在雲端（OneDrive）就照 placeholder 回，不讀內容（manage 第二版，B-095）。
 找不到原檔（含 status missing）只印一行、不寫待處理（實作疑義裁定 2）。其他讀不到的 exit 3，條目在清冊就寫一條 unreadable。
 原檔被別的程式鎖住、沒權限（OSError）→ 一句話 exit 3、不寫待處理（裁定 18）；--json 時所有失敗都印 JSON。
 任何情況不印檔案內容到終端機（D-022）。
@@ -60,6 +61,17 @@ class Refused(Exception):
 def add_arguments(sub):
     sub.add_argument("target", help="清冊編號（f-…）、uri（file://別名/相對路徑）或磁碟路徑；總資料夾從目前目錄往上找")
     sub.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
+
+
+RECALL_ON_DATA_ACCESS = 0x400000  # OneDrive 只在雲端：讀內容會觸發下載（manage 第二版，B-095）
+
+
+def _attrs(path):
+    """目前的檔案屬性（os.stat 只讀中繼資料，不下載）；讀不到回 0。"""
+    try:
+        return getattr(os.stat(long_path(path)), "st_file_attributes", 0)
+    except OSError:
+        return 0
 
 
 def _is_reparse(path):
@@ -135,6 +147,8 @@ def gate(vault, sources, entry, path):
             raise Refused(CREDENTIAL, None)
     if entry is not None and entry.get("read") == "credential":
         raise Refused(CREDENTIAL, None)
+    if _attrs(path) & RECALL_ON_DATA_ACCESS:  # 讀前看一次目前的屬性，不靠清冊的 read（B-095：清冊過時會整份下載）
+        raise Refused(PLACEHOLDER, PLACEHOLDER)
     if entry is not None and entry.get("read") == "placeholder":
         raise Refused(PLACEHOLDER, PLACEHOLDER)
     if entry is not None and entry.get("read") == "too_large":

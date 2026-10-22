@@ -294,13 +294,21 @@ def set_card(vault, entity_id, value, turn_id):
 
 def mounts(vault, data=None):
     """檔案索引/ 全部卡的檔頭 實體 → {實體名稱: [{"id","path","title","fp","date"}]}。只算清冊條目 active 的檔案卡
-    （同編號多張取第一張）與 active 的實體；名稱照登記的（別名、合併過的轉到目標）；fp 是內容指紋（沒有取指紋）前 12 碼。"""
-    from kb._lib import cards, inventory
+    （同編號多張取第一張）與 active 的實體；名稱照登記的（別名、合併過的轉到目標）；fp 是內容指紋（沒有取指紋）前 12 碼。
+    B-069：原檔不見（missing）、「是不是刪了」還沒答（missing_file 待處理 open）的照算掛載，客戶答之前卡先留著。"""
+    from kb._lib import cards, inventory, pending
     data = data if data is not None else load(vault)
     try:
-        active = {e.get("id") for e in inventory.load(vault)["entries"] if e.get("status") == "active"}
+        entries = inventory.load(vault)["entries"]
     except ValueError:
-        active = set()
+        entries = []
+    try:
+        asking = {(i.get("file_ids") or [None])[0] for i in pending.load(vault)["items"]
+                  if i.get("kind") == "missing_file" and i.get("status") == "open"}
+    except ValueError:
+        asking = set()
+    active = {e.get("id") for e in entries
+              if e.get("status") == "active" or (e.get("status") == "missing" and e.get("id") in asking)}
     groups, _broken = cards._scan_groups(vault)
     out = {}
     for cid in sorted(groups):

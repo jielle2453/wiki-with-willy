@@ -4,6 +4,8 @@ schema 見 specs/2026-10-12-守門.md。排除的 spec 相對該來源根；兩�
 壞 JSON 直接丟例外，讓 hook 走出錯路徑（deny，fail closed）。
 骨架與來源登記：load_raw 給 kb folders 讀原始 dict（Sources 類是展開後的，寫回要用原始；寫回由 folders 在自己的鎖裡做）；
 new_id、RESERVED_ALIASES。條目不是物件、excludes 不是清單也丟 ValueError（N6）。
+排除列選填 purge（manage 第二版，D-174）："pending" 是「不想讓 AI 看到」排除後殘留還沒清，清完改成清完的日期；舊列沒有就當沒有要清的。
+PURGE_PENDING、pending_purges 給 cards todo 與 kb folders purge 找還沒清的那幾條。
 """
 import json
 import secrets
@@ -34,7 +36,8 @@ class Sources:
                 if ex_root is None:
                     self.unresolved.append({"alias": alias, "spec": ex.get("spec", ""), "id": src_id, "kind": "exclude"})
                     continue
-                excludes.append({"root": ex_root, "kind": ex.get("kind", "hidden"), "reason": ex.get("reason", "")})
+                excludes.append({"root": ex_root, "kind": ex.get("kind", "hidden"), "reason": ex.get("reason", ""),
+                                 "spec": ex.get("spec", ""), "purge": ex.get("purge")})
             self.entries.append({"id": src_id, "alias": alias, "root": root, "excludes": excludes})
 
     def lookup(self, path):
@@ -85,3 +88,12 @@ def new_id(existing_ids):
         new = "src-" + secrets.token_hex(2)
         if new not in taken:
             return new
+
+
+PURGE_PENDING = "pending"
+
+
+def pending_purges(sources):
+    """還沒清的 hidden 排除：[{"alias", "spec", "root"}]（照登記順序）。"""
+    return [{"alias": src["alias"], "spec": ex["spec"], "root": ex["root"]} for src in sources.entries
+            for ex in src["excludes"] if ex.get("kind") == "hidden" and ex.get("purge") == PURGE_PENDING]

@@ -341,11 +341,16 @@ def _interpreter_ok(token):
     return token.lower() in _BARE_INTERP
 
 
-def is_single_plugin_call(command, plugin_root, cwd=None):
+CURLY_QUOTES = frozenset(chr(c) for c in range(0x2018, 0x2020))  # ‘’‚‛“”„‟
+
+
+def is_single_plugin_call(command, plugin_root, cwd=None, tool=None):
     """整句是不是只有「python <plugin>/scripts/kb.py …」這一個呼叫。串接、導向、子運算式、反引號都不算；
     引號外出現任何反斜線也不算（N-a：kb.py 路徑在引號內，用不到跳脫）。"""
     if "`" in command or "$(" in command:
         return False
+    if tool != "Bash" and CURLY_QUOTES & set(command):
+        return False  # PowerShell 把彎引號當引號，outside_quotes 看不出來；Bash 裡是普通字（manage 第二版第四輪）；不知道是哪個照 PowerShell
     bare = outside_quotes(command)
     if bare is None or "\\" in bare or any(ch in SHELL_META for ch in bare):
         return False

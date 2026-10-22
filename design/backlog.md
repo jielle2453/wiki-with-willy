@@ -134,7 +134,7 @@
 | B-419 | 2026-10-23 | open | Claude Code 桌面版在使用者送出一句話時，會重讀它讀寫過的檔；那份檔若在 OneDrive 而且設成只在雲端，就被抓回本機（manage 第二版補確認第 9 步；kb 的指令與 hook 都沒讀）。真實使用時 AI 讀原檔走 `kb convert`（只在雲端的不讀），影響小；要不要在 README 或 manage 的 OneDrive 說明講一句，等 B-095 一帶再看 | manage 第二版補確認 |
 | B-420 | 2026-10-23 | open | manage 第二版第八輪測試的低風險項：路徑遮罩左邊沒邊界（「舊客戶案件/私人」也整欄換）；purge-pending.json 型別錯會噴未攔截的 traceback；turns/*.json 的鎖只有 purge 拿；推算先拿掉才記編號，被殺掉會漏；只有 c- 編號的綜合卡舊版不在清理範圍，退回 purge 那回合可能還原出懸空 c- 行 | manage 第二版測試 |
 | B-421 | 2026-10-23 | open | D-075 大改動攔截（一句話改到第 10 張既有綜合卡就擋）使用者想改成只提醒、不擋：擋的時候前 10 張已經改了、也防不住誤會範圍；大批更新已有口述由程式算範圍（D-146）與 card-maker 派工前先問（D-198）。使用者之後自己修，不在第 (6) 題 | 第 (6) 題討論 |
-| B-423 | 2026-10-23 | open | 守門對直譯器程式碼（`python -c`、`node -e`、`ruby -e`、`awk`、`python x.py <路徑>`）的寫檔偵測是字串樣式，繞法多（`m='w'; open(p,m)`、`__import__('os').remove`），底版就沒擋；要不要改成「直譯器碰到知識庫保護區的路徑一律擋」 | 密碼與守門測試 F8 |
+| B-423 | 2026-10-23 | open | 守門對直譯器程式碼（`python -c`、`node -e`、`ruby -e`、`awk`、`python x.py <路徑>`）的寫檔偵測是字串樣式，繞法多（`m='w'; open(p,m)`、`__import__('os').remove`），底版就沒擋；要不要改成「直譯器碰到知識庫保護區的路徑一律擋」。同類（第二輪 N3）：附著寫法 `sort -o<路徑>`、`find -fprint*`（對 AI 產出是退步）、`sdiff -o`、sed 的 `w`、awk 寫檔、動詞加引號（`"rm" x`、`$'rm' x`）、PowerShell `& 'Remove-Item'`、`[scriptblock]::Create` | 密碼與守門測試 F8、N3 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

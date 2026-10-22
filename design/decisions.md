@@ -1222,6 +1222,7 @@
 - 為什麼：現在還沒有客戶，先不讓 kb 程式第一次寫進客戶的夾（守門與退回要另外測），produce 題維持小（使用者定）；客戶自己拖的搬動，清冊與卡本來就跟得上（D-094）。
 - 放棄了：produce 先做只收 `AI 產出/` 的 `source-edit move`；把 manage 第二版的搬檔改名整個提前。
 - 重談條件：第一位客戶試跑排在 manage 第二版之前，且常要把定稿放進自己的夾。
+- **2026-10-22 補**（manage 第二版實作的 I-116 grep 查到）：manage 第二版做了 `kb source-edit move`，「定稿放到王宅那個夾」改成定稿後走 manage 搬（從 AI 產出搬出，D-175、D-176）；produce SKILL 那兩句（草稿與定稿的分辨、定稿放哪的原則）與 ingest `references/commands.md` 兩處「夾裡的東西不幫客戶搬」跟著改，併進 manage 第二版的「可以動」。
 
 ## D-165 改既有的用本機改副本；做新的先推薦 Claude artifacts、說明清楚；改原本 PowerPoint 分三級
 - 日期：2026-10-21

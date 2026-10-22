@@ -309,8 +309,8 @@ def _plan_stages(command, bodies):
         same = by_sub[sub]
         code = ""
         if verb in cmdparse.INTERPRETERS or verb in cmdparse.SHELL_WRAPPERS:
-            marks = [m for _s, t in same for m in cmdparse.data_marks(t)]
-            code = "\n".join(bodies[m] for m in marks if m < len(bodies))
+            # 整句的內文都算它的程式碼：here-string／heredoc 可能先放進變數再餵（$c = @'…'@ 換行 $c | python -，測試 28）
+            code = "\n".join(bodies)
             code += "\n" + "\n".join(t for s, t in same if s < stage)
         bare = cmdparse.outside_quotes(cmdparse.strip_marks(text))
         out.append({"sub": sub, "stage": stage, "text": text, "verb": verb, "words": words,
@@ -383,8 +383,9 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
                     p = _norm(raw, stage_base)
                     if p is not None:
                         out["body_reads"].append(p)
-                        if stage_write and (verb in cmdparse.INTERPRETERS or verb in cmdparse.SHELL_WRAPPERS):
-                            own.append(p)  # 直譯器的程式碼要寫：內文裡的路徑也是目標
+        if stage_write and (verb in cmdparse.INTERPRETERS or verb in cmdparse.SHELL_WRAPPERS):
+            for body in bodies:  # 直譯器的程式碼要寫：整句內文裡的路徑都是目標（經變數餵的也算）
+                own.extend(p for p in (_norm(raw, stage_base) for raw in body_paths(body)) if p is not None)
         expect_cd, has_read_path = False, False
         verbs, flags, stage_globs, redirect_targets = [], [], [], []
         for tok, quoted, glob_out, after_redirect in tokens:
@@ -519,6 +520,7 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         else:
             out["unparsed"] = True
     out["cd_targets"] -= cd_written
+    out["final_base"] = base  # 這段指令跑完時的效用 cwd（指令替換遞迴用）
     return out
 
 
@@ -695,9 +697,7 @@ def _touches_output(info, bodies, vault_n, sources, tool):
         if base is not None and inside(base, vault_n) and classify(base, vault_n, sources)[0] == "Z3":
             return True
         if verb in cmdparse.INTERPRETERS or verb in cmdparse.SHELL_WRAPPERS:
-            marks = [m for q in info["stages"] if q["sub"] == plan["sub"] for m in q["marks"]]
-            for m in marks:
-                body = bodies[m] if m < len(bodies) else ""
+            for body in bodies:  # 整句的內文（經變數餵直譯器的也算，測試 28）
                 if "ai 產出" in body.casefold():
                     return True
                 for raw in body_paths(body):
@@ -745,7 +745,21 @@ def ruled_readable(vault, sources, path, ids=None):
     return entry is not None and entry.get("status") == "active" and entry.get("id") in ids
 
 
-def _shell_tool(tool, command, cwd, vault, sources):
+SUBST_DEPTH_MAX = 4
+
+
+def _inner_commands(clean, bodies, powershell):
+    """會被執行的內層指令（測試 28）：回 [(在 clean 裡的位置, 內文)]；heredoc／here-string 會展開的內文裡的也算（位置是記號）。
+    拆不出來丟 cmdparse.Unbalanced。"""
+    found = cmdparse.substitutions(clean, powershell)
+    for idx, body in enumerate(bodies):
+        if idx < len(bodies.expands) and bodies.expands[idx]:
+            pos = clean.find(cmdparse.DATA_MARK.format(idx))
+            found += [(max(pos, 0), s) for _p, s in cmdparse.substitutions(body, powershell, literal=True)]
+    return found
+
+
+def _shell_tool(tool, command, cwd, vault, sources, depth=0):
     powershell = tool == "PowerShell"
     clean, bodies = cmdparse.split_bodies(command, powershell=powershell)
     flat = cmdparse.strip_marks(clean)
@@ -754,6 +768,27 @@ def _shell_tool(tool, command, cwd, vault, sources):
 
     def deny(zone, code, reason):
         return Decision("deny", zone, code, reason, [_row(tool, "deny", zone, code, command)], vault)
+
+    def unparsed():
+        return Decision("deny", "", "unparsed", UNPARSED_REASON, [_row(tool, "deny", "", "unparsed", command)], vault)
+
+    # 指令替換與展開（$(…)、反引號、<(…)、PowerShell 的 (…)、{…}）裡是會執行的指令：外層是 echo、ls 也一樣，
+    # 照同一套遞迴判斷，效用 cwd 用替換出現的位置之前算出來的那個；拆不出來照 unparsed 擋（測試 28，D-186）
+    try:
+        inner = _inner_commands(clean, bodies, powershell)
+    except cmdparse.Unbalanced:
+        return unparsed()
+    for pos, text in inner:
+        if not text.strip():
+            continue
+        if depth >= SUBST_DEPTH_MAX:
+            return unparsed()
+        base = _analyze(clean[:pos], cwd, vault_n, tool, bodies)["final_base"]
+        d = _shell_tool(tool, text, base or cwd, vault, sources, depth + 1)
+        if d.decision == "deny":
+            return deny(d.zone, d.reason_code, d.reason)
+        if base is None and _analyze(*cmdparse.split_bodies(text, powershell=powershell)[:1], cwd, vault_n, tool)["has_write"]:
+            return unparsed()  # 效用 cwd 推不出來（cd $X 之後）又要寫：看不出寫到哪
 
     info = _analyze(clean, cwd, vault_n, tool, bodies)
     paths = cmdparse.extract_paths(flat, cwd, powershell=powershell)
@@ -877,7 +912,7 @@ def _shell_tool(tool, command, cwd, vault, sources):
             return deny(zone, code, reason)
     if info["has_write"] and (info["unparsed"] or cmdparse.unresolved_paths(flat, powershell=powershell)):
         # 寫入那段找不到目標，或有帶 $變數／%變數% 展不開的路徑（第九輪 Z3）：看不出會寫到哪，一律擋
-        return Decision("deny", "", "unparsed", UNPARSED_REASON, [_row(tool, "deny", "", "unparsed", command)], vault)
+        return unparsed()
     if saw_unresolved:
         rows = _unresolved_rows(tool, sources, command)
     return Decision("pass", "", "", "", rows, vault)

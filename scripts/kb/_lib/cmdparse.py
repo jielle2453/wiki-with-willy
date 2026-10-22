@@ -87,7 +87,7 @@ def split_bodies(command, powershell=False):
     引號裡的 << 不算；內文沒有結束行就收到最後。"""
     if powershell:
         return _split_herestrings(command)
-    out, bodies, pending = [], [], []
+    out, bodies, pending = [], Bodies(), []
     i, n, quote = 0, len(command), None
     while i < n:
         ch = command[i]
@@ -124,6 +124,8 @@ def split_bodies(command, powershell=False):
             if word:
                 pending.append((word, strip_tabs, len(bodies)))
                 bodies.append("")
+                # <<EOF 的內文會展開 $(…) 與反引號；結束字有引號或反斜線（<<'EOF'、<<"EOF"、<<\EOF）才是純資料
+                bodies.expands.append(not any(c in command[k:end] for c in "'\"\\"))
                 out.append(" " + DATA_MARK.format(len(bodies) - 1) + " ")
                 i = end
                 continue
@@ -174,7 +176,7 @@ def _shell_word(command, k):
 def _split_herestrings(command):
     """PowerShell：@' … '@、@" … "@ 的內文換成記號。照引號與註解走（字串裡、# 註解裡的 @' 不是 here-string），
     結束行是開頭就是 '@ 或 "@ 的那一行；沒有結束行就收到最後。"""
-    out, bodies, quote, i, n = [], [], None, 0, len(command)
+    out, bodies, quote, i, n = [], Bodies(), None, 0, len(command)
     while i < n:
         ch = command[i]
         if quote:
@@ -202,6 +204,7 @@ def _split_herestrings(command):
             j = command.find(close, start - 1)
             body = command[start:j if j >= 0 else n].rstrip("\r")
             bodies.append(body)
+            bodies.expands.append(m.group(1) == '"')  # @" "@ 會展開 $(…)，@' '@ 是純資料
             out.append(" " + DATA_MARK.format(len(bodies) - 1) + " ")
             i = (j + len(close)) if j >= 0 else n
             continue
@@ -210,6 +213,97 @@ def _split_herestrings(command):
         out.append(ch)
         i += 1
     return "".join(out), bodies
+
+
+class Bodies(list):
+    """split_bodies 的內文清單；expands[n] 是第 n 段會不會展開 $(…)（bash 沒加引號的 heredoc、PowerShell 的 @" "@）。"""
+
+    def __init__(self):
+        super().__init__()
+        self.expands = []
+
+
+class Unbalanced(ValueError):
+    """指令替換的括號或反引號沒收尾：拆不出來，呼叫端照 unparsed 擋。"""
+
+
+def _group(text, i, close, powershell):
+    """text[i] 是開括號之後的第一個字：找對應的 close（照引號與巢狀），回 (內文, 收尾之後的位置)；沒收尾丟 Unbalanced。"""
+    opener = {")": "(", "}": "{"}[close]
+    depth, quote, j, n = 1, None, i, len(text)
+    esc = "`" if powershell else "\\"
+    while j < n:
+        ch = text[j]
+        if quote:
+            if ch == esc and quote == '"' and j + 1 < n:
+                j += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch == esc and j + 1 < n:
+            j += 2
+            continue
+        elif ch in "\"'":
+            quote = ch
+        elif ch == opener:
+            depth += 1
+        elif ch == close:
+            depth -= 1
+            if depth == 0:
+                return text[i:j], j + 1
+        j += 1
+    raise Unbalanced(text[i:i + 40])
+
+
+def substitutions(text, powershell=False, literal=False):
+    """會被執行的內層指令（測試 28，D-186）：回 [(位置, 內文)]，位置是在 text 裡開始的地方（給呼叫端算那時的效用 cwd）。
+    Bash：$(…)、反引號、<(…)、>(…)；雙引號裡的 $(…) 與反引號照樣執行，單引號裡不算。
+    PowerShell：$(…)、@(…)、(…) 子運算式、{…} 指令區塊（${名稱} 是變數，不算）；雙引號裡只有 $(…)，單引號裡不算。
+    literal：heredoc／here-string 的內文，引號只是字（只找 $(…)，bash 另找反引號）。括號或反引號沒收尾丟 Unbalanced。"""
+    out, quote, i, n = [], None, 0, len(text)
+    esc = "`" if powershell else "\\"
+    while i < n:
+        ch = text[i]
+        if not literal and quote == "'":
+            if ch == "'":
+                if powershell and text.startswith("''", i):
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if ch == esc and i + 1 < n:
+            i += 2
+            continue
+        if text.startswith("$(", i) or (not quote and not literal and (
+                (powershell and text.startswith("@(", i)) or (not powershell and text.startswith(("<(", ">("), i)))):
+            inner, end = _group(text, i + 2, ")", powershell)
+            out.append((i, inner))
+            out.extend((i + 2 + p, s) for p, s in substitutions(inner, powershell))
+            i = end
+            continue
+        if ch == "`" and not powershell:
+            j = i + 1
+            while j < n and not (text[j] == "`" and text[j - 1] != "\\"):
+                j += 1
+            if j >= n:
+                raise Unbalanced(text[i:i + 40])
+            out.append((i, text[i + 1:j]))
+            i = j + 1
+            continue
+        if powershell and not quote and not literal and ch in "({" and not (ch == "{" and i > 0 and text[i - 1] == "$"):
+            inner, end = _group(text, i + 1, ")" if ch == "(" else "}", powershell)
+            out.append((i, inner))
+            out.extend((i + 1 + p, s) for p, s in substitutions(inner, powershell))
+            i = end
+            continue
+        if not literal:
+            if ch == '"' and quote == '"':
+                quote = None
+            elif ch in "\"'" and not quote:
+                quote = ch
+        i += 1
+    return out
 
 
 def data_marks(text):
@@ -521,8 +615,9 @@ def _walk(command, cwd, powershell=False):
         for text in brace_expand(token):  # 第十輪 A1：{a,b} 先展開再抽
             for cand in _candidates(text, quoted, after_redirect, after_cd, powershell or verb in SWITCH_VERBS,
                                     write_base=(base if writing and not first else None)):
-                # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對
-                for form in dict.fromkeys((cand, _ESCAPE.sub("", cand))):
+                # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對；
+                # PowerShell 的 \ 不是跳脫字元，只比原樣（測試 28：C:\…\網站密碼.xlsx 多產假路徑被擋）
+                for form in dict.fromkeys((cand,) if powershell else (cand, _ESCAPE.sub("", cand))):
                     p = normalize(form, base)
                     if _ABS_START.match(form) or _relative_resolves(form, p):
                         yield form, p

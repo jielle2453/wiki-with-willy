@@ -648,9 +648,9 @@
     "command": "python \"<PLUGIN>/scripts/kb.py\" version @(Remove-Item x)"
    },
    "cwd": "<V>",
-   "expect": "pass",
+   "expect": "deny",
    "來源": "守門-測試.md 第二輪 第24條",
-   "note": "S2 acceptance: @() -> pass"
+   "note": "S2 acceptance: @() -> pass｜密碼與守門（測試 28）：@(…) 裡的 Remove-Item 會執行，遞迴判斷；看不出刪哪裡 → unparsed"
   },
   {
    "tool": "PowerShell",
@@ -8062,6 +8062,236 @@
    "expect": "pass",
    "來源": "密碼與守門 收尾 security-review（主 session 自查；子代理被分類器停下）",
    "note": "只切目錄（B-093 (b)）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo $(rm \"<V>/系統/待處理.md\")"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：$(…) 裡是要執行的指令"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat <(rm \"<V>/系統/待處理.md\")"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：<(…) 程序替換"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat `rm \"<V>/系統/待處理.md\"`"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：反引號"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls $(rm \"<V>/系統/待處理.md\")"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：列檔名的外殼不能放行裡面的指令"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "printf '%s' $(python -c \"open('<V>/系統/x','w')\")"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：$(…) 裡的直譯器寫檔"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat <<EOF\n$(rm \"<V>/系統/待處理.md\")\nEOF"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：沒加引號的 heredoc 內文會展開 $(…)"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat <<EOF\n`rm \"<V>/系統/待處理.md\"`\nEOF"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：沒加引號的 heredoc 內文會展開反引號"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo \"$(rm \"<V>/系統/待處理.md\")\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：雙引號裡的 $(…) 照樣執行"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat >(rm \"<V>/系統/待處理.md\")"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：>(…) 程序替換"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo $(rm -rf \"<V>/.system\")"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：刪 .system"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat <<'EOF'\n$(rm \"<V>/系統/待處理.md\")\nEOF"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：<<'EOF' 的內文是純資料（對照）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo '$(rm \"<V>/系統/待處理.md\")'"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：單引號裡不展開（對照）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo \"$(date)\" > \"<OUT>/d.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：平常的 $(date)（對照）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo $(rm x"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：括號沒收尾拆不出來，照 unparsed 擋"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Write-Output $(Remove-Item '<V>\\系統\\x')"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：PowerShell $(…)"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Write-Host (Remove-Item '<V>\\系統\\x')"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：PowerShell (…) 子運算式"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Test-Path (Remove-Item '<V>\\系統\\x')"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：Test-Path 外殼"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem '<V>\\系統' | Where-Object { Remove-Item '<V>\\系統\\x' }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：{…} 指令區塊"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Write-Output \"$(Remove-Item '<V>\\系統\\x')\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：雙引號裡的 $(…) 照樣執行"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Write-Output '$(Remove-Item '<V>\\系統\\x')'"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：單引號裡不展開（對照）"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "$c = @'\nopen(r\"<V>\\系統\\x\",\"w\").write(\"1\")\n'@\n$c | python -"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "2：here-string 經變數餵給直譯器"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "$c = @'\nRemove-Item '<V>\\系統\\x'\n'@\nInvoke-Expression $c"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "2：here-string 經變數餵給 Invoke-Expression"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "$c = @\"\n$(Remove-Item '<V>\\系統\\x')\n\"@\nWrite-Output $c"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
+   "note": "1：@\" \"@ 會展開 $(…)"
   }
  ]
 }

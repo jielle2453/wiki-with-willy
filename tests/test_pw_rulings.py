@@ -122,6 +122,7 @@ class Guard(Base):
         item = self.add(_pw.WEB)
         self.assertEqual(self.decide("Read", web), "allow")
         self.assertEqual(self.decide("Bash", f'cat "{web.as_posix()}"'), "pass")
+        self.assertEqual(self.decide("PowerShell", f"Get-Content '{web}'"), "pass")  # 測試 28 第 3 件：反斜線路徑不產跳脫變體
         self.assertEqual(self.decide("Read", bank), "deny")
         self.assertEqual(self.decide("Bash", f'grep -r x "{folder}"'), "deny")
         self.assertEqual(self.decide("Grep", folder), "deny")

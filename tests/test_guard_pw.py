@@ -213,5 +213,28 @@ class SecurityReviewRound(Base):
         self.assertDecision("Bash", f'cd "{adm}" && pwd', "pass")
 
 
+class Round28(Base):
+    """測試 28（a2 轉）：指令替換與展開、here-string 經變數餵直譯器；語料同一批在 guard_corpus（來源標測試 28）。"""
+
+    def test_substitutions_are_commands(self):
+        v = self.V.as_posix()
+        t = f'"{v}/系統/待處理.md"'
+        for tool, cmd in (("Bash", f"echo $(rm {t})"), ("Bash", f"cat <(rm {t})"), ("Bash", f"cat `rm {t}`"),
+                          ("Bash", f"ls $(rm {t})"), ("Bash", f"cat <<EOF\n$(rm {t})\nEOF"),
+                          ("Bash", f'cd "{self.out.as_posix()}" && echo $(rm ../vault/系統/待處理.md)'),
+                          ("Bash", f'echo $(cd "{self.out.as_posix()}"); rm 系統/待處理.md'),
+                          ("PowerShell", f"Write-Output $(Remove-Item '{v}/系統/x')"),
+                          ("PowerShell", f"Write-Host (Remove-Item '{v}/系統/x')"),
+                          ("PowerShell", f"Get-ChildItem '{v}/系統' | Where-Object {{ Remove-Item '{v}/系統/x' }}")):
+            self.assertDecision(tool, cmd, "deny")
+        for tool, cmd in (("Bash", f"cat <<'EOF'\n$(rm {t})\nEOF"), ("Bash", f"echo '$(rm {t})'"),
+                          ("Bash", f'echo "$(date)" > "{self.out.as_posix()}/d.txt"')):
+            self.assertDecision(tool, cmd, "pass")
+
+    def test_herestring_through_variable_into_interpreter(self):
+        v = str(self.V)
+        self.assertDecision("PowerShell", f"$c = @'\nopen(r\"{v}\\系統\\x\",\"w\").write(\"1\")\n'@\n$c | python -", "deny")
+
+
 if __name__ == "__main__":
     unittest.main()

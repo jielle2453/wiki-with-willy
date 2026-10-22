@@ -16,7 +16,7 @@ from kb._lib.paths import plugin_root  # noqa: E402
 
 CURLY = [chr(c) for c in range(0x2018, 0x2020)]
 KB_IN_VAULT = "知識庫裡的夾不能設成不讀；要不讓 AI 看到，先搬到登記的來源夾再設"
-CURLY_DENY = "指令裡有彎引號，PowerShell 會拆開；夾名有彎引號請她先改名"
+CURLY_DENY = "PowerShell 會把彎引號（“ ” ‘ ’）當成引號拆開指令；改用「」或直引號，或改用 Bash 再跑"
 
 
 def kb(*args, cwd=None):
@@ -91,21 +91,44 @@ class ExcludeFindForm(Base):
 # ---------- 第 2 條：守門的彎引號 ----------
 
 class GuardCurly(Base):
-    def test_kb_call_with_curly_quotes_denied(self):
+    """第四輪修：只在 PowerShell 擋（它把彎引號當引號，任何文字參數都拆得開）；Bash 裡彎引號是普通字，照常放行。"""
+
+    def commands(self):
         kbpy = os.path.join(str(plugin_root()), "scripts", "kb.py")
-        for tool in ("Bash", "PowerShell"):
-            for ch in CURLY:
-                with self.subTest(tool=tool, ch=hex(ord(ch))):
-                    command = f'python "{kbpy}" folders exclude "客戶案件/a{ch}; calc; {ch}b" --kind unused'
-                    self.assertFalse(cmdparse.is_single_plugin_call(command, plugin_root(), str(self.V)))
-                    d = guard.decide({"tool_name": tool, "tool_input": {"command": command}, "cwd": str(self.V)})
-                    self.assertEqual((d.decision, d.reason), ("deny", CURLY_DENY))
+        out = [f'python "{kbpy}" folders exclude "客戶案件/a{ch}; calc; {ch}b" --kind unused' for ch in CURLY]
+        out.append(f'python "{kbpy}" turn note "把\u201c舊備忘\u201d搬到 2026"')
+        return out
+
+    def test_powershell_denied(self):
+        for command in self.commands():
+            with self.subTest(command=command[-40:]):
+                self.assertFalse(cmdparse.is_single_plugin_call(command, plugin_root(), str(self.V), tool="PowerShell"))
+                d = guard.decide({"tool_name": "PowerShell", "tool_input": {"command": command}, "cwd": str(self.V)})
+                self.assertEqual((d.decision, d.reason), ("deny", CURLY_DENY))
+
+    def test_bash_allowed(self):
+        for command in self.commands():
+            with self.subTest(command=command[-40:]):
+                self.assertTrue(cmdparse.is_single_plugin_call(command, plugin_root(), str(self.V), tool="Bash"))
+                d = guard.decide({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.V)})
+                self.assertEqual(d.decision, "allow")
+
+    def test_unknown_tool_treated_as_powershell(self):
+        command = self.commands()[0]
+        self.assertFalse(cmdparse.is_single_plugin_call(command, plugin_root(), str(self.V)))
 
     def test_plain_kb_call_still_allowed(self):
         kbpy = os.path.join(str(plugin_root()), "scripts", "kb.py")
-        d = guard.decide({"tool_name": "Bash", "tool_input": {"command": f'python "{kbpy}" folders list'},
-                          "cwd": str(self.V)})
-        self.assertEqual(d.decision, "allow")
+        for tool in ("Bash", "PowerShell"):
+            d = guard.decide({"tool_name": tool, "tool_input": {"command": f'python "{kbpy}" folders list'},
+                              "cwd": str(self.V)})
+            self.assertEqual(d.decision, "allow")
+
+    def test_shell_args_still_refuse_curly(self):
+        """不知道 AI 會用哪個 shell：程式給的指令照樣不給彎引號（第四輪修第 5 點，不改）。"""
+        self.assertIsNone(plan.shell_arg("a\u201cb"))
+        from kb._lib import source_edit
+        self.assertIsNone(source_edit.shell_arg("a\u201cb"))
 
 
 # ---------- 第 3 條：purge 還留著夾名與卡標題 ----------

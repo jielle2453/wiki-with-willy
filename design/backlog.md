@@ -117,6 +117,7 @@
 | B-403 | 2026-10-22 | open | 低：`kb output save` 算同名加 (2) 到複製之間沒鎖，兩個對話同時存同名檔可能互蓋 | produce security-review |
 | B-404 | 2026-10-22 | open | 低：produce 測試第一輪 skill-reviewer 與 code-review 剩下的：note 沒有「以後報價單照這份做」（設範本）的路，客戶這樣說要靠 produce 自己判；新建 `AI 產出/<型別>/` 夾沒記資料夾帳（空夾會被 delete-outputs 收掉，目前沒有後果） | produce 測試第一輪、裁定 19、21 |
 | B-405 | 2026-10-22 | open | 低：produce 測試第二輪剩下的：修訂作者實跑寫成「AI」（規定「AI 助理」、第一輪是 Claude），驗修訂仍先試 `python -c` 被擋（N-5）；`_why` 不看用了誰，Office 失敗也說 LibreOffice 沒有執行成功（N-2）；`to_pdf` 先刪舊 PDF 才檢查有沒有轉換器（N-3）；`output link` 的備份在清冊鎖外（N-4）；重裝前沒清 `ready.json`（N-7）；`unpack`／`run` 的範圍仍是整個 `.system/temp`、`_URL` 用 `$` 可能放過結尾換行（N-8，未實跑） | produce 測試第二輪 |
+| B-406 | 2026-10-22 | deferred | 解加密的 Word、Excel、PowerPoint（D-182 這版只解 PDF）：候選純 Python 寫 AES 與 OLE 拆檔、或選配 msoffcrypto-tool 跟 produce 的工具一起裝（要驗智慧型應用程式控制擋不擋） | 密碼與守門 |
 
 ## 補漏洞型延伸（落在既有位置，不加分類）
 

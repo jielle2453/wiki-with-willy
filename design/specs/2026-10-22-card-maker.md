@@ -9,7 +9,7 @@
 ## 決策
 （還沒定。相關的既有決策：D-022、D-053、D-100、D-104、D-132、D-134、D-135、D-156、D-161、D-074、D-075、D-147。）
 
-**開工條件**：密碼與守門發行之後（同改 `cards.py`、`plan.py`、`inventory.py`，一題一題來）；下面的 spike 報告收進 `design/reports/`。
+**開工條件**：密碼與守門發行之後（同改 `cards.py`、`plan.py`、`inventory.py`，一題一題來）；spike 報告已收（`design/reports/card-maker-spike.md`），桌面版三步做完才寫定本 spec。確認與 build 併在一起、一起發行（D-133 補）。
 
 ### 例句（設計 session 2026-10-22 列，使用者 10-22 定範圍；林小姐：接案室內設計師；服務人員：建置那天在場的人）
 card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那天服務人員打 build 指令），ingest 照程式的 `plan` 看份數多才派 card-maker。所以下表是「份數多時 ingest 怎麼應對」，客戶看得到的部分；看不到的在下一節。
@@ -61,3 +61,4 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - 2026-10-22：查官方文件（子代理與 hook），寫 spike 任務檔九題加桌面版三步；文件沒寫死要實測的：SubagentStart 塞的規則子代理看不看得到、子代理裡 PostToolUse 打回回不回得去、背景子代理回報會不會觸發 UserPromptSubmit（會的話 turn hook 多開回合）、按停止與關視窗時子代理停不停。等 a2 排時間。
 - 2026-10-22：spike CLI 部分跑完，報告收進 `design/reports/card-maker-spike.md`。要點：SubagentStart 加 matcher 能把 core.md 給 card-maker（B-032 有解）；守門、驗卡在子代理照跑；回合歸屬看寫的那一刻（客戶中途說話，之後的卡算進那句）；主對話派完回合就結束，子代理的 kb 呼叫被記成終端機、D-156 的停止偵測碰不到；I-035 在 CLI 成立；中斷靠卡檔判斷接得上；每份 12～18 秒（並行 3 個牆鐘 5～8 秒）；子代理每份拿清單要跑整份 todo、常被權限與守門誤擋；子代理不抽日程。桌面版三步待使用者做（要先加新來源夾）。
 - 2026-10-22：a2 確認：守門誤擋三則收進密碼與守門（d4153e6）；`PYTHONIOENCODING=… python` 不符合 `Bash(python *)` 是權限規則，歸這題（子代理怎麼叫 kb、或 skeleton 的 allow 規則）；`hooks/turn.py` 可進這題的可動範圍（密碼與守門改 `_lib/turn.py`、`hooks/stop.py`，這題實作在它發行後，照順序不同時跑）。
+- 2026-10-22：兩題實作測試分開、確認與 build 併在一起（D-133 補）；寫本 spec 前先做 spike 的桌面版三步。

@@ -92,7 +92,7 @@ build 指令 `disable-model-invocation`：模型不代叫，客戶或服務人�
 | 可逆 | 回合備份 | 快照 |
 | 內容 | 加資料夾、不讀某夾、搬檔、改名、資料夾搬了 | 建置五步、升級、備份、還原、搬家、換電腦、換帳號 |
 
-**build 五步的內容（D-051、D-052）：**
+**build 五步的內容（D-051、D-052）：** 一個指令 `build` 照順序走這五步，程式記做到哪、下次接著做（D-190）；下表的 build-setup 等是步驟名，不是指令；環境檢查在 setup 之前（D-133、D-189）。
 
 | 步 | 誰 | 做什麼 |
 |---|---|---|
@@ -210,7 +210,7 @@ llm-wiki-j/
 │  ├─ lint/SKILL.md + references/{content,system,questions}.md
 │  └─ manage/SKILL.md + references/{sources,files,ops}.md
 ├─ commands/                          全部 disable-model-invocation
-│  ├─ build-setup.md  build-inventory.md  build-sample.md  build-cards.md  build-finish.md
+│  ├─ build.md                        建置五步一個指令（D-190）
 │  └─ upgrade.md  backup.md  restore.md  relocate.md  migrate.md  account.md
 ├─ hooks/{hooks.json,session.py,turn.py,guard.py,output_log.py}
 ├─ agents/card-maker.md

@@ -84,7 +84,7 @@
 | `skills/note/` | 第三個 skill（日程題，D-131、D-132）：描述涵蓋 note 的全部（偏好、日程與承諾、糾正、決定與裁示、「把這個記下來」、加型別與改型別名），本文做日程、事類狀態、改規則（設定檔六節與型別改名、合併、刪除，note 改規則題）與改知識（口述、糾正四種、別名、裁示，note 改知識題），憑證例外明說還記不起來、記下剛才的答案記成推算；`references/correction.md` 是口述怎麼寫、糾正怎麼分辨、別名、成功句與拒絕句；`references/ruling.md` 是兩種裁示、規則與個案的分界、憑證例外怎麼說；`references/preference.md` 是改規則的 20 句例句、兩種意思怎麼問、門檻的話怎麼解釋、成功句與拒絕句怎麼說；`references/agenda.md` 是種類怎麼判、日期怎麼換算、`kb agenda`／`kb entity progress`／`kb asks` 的參數、成功句與拒絕句；`references/record-answer.md` 是「把剛才的答案記下來」記成推算（`kb finding add`，D-151）；`tests/evals/note.json` 20 句，`test_skill_note` 守形狀 |
 | `skills/answer/` | 第四個 skill（D-151～D-161）：問自己的資料（現況、找檔、數字與統計、比較、日程、最近改了什麼與聊過什麼、有沒有要我確認的），只讀；本文分辨、原則（D-153、D-155、D-159、D-160…）與骨架；`references/find.md` 是 lookup、cards list、agenda list、journal recent、asks 的參數與輸出怎麼讀、起點三種；`references/verify.md` 是粗估、核對、`kb tally`、對不上三種（redo、pending add conflict、原檔改過）、短標；`tests/evals/answer.json` 20 句，`test_skill_answer` 守形狀 |
 | `skills/produce/` | 第五個 skill（D-162～D-170）：做成文件（新做、照舊的寫新的、改原檔、轉格式、把回答存成檔、草稿與定稿），本文分辨、原則（各帶理由與編號）、骨架；`references/draft.md` 是草稿放哪與檔名、短標、核對、剛回答過的、定稿與跨對話；`references/make.md` 是用途對成品、推薦線上文件講清楚三件事、本機做檔的 Windows 坑、改 Word／Excel／PowerPoint、沒有工具的說法、程式的話轉白話；`tests/evals/produce.json` 20 句，`test_skill_produce` 守形狀 |
-| `commands/` | 尚未。build 五步與 upgrade、backup、restore、relocate、migrate、account（D-028），沒有 manage 指令 |
+| `commands/` | 尚未。build（一個指令走五步，D-190）與 upgrade、backup、restore、relocate、migrate、account（D-028），沒有 manage 指令 |
 | `agents/` | 尚未 |
 | `templates/` | `card.md` 檔案卡範本（檔頭中文鍵名，D-101，第二版）、`synthesis.md` 綜合卡範本；報告範本尚未 |
 | `skeleton/` | 客戶端總資料夾骨架：`CLAUDE.md`（身分與五區、沒有開場段就不改檔的哨兵句，D-080、D-088，`test_budget` 量）、`.claude/settings.json`（空殼 deny 清單）、四區的 `.gitkeep`（只為 git 留空夾，`kb init` 不複製）；`CLAUDE.md` 第一段多一句「工具之間的過場也是給客戶看的，一律繁體中文、不唸步驟編號」（B-064） |

@@ -104,9 +104,22 @@ def _canonical(p):
         return p
 
 
+def _drive_of(cwd):
+    """cwd 的磁碟代號（C:）；cwd 沒給或沒有代號就用程式目前所在的磁碟。"""
+    if cwd:
+        base, _ = _text_forms(cwd)
+        m = re.match(r"^([a-zA-Z]:)", base)
+        if m:
+            return m.group(1)
+    return os.path.splitdrive(os.getcwd())[0]
+
+
 def normalize(p, cwd):
-    """相對路徑接 cwd；統一正斜線；去尾斜線；Windows 上小寫。回 str。"""
+    """相對路徑接 cwd；統一正斜線；去尾斜線；Windows 上小寫。回 str。
+    B-022（密碼與守門）：Windows 上以 \\ 或 / 開頭、不是 \\\\ UNC、也不是 Git Bash /c/ 的路徑，補上目前所在的磁碟代號。"""
     p, drive_rel = _text_forms(p)
+    if os.name == "nt" and p.startswith("/") and not p.startswith("//"):
+        p = (_drive_of(cwd) or "") + p
     if drive_rel or not _is_abs(p):
         if cwd:
             base, _ = _text_forms(cwd)

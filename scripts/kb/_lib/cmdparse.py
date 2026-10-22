@@ -29,10 +29,19 @@ WRITE_WORDS = re.compile(
     r"set-itemproperty|export-csv|export-clixml|invoke-expression|start-process)\b",
     re.IGNORECASE,
 )
-# 程式碼裡的寫入（python -c、inline script）：引號內也算
+# 程式碼裡的寫入（python -c、heredoc 餵給直譯器、inline script）：引號內也算。
+# 密碼與守門（D-186 (c)）：直譯器的程式碼只看這個，不再看裡面的 > 與寫入動詞，所以這裡要收齊開檔寫、刪、搬、建、開子行程
 WRITE_CODE = re.compile(
-    r"(open\([^)]*['\"][wax+]|\.write_text|\.write_bytes|writealltext|writeallbytes|shutil\.|os\.remove|"
-    r"os\.rename|os\.unlink|os\.makedirs|os\.mkdir|\bunlink\(|writefilesync|unlinksync|renamesync|mkdirsync)",
+    r"(open\([^)]*['\"][wax+]|\.open\(\s*['\"][wax+]|\bmode\s*=\s*['\"][wax+]|"
+    r"(?:zipfile|tarfile|io|codecs|gzip|bz2|lzma)\.\w*\(?[^)]*['\"][wax]|\bZipFile\([^)]*['\"][wax]|"
+    r"\.write_text|\.write_bytes|\.(?:unlink|rmdir|mkdir|touch|rename|replace|symlink_to|hardlink_to|chmod)\(|"
+    r"writealltext|writeallbytes|appendalltext|writealllines|appendalllines|\[io\.file\]::(?:delete|move|copy|create|open)|"
+    r"shutil\.|os\.(?:remove|rename|replace|unlink|makedirs|mkdir|rmdir|removedirs|truncate|link|symlink|chmod|system|popen|startfile)|"
+    r"\bunlink\(|subprocess|\bpopen\b|"
+    r"writefile|appendfile|unlinksync|renamesync|mkdirsync|rmsync|rmdirsync|copyfile|createwritestream|truncatesync|"
+    r"\bfs\.(?:rm|cp|rename|unlink|mkdir|rmdir|copy|symlink|link)\w*\(|child_process|execsync|spawnsync|"
+    r"\bopen\s*\(?[^)\n]*['\"]\s*(?:\+?[>|]|>>)|"
+    r"file_put_contents|fwrite|\bfopen\([^)]*['\"][wax+]|File\.(?:write|open\([^)]*['\"][wax])|FileUtils)",
     re.IGNORECASE,
 )
 # 會把引號裡的字串當指令跑的包裝：出現時整句（含引號內）都看
@@ -41,12 +50,169 @@ WRAPPER = re.compile(
     r"python3?|py|node|perl|ruby|php)\b",
     re.IGNORECASE,
 )
+# 密碼與守門（D-186 (c)）：包裝分兩種。殼（引號裡是指令）照舊整段看 > 與寫入動詞；直譯器（引號裡、heredoc 裡是程式碼）只看 WRITE_CODE
+SHELL_WRAPPERS = {"bash", "sh", "zsh", "dash", "ksh", "cmd", "powershell", "pwsh", "eval", "exec", "source", ".",
+                  "iex", "invoke-expression", "start-process", "saps", "start", "wsl", "busybox"}
+INTERPRETERS = {"python", "python3", "py", "node", "perl", "ruby", "php", "pythonw", "deno", "bun", "osascript", "cscript",
+                "wscript", "java", "dotnet", "r", "rscript", "lua", "tclsh", "julia"}
+# 已知只讀的指令（D-186 補、D-185）：這一段只有導向才是寫；參數裡出現寫入動詞（grep md、echo rm）是資料
+READONLY_VERBS = {"cat", "type", "more", "less", "head", "tail", "grep", "egrep", "fgrep", "rg", "findstr", "select-string",
+                  "sls", "wc", "sort", "uniq", "cut", "diff", "cmp", "fc", "file", "stat", "ls", "dir", "gci", "get-childitem",
+                  "tree", "find", "get-content", "gc", "test-path", "get-item", "gi", "get-itemproperty", "gp", "resolve-path",
+                  "rvpa", "split-path", "join-path", "measure-object", "select-object", "where-object", "format-table",
+                  "format-list", "out-string", "out-host", "echo", "printf", "write-output", "write-host", "pwd", "get-location",
+                  "gl", "test", "[", "realpath", "readlink", "basename", "dirname", "md5sum", "sha1sum", "sha256sum",
+                  "get-filehash", "od", "xxd", "hexdump", "strings", "jq", "true", "false", "nl", "column", "tac", "rev",
+                  "where", "which", "get-command", "date", "get-date", "whoami", "hostname", "convertfrom-json",
+                  "convertto-json", "sleep", "start-sleep"}
+# find 帶這些就不是只讀（會跑別的指令或刪檔）
+FIND_ACTIONS = re.compile(r"(?:^|\s)-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)\b", re.IGNORECASE)
+# 列檔名（D-185）：find 只准帶這些
+FIND_LIST_FLAGS = {"-name", "-iname", "-type", "-maxdepth", "-mindepth", "-print"}
+LIST_ONLY_VERBS = {"ls", "dir", "tree", "find", "gci", "get-childitem"}
+CD_ONLY_VERBS = {"cd", "pushd", "popd", "set-location", "sl", "chdir", "push-location", "pop-location", "pwd", "get-location", "gl"}
+# 指令前綴：後面那個字才是動詞
+VERB_PREFIXES = {"sudo", "time", "nohup", "env", "nice", "command", "builtin", "exec", "timeout", "stdbuf", "ionice", "&", "!",
+                 "then", "do", "else", "if", "while", "until", "{", "("}
+DATA_MARK = "__KBDATA{}__"
+_DATA_MARK = re.compile(r"__KBDATA(\d+)__")
+_HEREDOC_OP = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\?([A-Za-z_][\w.-]*))")
+
+
+def split_bodies(command, powershell=False):
+    """D-186 (a)：heredoc（<<WORD、<<'WORD'、<<"WORD"、<<-WORD）與 PowerShell here-string（@' … '@、@" … "@）的內文拿出來當資料。
+    回 (clean, bodies)：clean 裡每段內文換成一個記號 __KBDATAn__（heredoc 連 << 運算子一起換），bodies[n] 是內文。
+    引號裡的 << 不算；內文沒有結束行就收到最後。"""
+    if powershell:
+        return _split_herestrings(command)
+    out, bodies, pending = [], [], []
+    i, n, quote = 0, len(command), None
+    while i < n:
+        ch = command[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                out.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if ch in "\"'":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if command.startswith("<<", i) and not command.startswith("<<<", i):
+            m = _HEREDOC_OP.match(command, i)
+            if m:
+                word = m.group(2) or m.group(3) or m.group(4)
+                pending.append((word, bool(m.group(1)), len(bodies)))
+                bodies.append("")
+                out.append(" " + DATA_MARK.format(len(bodies) - 1) + " ")
+                i = m.end()
+                continue
+        if ch == "\n" and pending:
+            out.append("\n")
+            i += 1
+            for word, strip_tabs, idx in pending:
+                lines = []
+                while i < n:
+                    j = command.find("\n", i)
+                    line = command[i:] if j < 0 else command[i:j]
+                    i = n if j < 0 else j + 1
+                    if (line.lstrip("\t") if strip_tabs else line).rstrip("\r") == word:
+                        break
+                    lines.append(line)
+                bodies[idx] = "\n".join(lines)
+            pending = []
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), bodies
+
+
+_HERESTRING = re.compile(r"@(['\"])[ \t]*\r?\n(.*?)\r?\n\1@", re.DOTALL)
+
+
+def _split_herestrings(command):
+    bodies = []
+
+    def repl(m):
+        bodies.append(m.group(2))
+        return " " + DATA_MARK.format(len(bodies) - 1) + " "
+    return _HERESTRING.sub(repl, command), bodies
+
+
+def data_marks(text):
+    """一段指令裡的內文記號編號。"""
+    return [int(x) for x in _DATA_MARK.findall(text)]
+
+
+def strip_marks(text):
+    return _DATA_MARK.sub(" ", text)
+
+
+def verb_of(words):
+    """一段的動詞：跳過前綴（sudo、time、env、timeout N…）與變數設定（X=1、$x =），回小寫、去路徑與 .exe；沒有回空字串。"""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        low = w.lower()
+        if not w or low in VERB_PREFIXES or re.match(r"^\w+=", w):
+            i += 1
+            if low == "timeout" and i < len(words) and re.match(r"^\d", words[i]):
+                i += 1
+            continue
+        if w.startswith("$") and i + 1 < len(words) and words[i + 1] == "=":
+            i += 2
+            continue
+        if w.startswith("$") and w.endswith("="):
+            i += 1
+            continue
+        base = low.replace("\\", "/").rsplit("/", 1)[-1]
+        return base[:-4] if base.endswith(".exe") else base
+    return ""
+
+
+def stage_kind(verb, text, code=""):
+    """D-186：一段指令的種類。text 是這段（記號已換回空白）、code 是要當程式碼看的內文（這段的 heredoc、或管線前面餵過來的）。
+    回 "write"（寫：參數都是寫的目標）、"read"（只讀或不知道會不會寫的執行檔）。導向另外算。"""
+    bare = outside_quotes(text)
+    unquoted = bare if bare is not None else text
+    if verb in READONLY_VERBS and not (verb == "find" and FIND_ACTIONS.search(unquoted)):
+        return "read"
+    if verb in SHELL_WRAPPERS:
+        scope = text + "\n" + code
+        return "write" if (REDIRECT.search(scope) or WRITE_WORDS.search(scope) or WRITE_CODE.search(scope)) else "read"
+    if verb in INTERPRETERS:
+        return "write" if (WRITE_CODE.search(text) or WRITE_CODE.search(code) or WRITE_WORDS.search(unquoted)) else "read"
+    if WRITE_WORDS.search(unquoted) or WRITE_CODE.search(text) or WRITE_CODE.search(code):
+        return "write"
+    return "read"
+
+
+def list_only(verb, words):
+    """D-185：這段只列檔名（ls、dir、tree、Get-ChildItem；find 只帶 -name／-type／-maxdepth）或只切目錄、印目前目錄。"""
+    if verb in CD_ONLY_VERBS:
+        return True
+    if verb not in LIST_ONLY_VERBS:
+        return False
+    if verb == "find":
+        flags = [w.lower() for w in words if w.startswith("-")]
+        return all(f in FIND_LIST_FLAGS for f in flags)
+    return True
 REDIRECT = re.compile(r">")
 # 引號外不能出現的字元：串接（; & |）、導向（< >）、換行、子運算式（( )，含 $( 與 PowerShell 的 @( ）；反引號在引號裡也會執行
 SHELL_META = set(";&|<>()\n\r")
 _TOKEN_BREAK = set(";|&<>()")
 _URL = re.compile(r"^(?!file:)\w+://")
-_OPT_PREFIX = re.compile(r"^--?[\w-]+=")
+_OPT_PREFIX = re.compile(r"^(?:--?[\w-]+=|(?:of|if)=)")  # dd 的 of=、if= 也是路徑（第十輪 A4，密碼與守門補）
 _FILENAME = re.compile(r"\.\w{1,6}$")
 # 第九輪 Z4：不存在的裸 token 只有這些副檔名才算新檔（v1.2、example.com 不算）
 _NEW_FILE_EXT = re.compile(r"\.(?:md|txt|docx|doc|xlsx|xls|csv|pdf|pptx|json|yaml|yml|ini|log|html|png|jpg|jpeg|zip)$", re.IGNORECASE)
@@ -234,14 +400,41 @@ def _relative_resolves(cand, path):
         return False
 
 
+# 直譯器與殼放程式碼的旗標（D-186 (c)）：後面那個參數是程式碼，不是路徑，只抽裡面的絕對路徑
+CODE_FLAGS = {"-c", "-e", "--eval", "-p", "--print", "-r", "-command", "/c", "/k"}
+
+
+def code_paths(text):
+    """程式碼或 heredoc 內文裡的絕對路徑（D-186 (c)(d)）：引號裡的整段（路徑可含空白），與引號外的 C:\\…、C:/…、/c/…。
+    相對路徑不抽（程式碼裡的字串多半不是路徑；以前整段程式碼被當成相對路徑，會分到實體夾，B-093 3-2d、card-maker (f)）。"""
+    found = []
+    for m in re.finditer(r"([\"'])([^\"'\n]+)\1", text):
+        s = m.group(2).strip()
+        if _ABS_START.match(s) and not s.startswith("~") and not _URL.match(s):
+            found.append(s)
+    for m in ABS_PATH.finditer(text):
+        s = m.group(0).rstrip(",;:)'\"")
+        if not any(s in f for f in found):
+            found.append(s)
+    return [f for f in found if "$" not in f and "%" not in f]
+
+
 def _walk(command, cwd, powershell=False):
-    """依序產出 (原字串, 正規化路徑)，cd 之後的相對路徑接 cd 的目標。powershell：單字母 /x 一律當旗標（PowerShell 沒有 Git Bash 寫法）。"""
+    """依序產出 (原字串, 正規化路徑)，cd 之後的相對路徑接 cd 的目標。powershell：單字母 /x 一律當旗標（PowerShell 沒有 Git Bash 寫法）。
+    直譯器與殼的 -c、-e、-Command 後面那個參數是程式碼：只抽裡面的絕對路徑（D-186 (c)）。"""
     cleaned = DISCARD_OUTPUT.sub(" ", command)
     base, expect_cd_target, after_cd, verb = cwd, False, False, ""
     writing = is_write(command)  # 寫入指令裡像檔名的裸 token（cp /tmp/a 新檔.md）也當路徑，要經區判斷（骨架與來源登記第八輪）
+    prev = ""
     for token, quoted, after_redirect, first, _qchar in _tokens(cleaned):
+        code_arg = (verb_of([verb]) in INTERPRETERS or verb_of([verb]) in SHELL_WRAPPERS) and prev.lower() in CODE_FLAGS and not first
+        prev = token
         if first:
             verb = token.lower().replace("\\", "/").rsplit("/", 1)[-1]
+        if code_arg:
+            for cand in code_paths(token):
+                yield cand, normalize(cand, base)
+            continue
         # 第十一輪保底：{ 之前的資料夾一律是候選，經區判斷（Z10／Z10b／上層）；排在展開之後，展開命中的理由（readonly_source）比前綴夾具體
         head = brace_head(token, powershell) if "{" in token and not (first and not expect_cd_target) else None
         head_p = normalize(head, base) if head is not None else None

@@ -1,6 +1,7 @@
 """Stop 工作日誌入口（D-083）：AI 答完一句話，把這回合那一行補完：結果、做了、改了、done。
 
 結果取 payload 的 last_assistant_message，壓成一行、遮值再截（D-061、D-086）；沒有這個鍵（舊版 Claude Code）寫固定句，不解析 transcript。
+回合記了 secret_shown（這句回答給了密碼，密碼與守門）就只記固定句，不碰回答。
 日誌寫成後才 set_done；md 渲染失敗只寫 log，不擋 set_done。
 做了：模型叫過 kb turn note 就用它（note_by ai），否則程式地板句（note_by program，D-084）；改了：這回合的 manifest。
 只收第一次 Stop：回合檔 done 已是 true 就不做；turns/<sid>.json 不存在也不做，不退到 current.json（會記到別的對話）。
@@ -21,6 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
 NO_MESSAGE = "（這版 Claude Code 沒給最後回答）"
+SECRET_RESULT = "（這句回答有密碼，沒記）"  # 密碼與守門：回合記了 secret_shown（kb unlock get、讀「可以讀」的密碼檔）
 
 
 def main():
@@ -43,8 +45,10 @@ def main():
         if not data or data.get("done"):
             return
         message = payload.get("last_assistant_message")
-        if isinstance(message, str):  # cut_result 先抽段、壓成一行、遮值、再截（M2）
-            result, truncated = journal.cut_result(message, config.get(vault, "journal_result_max"))
+        if data.get("secret_shown"):
+            result, truncated = SECRET_RESULT, False
+        elif isinstance(message, str):  # cut_result 先抽段、壓成一行、遮值、再截（M2）
+            result, truncated = journal.cut_result(message, config.get(vault, "journal_result_max"), vault)
         else:
             result, truncated = NO_MESSAGE, False
         note, note_by, changed = journal.finish_fields(vault, data)

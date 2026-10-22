@@ -11,7 +11,7 @@ from tests._guard_fixture import KB, ROOT, make_vault, payload
 from kb import guard  # noqa: E402
 
 OUTPUT_REASON = "AI 產出的檔用 kb output save 放進來；要轉 PDF 或看版面用 kb office"
-SOURCE_REASON = "客戶原檔只讀；要改先用 kb office copy 拿一份副本"
+SOURCE_REASON = "客戶原檔的夾只讀；要放新檔進去用 kb source-edit move（或請客戶自己放），要改內容先用 kb office copy 拿副本"  # B-093 (e)
 
 
 class Base(unittest.TestCase):
@@ -38,21 +38,25 @@ class ShellOutput(Base):
                           ("Bash", f'python x.py "{v}/AI 產出/a.xlsx"'),
                           ("Bash", 'node build.js "AI 產出/報告/進度報告.docx"'),
                           ("Bash", f'soffice --headless --convert-to pdf "{v}/AI 產出/a.docx"'),
-                          ("Bash", f'cat "{v}/AI 產出/a.docx"'),
-                          ("Bash", 'ls "AI 產出"'),
-                          ("Bash", 'cat "AI 產出"/*.docx'),
                           ("Bash", 'cd "AI 產出" && node build.js out.docx'),
                           ("Bash", 'node build.js --out="AI 產出/新夾/x.docx"'),
                           ("Bash", "node build.js AI\\ 產出/新夾/x.docx"),
                           ("Bash", 'OUT="AI 產出/x.docx" node build.js'),
                           ("PowerShell", 'node build.js "AI 產出\\新夾\\x.docx"'),
-                          ("PowerShell", f'Get-Content "{v}/AI 產出/a.docx"'),
                           ("Bash", f'python x.py "{v}/AI 產出/a.xlsx" && echo done'),
                           ("Bash", f'python "{KB}" output save "{v}/AI 產出/a.docx" --to "AI 產出/b.docx"; echo x')):
             with self.subTest(cmd=cmd):
                 d = self.decide(tool, cmd)
                 self.assertEqual((d.decision, d.zone, d.reason_code, d.reason), ("deny", "Z3", "output_shell", OUTPUT_REASON))
                 self.assertEqual(len(d.ledger_rows), 1)
+
+    def test_known_read_only_commands_are_reads(self):
+        """D-186 補：已知只讀指令（cat、ls、Get-Content）的參數當讀放行。"""
+        v = self.V.as_posix()
+        for tool, cmd in (("Bash", f'cat "{v}/AI 產出/a.docx"'), ("Bash", 'ls "AI 產出"'), ("Bash", 'cat "AI 產出"/*.docx'),
+                          ("PowerShell", f'Get-Content "{v}/AI 產出/a.docx"'), ("PowerShell", f'Get-Content -Path:"{v}/AI 產出/a.docx"')):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.decide(tool, cmd).decision, "pass")
 
     def test_single_kb_call_still_allowed(self):
         v = self.V.as_posix()
@@ -163,8 +167,7 @@ class SecurityReview(Base):
 
     def test_param_colon_forms(self):
         v = self.V.as_posix()
-        for tool, cmd in (("PowerShell", f'Get-Content -Path:"{v}/AI 產出/a.docx"'),
-                          ("PowerShell", 'node b.js -Out:"AI 產出/x.docx"'),
+        for tool, cmd in (("PowerShell", 'node b.js -Out:"AI 產出/x.docx"'),
                           ("Bash", 'tool.exe /out:"AI 產出/x.docx"')):
             with self.subTest(cmd=cmd):
                 d = self.decide(tool, cmd)

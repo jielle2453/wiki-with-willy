@@ -69,12 +69,39 @@ class Hook(unittest.TestCase):
         r = run_hook(payload("Read", self.raw / "客戶案件" / "a.txt", self.V))
         self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 2)
 
-    def test_bad_sources_json_bash_is_silent_but_logs(self):
+    def test_bad_sources_json_bash_denies_and_logs(self):
+        """密碼與守門 D-186 第 4 點、驗收 13：知識庫裡的 Bash／PowerShell 守門出錯也擋（以前不表態等於放行）。"""
         (self.V / ".system" / "sources.json").write_text("{bad json", encoding="utf-8")
-        r = run_hook(payload("Bash", "git status", self.V))
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout, "")
+        for tool in ("Bash", "PowerShell"):
+            r = run_hook(payload(tool, "git status", self.V))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(decision_of(r)[1:], ("deny", "守門出錯，這次不放行。說「檢查」我看原因"))
         self.assertTrue((self.V / ".system" / "hook-errors.log").exists())
+        rows = (self.V / ".system" / "ledger.tsv").read_text(encoding="utf-8").splitlines()[1:]
+        self.assertTrue(all(r.split("\t")[2] == "deny" and r.split("\t")[4] == "guard_error" for r in rows), rows)
+
+    def test_guard_error_outside_vault_stays_silent(self):
+        r = run_hook(payload("Bash", "git status", self.tmp / "nowhere"))
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_hooks_json_blocks_on_failure(self):
+        """D-186 第 4 點：hook 本身掛掉、逾時、起不來時 Claude Code 擋下（onFailure: block，Claude Code 2.1.295 起）。"""
+        cfg = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        hooks = [h for group in cfg["hooks"]["PreToolUse"] for h in group["hooks"]]
+        self.assertTrue(hooks)
+        for h in hooks:
+            self.assertEqual(h.get("onFailure"), "block", h)
+
+    def test_ledger_head_is_masked(self):
+        """密碼與守門 8：擋下時 ledger 記的指令開頭先遮值（--value、密碼：…）。"""
+        cmd = f'python “{ROOT}/scripts/kb.py” unlock save --kind 記下的密碼 --name 門 --value "zq-7731-secret"'
+        r = run_hook(payload("PowerShell", cmd, self.V))
+        self.assertEqual(decision_of(r)[1], "deny")
+        r = run_hook(payload("Bash", f'echo "密碼：zq-7731-secret" > "{self.V.as_posix()}/系統/x.txt"', self.V))
+        self.assertEqual(decision_of(r)[1], "deny")
+        text = (self.V / ".system" / "ledger.tsv").read_text(encoding="utf-8")
+        self.assertEqual(len(text.splitlines()), 3, text)
+        self.assertNotIn("zq-7731-secret", text)
 
     def test_garbage_stdin_outside_vault_is_silent_and_logged_to_temp(self):
         """P2：找不到 vault 時任何錯誤一律不表態，只寫 %TEMP% 的錯誤檔（驗收 29）。"""

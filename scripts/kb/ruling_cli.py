@@ -1,9 +1,11 @@
-"""kb ruling add／remove／recheck／list（note 改知識第 3 點，D-149、D-150）。
+"""kb ruling add／remove／recheck／decline／list（note 改知識第 3 點，D-149、D-150；密碼與守門第 6 點，D-183、D-181）。
 
 裁示只准這裡與 entities 寫（經 _lib/rulings）：每次在 rulings.json 的鎖裡讀改寫（CLI 等 30 秒，等不到「等不到鎖，沒有寫入」
 exit 3），寫前備進回合，寫完重渲染 系統/裁示.md。拒絕的第一行就是原因、exit 3；成功句與拒絕句一字不差。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。人讀輸出不印 r-…、f-… 編號，要編號取 --json；
 list 最後一行印有效裁示幾條（封頂交 lint，D-150）。
+密碼與守門：add --kind 可以讀 --file <清冊編號、uri 或路徑>… [--label <這一種叫什麼>]（掛清冊條目、只放讀那一份）；
+decline --file <…> [--quiet]（客戶說不要讀，或 AI 判斷不是同一種：清冊記 credential_declined，之後不再問）。
 """
 import argparse
 import json
@@ -20,8 +22,11 @@ CHANGED = [{"path": rulings.RULINGS_POSIX, "action": "modify"}, {"path": rulings
 
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="ruling_command", metavar="<子子命令>", required=True)
-    ad = subs.add_parser("add", help="記一條個案裁示", description="客戶說「只有這件這樣」：口述為準掛實體或卡，不採用掛卡。")
-    ad.add_argument("--kind", required=True, help="種類：口述為準、不採用")
+    ad = subs.add_parser("add", help="記一條個案裁示",
+                         description="客戶說「只有這件這樣」：口述為準掛實體或卡，不採用掛卡，可以讀掛檔名像密碼的那一份檔。")
+    ad.add_argument("--kind", required=True, help="種類：口述為準、不採用、可以讀")
+    ad.add_argument("--file", action="append", help="可以讀的那份檔：清冊編號（f-…）、uri 或路徑，可以重複")
+    ad.add_argument("--label", help="可以讀：客戶怎麼稱呼這一種（例：網站密碼表），之後同一種的新檔會問一句")
     ad.add_argument("--entity", action="append", help="掛的實體名稱，可以重複（口述為準才用）")
     ad.add_argument("--card", action="append", help="掛的檔案卡編號（f-…），可以重複")
     ad.add_argument("--text", required=True, help="客戶的原話")
@@ -29,8 +34,12 @@ def add_arguments(sub):
     rm.add_argument("id", help="裁示編號（r-…）")
     rc = subs.add_parser("recheck", help="原檔新版看過了，裁示照舊", description="客戶說還是照舊：記下掛的卡現在的版本，不再問。")
     rc.add_argument("id", help="裁示編號（r-…）")
+    dc = subs.add_parser("decline", help="檔名像密碼的這份不要讀，之後不再問",
+                         description="客戶說不要讀（或判斷不是之前說可以讀的那一種）：清冊記下來，之後不再問。")
+    dc.add_argument("--file", required=True, help="那份檔：清冊編號（f-…）、uri 或路徑")
+    dc.add_argument("--quiet", action="store_true", help="沒有問客戶（判斷不是同一種）：只記、不印句子")
     ls = subs.add_parser("list", help="列出有效的裁示", description="列出有效的裁示，最後一行是條數。")
-    for p in (ad, rm, rc, ls):
+    for p in (ad, rm, rc, dc, ls):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -43,7 +52,7 @@ def _out(as_json, lines, payload):
 
 
 def _targets(vault, it):
-    return rulings.targets(it, agenda.card_titles(vault))
+    return rulings.targets(it, agenda.card_titles(vault), rulings.file_names(vault))
 
 
 def _kind(it):
@@ -52,7 +61,7 @@ def _kind(it):
 
 def _add(vault, args, as_json, conversation, turn_id):
     it = rulings.add(vault, args.kind, [n.strip() for n in args.entity or []], [c.strip() for c in args.card or []],
-                     args.text, turn_id)
+                     args.text, turn_id, files=[f.strip() for f in args.file or []], label=args.label)
     targets = _targets(vault, it)
     line = f"已記下裁示（{_kind(it)}）：{targets}" + (f"—{it['text']}" if it["kind"] == "ruled_out" else "")
     journal_cli.record_program_or_warn(vault, f"記下裁示（{_kind(it)}）：{targets}", CHANGED, "ruling add", conversation)
@@ -76,19 +85,32 @@ def _recheck(vault, args, as_json, conversation, turn_id):
     return 0
 
 
+DECLINE_LINE = "記下了：「{}」不讀，之後不再問"
+DECLINE_QUIET = "記好了，不再列"
+
+
+def _decline(vault, args, as_json, conversation, turn_id):
+    entry = rulings.decline(vault, args.file.strip(), turn_id)
+    name = rulings.file_name(entry)
+    journal_cli.record_program_or_warn(vault, f"不讀：「{name}」", [{"path": ".system/inventory.json", "action": "modify"}],
+                                       "ruling decline", conversation)
+    _out(as_json, [DECLINE_QUIET if args.quiet else DECLINE_LINE.format(name)], {"id": entry["id"], "name": name})
+    return 0
+
+
 def _list(vault, as_json):
     items = [r for r in rulings.load(vault)["rulings"] if rulings.is_active(r)]
     if as_json:
         print(json.dumps({"rulings": items}, ensure_ascii=False))
         return 0
-    titles = agenda.card_titles(vault)
+    titles, names = agenda.card_titles(vault), rulings.file_names(vault)
     for r in items:
-        print(f"- {_kind(r)}：{rulings.targets(r, titles)}—{r.get('text')}（{r.get('date')}）")
+        print(f"- {_kind(r)}：{rulings.targets(r, titles, names)}—{r.get('text')}（{r.get('date')}）")
     print(f"有效裁示 {len(items)} 條")
     return 0
 
 
-WRITERS = {"add": _add, "remove": _remove, "recheck": _recheck}
+WRITERS = {"add": _add, "remove": _remove, "recheck": _recheck, "decline": _decline}
 
 
 def run(args):

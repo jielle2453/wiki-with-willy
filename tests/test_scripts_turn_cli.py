@@ -121,15 +121,15 @@ class Note(JournalBase):
 
     def test_note_is_masked(self):
         run_kb("turn", "note", "用密碼 abc123 登入了", cwd=self.V)
-        self.assertEqual(self.sess()["note"], "用密碼███")
-        self.assertEqual(self.row()["note"], "用密碼███")
+        self.assertEqual(self.sess()["note"], "用密碼 ███ 登入了")
+        self.assertEqual(self.row()["note"], "用密碼 ███ 登入了")
 
     def test_acceptance_37_note_value_after_blank_line_is_masked(self):
-        """驗收 37（M2「一律」）：turn note 的句子也先壓空白再遮，回合檔與 jsonl 都是「密碼███」。"""
+        """驗收 37（M2「一律」）：turn note 的句子也先壓空白再遮，回合檔與 jsonl 都是「密碼如下： ███」（D-187 只遮值）。"""
         r = run_kb("turn", "note", "密碼如下：\n\nabc123", cwd=self.V)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.sess()["note"], "密碼███")
-        self.assertEqual(self.row()["note"], "密碼███")
+        self.assertEqual(self.sess()["note"], "密碼如下： ███")
+        self.assertEqual(self.row()["note"], "密碼如下： ███")
 
     def test_note_outside_vault_exits_2(self):
         r = run_kb("turn", "note", "x", cwd=self.tmp)
@@ -155,8 +155,8 @@ class Redact(JournalBase):
 
     def test_redact_value_is_masked_again(self):
         r = run_kb("turn", "redact", "登入 ERP 帳號 x", cwd=self.V)
-        self.assertEqual(r.stdout.strip(), "這一句的問已改成：「登入 ERP 帳號███」")
-        self.assertEqual(self.three(), ("登入 ERP 帳號███",) * 3)
+        self.assertEqual(r.stdout.strip(), "這一句的問已改成：「登入 ERP 帳號 ███」")
+        self.assertEqual(self.three(), ("登入 ERP 帳號 ███",) * 3)
 
     def test_redact_without_versions_dir_does_not_create_it(self):
         shutil.rmtree(self.V / ".system" / "versions")

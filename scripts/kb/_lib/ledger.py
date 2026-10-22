@@ -65,12 +65,21 @@ def log_error(vault, text, source="guard"):
         pass
 
 
+def _masked(head):
+    """指令開頭先遮值再截（密碼與守門第 8 點：擋下的指令可能帶著密碼）；遮值出錯整欄不記。"""
+    try:
+        from kb._lib import credentials
+        return credentials.mask_secrets(_clean(head))[:HEAD_MAX]
+    except Exception:  # noqa: BLE001  留痕不能掛；寧可不記
+        return "（遮值出錯，沒記）"
+
+
 def append(vault, row):
-    """row：{tool, decision, zone, reason_code, head}。檔不存在就建含表頭。"""
+    """row：{tool, decision, zone, reason_code, head}。檔不存在就建含表頭。head 先遮值再截。"""
     target = Path(vault) / LEDGER_REL
     line = "\t".join([
         _now(), _clean(row.get("tool")), _clean(row.get("decision")), _clean(row.get("zone")),
-        _clean(row.get("reason_code")), _clean(row.get("head"))[:HEAD_MAX],
+        _clean(row.get("reason_code")), _masked(row.get("head")),
     ])
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

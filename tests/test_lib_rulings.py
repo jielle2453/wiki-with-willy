@@ -43,9 +43,9 @@ class Load(Base):
         self.assertIn(".system/rulings.json", str(cm.exception))
 
     def test_kinds(self):
-        self.assertEqual(rulings.KINDS, {"口述為準": "spoken_wins", "不採用": "ruled_out", "可以讀": "credential_read",
-                                         "可以記": "credential_write"})
-        self.assertEqual(rulings.ACTIVE_KINDS, ("spoken_wins", "ruled_out"))
+        # 密碼與守門：「可以讀」開放、「可以記」拿掉（D-183）；可以讀的細節在 test_pw_rulings
+        self.assertEqual(rulings.KINDS, {"口述為準": "spoken_wins", "不採用": "ruled_out", "可以讀": "credential_read"})
+        self.assertEqual(rulings.ACTIVE_KINDS, ("spoken_wins", "ruled_out", "credential_read"))
 
 
 class Add(Base):
@@ -67,14 +67,14 @@ class Add(Base):
 
     def test_refusals_exact(self):
         cid, _fp, _p = self.card()
-        self.refused("裁示種類要是 口述為準、不採用 之一", "以後都這樣", [], [cid], "x")
-        self.refused("「可以讀」「可以記」這兩種要等密碼與守門那一版", "可以讀", [], [cid], "密碼檔可以讀")
-        self.refused("「可以讀」「可以記」這兩種要等密碼與守門那一版", "可以記", ["信義王"], [], "這組密碼記下來")
+        self.refused("裁示種類要是 口述為準、不採用、可以讀 之一", "以後都這樣", [], [cid], "x")
+        self.refused("可以讀要指定是哪一份檔（--file）", "可以讀", [], [cid], "密碼檔可以讀")
+        self.refused("裁示種類要是 口述為準、不採用、可以讀 之一", "可以記", ["信義王"], [], "這組密碼記下來")
         self.refused("不採用要指定是哪幾張卡（--card）", "不採用", ["信義王"], [], "信義王的報價別信")
         self.refused("口述為準要掛實體或卡", "口述為準", [], [], "以口述為準")
         self.refused("實體清單沒有「內湖李」，先 kb entity add", "口述為準", ["內湖李"], [], "以口述為準")
         self.refused("清冊沒有 f-00000000", "不採用", [], ["f-00000000"], "別信")
-        self.refused("裁示裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版", "口述為準", ["信義王"], [],
+        self.refused("裁示裡不要放密碼；要記的話跟我說『記下來』，我存進這台電腦的憑證管理員", "口述為準", ["信義王"], [],
                      "Wi-Fi 密碼 password: Abc12345678")
         self.refused("裁示要一句話，最多 200 字", "口述為準", ["信義王"], [], "字" * 201)
         self.refused("裁示要一句話，最多 200 字", "口述為準", ["信義王"], [], "   ")

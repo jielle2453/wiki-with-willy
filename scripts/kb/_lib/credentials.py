@@ -21,35 +21,221 @@ CREDENTIAL_PATTERNS = (
 
 # 沒副檔名也算檔名的樣式（金鑰檔慣例沒有副檔名）
 KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
-# 遮值關鍵詞（第 5b 節、第五輪 V4）：關鍵詞留著，後面的值換成 ███。長的排前面，password 不被 pw 搶走
+# 遮值關鍵詞（第 5b 節、第五輪 V4）。比對前先 NFKC、小寫、去空白（D-187），所以 api key 與 apikey 同一個
 SECRET_WORDS = ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey",
                 "api_key", "api-key", "密码", "passphrase", "pin", "pin碼", "驗證碼", "otp")
 MASK = "███"
-# 子句尾（第六輪 W3、第七輪 X4、第八輪 Y6、第九輪 Z5）：只有 。！？ 與連續兩個換行；
-# ，；、 都不是（「jie，abc123」「jie、abc123」要整段遮，「密碼 abc，謝謝」把謝謝一起遮掉，接受）；
-# 空白、半形標點、單一換行也不是停止符（password:\nhunter2 要遮）
-_STOP = "。！？"
-# 短字要整字邊界（typing 裡的 pin、stopwatch 裡的 pw 不算）；長字允許前綴（PGPASSWORD=、accessToken=、mySecret 要遮）
+# 短字要整字邊界（typing 裡的 pin、stopwatch 裡的 pw 不算，看原字串的前後字）；長字允許前綴（PGPASSWORD=、accessToken=）
 SHORT_WORDS = ("pw", "pin", "otp")
+# 帳密、帳號密碼後面可以跟兩個值（帳號、密碼各一）
+PAIR_WORDS = ("帳密",)
+# 程式固定句（D-187 (c)）：裡面的關鍵字不遮。只遮值之後這些本來就不會被遮，列著當保險、也給測試守
+SAFE_PHRASES = (
+    "讀不到：有密碼", "檔名像密碼或金鑰", "（這句回答有密碼，沒記）", "這組密碼沒說過可以用在別的檔", "密碼不對",
+    "這台電腦不是 Windows，存不了密碼", "給我密碼就能打開，要我記住也可以", "不製卡：檔名像密碼或金鑰",
+    "裡不要放密碼；要記的話跟我說『記下來』，我存進這台電腦的憑證管理員",
+)
+_SPACE = " \t　"
+# 關鍵字到值之間（D-187 (b)）：可以先有幾個虛字（我設成、都用、分別是），再一個以上的分隔；或只有空白（單一換行也算）
+_FILLER = r"(?:我|他|她|你|妳|們|的|都|已經|現在|新|預設|分別|一律|就|先|要)"
+_SEP = r"(?:[:：=＝]|如下|是|為|为|設成|設為|設定成|設定為|改成|改為|換成|換為|用|叫做|叫|(?:is|are|was)(?=\s))"
+_CONNECT = re.compile(rf"[{_SPACE}]*(?:{_FILLER}[{_SPACE}]*)*(?:{_SEP}[{_SPACE}]*\n?[{_SPACE}]*)+|[{_SPACE}]+|[{_SPACE}]*\n[{_SPACE}]*",
+                      re.IGNORECASE)
+_STOP_CHARS = "，。、；！？：「」『』（）【】〈〉《》…"
+_VALUE = re.compile(rf"\"[^\"\n]+\"|'[^'\n]+'|「[^」\n]+」|[^\s{_STOP_CHARS}]+")
+# 值是疑問詞（密碼是多少）不遮；Bearer、Basic 後面那個才是值
+_QUESTION = re.compile(r"^(?:多少|什麼|什么|啥|幾|几|哪個|哪个|呢|嗎|吗|\?|？)")
+_SCHEMES = ("bearer", "basic")
+# 值的位置先是 markdown 記號（## 結論、- 、>）：往後最多看 _SKIP_MAX 個字，遮第一個不含中日韓字的（工作日誌抽結論段前的保險）
+_MARKUP = re.compile(r"^[#>*\-|=_`~]+$")
+_SKIP_MAX = 3
+# 兩個值之間（帳號密碼分別是 jie、abc123）；第二個值不含中日韓字（「密碼 abc、之後再改」的之後不算值）
+_NEXT_VALUE = re.compile(rf"(?:[{_SPACE}]*[、，,/／][{_SPACE}]*|[{_SPACE}]+)(?P<v>[^\s{_STOP_CHARS}㐀-鿿]+)")
+# 值在前（D-187 (b)）：「<值> 是他的密碼」「hunter2 is my password」，<值> 緊接在這段之前
+_VALUE_FIRST = re.compile(rf"(?P<v>[^\s{_STOP_CHARS}]+)[{_SPACE}]*(?:是|is)[{_SPACE}]*"
+                          rf"(?:(?:他|她|我|你|妳|們|的|my|his|her|the|our|your)[{_SPACE}]*)*$", re.IGNORECASE)
+# kb 指令的值旗標：被守門擋下時 ledger 記指令開頭（密碼與守門開工前補第 2 條）
+_FLAG_VALUE = re.compile(r"(?P<kw>--(?:value|password))(?P<sep>=|\s+)(?P<v>\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE)
+_MERGE_GAP = re.compile(rf"^[{_SPACE}和與及跟、/／]*$")
 
 
-def _keyword_pattern(word):
-    pat = re.escape(word)
-    if word in SHORT_WORDS:
-        pat = r"(?<![A-Za-z0-9])" + pat + r"(?![A-Za-z])"
-    return pat
+def _norm_key(word):
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFKC", word).casefold() if not ch.isspace())
 
 
-_WORDS_ALT = "|".join(_keyword_pattern(w) for w in sorted(SECRET_WORDS, key=len, reverse=True))
-# 關鍵詞之後到子句尾（至少一字）全部換成 ███：連接詞、值、子句裡再出現的關鍵詞都在裡面
-_SECRET = re.compile(rf"(?P<kw>{_WORDS_ALT})(?P<rest>(?:[^{_STOP}\n]|\n(?!\n))+)", re.IGNORECASE)
+_KEYWORDS = sorted({_norm_key(w) for w in SECRET_WORDS}, key=len, reverse=True)
+_SHORT = {_norm_key(w) for w in SHORT_WORDS}
+_KW = re.compile("|".join(re.escape(w) for w in _KEYWORDS))
 
 
-def mask_secrets(text):
-    """不分大小寫找關鍵詞，把它之後到子句尾的字換成 ███；關鍵詞本身留著。沒命中原樣回；空字串回空字串。"""
+def _normalized(text):
+    """回 (比對用字串, 每個字對回原字串的位置)：每個字 NFKC、小寫，空白丟掉（D-187 (a)）。"""
+    import unicodedata
+    chars, where = [], []
+    for i, ch in enumerate(text):
+        for c in unicodedata.normalize("NFKC", ch).casefold():
+            if not c.isspace():
+                chars.append(c)
+                where.append(i)
+    return "".join(chars), where
+
+
+def _spans(text, needles):
+    out = []
+    for needle in needles:
+        if not needle:
+            continue
+        start = text.find(needle)
+        while start >= 0:
+            out.append((start, start + len(needle)))
+            start = text.find(needle, start + 1)
+    return out
+
+
+def _inside(spans, a, b):
+    """[a, b) 跟任何受保護的區段重疊。"""
+    return any(a < e and s < b for s, e in spans)
+
+
+def _keywords(text, norm, where):
+    """回 [(原字串起點, 原字串終點, 可以跟幾個值)]：相鄰（中間只有空白或和、與、、、/）的關鍵字併成一個。"""
+    found = []
+    for m in _KW.finditer(norm):
+        a, b = where[m.start()], where[m.end() - 1] + 1
+        if m.group() in _SHORT:
+            before = text[a - 1] if a > 0 else ""
+            after = text[b] if b < len(text) else ""
+            if (before.isascii() and before.isalnum()) or (after.isascii() and after.isalpha()):
+                continue
+        values = 2 if m.group() in PAIR_WORDS else 1
+        if found and _MERGE_GAP.match(text[found[-1][1]:a]):
+            pa, _pb, pv = found[-1]
+            found[-1] = (pa, b, pv + values)
+        else:
+            found.append((a, b, values))
+    return found
+
+
+def _after_markup(text, pos):
+    """值的位置是 markdown 記號時，往後找第一個不含中日韓字、也不是記號的字；找不到回 None。"""
+    for _ in range(_SKIP_MAX):
+        rest = text[pos:]
+        start = pos + len(rest) - len(rest.lstrip())
+        tok = _VALUE.match(text, start)
+        if not tok:
+            return None
+        if not _MARKUP.match(tok.group()) and not re.search("[㐀-鿿]", tok.group()):
+            return tok
+        pos = tok.end()
+    return None
+
+
+INVENTORY_POSIX = ".system/inventory.json"
+_NAMES_CACHE = {}
+
+
+def known_names(vault):
+    """清冊裡的檔名（D-187 (c)）：只回含遮值關鍵字的（其他的本來就不會被遮），給日誌與回合的遮值當不遮的字。
+    直接讀 inventory.json（inventory 會 import 這裡，不能反過來）；讀不到回空清單（照舊遮）。照修改時間快取。"""
+    import json
+    if not vault:
+        return []
+    p = os.path.join(str(vault), *INVENTORY_POSIX.split("/"))
+    try:
+        stamp = os.stat(p).st_mtime_ns
+    except OSError:
+        return []
+    hit = _NAMES_CACHE.get(p)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    try:
+        with open(p, encoding="utf-8") as f:
+            entries = json.load(f).get("entries") or []
+        names = {str(loc.get("uri", "")).rsplit("/", 1)[-1] for e in entries if isinstance(e, dict)
+                 for loc in e.get("locations") or [] if isinstance(loc, dict)}
+    except (OSError, ValueError, AttributeError):
+        return []
+    out = sorted((n for n in names if n and _KW.search(_norm_key(n))), key=len, reverse=True)
+    _NAMES_CACHE[p] = (stamp, out)
+    return out
+
+
+def mask_secrets(text, known_names=None):
+    """只遮值本身（D-187）：關鍵字（NFKC、去空白比對）後接分隔的那一段換成 ███，到下一個空白或標點為止；
+    「<值> 是他的密碼」遮 <值>；kb 指令的 --value、--password 遮後面那個參數。
+    known_names（清冊裡的檔名）與 SAFE_PHRASES 裡的字不遮。沒命中原樣回；空字串、None 原樣回。"""
     if not text:
         return text
-    return _SECRET.sub(lambda m: m.group("kw") + MASK, str(text))
+    text = str(text)
+    protected = _spans(text, list(known_names or ()) + list(SAFE_PHRASES))
+    cuts = []
+
+    def cut(a, b):
+        if b > a and not _inside(protected, a, b):
+            cuts.append((a, b))
+
+    for m in _FLAG_VALUE.finditer(text):
+        cut(m.start("v"), m.end("v"))
+    norm, where = _normalized(text)
+    done = 0
+    for a, b, values in _keywords(text, norm, where):
+        if a < done or _inside(protected, a, b):
+            continue
+        before = _VALUE_FIRST.search(text[:a])
+        if before and not _QUESTION.match(before.group("v")) and not _KW.search(_norm_key(before.group("v"))):
+            cut(before.start("v"), before.end("v"))
+        link = _CONNECT.match(text, b)
+        if not link or link.end() == b:
+            continue
+        pos = link.end()
+        value = _VALUE.match(text, pos)
+        if value and _MARKUP.match(value.group()):
+            value = _after_markup(text, value.end())
+        if not value or _QUESTION.match(value.group()):
+            continue
+        end = value.end()
+        if value.group().casefold() in _SCHEMES:  # Bearer xyz：連後面那個一起
+            nxt = _VALUE.match(text, end + len(text[end:]) - len(text[end:].lstrip(_SPACE)))
+            end = nxt.end() if nxt else end
+        cut(pos, end)
+        for _ in range(values - 1):
+            more = _NEXT_VALUE.match(text, end)
+            if not more:
+                break
+            cut(more.start("v"), more.end("v"))
+            end = more.end("v")
+        done = end
+    if not cuts:
+        return text
+    out, last = [], 0
+    for a, b in sorted(cuts):
+        if a < last:
+            a = last
+        if b <= a:
+            continue
+        out.append(text[last:a] + MASK)
+        last = b
+    return "".join(out) + text[last:]
+
+
+def exempt_roots():
+    """不比憑證樣式的夾（B-088、B-093 (a)）：produce 的工具夾（%LOCALAPPDATA%\\wiki-with-willy\\tools，照 office.tools_dir 的算法，
+    每次從環境變數算）、plugin 自己的夾、~/.claude/plugins。回 normalize 過的路徑。"""
+    from kb._lib.paths import normalize, plugin_root
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    roots = [os.path.join(base, "wiki-with-willy", "tools"), os.path.join(os.path.expanduser("~"), ".claude", "plugins")]
+    try:
+        roots.append(str(plugin_root()))
+    except FileNotFoundError:
+        pass
+    return [normalize(r, None) for r in roots]
+
+
+def exempt(path):
+    """normalize 過的 path 在 exempt_roots 底下。"""
+    from kb._lib.paths import inside
+    return any(inside(path, r) for r in exempt_roots())
 
 
 def looks_like_filename(segment):

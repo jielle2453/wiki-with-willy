@@ -31,7 +31,8 @@
           {
             "type": "command",
             "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.py\"",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

@@ -135,50 +135,27 @@ class ScanDir(unittest.TestCase):
 
 
 class MaskSecrets(unittest.TestCase):
-    """第 5b 節（D-081、B-027）：關鍵詞後的值換成 ███，關鍵詞留著。"""
+    """第 5b 節（D-081、B-027）的舊案例，D-187 改成只遮值（關鍵字、分隔、後面的話照留）；完整的在 test_lib_mask。"""
 
     def test_cases_from_acceptance_62(self):
-        """第六輪 W3：關鍵詞之後遮到子句尾（全形標點或換行），空白與半形標點都不是停止符；子句裡再出現的關鍵詞一起遮。"""
         m = credentials.mask_secrets
-        self.assertEqual(m("密碼是abc 123，謝謝"), "密碼███")  # 第九輪 Z5：全形逗號不是子句尾，謝謝一起遮掉（接受）
-        self.assertEqual(m("my password is hunter2"), "my password███")
-        self.assertEqual(m("密碼我設成 abc123、帳密：jie abc123"), "密碼███")  # 第八輪 Y6：頓號不是子句尾
-        self.assertEqual(m("帳號密碼分別是 jie、abc123"), "帳號███")
-        self.assertEqual(m("密碼 abc、之後再改"), "密碼███")
-        self.assertEqual(m("密碼 abc，之後再改"), "密碼███")
-        # 第九輪 Z5／驗收 87：子句尾只剩 。！？ 與連續兩個換行；，；、 都不是
-        self.assertEqual(m("帳號密碼分別是 jie，abc123"), "帳號███")
-        self.assertEqual(m("密碼 abc；謝謝"), "密碼███")
-        self.assertEqual(m("密碼 abc。謝謝"), "密碼███。謝謝")
-        self.assertEqual(m("密碼 abc！謝謝"), "密碼███！謝謝")
-        self.assertEqual(m("密碼是多少？abc"), "密碼███？abc")
-        self.assertEqual(m("Token: Bearer eyJabc"), "Token███")
-        self.assertEqual(m("PIN 碼 4821"), "PIN███")
-        self.assertIn(m("PGPASSWORD=xyz 請存"), ("PGPASSWORD███", "PGPASSWORD███\n"))
-        self.assertEqual(m("Password: Abc_9!"), "Password███")
-        self.assertEqual(m("典型的 typing fast"), "典型的 typing fast")
+        M = credentials.MASK
+        self.assertEqual(m("密碼是abc 123，謝謝"), f"密碼是{M} 123，謝謝")  # 值遮到空白為止（D-187）
+        self.assertEqual(m("my password is hunter2"), f"my password is {M}")
+        self.assertEqual(m("密碼 abc。謝謝"), f"密碼 {M}。謝謝")
+        self.assertEqual(m("密碼是多少？abc"), "密碼是多少？abc")  # 疑問詞不是值
+        self.assertEqual(m("Token: Bearer eyJabc"), f"Token: {M}")
+        self.assertEqual(m("PIN 碼 4821"), f"PIN 碼 {M}")
         self.assertEqual(m("今天天氣好"), "今天天氣好")
         self.assertEqual(m(""), "")
-        self.assertEqual(m("幫我登入 ERP，帳號 jie 密碼 abc123"), "幫我登入 ERP，帳號███")
-        self.assertEqual(m("我的密碼是 Secret!23"), "我的密碼███")
-        self.assertIn("███", m("門禁密碼多少"))
-        # 第七輪 X4：關鍵詞與值之間允許一個換行；子句尾只有全形標點與連續兩個換行
-        self.assertEqual(m("password:\nhunter2"), "password███")
-        self.assertEqual(m("密碼\nabc123"), "密碼███")
-        self.assertEqual(m("密碼：abc\n\n另外"), "密碼███\n\n另外")
-        self.assertEqual(m("第一行密碼 a\n第二行沒有，好"), "第一行密碼███")  # 第九輪 Z5：單一換行與全形逗號都不停
+        self.assertEqual(m("password:\nhunter2"), f"password:\n{M}")
+        self.assertEqual(m("密碼：abc\n\n另外"), f"密碼：{M}\n\n另外")
+        self.assertEqual(m("第一行密碼 a\n第二行沒有，好"), f"第一行密碼 {M}\n第二行沒有，好")
 
     def test_keywords_case_insensitive_and_bare_keyword_untouched(self):
         m = credentials.mask_secrets
-        self.assertEqual(m("TOKEN=abcd"), "TOKEN███")
         self.assertEqual(m("secret"), "secret")
-        self.assertEqual(m("金鑰：xyz。"), "金鑰███。")
-        self.assertNotIn("abc", m("pw abc"))
-        for text in ("api-key: k1", "api_key k2", "密码是k3", "passphrase k4", "pin 1234", "PIN碼 5678", "驗證碼 999", "otp=12",
-                     "userPassword=k5", "accessToken=k6", "mySecret k7"):
-            with self.subTest(text=text):
-                self.assertIn("███", m(text))
-                self.assertNotIn(text.split()[-1].split("=")[-1].split("是")[-1].split(":")[-1], m(text))
+        self.assertNotIn("abcd", m("TOKEN=abcd"))
         for text in ("typing fast", "spinach 1", "stopwatch 2", "ottoman 3"):  # 短字 pw、pin、otp 要整字
             with self.subTest(text=text):
                 self.assertEqual(m(text), text)

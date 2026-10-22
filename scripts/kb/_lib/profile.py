@@ -92,7 +92,7 @@ _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 SHELL_CHARS = "$`"
 # 偏好照 rule 擋的四種字元（測試後修正裁定 16）；不收密碼（裁定 14）
 FREE_TEXT_CHARS = '"$`\\'
-PREFERENCE_SECRET = "偏好裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版"
+PREFERENCE_SECRET = "偏好裡不要放密碼；要記的話跟我說『記下來』，我存進這台電腦的憑證管理員"
 PREFERENCE_CHARS = '偏好裡不能有 " $ ` \\ 這四種字元'
 _ASCII_TOKEN = re.compile(r"[A-Za-z0-9_.\-]+")
 # 實體名稱、第五節名稱與別名另擋卡檔頭清單的分隔與括號（測試後修正裁定 10）

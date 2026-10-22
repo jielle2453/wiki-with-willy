@@ -124,9 +124,9 @@ class Masking(Base):
         journal.begin_turn(self.V, None, td)
         journal.complete_turn(self.V, td, "已用密碼 abc 登入", "記下密碼 abc", "ai", [], False)
         r = self.rows("2026-10")[0]
-        self.assertEqual(r["prompt"], "幫我登入，密碼███")
-        self.assertEqual(r["result"], "已用密碼███")
-        self.assertEqual(r["note"], "記下密碼███")
+        self.assertEqual(r["prompt"], "幫我登入，密碼 ███")
+        self.assertEqual(r["result"], "已用密碼 ███ 登入")
+        self.assertEqual(r["note"], "記下密碼 ███")
         for p in (self.V / ".system", self.V / "系統"):
             for f in p.rglob("*"):
                 if f.is_file():
@@ -137,7 +137,7 @@ class Masking(Base):
         journal.complete_turn(self.V, td, "已用密碼 abc" + journal.TRUNCATED_TAIL, "沒有改動", "program", [], False,
                               result_truncated=True)
         r = self.rows("2026-10")[0]
-        self.assertEqual(r["result"], "已用密碼███" + journal.TRUNCATED_TAIL)
+        self.assertEqual(r["result"], "已用密碼 ███" + journal.TRUNCATED_TAIL)
         self.assertTrue(r["result_truncated"])
 
     def test_program_note_is_not_masked(self):
@@ -370,7 +370,7 @@ class CutResult(unittest.TestCase):
 
     def test_value_after_blank_line_is_masked(self):
         """M2：值跟關鍵詞隔空行，先壓空白再遮才遮得到。"""
-        self.assertEqual(journal.cut_result("密碼如下：\n\nabc123", 300), ("密碼███", False))
+        self.assertEqual(journal.cut_result("密碼如下：\n\nabc123", 300), ("密碼如下： ███", False))
 
     def test_acceptance_38_keyword_outside_conclusion_section(self):
         """第二輪 R2-M1 裁定：全文壓一行遮過有東西被遮，就不抽段、用整段遮過的結果；三句都不能漏值。"""
@@ -385,7 +385,7 @@ class CutResult(unittest.TestCase):
 
     def test_mask_before_cut(self):
         """先遮再截：遮掉的值不佔字數（先截會截在 x 中間、判成被截斷）。"""
-        self.assertEqual(journal.cut_result("字" * 290 + "，密碼 " + "x" * 50, 300), ("字" * 290 + "，密碼███", False))
+        self.assertEqual(journal.cut_result("字" * 290 + "，密碼 " + "x" * 50, 300), ("字" * 290 + "，密碼 ███", False))
 
     def test_truncated_adds_tail(self):
         out, cut = journal.cut_result("字" * 400, 300)

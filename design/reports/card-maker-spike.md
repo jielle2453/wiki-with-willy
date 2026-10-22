@@ -255,3 +255,19 @@ hook log 一行一則：`C:\Users\Jie\Desktop\llm-wiki-test\card-maker-spike\hoo
 - plugin 副本：`C:\Users\Jie\Desktop\llm-wiki-test\card-maker-spike-plugin\`（`agents\card-maker.md`、`hooks\spike_subagent_start.py`、`hooks\spike_wrap.py`、`hooks\hooks.json`）
 - 測試知識庫：`C:\Users\Jie\Desktop\llm-wiki-test\card-maker-spike\知識庫\`；假來源：`來源\`（40）、`來源-大\`（100）
 - 每次 `claude -p` 的 stream 輸出與驅動腳本（A、A2、B～H 的 `.jsonl`、`.driver.log`，`drive.py`、`usage.py`、`hl.py`、`gen.py`）：`C:\Users\Jie\AppData\Local\Temp\claude\c--Users-Jie-Desktop-llm-wiki-j\eb30c280-dbe7-45be-8d73-f30c2a863b1e\scratchpad\`
+
+## 桌面版（使用者 2026-10-22 20:11～20:22 操作，設計 session 對照記錄整理）
+
+plugin 副本經本機市集 `willy-cm` 裝在測試知識庫的 local 範圍（使用者範圍 `settings.json` 前後雜湊相同）；新登記「來源-桌面」30 份。三個 session：`21e3…`、`651d…`、`c8e9…`。依據：知識庫的 `系統/工作日誌/2026-10.md`、`.system/journal/2026-10.jsonl`、`hook-log.jsonl`（記 log 的包裝在桌面版把中文 stdin 記成亂碼，只用來看事件與時間；正式 hook 讀寫正常，日誌中文正確）。
+
+| # | 看到的 | 對設計的意思 |
+|---|---|---|
+| D1 | 開場 30 份超過門檻，AI 先問；說「用 card-maker 分批做」後，SubagentStart 帶 `wiki-with-willy:card-maker`，主對話派完就回話（「第一批 10 份已經交給製卡助手」），背景跑約 2 分 20 秒寫完 10 張 | 桌面版背景子代理照跑，跟 CLI 一樣 |
+| D2 | **子代理做完時，送進來的是 `<agent-message from="…">`（子代理交回報告），不是 `<task-notification>`**；turn.py 沒認得，開了回合、日誌多一段「問：<agent-message …」。TaskStop 停掉的那幾次照舊是 `<task-notification>` | I-035 的開頭比對漏一種，要補（`hooks/turn.py`，card-maker 題） |
+| D3 | 派出的那一句回合，日誌「改了：（無）」；第一批 10 張卡是 Stop 之後才寫的 | 日誌的「改了」在答完那一刻就算好，背景後來寫的沒算進去（D-195 要一起修） |
+| D4 | 客戶打「停止」（文字，不是停止鈕），主對話用 TaskStop 停掉子代理，回報停之前寫好幾張、還剩幾份 | 打字說停止有用；停止鈕在背景跑時的行為還沒看到（要人眼補） |
+| D5 | 關掉視窗時子代理還在跑：新對話說「上一次關掉時它還在跑，這批一張卡都還沒寫」 | 關視窗會讓背景子代理中斷；做好的卡留著，靠 `cards todo` 接 |
+| D6 | 再開新對話（c8e9）說「你好」：開場知道還有 19 份沒整理完，但 AI 回「份數比較少…這次還沒動手」，沒照 D-161 直接整理 | 19 份在門檻內應該直接整理；開場指示沒被照做，跟 card-maker 無關，另記 |
+| D7 | 停之前已寫的卡完整、檔頭正確（第二批停在第 1 張後，那張完整）；新對話與 `cards todo` 都說 19 份，對 | 中斷接得上，桌面版同 CLI |
+
+要人眼補：工作清單（標題列 ⋮）有沒有列出子代理；背景跑時按停止鈕會怎樣。

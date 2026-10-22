@@ -41,7 +41,8 @@ NOT_IN_VAULT = "這裡不是知識庫；到知識庫裡執行，或加 --vault"
 HOME_TOP_FOLDERS = ("Desktop", "Documents", "Downloads", "桌面", "文件", "下載")
 CREDENTIAL_LIST_MAX = 10
 KIND_TEXT = {"hidden": "不想讓 AI 看到", "unused": "用不到"}
-PURGE_TAIL = "之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉"
+PURGE_TAIL = ("之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉；"
+              "以前的回答若沒提到檔名或卡名、只是轉述，認不出來")
 NOTHING_TO_PURGE = "「{name}」沒有要清的"
 PURGE_BLOCKED = "還有綜合卡寫著那夾的內容：{names}（先重寫再清）"
 RESERVED_RELOCATE = "「{alias}」是知識庫自己的，不用換位置"
@@ -270,11 +271,14 @@ def _drop_cards(vault, ids, turn_id):
         removed.append(c["path"])
         titles.append(cards._title(c))
         changed.append({"path": c["path"], "action": "delete"})
-    if removed:
+    # 同一份內容還在別處讀得到的條目：卡的「原檔」當場改成還在讀的位置，不等下次 sync（第五輪）
+    got = cards.sync(vault, sources_lib.load(vault), turn_id)
+    changed += got["changed"]
+    if removed or got["moved"] or got["updated"] or got["dropped"]:
         cards.render_index(vault, turn_id)
         changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
         changed += [{"path": rel, "action": "modify"}
-                    for rel in cards.refresh_synthesis(vault, cards.entity_names_of(group), turn_id)]
+                    for rel in cards.refresh_synthesis(vault, cards.entity_names_of(group) + got["touched"], turn_id)]
     return removed, titles, changed
 
 
@@ -704,7 +708,8 @@ def _relocate(vault, args, as_json):
             changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
             changed += [{"path": rel, "action": "modify"} for rel in cards.refresh_synthesis(vault, got["touched"], turn_id)]
     env.clear_missing(vault, [entry.get("id") or alias])
-    first = f"已把「{alias}」換到新位置：{_realcase(t)}；說「退回上一版」換得回來"
+    first = (f"已把「{alias}」換到新位置：{_realcase(t)}；卡的原檔連結更新了 {len(got['moved']) + len(got['updated'])} 張；"
+             "說「退回上一版」換得回來")
     _journal(vault, first, "folders relocate", inv_changed, changed)
     if as_json:
         print(json.dumps({"alias": alias, "spec": spec, "old_spec": old_spec, "path": str(t), "sampled": total,

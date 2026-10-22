@@ -165,6 +165,14 @@ def _drop_stale_redo(vault, entries):
             e.pop("redo", None)
 
 
+def _attrs_now(path):
+    """現在的檔案屬性（os.stat 只讀中繼資料，不下載）；讀不到回 0。"""
+    try:
+        return getattr(os.stat(long_path(path)), "st_file_attributes", 0)
+    except OSError:
+        return 0
+
+
 def sha256_of(path, should_stop=None):
     """分塊讀；第一塊之後每讀一塊前問 should_stop，喊停回 None（開場的時間預算，審閱裁定 34）。"""
     h = hashlib.sha256()
@@ -682,8 +690,18 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         """快速模式：每算一個指紋前查剩餘時間（審閱裁定 31）；到了就不再算，這次 incomplete。"""
         return stopper()
 
+    def cloud(rec):
+        """讀內容之前一刻再看一次屬性：只在雲端（RECALL_ON_DATA_ACCESS、OFFLINE…）就不讀，記成 placeholder
+        （manage 第二版第五輪：指紋、內容指紋、快速比對預算都不碰）。"""
+        if _attrs_now(rec["path"]) & PLACEHOLDER_ATTRS:
+            rec["read"] = "placeholder"
+            return True
+        return False
+
     def digest_of(rec):
         size = rec["st"].st_size
+        if cloud(rec):
+            return None
         if out_of_time():
             return None
         if budget["left"] is not None:
@@ -699,7 +717,9 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         return digest  # 算到一半時間到是 None：放棄這個檔，這次 incomplete
 
     def text_of(rec):
-        return None if out_of_time() else content_fp.text_fingerprint(rec["path"], should_stop=stopper)
+        if cloud(rec) or out_of_time():
+            return None
+        return content_fp.text_fingerprint(rec["path"], should_stop=stopper)
 
     def fingerprint(digest, text):
         fp = {"sha256": digest}
@@ -740,11 +760,17 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
                 digest = digest_of(rec)
                 if digest:
                     fps.append(fingerprint(digest, text_of(rec)))
+                elif rec["read"] == "placeholder":
+                    _set_read(e, "placeholder")
             report["unchanged"] += 1
             continue
         digest = digest_of(rec)
         if rec["read"] == "error":
             _set_read(e, "error", rec["error"])
+            continue
+        if rec["read"] == "placeholder":  # 算之前一刻變成只在雲端：不讀，當修改
+            _set_read(e, "placeholder")
+            report["modified"].append(rec["uri"])
             continue
         _set_read(e, "ok")
         if digest is None:  # 讀取預算用完：變了就當修改

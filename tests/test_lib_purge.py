@@ -139,7 +139,7 @@ class Purge(unittest.TestCase):
         code, out = kb("folders", "purge", "客戶案件/私人", "--vault", str(V))
         self.assertEqual(code, 0, out)
         self.assertRegex(out.strip(), r"^清好了：卡 1 張、備份 \d+ 份、暫存 3 份、推算 1 條、工作日誌 \d+ 段；"
-                                      r"之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉$")
+                                      r"之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉；以前的回答若沒提到檔名或卡名、只是轉述，認不出來$")
         self.assertNotEqual(self.sources_row()["purge"], "pending")
         # 第 5 點：目前的狀態檔
         self.assertEqual([i for i in pending.load(V)["items"] if self.fid in i.get("file_ids", [])], [])

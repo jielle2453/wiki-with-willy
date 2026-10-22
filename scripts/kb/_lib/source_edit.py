@@ -562,6 +562,7 @@ def plan_move(vault, sources, target, cwd, dest=None, new_name=None):
             "excludes": [rest for _s, _e, rest in moved_ex], "_moved_ex": moved_ex,
             "signs": [Path(f).name for f in _files_under(src) if Path(f).name.startswith("~$")][:SIGNS_MAX]}
     plan["download"] = None
+    plan["cloud_only"] = not folder and cloud_only(src)
     if in_onedrive(src) and not in_onedrive(dest_dir):
         n, size = cloud_download(src)
         if n:
@@ -611,7 +612,32 @@ def check_lines(plan, op):
     if plan["download"]:
         d = plan["download"]
         lines.append(f"{d['files']} 份只在雲端，搬出 OneDrive 會先全部下載（約 {size_text(d['bytes'])}）")
+    elif plan.get("cloud_only"):
+        lines.append("這份只在雲端；同一個 OneDrive 裡搬不會下載")
     return lines
+
+
+def _place(alias, rel):
+    return f"{alias}/{rel}" if rel else alias
+
+
+def move_sentence(plan, got, op="move"):
+    """搬、改名的成功句（人讀不印編號）。兩邊最後一段同名（從 大安陳 搬到 大安陳）就改印「別名/相對路徑」（第五輪）；
+    整個夾也說「退回」會搬回去。"""
+    if op == "rename":
+        return f"已改名：{plan['name']} → {plan['new_name']}（說「退回」會改回來）"
+    a, b = folder_word(plan["from_uri"] or ""), dest_word(plan["to_dir_uri"] or "")
+    if a.casefold() == b.casefold():
+        fa, frel = inventory.split_uri(plan["from_uri"] or "")
+        ta, trel = inventory.split_uri(plan["to_dir_uri"] or "")
+        a, b = _place(fa, frel.rpartition("/")[0]), _place(ta, trel)
+    if plan["kind"] == "folder":
+        out = f"已搬好：{plan['name']}（{plan['files']} 份）從 {a} 搬到 {b}"
+        if plan["excludes"]:
+            out += "；不讀的「" + "」「".join(x.rpartition("/")[2] for x in plan["excludes"]) + "」跟著搬"
+        return out + "（說「退回」會搬回去）"
+    return (f"已搬好：{plan['name']} 從 {a} 搬到 {b}" + ("；卡跟著改了" if got["cards_moved"] else "")
+            + "（說「退回」會搬回去）")
 
 
 def _readonly(path):

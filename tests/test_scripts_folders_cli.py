@@ -314,7 +314,7 @@ class Exclude(Base):
         self.assertEqual(r.stdout.splitlines(), ["已排除「行政/薪資」（不想讓 AI 看到）。卡拿掉 0 張。",
                                                  "清冊：0 份已拿掉",
                                                  "清好了：卡 0 張、備份 0 份、暫存 0 份、工作日誌 1 段；"  # 剛記的那一段排除
-                                                 "之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉"])
+                                                 "之前讀過的已送過雲端，Claude 自己的對話紀錄也還有，這兩處清不掉；以前的回答若沒提到檔名或卡名、只是轉述，認不出來"])
         ex = self.sources()["sources"][0]["excludes"]
         today = date.today().isoformat()
         self.assertEqual(ex, [{"spec": "薪資", "kind": "hidden", "reason": "薪資個資", "added": today, "purge": today}])

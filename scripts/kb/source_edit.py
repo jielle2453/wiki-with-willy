@@ -68,17 +68,7 @@ def _move(vault, args, as_json, conversation, op):
             return 0
         turn_id = turn.current(vault)["turn"]
         got = se.do_move(vault, plan, turn_id, op, replace=getattr(args, "replace", False))
-    if op == "rename":
-        sentence = f"已改名：{plan['name']} → {plan['new_name']}（說「退回」會改回來）"
-    elif plan["kind"] == "folder":
-        sentence = (f"已搬好：{plan['name']}（{plan['files']} 份）從 {se.folder_word(plan['from_uri'] or '')} "
-                    f"搬到 {se.dest_word(plan['to_dir_uri'] or '')}")
-        if plan["excludes"]:
-            sentence += "；不讀的「" + "」「".join(x.rpartition("/")[2] for x in plan["excludes"]) + "」跟著搬"
-    else:
-        sentence = (f"已搬好：{plan['name']} 從 {se.folder_word(plan['from_uri'] or '')} "
-                    f"搬到 {se.dest_word(plan['to_dir_uri'] or '')}" + ("；卡跟著改了" if got["cards_moved"] else "")
-                    + "（說「退回」會搬回去）")
+    sentence = se.move_sentence(plan, got, op)
     replaced = got["replaced"]
     lines = [sentence]
     if replaced is not None:

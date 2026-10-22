@@ -526,12 +526,12 @@ def _scrub_rows(vault, files, rows, ids, prefix, mask, counts, shorts, datas, st
         if not f.is_file():
             continue
         try:
-            _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state)
+            _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state, mask)
         except (OSError, UnicodeDecodeError):
             counts["left"]["backups"] += 1
 
 
-def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state):
+def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state, mask=None):
     """manifest 一行：那些卡的舊版、引用它們的綜合卡舊版刪掉並標 purged；狀態檔舊版拿掉那些條目；總目錄舊版拿掉那些行。"""
     gone = False
     if rel.startswith(cards.CARDS_DIR + "/") and rel.endswith(".md"):
@@ -539,6 +539,11 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state):
         if cid in ids:
             counts["card_ids"].add(cid)
             gone = True
+        elif mask is not None:  # 別張卡的舊版：「原檔」行等文字裡那夾的路徑換掉（第五輪）
+            text = f.read_text(encoding="utf-8")
+            if mask(text) != text:
+                write_text_atomic(f, mask(text))
+                counts["backups"] += 1
     elif _is_synthesis(rel):
         gone = _refs(f.read_text(encoding="utf-8"), ids)
     elif rel in JSON_DROPS:
@@ -556,6 +561,14 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state):
         kept = _drop_empty_nodes(kept)
         if kept != lines:
             write_text_atomic(f, "".join(kept))
+            counts["backups"] += 1
+    elif mask is not None and rel != sources_lib.SOURCES_REL and f.suffix.casefold() in TEXT_SUFFIXES \
+            and not any(rel == md for _j, md, _r in MD_RENDERS):
+        # 別的檔的舊版（別張卡的「原檔」行、其他文字檔）：文字裡那夾的路徑、那些卡的編號與標題換掉（第五輪）
+        text = f.read_text(encoding="utf-8")
+        new = mask(text)
+        if new != text:
+            write_text_atomic(f, new)
             counts["backups"] += 1
     if gone:
         f.unlink()
@@ -671,6 +684,23 @@ def _scrub_text(vault, rel, mask):
     return True
 
 
+TEXT_SUFFIXES = (".md", ".txt", ".json", ".jsonl", ".tsv", ".csv")
+TITLE_MIN = 3  # 太短的標題（兩個字）當字詞比對會誤遮一大片，不比
+
+
+def word_masker(path_mask, ids, titles):
+    """路徑之外，那些卡的編號與卡標題也換「（已排除）」（第五輪：回答裡列了卡標題、編號的回合要認得出來）。"""
+    words = sorted({i for i in ids if i} | {t for t in titles if t and len(t) >= TITLE_MIN}, key=len, reverse=True)
+    wx = re.compile("|".join(re.escape(w) for w in words)) if words else None
+
+    def mask(text):
+        if not isinstance(text, str):
+            return text
+        out = path_mask(text)
+        return wx.sub(PURGED, out) if wx else out
+    return mask
+
+
 LEFT_WORDS = (("state", "狀態檔 {n} 個"), ("backups", "備份 {n} 份"), ("temp", "暫存 {n} 份"),
               ("journal", "工作日誌 {n} 個月"), ("logs", "留痕 {n} 個"))
 
@@ -692,13 +722,14 @@ def purge(vault, alias, spec, root, turn_id):
     counts = {"card_ids": set(), "backups": 0, "temp": 0, "journal": 0, "findings": 0,
               "left": {k: 0 for k, _w in LEFT_WORDS}}
     prefix = folder_uri(alias, spec)
-    mask = masker(vault, alias, spec, root)
+    titles = set(_titles(vault, ids).values()) if ids else set()  # 卡與舊版還在的時候先取（清完就認不出來）
+    mask = word_masker(masker(vault, alias, spec, root), ids, titles)
     _current_state(vault, ids, turn_id, counts)
     for vdir in _version_dirs(vault):
         _scrub_version(vault, vdir, ids, prefix, mask, counts)
     counts["temp"] = _temp(vault, ids, sc["hashes"], counts)
     try:
-        counts["journal"] = journal.scrub(vault, mask)
+        counts["journal"] = journal.scrub(vault, mask, mention=lambda text: mask(text) != text)
     except OSError:
         counts["left"]["journal"] += 1
     for rel in (ledger.LEDGER_REL, ledger.ERROR_LOG_REL):

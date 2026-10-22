@@ -236,5 +236,26 @@ class Round28(Base):
         self.assertDecision("PowerShell", f"$c = @'\nopen(r\"{v}\\系統\\x\",\"w\").write(\"1\")\n'@\n$c | python -", "deny")
 
 
+class Round28b(Base):
+    """測試 28 第二輪（報告附錄 A）：引號尾端反斜線、導向變體、perl -e、只讀動詞的輸出旗標。語料同一批。"""
+
+    def test_quote_backslash_redirect_variants_perl_and_output_flags(self):
+        v, o = self.V.as_posix(), self.out.as_posix()
+        t = f'"{v}/系統/待處理.md"'
+        for tool, cmd in (("Bash", f"echo 'a\\' ; rm {t}"),
+                          ("PowerShell", f"Get-ChildItem 'C:\\Windows\\'; Remove-Item '{v}/系統/待處理.md'"),
+                          ("PowerShell", f'Write-Host "C:\\x\\" ; Set-Content \'{v}/系統/x\' -Value 1'),
+                          ("Bash", f"echo hi >| {t}"), ("Bash", f"echo hi >& {t}"), ("Bash", f"echo hi >&{t}"),
+                          ("Bash", f"perl -e 'unlink q({v}/系統/待處理.md)'"),
+                          ("Bash", f'uniq "{o}/a.txt" "{v}/系統/x.txt"'), ("Bash", f'xxd -r "{o}/a.hex" "{v}/系統/x.bin"'),
+                          ("Bash", f'less -o "{v}/系統/x.txt" "{o}/a.txt"'), ("Bash", f'tree -o "{v}/系統/x.txt" "{o}"')):
+            self.assertDecision(tool, cmd, "deny")
+        d = self.assertDecision("Bash", f'sort -o "{v}/AI 產出/x.txt" "{o}/a.txt"', "deny")
+        self.assertEqual(d.reason_code, "output_shell")
+        for cmd in (f'sort -o "{o}/s.txt" "{o}/a.txt"', 'ls 2>&1', 'ls >&2', f'uniq -c "{o}/a.txt"', f'xxd "{o}/a.bin"',
+                    'python -c "import copy, json; print(1)"', 'git commit -m "rename x"'):
+            self.assertDecision("Bash", cmd, "pass")
+
+
 if __name__ == "__main__":
     unittest.main()

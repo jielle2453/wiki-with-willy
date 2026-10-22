@@ -8292,6 +8292,306 @@
    "expect": "deny",
    "來源": "密碼與守門-測試（28 中途回報，a2 轉）",
    "note": "1：@\" \"@ 會展開 $(…)"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo 'a\\' ; rm \"<V>/系統/待處理.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-1：bash 單引號裡的 \\ 不是跳脫"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem 'C:\\Windows\\'; Remove-Item '<V>\\系統\\待處理.md'"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-1：PowerShell 單引號尾端的 \\"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Write-Host \"C:\\x\\\" ; Set-Content '<V>\\系統\\x' -Value 1"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-1：PowerShell 雙引號尾端的 \\"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo hi >| <V>/系統/待處理.md"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-2：>| 是導向"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo hi >| \"<V>/.system/inventory.json\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-2：>| 寫 .system"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo hi >& \"<V>/系統/待處理.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-2：>& 檔"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo hi >&\"<V>/系統/待處理.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-2：>&檔"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo hi &> \"<V>/系統/待處理.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-2：&>（對照，原本就擋）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "perl -e 'unlink q(<V>/系統/待處理.md)'"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-4：perl -e 是直譯器、unlink 是寫"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "sort -o \"<V>/AI 產出/x.txt\" \"<OUT>/a.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-5：sort -o 寫 AI 產出"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "sort \"<OUT>/a.txt\" -o \"<V>/系統/x.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-5：-o 放在後面"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "uniq \"<OUT>/a.txt\" \"<V>/系統/x.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-5：uniq 入 出"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "xxd -r \"<OUT>/a.hex\" \"<V>/系統/x.bin\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-5：xxd -r 入 出"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "less -o \"<V>/系統/x.txt\" \"<OUT>/a.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-5：less -o"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "tree -o \"<V>/系統/x.txt\" \"<RAW>/客戶案件\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-5：tree -o（也不算只列檔名）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "uniq -c \"<OUT>/a.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-5 對照：只有輸入"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "xxd \"<OUT>/a.bin\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪）",
+   "note": "F2-5 對照：只有輸入"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo $'\\'' ; rm \"<V>/系統/待處理.md\" #'"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-1 同類：$'…' 裡 \\' 是跳脫"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "echo $'\\' # ' ; rm \"<V>/系統/待處理.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-1 同類：$'…' 讓 # 不是註解"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "python \"<PLUGIN>/scripts/kb.py\" version 'a\\' ; rm \"<V>/系統/待處理.md\" #'"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-1 同類：kb 呼叫後面接 'a\\' 不能算單一 kb 呼叫"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Write-Host `'; Remove-Item '<V>\\系統\\待處理.md' #'"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-1 同類：PowerShell 引號外的 `' 不是引號"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls 2>&1"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-2 對照：2>&1 丟到 fd 不是寫檔"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls >&2"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-2 對照：>&2"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls 2>&-"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-2 對照：>&- 關掉 fd"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "grep -r 報價 . 2>&1 | head"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-2 對照：管線前的 2>&1"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ruby -e 'File.delete(\"<V>/系統/待處理.md\")'"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-4 同類：ruby 的刪檔"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "git commit -m \"unlink and rename helpers\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-4 對照：perl 的字只在動詞是 perl 時看"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "sort -o \"<OUT>/s.txt\" \"<OUT>/a.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-5 對照：寫知識庫外"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "sort -n \"<OUT>/a.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-5 對照：沒有 -o"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "uniq \"<OUT>/a.txt\" > \"<OUT>/b.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 完整報告附錄 A，第二輪；實作時自己找到的同類）",
+   "note": "F2-5 對照：輸出是導向，不是第二個位置參數"
   }
  ]
 }

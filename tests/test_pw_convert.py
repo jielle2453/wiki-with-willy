@@ -93,6 +93,22 @@ class Saved(Base):
         self.assertEqual(self.convert(_pw.CHEN, "--saved", "門", "--explicit", code=3), ["「門」不是 PDF 密碼"])
 
 
+@unittest.skipUnless(HAVE_PDF, "沒裝 pypdfium2")
+class NotEncrypted(Base):
+    """測試 28 F9：沒加密（或只有擁有者密碼）的 PDF 給了 --password／--saved：不問要不要記、不記 opened、tell 不說用密碼打開。"""
+
+    def test_password_not_needed(self):
+        from tests._pdfcrypt import make_pdf
+        plain = self.raw / "客戶案件" / "信義王" / "平面.pdf"
+        make_pdf(plain, "Plain floor plan text for testing")
+        _cards.scan_apply(self.V)
+        out = self.convert("客戶案件/信義王/平面.pdf", "--password", _pw.PDF_PW, as_json=True)
+        self.assertEqual((out["ask_save"], out["unlocked"]), (False, None))
+        out = self.convert(_pw.OWNER_ONLY, "--password", _pw.PDF_PW, as_json=True)
+        self.assertEqual((out["ask_save"], out["unlocked"]), (False, None))
+        self.assertEqual(unlock.load(self.V)["opened"], [])
+
+
 class Readable(Base):
     """驗收 2、3 的 convert 那半：「可以讀」的那份讀得到；讀的回合記 secret_shown；暫存是原檔內容，卡怎麼寫交 carding.md。"""
 

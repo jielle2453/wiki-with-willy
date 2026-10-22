@@ -52,6 +52,22 @@ class A2Followups(unittest.TestCase):
         self.assertNotIn("Claude Code 會當作沒有 hook，照常放行", readme)
 
 
+class Round28bDocs(unittest.TestCase):
+    """測試 28 第二輪 E：skill-reviewer 的三個 Major。"""
+
+    def read(self, rel):
+        return (ROOT / rel).read_text(encoding="utf-8")
+
+    def test_majors(self):
+        self.assertIn("回答裡完全不出現密碼值，唯一例外是 `kb unlock get` 印出的那一行", self.read("skills/note/references/password.md"))
+        carding = self.read("skills/ingest/references/carding.md")
+        self.assertIn("回答與 `kb turn note` 都不寫任何值", carding[carding.index("## 十、"):])
+        find = self.read("skills/answer/references/find.md")
+        part = find[find.index("## 八、"):]
+        for want in ("`mentions`", "`kb cards list --entity", "不用 Grep"):
+            self.assertIn(want, part)
+
+
 class NoOldPhrases(unittest.TestCase):
     """驗收 15：skills 與程式裡「這版還不能開放」「這版記不起來」「等密碼與守門那一版」為 0（只在 design/）。"""
 

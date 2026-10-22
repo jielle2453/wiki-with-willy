@@ -15,7 +15,7 @@ from kb._lib.paths import normalize
 KB_SCRIPT = "scripts/kb.py"
 
 # 只是把輸出丟掉，不算寫入：2>/dev/null、>/dev/null、2>&1、> nul、> $null、| Out-Null
-DISCARD_OUTPUT = re.compile(r"\d?>\s*&\s*\d|\d?>\s*/dev/null|\d?>\s*\$null|\d?>\s*nul\b|\|\s*out-null", re.IGNORECASE)
+DISCARD_OUTPUT = re.compile(r"\d?>\s*&\s*(?:\d+|-)(?![\w.\\/-])|\d?>\s*/dev/null|\d?>\s*\$null|\d?>\s*nul\b|\|\s*out-null", re.IGNORECASE)
 # 寫入動詞只在 token 開頭：前一個字元不能是 . 字母 數字 _ -（B1：.md、--rm 不算）；
 # 前面是 \ 或 / 也算動詞（N-b：\rm、/bin/rm、Microsoft.PowerShell.Management\Remove-Item）
 _W = r"(?<![.\w-])"
@@ -65,6 +65,20 @@ READONLY_VERBS = {"cat", "type", "more", "less", "head", "tail", "grep", "egrep"
                   "get-filehash", "od", "xxd", "hexdump", "strings", "jq", "true", "false", "nl", "column", "tac", "rev",
                   "where", "which", "get-command", "date", "get-date", "whoami", "hostname", "convertfrom-json",
                   "convertto-json", "sleep", "start-sleep"}
+# 只讀動詞的輸出檔（測試 28 F2-5）：(短旗標裡的字母, 長旗標)；帶了就是寫，這段的路徑都是目標
+OUTPUT_FLAGS = {"sort": ("o", ("--output",)), "less": ("oO", ("--log-file",)), "tree": ("o", ("--output",))}
+# 第二個位置參數是輸出檔的只讀動詞：值放在下一個字的旗標
+POSITIONAL_OUTPUT = {"uniq": {"-f", "-s", "-w"},
+                     "xxd": {"-c", "-g", "-l", "-s", "-o", "-n", "-cols", "-groupsize", "-len", "-seek", "-name", "-offset"}}
+# perl、ruby、php 的內建刪改檔與跑指令（測試 28 F2-4）：只在動詞是它們時看，git commit -m "unlink…" 不算
+SCRIPT_BUILTIN_VERBS = {"perl", "ruby", "php"}
+SCRIPT_BUILTIN_WRITE = re.compile(
+    r"\b(?:unlink|rename|mkdir|rmdir|symlink|truncate|chmod|chown|utime|sysopen|system|exec|qx|syscall|spawn|"
+    r"make_path|mkpath|remove_tree|rmtree|shell_exec|passthru|proc_open|popen)\b|\b(?:copy|move)\s*\(|File::\w+|"
+    r"\bFile\.(?:delete|unlink|rename|symlink|link|truncate|chmod|write|binwrite)|\bDir\.(?:mkdir|rmdir|delete|unlink)|"
+    r"\bIO\.(?:write|binwrite|popen)|%x|`",
+    re.IGNORECASE,
+)
 # find 帶這些就不是只讀（會跑別的指令或刪檔）
 FIND_ACTIONS = re.compile(r"(?:^|\s)-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)\b", re.IGNORECASE)
 # 列檔名（D-185）：find 只准帶這些
@@ -93,16 +107,21 @@ def split_bodies(command, powershell=False):
         ch = command[i]
         if quote:
             out.append(ch)
-            if ch == "\\" and quote == '"' and i + 1 < n:
+            if ch == "\\" and quote in ('"', "$'") and i + 1 < n:
                 out.append(command[i + 1])
                 i += 2
                 continue
-            if ch == quote:
+            if ch == quote[-1]:
                 quote = None
             i += 1
             continue
         if ch == "\\" and i + 1 < n:
             out.append(command[i:i + 2])
+            i += 2
+            continue
+        if command.startswith("$'", i):
+            quote = "$'"  # $'…' 裡 \' 是跳脫（不然 $'\'' # … 會被當成註解拿掉）
+            out.append("$'")
             i += 2
             continue
         if ch in "\"'":
@@ -193,6 +212,10 @@ def _split_herestrings(command):
                 quote = None
             i += 1
             continue
+        if ch == "`" and i + 1 < n:
+            out.append(command[i:i + 2])  # 引號外的反引號跳脫下一個字（`' 不是引號）
+            i += 2
+            continue
         if ch == "#" and (i == 0 or command[i - 1] in " \t\n;|&({"):
             j = command.find("\n", i)
             i = n if j < 0 else j  # 註解不跑：整段拿掉（同 bash）
@@ -235,12 +258,16 @@ def _group(text, i, close, powershell):
     while j < n:
         ch = text[j]
         if quote:
-            if ch == esc and quote == '"' and j + 1 < n:
+            if ch == esc and quote in ('"', "$'") and j + 1 < n:
                 j += 2
                 continue
-            if ch == quote:
+            if ch == quote[-1]:
                 quote = None
         elif ch == esc and j + 1 < n:
+            j += 2
+            continue
+        elif not powershell and text.startswith("$'", j):
+            quote = "$'"
             j += 2
             continue
         elif ch in "\"'":
@@ -271,6 +298,15 @@ def substitutions(text, powershell=False, literal=False):
                     continue
                 quote = None
             i += 1
+            continue
+        if quote == "$'":  # bash 的 $'…'：\ 跳脫、不執行任何東西
+            i += 2 if ch == "\\" else 1
+            if ch == "'":
+                quote = None
+            continue
+        if not powershell and not literal and not quote and text.startswith("$'", i):
+            quote = "$'"
+            i += 2
             continue
         if ch == esc and i + 1 < n:
             i += 2
@@ -337,17 +373,53 @@ def verb_of(words):
     return ""
 
 
-def stage_kind(verb, text, code=""):
+def readonly_writes(verb, args):
+    """只讀動詞也會寫檔的寫法（測試 28 F2-5）：sort -o、less -o／-O／--log-file、tree -o 的輸出檔；uniq、xxd 的第二個位置參數是輸出檔。
+    args 是這段的字（不含導向目標），從動詞之後看。"""
+    i = next((k for k, w in enumerate(args) if verb_of([w]) == verb), None)
+    if i is None:
+        return False
+    rest = args[i + 1:]
+    if verb in OUTPUT_FLAGS:
+        letters, longs = OUTPUT_FLAGS[verb]
+        for w in rest:
+            low = w.lower()
+            if low.startswith("--"):
+                if any(low == x or low.startswith(x + "=") for x in longs):
+                    return True
+            elif w.startswith("-") and any(c in letters for c in w[1:]):
+                return True
+        return False
+    if verb in POSITIONAL_OUTPUT:
+        takes_value, count, k = POSITIONAL_OUTPUT[verb], 0, 0
+        while k < len(rest):
+            w = rest[k]
+            if w == "--":
+                count += len(rest) - k - 1
+                break
+            if w.startswith("-") and w != "-":
+                k += 2 if w.lower() in takes_value else 1
+                continue
+            count += 1
+            k += 1
+        return count >= 2
+    return False
+
+
+def stage_kind(verb, text, code="", args=None, powershell=False):
     """D-186：一段指令的種類。text 是這段（記號已換回空白）、code 是要當程式碼看的內文（這段的 heredoc、或管線前面餵過來的）。
+    args：這段的字（不含導向目標），只讀動詞看輸出旗標與位置參數用。
     回 "write"（寫：參數都是寫的目標）、"read"（只讀或不知道會不會寫的執行檔）。導向另外算。"""
-    bare = outside_quotes(text)
+    bare = outside_quotes(text, powershell)
     unquoted = bare if bare is not None else text
     if verb in READONLY_VERBS and not (verb == "find" and FIND_ACTIONS.search(unquoted)):
-        return "read"
+        return "write" if readonly_writes(verb, args or []) else "read"
     if verb in SHELL_WRAPPERS:
         scope = text + "\n" + code
         return "write" if (REDIRECT.search(scope) or WRITE_WORDS.search(scope) or WRITE_CODE.search(scope)) else "read"
     if verb in INTERPRETERS:
+        if verb in SCRIPT_BUILTIN_VERBS and (SCRIPT_BUILTIN_WRITE.search(text) or SCRIPT_BUILTIN_WRITE.search(code)):
+            return "write"  # perl -e 'unlink q(…)'（F2-4）：perl、ruby、php 的內建刪改檔與跑指令
         return "write" if (WRITE_CODE.search(text) or WRITE_CODE.search(code) or WRITE_WORDS.search(unquoted)) else "read"
     if WRITE_WORDS.search(unquoted) or WRITE_CODE.search(text) or WRITE_CODE.search(code):
         return "write"
@@ -394,21 +466,46 @@ _BARE_INTERP = {"python", "python3", "py", "python.exe", "python3.exe", "py.exe"
 _ESCAPE = re.compile(r"\\(?=[^\x00-\x7f]| )")
 
 
-def outside_quotes(cmd):
+def outside_quotes(cmd, powershell=False):
     """去掉引號裡的內容（引號裡的 > ; | 都只是文字）。引號沒有成對時回 None。
-    反斜線跳脫的引號（\\" 與 \\'）不是引號邊界（N-a）。"""
-    out, quote, prev = [], None, ""
-    for ch in cmd:
-        escaped = ch in "\"'" and prev == "\\"
+    Bash：引號外與雙引號裡 \\ 跳脫下一個字（\\" 與 \\' 不是引號邊界，N-a）；單引號裡沒有跳脫，\\ 是普通字（測試 28 F2-1）；$'…' 裡 \\ 跳脫。
+    PowerShell：\\ 一律是普通字，跳脫是反引號（引號外與雙引號裡）；單引號裡的 '' 照關了再開算。"""
+    esc = "`" if powershell else "\\"
+    out, quote, i, n = [], None, 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
         if quote:
-            if ch == quote and not escaped:
+            if ch == esc and quote in ('"', "$'") and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote[-1]:
                 quote = None
-        elif ch in "\"'" and not escaped:
+        elif ch == esc and i + 1 < n:
+            out.append(cmd[i:i + 2])
+            i += 2
+            continue
+        elif not powershell and cmd.startswith("$'", i):
+            quote = "$'"
+            out.append("$")
+            i += 2
+            continue
+        elif ch in "\"'":
             quote = ch
         else:
             out.append(ch)
-        prev = ch
+        i += 1
     return None if quote else "".join(out)
+
+
+def redirect_joint(cmd, i):
+    """cmd[i] 是導向的一部分、不是串接或管線（測試 28 F2-2）：>| 的 |、>& 的 &、&> 的 &。
+    丟到 fd 的 >&1、>&- 先被 DISCARD_OUTPUT 拿掉了，剩下的 >& 後面都是檔。"""
+    ch = cmd[i]
+    if ch == "|":
+        return i > 0 and cmd[i - 1] == ">"
+    if ch == "&":
+        return (i > 0 and cmd[i - 1] == ">") or (cmd.startswith("&>", i) and not (i > 0 and cmd[i - 1] == "&"))
+    return False
 
 
 def norm_cmd(cmd):
@@ -433,7 +530,7 @@ def _tokens(cmd):
         buf, quoted, qchar = [], False, ""
 
     prev = ""
-    for ch in cmd:
+    for i, ch in enumerate(cmd):
         if quote:
             if ch == quote:
                 quote = None
@@ -445,6 +542,9 @@ def _tokens(cmd):
             qchar = qchar or ch
         elif ch == " " and prev == "\\":
             buf.append(ch)  # 跳脫的空白是 token 的一部分（AI\ 產出），N-c 再去掉 \
+        elif redirect_joint(cmd, i):
+            flush()
+            after_redirect = True  # >|、>&檔、&>檔：後面那個是導向目標，不是新的一段（F2-2）
         elif ch.isspace() or ch in _TOKEN_BREAK:
             flush()
             if ch == ">":
@@ -581,7 +681,7 @@ def _walk(command, cwd, powershell=False):
     直譯器與殼的 -c、-e、-Command 後面那個參數是程式碼：只抽裡面的絕對路徑（D-186 (c)）。"""
     cleaned = DISCARD_OUTPUT.sub(" ", command)
     base, expect_cd_target, after_cd, verb = cwd, False, False, ""
-    writing = is_write(command)  # 寫入指令裡像檔名的裸 token（cp /tmp/a 新檔.md）也當路徑，要經區判斷（骨架與來源登記第八輪）
+    writing = is_write(command, powershell)  # 寫入指令裡像檔名的裸 token（cp /tmp/a 新檔.md）也當路徑，要經區判斷（骨架與來源登記第八輪）
     prev = ""
     for token, quoted, after_redirect, first, _qchar in _tokens(cleaned):
         code_arg = (verb_of([verb]) in INTERPRETERS or verb_of([verb]) in SHELL_WRAPPERS) and prev.lower() in CODE_FLAGS and not first
@@ -678,11 +778,11 @@ def unresolved_paths(command, powershell=False):
     return out
 
 
-def is_write(command):
+def is_write(command, powershell=False):
     """引號外有 > 或寫入動詞；有包裝指令（bash -c、cmd /c、powershell -c…）時整句都看；程式碼裡的 open(…,'w') 之類引號內也算。
     導到 null 不算。"""
     cleaned = DISCARD_OUTPUT.sub(" ", command)
-    bare = outside_quotes(cleaned)
+    bare = outside_quotes(cleaned, powershell)
     scope = cleaned if (bare is None or WRAPPER.search(bare)) else bare
     return bool(REDIRECT.search(scope) or WRITE_WORDS.search(scope) or WRITE_CODE.search(cleaned))
 
@@ -702,9 +802,13 @@ def is_single_plugin_call(command, plugin_root, cwd=None, tool=None):
         return False
     if tool != "Bash" and CURLY_QUOTES & set(command):
         return False  # PowerShell 把彎引號當引號，outside_quotes 看不出來；Bash 裡是普通字（manage 第二版第四輪）；不知道是哪個照 PowerShell
-    bare = outside_quotes(command)
-    if bare is None or "\\" in bare or any(ch in SHELL_META for ch in bare):
-        return False
+    # 引號照工具的規則看；不知道是哪個工具就兩種都要過（測試 28 F2-1：'a\' 在 Bash 是關了的引號）
+    for powershell in ((False,) if tool == "Bash" else (True,) if tool == "PowerShell" else (False, True)):
+        bare = outside_quotes(command, powershell)
+        if bare is None or "\\" in bare or any(ch in SHELL_META for ch in bare):
+            return False
+        if not powershell and "$'" in command:
+            return False  # $'…' 的跳脫規則不同，kb 呼叫用不到
     m = _PYTHON.match(command)
     if not m:
         return False

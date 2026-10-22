@@ -9,6 +9,7 @@ scan_all：kb folders add 用，收全部命中、數檔案份數，碰到含 st
 mask_secrets：回合 prompt_head 的遮值（第 5b 節、B-027），關鍵詞後的值換成 ███。
 不含「憑證」：會計憑證、報關憑證是客戶的正常文件。寧可多擋、多遮（D-034，誤擋率併 B-110）。
 """
+import bisect
 import fnmatch
 import os
 import re
@@ -51,9 +52,14 @@ _MARKUP = re.compile(r"^[#>*\-|=_`~]+$")
 _SKIP_MAX = 3
 # 兩個值之間（帳號密碼分別是 jie、abc123）；第二個值不含中日韓字（「密碼 abc、之後再改」的之後不算值）
 _NEXT_VALUE = re.compile(rf"(?:[{_SPACE}]*[、，,/／][{_SPACE}]*|[{_SPACE}]+)(?P<v>[^\s{_STOP_CHARS}㐀-鿿]+)")
-# 值在前（D-187 (b)）：「<值> 是他的密碼」「hunter2 is my password」，<值> 緊接在這段之前
-_VALUE_FIRST = re.compile(rf"(?P<v>[^\s{_STOP_CHARS}]+)[{_SPACE}]*(?:是|is)[{_SPACE}]*"
-                          rf"(?:(?:他|她|我|你|妳|們|的|my|his|her|the|our|your)[{_SPACE}]*)*$", re.IGNORECASE)
+# 值在前（D-187 (b)）：「<值> 是他的密碼」「hunter2 is my password」，<值> 緊接在這段之前。
+# 測試 28 F4：在反轉的字串上從關鍵字的位置往前比（字也反著寫），一個關鍵字只看它前面一小段，整句是線性時間
+_VALUE_MAX = 256
+_VALUE_FIRST_REV = re.compile(rf"(?:[{_SPACE}]*(?:他|她|我|你|妳|們|的|ym|sih|reh|eht|ruo|ruoy))*[{_SPACE}]*(?:是|si)[{_SPACE}]*"
+                              rf"(?P<v>[^\s{_STOP_CHARS}]{{1,{_VALUE_MAX}}})", re.IGNORECASE)
+_RUN = re.compile(rf"[^\s{_STOP_CHARS}]+")
+_BLANK = re.compile(r"\s*")
+_BLANK_SPACE = re.compile(rf"[{_SPACE}]*")
 # kb 指令的值旗標：被守門擋下時 ledger 記指令開頭（密碼與守門開工前補第 2 條）
 _FLAG_VALUE = re.compile(r"(?P<kw>--(?:value|password))(?P<sep>=|\s+)(?P<v>\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE)
 _MERGE_GAP = re.compile(rf"^[{_SPACE}和與及跟、/／]*$")
@@ -120,8 +126,7 @@ def _keywords(text, norm, where):
 def _after_markup(text, pos):
     """值的位置是 markdown 記號時，往後找第一個不含中日韓字、也不是記號的字；找不到回 None。"""
     for _ in range(_SKIP_MAX):
-        rest = text[pos:]
-        start = pos + len(rest) - len(rest.lstrip())
+        start = _BLANK.match(text, pos).end()
         tok = _VALUE.match(text, start)
         if not tok:
             return None
@@ -178,13 +183,20 @@ def mask_secrets(text, known_names=None):
     for m in _FLAG_VALUE.finditer(text):
         cut(m.start("v"), m.end("v"))
     norm, where = _normalized(text)
+    rev, n, runs = text[::-1], len(text), None
     done = 0
     for a, b, values in _keywords(text, norm, where):
         if a < done or _inside(protected, a, b):
             continue
-        before = _VALUE_FIRST.search(text[:a])
-        if before and not _QUESTION.match(before.group("v")) and not _KW.search(_norm_key(before.group("v"))):
-            cut(before.start("v"), before.end("v"))
+        before = _VALUE_FIRST_REV.match(rev, n - a)
+        if before:
+            va, vb = n - before.end("v"), n - before.start("v")
+            v = text[va:vb]
+            if not _QUESTION.match(v) and not _KW.search(v.casefold()) and not _KW.search(_norm_key(v)):
+                if before.end("v") - before.start("v") == _VALUE_MAX:  # 很長的字：往前補到字的開頭（字的起點只算一次）
+                    runs = runs if runs is not None else [m.start() for m in _RUN.finditer(text)]
+                    va = runs[bisect.bisect_right(runs, va) - 1]
+                cut(va, vb)
         link = _CONNECT.match(text, b)
         if not link or link.end() == b:
             continue
@@ -196,7 +208,7 @@ def mask_secrets(text, known_names=None):
             continue
         end = value.end()
         if value.group().casefold() in _SCHEMES:  # Bearer xyz：連後面那個一起
-            nxt = _VALUE.match(text, end + len(text[end:]) - len(text[end:].lstrip(_SPACE)))
+            nxt = _VALUE.match(text, _BLANK_SPACE.match(text, end).end())
             end = nxt.end() if nxt else end
         cut(pos, end)
         for _ in range(values - 1):

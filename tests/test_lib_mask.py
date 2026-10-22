@@ -101,6 +101,26 @@ class NotMasked(unittest.TestCase):
         self.assertEqual(m(""), "")
 
 
+class LinearTime(unittest.TestCase):
+    """測試 28 F4：遮值不能是二次方；200KB 自然中文、2 萬字無空白後接「密碼」都要在 1 秒內（turn hook 逾時 5 秒）。"""
+
+    def timed(self, text):
+        import time
+        start = time.perf_counter()
+        credentials.mask_secrets(text)
+        return time.perf_counter() - start
+
+    def test_large_inputs_under_one_second(self):
+        chunk = "今天跟王先生討論廚房動線與材料，他說網站密碼是 abc123，之後再改。" * 1
+        natural = (chunk * (200_000 // len(chunk) + 1))[:200_000]
+        self.assertLess(self.timed(natural), 1.0)
+        self.assertLess(self.timed("字" * 20_000 + "密碼"), 1.0)
+        self.assertLess(self.timed("帳密 a、b " * 5000), 1.0)
+        self.assertEqual(credentials.mask_secrets("x" * 20_000 + " abc 是他的密碼"), "x" * 20_000 + f" {M} 是他的密碼")
+        long_value = "k" * 1000
+        self.assertEqual(credentials.mask_secrets(f"前面 {long_value} 是他的密碼"), f"前面 {M} 是他的密碼")  # 比 _VALUE_MAX 長的值整個遮
+
+
 class KnownNamesFromInventory(unittest.TestCase):
     """日誌與回合從清冊取檔名（D-187 (c)）：清冊有「密碼 王.txt」，問與結論提到它不遮；清冊讀不到照舊遮。"""
 

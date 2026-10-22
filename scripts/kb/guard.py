@@ -216,7 +216,7 @@ def _tokens_q(cmd, globs_in_quotes=False):
             after_redirect = False
         buf, ubuf, quoted = [], [], False
 
-    for ch in cmd:
+    for i, ch in enumerate(cmd):
         if quote:
             if ch == quote:
                 quote = None
@@ -228,6 +228,9 @@ def _tokens_q(cmd, globs_in_quotes=False):
         elif ch == " " and prev == "\\":
             buf.append(ch)
             ubuf.append(ch)
+        elif cmdparse.redirect_joint(cmd, i):
+            flush()
+            after_redirect = True  # >|、>&檔、&>檔：後面那個是導向目標（F2-2）
         elif ch.isspace() or ch in cmdparse._TOKEN_BREAK:
             flush()
             if ch == ">":
@@ -242,11 +245,14 @@ def _tokens_q(cmd, globs_in_quotes=False):
     return out
 
 
-def _stages(command):
-    """把指令切成子指令與管線段：回 [(子指令序號, 段序號, 段字串)]。引號外的 ; && || & 與換行切子指令，| 切管線段。引號保留給 _tokens 去。"""
-    out, buf, quote, prev = [], [], None, ""
+def _stages(command, powershell=False):
+    """把指令切成子指令與管線段：回 [(子指令序號, 段序號, 段字串)]。引號外的 ; && || & 與換行切子指令，| 切管線段。引號保留給 _tokens 去。
+    引號與跳脫照 cmdparse.outside_quotes（測試 28 F2-1：Bash 單引號裡、PowerShell 的 \\ 都是普通字）；
+    導向裡的 & 與 |（>|、>&檔、&>檔）不切（F2-2）。"""
+    out, buf, quote = [], [], None
+    esc = "`" if powershell else "\\"
     sub = stage = 0
-    i = 0
+    i, n = 0, len(command)
 
     def flush():
         text = "".join(buf).strip()
@@ -254,14 +260,29 @@ def _stages(command):
             out.append((sub, stage, text))
         buf.clear()
 
-    while i < len(command):
+    while i < n:
         ch = command[i]
         if quote:
             buf.append(ch)
-            if ch == quote and prev != "\\":
+            if ch == esc and quote in ('"', "$'") and i + 1 < n:
+                buf.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote[-1]:
                 quote = None
+        elif ch == esc and i + 1 < n:
+            buf.append(command[i:i + 2])
+            i += 2
+            continue
+        elif not powershell and command.startswith("$'", i):
+            quote = "$'"
+            buf.append("$'")
+            i += 2
+            continue
         elif ch in "\"'":
             quote = ch
+            buf.append(ch)
+        elif cmdparse.redirect_joint(command, i):
             buf.append(ch)
         elif ch in ";\n" or command.startswith("&&", i) or command.startswith("||", i) or ch == "&":
             flush()
@@ -273,7 +294,6 @@ def _stages(command):
             stage += 1
         else:
             buf.append(ch)
-        prev = ch
         i += 1
     flush()
     return out
@@ -295,16 +315,18 @@ def _outside_vault(base, vault_n):
     return base is None or not inside(base, vault_n)
 
 
-def _plan_stages(command, bodies):
+def _plan_stages(command, bodies, powershell=False):
     """D-186：每一段的動詞、種類（write／read）、有沒有導向，與它屬於哪個子指令。直譯器與殼的程式碼範圍是自己這段、
     同一個子指令裡任何一段的 heredoc 內文、與管線前面幾段（echo 程式碼 | python、cat <<EOF | bash）。回 [dict]。"""
-    stages = _stages(command)
+    stages = _stages(command, powershell)
     by_sub = {}
     for sub, stage, text in stages:
         by_sub.setdefault(sub, []).append((stage, text))
     out = []
     for sub, stage, text in stages:
-        words = [t for t, _q, _g, _a in _tokens_q(cmdparse.strip_marks(text))]
+        toks = _tokens_q(cmdparse.strip_marks(text))
+        words = [t for t, _q, _g, _a in toks]
+        args = [t for t, _q, _g, a in toks if not a]  # 導向目標以外（只讀動詞數位置參數用，F2-5）
         verb = cmdparse.verb_of(words)
         same = by_sub[sub]
         code = ""
@@ -312,9 +334,9 @@ def _plan_stages(command, bodies):
             # 整句的內文都算它的程式碼：here-string／heredoc 可能先放進變數再餵（$c = @'…'@ 換行 $c | python -，測試 28）
             code = "\n".join(bodies)
             code += "\n" + "\n".join(t for s, t in same if s < stage)
-        bare = cmdparse.outside_quotes(cmdparse.strip_marks(text))
+        bare = cmdparse.outside_quotes(cmdparse.strip_marks(text), powershell)
         out.append({"sub": sub, "stage": stage, "text": text, "verb": verb, "words": words,
-                    "kind": cmdparse.stage_kind(verb, cmdparse.strip_marks(text), code),
+                    "kind": cmdparse.stage_kind(verb, cmdparse.strip_marks(text), code, args, powershell),
                     "redirect": bare is None or ">" in bare, "marks": cmdparse.data_marks(text)})
     return out
 
@@ -344,7 +366,7 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
     out = {"read_dirs": [], "implicit_dirs": [], "read_paths": set(), "write_targets": set(), "write_globs": [],
            "globs": [], "cd_dirs": [], "cd_targets": set(), "token": None, "unparsed": False, "has_write": False,
            "list_only": False, "body_reads": [], "stages": []}
-    plans = _plan_stages(cleaned, bodies)
+    plans = _plan_stages(cleaned, bodies, tool == "PowerShell")
     out["stages"] = plans
     out["list_only"] = bool(plans) and not bodies and all(
         not p["redirect"] and cmdparse.list_only(p["verb"], p["words"]) for p in plans) and all(p["stage"] == 0 for p in plans)
@@ -358,7 +380,6 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         text = plan["text"]
         stage_text = cmdparse.strip_marks(text)
         tokens = _tokens_q(stage_text, globs_in_quotes=(tool == "PowerShell"))
-        bare = cmdparse.outside_quotes(stage_text)
         verb = plan["verb"]
         stage_write = plan["kind"] == "write"
         write_verb = stage_write  # 只有寫入那一段才讓隱含的讀取範圍不走訪

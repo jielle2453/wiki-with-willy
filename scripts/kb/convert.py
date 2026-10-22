@@ -63,6 +63,9 @@ KIND_REASONS = {
 PARTS_WORD = {"xlsx": "工作表", "pptx": "投影片"}
 
 
+PASSWORD_USED = "_password_used"
+
+
 class Refused(Exception):
     """讀不到：args = (第一行原因, 待處理 reason 或 None)。reason 是 None 就不寫待處理。"""
 
@@ -224,20 +227,27 @@ def _extract(vault, kind, path):
 
 
 def convert(vault, sources, entry, path, password=None, secret=False):
-    """回 (result dict, 印給人的行)。讀不到丟 Refused。password：加密的 PDF 帶密碼開（只有 PDF，D-182）。
+    """回 (result dict, 印給人的行)。讀不到丟 Refused。password：加密的 PDF 帶密碼開（只有 PDF，D-182）；
+    真的用了密碼才開得了的，result[PASSWORD_USED] 是 True（呼叫端拿掉，不進 JSON）。
     secret：「可以讀」的密碼檔，暫存叫 <編號>.secret.md。"""
     real = os.path.realpath(str(path))
     result = {"kind": None, "temp": None, "chars": None, "parts": None, "encoding": None, "pages": None,
               "big": False, "path": real, "scanned_pages": None, "images": None}
     kind = extract.probe(path)
     ext = Path(str(path)).suffix.lower() or "沒有副檔名"
+    used = False
     if kind == "encrypted" and ext == ".pdf":
         try:
-            if password or extract.pdf_opens_without_password(path):
-                kind = "pdf"  # 帶了密碼，或只有擁有者密碼（不用密碼就能看）
+            if extract.pdf_opens_without_password(path):
+                kind, password = "pdf", None  # 只有擁有者密碼（不用密碼就能看）：給了密碼也不用（測試 28 F9）
+            elif password:
+                kind, used = "pdf", True
         except extract.Unreadable as e:
             raise Refused(str(e), str(e)) from None
+    elif kind == "pdf":
+        password = None  # 沒加密：給了密碼也不用、不問要不要記
     result["kind"] = kind
+    result[PASSWORD_USED] = used
     if kind in KIND_REASONS:
         first, reason = KIND_REASONS[kind]
         raise Refused(first.format(ext=ext), reason.format(ext=ext))
@@ -401,8 +411,8 @@ def run(args):
     except Refused as e:
         first, reason = e.args
         return _fail(out, as_json, f"讀不到：{first}", _record_unreadable(vault, entry, uri, reason))
+    used = result.pop(PASSWORD_USED, False)
     out.update(result)
-    used = password is not None and result.get("kind") == "pdf"
     if used and saved is None and entry is not None:
         try:
             pending.auto_done(vault, entry["id"], "unreadable", OPENED_HOW, turn.current(vault)["turn"])

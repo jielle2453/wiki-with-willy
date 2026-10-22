@@ -38,6 +38,20 @@ class ManageSkillLine(unittest.TestCase):
         self.assertNotIn("這版還不能開放", body)
 
 
+class A2Followups(unittest.TestCase):
+    """a2 回疑義（spec 最後一條）：answer 骨架指到問密碼那節；README 講 Python 壞了連別的專案都動不了（onFailure: block）。"""
+
+    def test_answer_skeleton_points_to_password_section(self):
+        body = (ROOT / "skills" / "answer" / "SKILL.md").read_text(encoding="utf-8")
+        skeleton = body[body.index("## 骨架"):body.index("## 共通")]
+        self.assertIn("問密碼：`references/find.md` 第八節", skeleton)
+
+    def test_readme_python_broken_blocks_everything(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Python 壞了時，連別的專案的 Claude 也動不了；先修 Python，或在外掛畫面暫時停用 wiki-with-willy", readme)
+        self.assertNotIn("Claude Code 會當作沒有 hook，照常放行", readme)
+
+
 class NoOldPhrases(unittest.TestCase):
     """驗收 15：skills 與程式裡「這版還不能開放」「這版記不起來」「等密碼與守門那一版」為 0（只在 design/）。"""
 

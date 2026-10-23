@@ -53,6 +53,7 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - **回合歸屬（D-195）**：
   1. `kb cards dispatch` 開一個 job（`batches.json`）：這個 session 有 open 的 job 就沿用，否則新開一個，`turn` 記目前回合；同一個 job 的批次都算這個回合，不管中間客戶說了什麼。job 在 dispatch 發現什麼都不剩、或 `cards stop` 時關。
   2. `SubagentStart`（card-maker）把 `agent_id` 記進 `batches.json` 的 `agents`：`turn` 取這個 session open 的 job 的回合，沒有 job 取目前回合。
+  3b. PostToolUse（`hooks/output_log.py`）同理：驗卡後重寫總目錄、重渲染綜合卡快取、`register_output` 的備份與找舊卡備份，都用 `agent_turn` 找到的回合（同一支函式）。
   3. 守門（`hooks/guard.py`）的輸入帶 `agent_id` 且在 `agents` 裡：檔案工具寫入的備份與大改動計數用那個回合（`turn.before_write` 收回合代號）；Bash 放行的單一 kb 呼叫用 PreToolUse 的 `updatedInput` 在 `kb.py` 路徑後面插 `--turn <回合> --agent <agent_id>`（整個 input 照抄、只換 `command`，`permissionDecision` 仍是 allow）。主對話與其他子代理的呼叫不改。
   4. `kb.py` 收全域 `--turn`、`--agent`（放在子命令前、`--help` 不列）：有 `--turn` 時這次呼叫的備份進那個回合、算「對話裡」（不寫程式段，D-085）；回合不存在 exit 3「回合不存在：<代號>」。
   - 實作先驗 `updatedInput` 在子代理的 Bash 呼叫生效（官方文件沒寫子代理會不會不同）；不生效就停下來回報，不自己換做法。
@@ -151,7 +152,7 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 ## 可以動 / 不可以動
 實作在 worktree：`git worktree add ..\llm-wiki-j-cardmaker -b spec/card-maker c3fdf63`（底是密碼與守門的最終版，見開工條件），之後全部在 `C:\Users\Jie\Desktop\llm-wiki-j-cardmaker` 做；commit 一律 `git -c user.name=…`，不要用 `git config`。
 
-可以動：`agents/card-maker.md`（新）、`hooks/subagent.py`（新）、`hooks/hooks.json`、`hooks/guard.py`、`hooks/turn.py`、`hooks/stop.py`、`hooks/session.py`（只 `INGEST_HINT` 與 B-412 那幾行）、`scripts/kb/cli.py`、`scripts/kb/cards.py`、`scripts/kb/turn_cli.py`、`scripts/kb/journal_cli.py`、`scripts/kb/_lib/batches.py`（新）、`scripts/kb/_lib/plan.py`、`scripts/kb/_lib/cards.py`（只為 `materials` 重用）、`scripts/kb/_lib/turn.py`、`scripts/kb/_lib/journal.py`、`config/defaults.json`、`skills/ingest/`、`README.md`、`CLAUDE.md`、`tests/`。
+可以動：`agents/card-maker.md`（新）、`hooks/subagent.py`（新）、`hooks/hooks.json`、`hooks/guard.py`、`hooks/output_log.py`（只改取回合：payload 有 `agent_id` 且 `turn.agent_turn` 查得到就用它，否則照舊）、`hooks/turn.py`、`hooks/stop.py`、`hooks/session.py`（只 `INGEST_HINT` 與 B-412 那幾行）、`scripts/kb/cli.py`、`scripts/kb/cards.py`、`scripts/kb/turn_cli.py`、`scripts/kb/journal_cli.py`、`scripts/kb/_lib/batches.py`（新）、`scripts/kb/_lib/plan.py`、`scripts/kb/_lib/cards.py`（只為 `materials` 重用）、`scripts/kb/_lib/turn.py`、`scripts/kb/_lib/journal.py`、`config/defaults.json`、`skills/ingest/`、`README.md`、`CLAUDE.md`、`tests/`。
 
 不可以動：`scripts/kb/guard.py`、`scripts/kb/_lib/cmdparse.py`、`scripts/kb/_lib/credentials.py`（守門判斷）、`rules/core.md`、其他 skill、`tests/evals/` 其他四份、`skeleton/`、`.claude-plugin/plugin.json`（版號發行時才動）。
 
@@ -228,3 +229,4 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-23：開工條件改（a2 轉、使用者向 22 確認「可以」）：實作先開工、底用 c3fdf63；測試與確認等密碼與守門發行。
 - 2026-10-23（實作中疑義，22 定）：連結型條目不進批次、主對話照舊做；讀不到用新指令 `kb cards unreadable` 記（在 `cards.py`，不動 `convert.py`）；驗收加 13c。
 - 2026-10-23（實作中疑義，22 定）：新 INGEST_HINT 讓開場最壞 416 字超過 D-070 的 400；選 (c) 開場句照舊、不提 card-maker，派工只寫在 ingest 本文。
+- 2026-10-23（實作中疑義，22 定）：`hooks/output_log.py` 也照子代理的回合（總目錄、綜合卡快取、AI 產出登記的備份），加進可以動、只改取回合那一行；否則驗收 13 退不乾淨。

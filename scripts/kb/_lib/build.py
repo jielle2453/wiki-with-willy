@@ -288,10 +288,7 @@ def start(cwd):
     p = Path(cwd).resolve()
     if _above(p) is not None:
         raise Refused(ALREADY)
-    held = Path(str(_path(p)) + ".lock")
-    if (p / ".system").is_dir() and not held.exists() and not _path(p).is_file():
-        raise Refused(ALREADY)  # 有 .system/、沒有人在建：本來就是知識庫
-    (p / ".system").mkdir(parents=True, exist_ok=True)
+    (p / ".system").mkdir(parents=True, exist_ok=True)  # 判斷全在鎖裡做：兩個 start 不會一個看到半套
     try:
         with lock(p):  # 兩個視窗同時 start：慢的那個等到這裡，看到 build.json 就回 BUSY（第一輪修 S10）
             data = load(p)

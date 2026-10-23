@@ -232,3 +232,4 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-23（實作中疑義，22 定）：`hooks/output_log.py` 也照子代理的回合（總目錄、綜合卡快取、AI 產出登記的備份），加進可以動、只改取回合那一行；否則驗收 13 退不乾淨。
 - 2026-10-23：實作回報（5aca4f2、e6b1fcd，commit 後全部測試 exit 0 由實作自報，22 另跑核對中）。疑義 13 條，22 定：1～9 照它的解讀（plan 的 cards 步也列憑證樣式檔與記過有密碼的、開場份數在記成讀不到前照算、approval 算全部未派的 stale、--source 時綜合卡只等範圍內、batches.json 備份但不算「改了」、`turn.start` 把舊回合欄位併進 versions 的 turn.json、dispatch 多 stopped、tell 講標題、只有 output_log 有取回合問題）；10 note 的 preference.md 第 46 行「按停止」加進可以動、照 D-200 改（I-116）；11～13 照記。`_lib/turn.py` 的改動跟密碼與守門確認後的修正（secret_shown 跨回合）同一支，合併時注意。
 - 2026-10-24（22，桌面版確認 B 段）：第 5 步「剛剛那批全部退回」只退得到最近一句（名字那句），整批退不回。使用者先選「退到指定那句為止」，看過後改成「先問要重做還是不讀」，D-228 照改（`--to` 不做）；整批標記重做在 build 分支一起做，確認補驗第 5、6 步。
+- 2026-10-24（22，B 段修後）：認領改成不分對話（兩個視窗不切同一批）；為了不讓關掉的視窗卡住新對話（B-412、確認第 6 步），加 SessionEnd 放掉那個對話的批次，另以批次的 last_seen 超過 `card_batch_idle_minutes`（10）當沒人在做、可重切；一般整理不加「接手整理」的說法。

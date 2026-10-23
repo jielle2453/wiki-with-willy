@@ -9182,6 +9182,201 @@
    "expect": "deny",
    "來源": "密碼與守門-測試.md（28 第四輪）",
    "note": "R4 對照：Remove-Item 照擋"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls \"<RAW>/客戶案件\" | head -5"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #10：列檔名接只處理文字的管線（D-185）",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls \"<RAW>/客戶案件\" | sort | wc -l"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #10",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls \"<RAW>/客戶案件\" | grep 報價"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #10",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls -la \"<RAW>/客戶案件\" | tail -3"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #10",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>\\客戶案件\" | Select-Object -ExpandProperty Name"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #11",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\" | Where-Object { $_.Name -like '*報價*' } | Sort-Object Name"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #11",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\" | Measure-Object"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #11",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls \"<RAW>/客戶案件\" | xargs cat"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #10 對照：接讀內容的照擋",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls \"<RAW>/客戶案件\" | grep -r 密碼"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #10 對照：grep -r 會讀內容",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls \"<RAW>/客戶案件\" | grep -f \"<RAW>/客戶案件/網站密碼.xlsx\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #10 對照：grep -f 讀檔",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\" | Get-Content"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #11 對照",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\" | ForEach-Object { Get-Content $_ }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #11 對照",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\" | Select-String 密碼"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #11 對照：Select-String 讀內容",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\" | Where-Object { (Get-Content $_) -match 'x' }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #11 對照：比的是內容",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\" | Where-Object { gc $_ }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
+   "note": "確認 #11 對照：別名 gc",
+   "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
   }
  ]
 }

@@ -35,6 +35,7 @@ SAFE_PHRASES = (
     "讀不到：有密碼", "檔名像密碼或金鑰", "（這句回答有密碼，沒記）", "這組密碼沒說過可以用在別的檔", "密碼不對",
     "這台電腦不是 Windows，存不了密碼", "給我密碼就能打開，要我記住也可以", "不製卡：檔名像密碼或金鑰",
     "裡不要放密碼；要記的話跟我說『記下來』，我存進這台電腦的憑證管理員",
+    "需要客戶按允許才會執行",  # 守門 ask 的前綴（D-212）；客戶貼回時不能被當成值（確認落差 A）
 )
 _SPACE = " \t　"
 # 關鍵字到值之間（D-187 (b)）：可以先有幾個虛字（我設成、都用、分別是），再一個以上的分隔；或只有空白（單一換行也算）
@@ -57,6 +58,7 @@ _NEXT_VALUE = re.compile(rf"(?:[{_SPACE}]*[、，,/／][{_SPACE}]*|[{_SPACE}]+)(
 _VALUE_MAX = 256
 _VALUE_FIRST_REV = re.compile(rf"(?:[{_SPACE}]*(?:他|她|我|你|妳|們|的|ym|sih|reh|eht|ruo|ruoy))*[{_SPACE}]*(?:是|si)[{_SPACE}]*"
                               rf"(?P<v>[^\s{_STOP_CHARS}]{{1,{_VALUE_MAX}}})", re.IGNORECASE)
+_NEGATION = ("不", "並非", "并非")  # 值在前的「<值>是密碼」前一個字是否定時不遮
 _RUN = re.compile(rf"[^\s{_STOP_CHARS}]+")
 _BLANK = re.compile(r"\s*")
 _BLANK_SPACE = re.compile(rf"[{_SPACE}]*")
@@ -192,7 +194,8 @@ def mask_secrets(text, known_names=None):
         if before:
             va, vb = n - before.end("v"), n - before.start("v")
             v = text[va:vb]
-            if not _QUESTION.match(v) and not _KW.search(v.casefold()) and not _KW.search(_norm_key(v)):
+            # 「都不是密碼」「不是密碼」是否定，不是值（確認落差 B）
+            if not v.endswith(_NEGATION) and not _QUESTION.match(v) and not _KW.search(v.casefold()) and not _KW.search(_norm_key(v)):
                 if before.end("v") - before.start("v") == _VALUE_MAX:  # 很長的字：往前補到字的開頭（字的起點只算一次）
                     runs = runs if runs is not None else [m.start() for m in _RUN.finditer(text)]
                     va = runs[bisect.bisect_right(runs, va) - 1]

@@ -230,6 +230,25 @@ def get(vault, name):
     return hit[0], value
 
 
+SAVED_VALUE_MIN = 4  # 短於這個的值不拿來比（1、ab 這種到處都有，會誤判）
+
+
+def saved_values(vault):
+    """這個知識庫存在憑證管理員的值（4 個字以上），給 Stop 比對回答用（桌面版確認後縱深防禦）。只讀：
+    知識庫還沒有編號（從沒存過）回空清單，不建 vault.json。讀不到丟 Refused 或 OSError，呼叫端跳過、寫 log。"""
+    from kb._lib import vault as vault_lib
+    vid = vault_lib.vault_id(vault)
+    if not vid or (BACKEND is None and sys.platform != "win32"):
+        return []  # 沒編號或不是 Windows：本來就存不了，不算讀不到
+    backend = _backend()
+    values = []
+    for target in backend.targets(f"{PREFIX}/{vid}/"):
+        value = backend.read(target)
+        if value and len(value) >= SAVED_VALUE_MIN:
+            values.append(value)
+    return values
+
+
 def forget(vault, name, turn_id):
     """刪那一筆，連用它授權的種類一起拿掉（unlock.json）。回拿掉的種類 label 清單。"""
     hit = find(vault, name)

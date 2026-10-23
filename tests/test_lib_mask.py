@@ -121,6 +121,19 @@ class LinearTime(unittest.TestCase):
         self.assertEqual(credentials.mask_secrets(f"前面 {long_value} 是他的密碼"), f"前面 {M} 是他的密碼")  # 比 _VALUE_MAX 長的值整個遮
 
 
+
+class ConfirmOverMask(unittest.TestCase):
+    """桌面版確認落差 A、B：程式固定句「需要客戶按允許才會執行」不遮；「值在前」遇到否定（不是密碼）不遮，句意不能顛倒。"""
+
+    def test_safe_phrase_and_negation(self):
+        text = "取出工地大門密碼\n需要客戶按允許才會執行：要把存好的「工地大門」密碼顯示出來"
+        self.assertEqual(credentials.mask_secrets(text), text)
+        for text in ("命中的只有幾個回合編號裡剛好有這四個字，都不是密碼", "這個不是密碼", "abc 不是密碼", "那串也不是他的密碼"):
+            with self.subTest(text=text):
+                self.assertEqual(credentials.mask_secrets(text), text)
+        self.assertEqual(credentials.mask_secrets("abc 是他的密碼"), f"{M} 是他的密碼")
+
+
 class KnownNamesFromInventory(unittest.TestCase):
     """日誌與回合從清冊取檔名（D-187 (c)）：清冊有「密碼 王.txt」，問與結論提到它不遮；清冊讀不到照舊遮。"""
 

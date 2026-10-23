@@ -198,7 +198,7 @@ def _is_recursive_flag(verb, token):
     return low in ("-r", "-recurse") or low.startswith("-rec")
 
 
-def _tokens_q(cmd, globs_in_quotes=False):
+def _tokens_q(cmd, globs_in_quotes=False, powershell=None):
     """跟 cmdparse._tokens 同一套切法，多記一個「是不是萬用字元 token」（Q7：Bash 只認引號外；V1：PowerShell 的 cmdlet 自己會展開引號裡的，照收；
     第十輪 A6：要含 *，或 ?／[ 加路徑分隔符且不是網址）。token 含 {a,b} 先展開成各組合（第十輪 A1）。
     回 [(字串, 有引號, 是萬用字元, 緊接在 > 後面)]。"""
@@ -216,7 +216,13 @@ def _tokens_q(cmd, globs_in_quotes=False):
             after_redirect = False
         buf, ubuf, quoted = [], [], False
 
+    powershell = globs_in_quotes if powershell is None else powershell
+    skip = 0
     for i, ch in enumerate(cmd):
+        if skip:
+            skip -= 1
+            prev = ch
+            continue
         if quote:
             if ch == quote:
                 quote = None
@@ -225,6 +231,13 @@ def _tokens_q(cmd, globs_in_quotes=False):
         elif ch in "\"'":
             quote = ch
             quoted = True
+        elif not powershell and cmdparse.escaped_break(cmd, i):
+            skip = 1  # find 的 \;、行尾 \ 續行：單獨的 \ 不是磁碟根（測試 28 N4）
+            if cmd[i + 1] not in "\r\n":
+                buf.append(cmd[i + 1])
+                ubuf.append(cmd[i + 1])
+            elif cmd.startswith("\r\n", i + 1):
+                skip = 2
         elif ch == " " and prev == "\\":
             buf.append(ch)
             ubuf.append(ch)
@@ -324,7 +337,7 @@ def _plan_stages(command, bodies, powershell=False):
         by_sub.setdefault(sub, []).append((stage, text))
     out = []
     for sub, stage, text in stages:
-        toks = _tokens_q(cmdparse.strip_marks(text))
+        toks = _tokens_q(cmdparse.strip_marks(text), powershell=powershell)
         words = [t for t, _q, _g, _a in toks]
         args = [t for t, _q, _g, a in toks if not a]  # 導向目標以外（只讀動詞數位置參數用，F2-5）
         verb = cmdparse.verb_of(words)
@@ -335,11 +348,51 @@ def _plan_stages(command, bodies, powershell=False):
             # 整句的內文都算它的程式碼：here-string／heredoc 可能先放進變數再餵（$c = @'…'@ 換行 $c | python -，測試 28）
             code = "\n".join(bodies)
             code += "\n" + "\n".join(t for s, t in same if s < stage)
+            fed = "\n".join([text] + [bodies[m] for m in cmdparse.data_marks(text) if m < len(bodies)]
+                            + [t for s, t in same if s < stage])
+            if cmdparse._VAR_INSIDE.search(fed):
+                # 程式碼經變數餵（c='rm T'; bash <<< "$c"、echo "$c" | bash、bash -c "$c"）：變數在別處設，整句都算它的程式碼（測試 28 N5）
+                code += "\n" + cmdparse.strip_marks(command)
+                var_code = True
+            else:
+                var_code = False
+        else:
+            var_code = False
         bare = cmdparse.outside_quotes(cmdparse.strip_marks(text), powershell)
-        out.append({"sub": sub, "stage": stage, "text": text, "verb": verb, "words": words, "runs": runs,
+        out.append({"sub": sub, "stage": stage, "text": text, "verb": verb, "words": words, "runs": runs, "var_code": var_code,
                     "kind": cmdparse.stage_kind(runs, cmdparse.strip_marks(text), code, args, powershell),
                     "redirect": bare is None or ">" in bare, "marks": cmdparse.data_marks(text)})
     return out
+
+
+_VALUE_PARAM = re.compile(r"-(?:value|inputobject)\s*:?\s*$", re.IGNORECASE)
+
+
+def _substituted_args(text, runs, powershell):
+    """寫入那段的參數是指令替換（$(…)、反引號、<(…)；PowerShell 的 (…)、$(…)、@(…)）：目標推不出來（測試 28 N6）。
+    替換本身另外遞迴判；這裡把替換換成一個佔位字後這段還是寫，才算目標來自替換（kb.py version @(Remove-Item x) 的寫在替換裡，不算）。
+    PowerShell 的 {…}、@{…} 不是參數值；接在 -Value、-InputObject 後面的是要寫的內容，不是目標。拆不出來也算。"""
+    try:
+        subs = cmdparse.substitutions(text, powershell)
+    except cmdparse.Unbalanced:
+        return True
+    spans = []
+    for pos, inner in subs:
+        if powershell and not (text.startswith(("$(", "@("), pos) or text[pos] == "("):
+            continue
+        if powershell and _VALUE_PARAM.search(text[:pos]):
+            continue
+        end = text.find(inner, pos) + len(inner) + 1
+        if not any(a <= pos < b for a, b in spans):
+            spans.append((pos, end))
+    if not spans:
+        return False
+    blanked, last = [], 0
+    for a, b in sorted(spans):
+        blanked.append(text[last:a] + " KBSUBST ")
+        last = b
+    blanked.append(text[last:])
+    return cmdparse.stage_kind(runs, "".join(blanked), "", None, powershell) == "write"
 
 
 def body_paths(body):
@@ -391,6 +444,9 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
             # 目標從前一段的輸出來（| xargs rm、| Remove-Item、| % { rm $_ }、kb … | xargs rm -rf）：推不出會寫到哪，一律擋，
             # 前一段是 kb 也一樣（測試 28 N2）。| Set-Content x 這類寫的是內容、目標是點名的檔，照一般判
             out["unparsed"] = True
+        if stage_write and (verb in cmdparse.PIPE_ARG_VERBS or _substituted_args(stage_text, plan["runs"], tool == "PowerShell")):
+            # 目標來自指令替換或檔案清單（rm -rf $(kb … folders find …)、rm $(cat list)、xargs -a list rm）：跟 N2 同一條（測試 28 N6）
+            out["unparsed"] = True
         switch_ok = tool == "PowerShell" or verb in cmdparse.SWITCH_VERBS  # X3
         stage_base = base
         if stage_write and stage_base in out["cd_targets"]:
@@ -411,6 +467,9 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         if stage_write and (plan["runs"] in cmdparse.INTERPRETERS or plan["runs"] in cmdparse.SHELL_WRAPPERS):
             for body in bodies:  # 直譯器的程式碼要寫：整句內文裡的路徑都是目標（經變數餵的也算）
                 own.extend(p for p in (_norm(raw, stage_base) for raw in body_paths(body)) if p is not None)
+            if plan["var_code"]:  # 程式碼經變數餵：整句裡的絕對路徑都是目標（N5）
+                own.extend(p for p in (_norm(raw, stage_base) for raw in cmdparse.code_paths(cmdparse.strip_marks(cleaned)))
+                           if p is not None)
         expect_cd, has_read_path = False, False
         verbs, flags, stage_globs, redirect_targets = [], [], [], []
         for tok, quoted, glob_out, after_redirect in tokens:

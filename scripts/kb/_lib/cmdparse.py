@@ -557,7 +557,12 @@ def norm_cmd(cmd):
 SWITCH_VERBS = {"cmd", "cmd.exe", "findstr", "robocopy", "xcopy", "dir", "attrib", "icacls"}
 
 
-def _tokens(cmd):
+def escaped_break(cmd, i):
+    """Bash：cmd[i] 是 \\，後面接 ; | & < > ( ) 或換行——跳脫成普通字（find 的 \\;）或續行，不是一個叫 \\ 的路徑（測試 28 N4）。"""
+    return cmd[i] == "\\" and i + 1 < len(cmd) and (cmd[i + 1] in _TOKEN_BREAK or cmd[i + 1] in "\r\n")
+
+
+def _tokens(cmd, powershell=False):
     """回 [(字串, 有引號, 緊接在 > 後面, 是不是一段的第一個 token, 第一個引號字元或空字串)]。引號裡的空白與符號保留；引號沒成對就一路到底。"""
     out, buf, quote, quoted, after_redirect, first, qchar = [], [], None, False, False, True, ""
 
@@ -569,8 +574,12 @@ def _tokens(cmd):
             first = False
         buf, quoted, qchar = [], False, ""
 
-    prev = ""
+    prev, skip = "", 0
     for i, ch in enumerate(cmd):
+        if skip:
+            skip -= 1
+            prev = ch
+            continue
         if quote:
             if ch == quote:
                 quote = None
@@ -580,6 +589,12 @@ def _tokens(cmd):
             quote = ch
             quoted = True
             qchar = qchar or ch
+        elif not powershell and escaped_break(cmd, i):
+            skip = 1  # find 的 \;、行尾 \ 續行：單獨的 \ 不是磁碟根（測試 28 N4）
+            if cmd[i + 1] not in "\r\n":
+                buf.append(cmd[i + 1])
+            elif cmd.startswith("\r\n", i + 1):
+                skip = 2
         elif ch == " " and prev == "\\":
             buf.append(ch)  # 跳脫的空白是 token 的一部分（AI\ 產出），N-c 再去掉 \
         elif redirect_joint(cmd, i):
@@ -723,7 +738,7 @@ def _walk(command, cwd, powershell=False):
     base, expect_cd_target, after_cd, verb = cwd, False, False, ""
     writing = is_write(command, powershell)  # 寫入指令裡像檔名的裸 token（cp /tmp/a 新檔.md）也當路徑，要經區判斷（骨架與來源登記第八輪）
     prev = ""
-    for token, quoted, after_redirect, first, _qchar in _tokens(cleaned):
+    for token, quoted, after_redirect, first, _qchar in _tokens(cleaned, powershell):
         code_arg = (verb_of([verb]) in INTERPRETERS or verb_of([verb]) in SHELL_WRAPPERS) and prev.lower() in CODE_FLAGS and not first
         prev = token
         if first:
@@ -802,7 +817,7 @@ def unresolved_paths(command, powershell=False):
     丟掉輸出的 >$null、| Out-Null，與 PowerShell 自動變數（$false $true $null $_ $PSItem $args $LASTEXITCODE）不算；
     +%Y%m%d、--format=%H、-Confirm:$false 這些不是整個 token 是變數的也不算。呼叫端對寫入指令有就 deny unparsed（I-031）；讀取指令不看。"""
     out = []
-    for text, _quoted, after_redirect, _first, qchar in _tokens(DISCARD_OUTPUT.sub(" ", command)):
+    for text, _quoted, after_redirect, _first, qchar in _tokens(DISCARD_OUTPUT.sub(" ", command), powershell):
         if not text or qchar == "'" or _URL.match(text):
             continue
         m = _VAR_WHOLE.match(text)

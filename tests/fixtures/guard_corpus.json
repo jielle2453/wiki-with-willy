@@ -8882,6 +8882,186 @@
    "expect": "pass",
    "來源": "密碼與守門-測試.md（28 第二輪，附錄 B）",
    "note": "N2 對照：tee 的目標是點名的檔"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "find . -name \"*.md\" -exec grep -l x {} \\;"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N4：\\; 是 find 的參數，不是磁碟根（8139a2f 起誤擋）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "find 檔案索引 -name \"*.md\" -exec head -3 {} \\;"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N4"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "grep a f \\; echo"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N4：單獨的 \\; 不是路徑"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "grep -rn 報價 \\\n  檔案索引"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N4：行尾 \\ 續行"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "find . -name \"*.md\" -exec rm {} \\;"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N4 對照：-exec rm 照擋"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "c='rm \"<V>/系統/待處理.md\"'; bash <<< \"$c\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N5：變數經 <<< 餵殼"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "c=\"open('<V>/系統/待處理.md','w')\"; python <<< \"$c\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N5：變數經 <<< 餵直譯器"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "c='rm \"<V>/系統/待處理.md\"'; echo \"$c\" | bash"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N5 同類：變數經管線餵殼"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "$c = 'Remove-Item \"<V>/系統/待處理.md\"'; $c | powershell -"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N5 同類：PowerShell 一般字串經變數餵殼"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "rm -rf $(python \"<PLUGIN>/scripts/kb.py\" folders find 信義王)"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6：寫入目標來自指令替換（kb 的輸出）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "rm $(cat list.txt)"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6：寫入目標來自檔案內容"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "rm `cat list.txt`"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6：反引號"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "xargs -a \"<OUT>/list\" rm"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6：xargs -a 檔案清單"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "xargs --arg-file=\"<OUT>/list\" rm"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6：xargs --arg-file"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Remove-Item (Get-Content list.txt)"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6：PowerShell 子運算式當目標"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Remove-Item $(Get-Content list.txt)"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6：PowerShell $(…) 當目標"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Set-Content \"<OUT>/d.txt\" -Value (Get-Date)"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6 對照：-Value 是內容不是目標"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "xargs -a \"<OUT>/list\" grep -l x"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
+   "note": "N6 對照：xargs -a 只讀"
   }
  ]
 }

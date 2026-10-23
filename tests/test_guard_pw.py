@@ -277,5 +277,23 @@ class Round28c(Base):
             self.assertDecision(tool, cmd, "pass")
 
 
+class Round28d(Base):
+    """測試 28 第四輪（報告附錄 C）：\; 與行尾續行不是磁碟根（N4）、變數經 <<< 或管線餵殼（N5）、
+    寫入目標來自指令替換或檔案清單（N6）。語料同一批。"""
+
+    def test_backslash_tokens_variable_feed_and_substituted_targets(self):
+        v, o = self.V.as_posix(), self.out.as_posix()
+        t = f"{v}/系統/待處理.md"
+        kb = f'python "{ROOT.as_posix()}/scripts/kb.py"'
+        for cmd in ('find . -name "*.md" -exec grep -l x {} \\;', "grep a f \\; echo", "grep -rn 報價 \\\n  檔案索引",
+                    f'echo "$(date)" > "{o}/d.txt"', f'xargs -a "{o}/list" grep -l x'):
+            self.assertDecision("Bash", cmd, "pass")
+        self.assertDecision("PowerShell", f'Set-Content "{o}/d.txt" -Value (Get-Date)', "pass")
+        for tool, cmd in (("Bash", f"c='rm \"{t}\"'; bash <<< \"$c\""), ("Bash", f"c='rm \"{t}\"'; echo \"$c\" | bash"),
+                          ("Bash", f"rm -rf $({kb} folders find 信義王)"), ("Bash", "rm $(cat list.txt)"),
+                          ("Bash", f'xargs -a "{o}/list" rm'), ("PowerShell", "Remove-Item (Get-Content list.txt)")):
+            self.assertDecision(tool, cmd, "deny")
+
+
 if __name__ == "__main__":
     unittest.main()

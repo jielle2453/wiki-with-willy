@@ -3,6 +3,8 @@ note 給這一句的「做了」一句白話（D-084，AI 覆寫程式地板）�
 CLI 由模型呼叫時拿不到 session_id，用 .system/turns/current.json（最近一句話的回合，B-019）。
 note、redact 進來的字一律再過 mask_secrets（多遮不改）；工作日誌那行存在才改，改了就重渲染。
 note、redact 先改 jsonl（永久紀錄優先）再改回合檔；鎖等 30 秒，等不到印一句 exit 3、什麼都沒寫（測試後修正 M4）。
+approve、note 收 --turn <回合>（card-maker，D-195）：改那個回合（整批整理的 job 回合，dispatch 給的指令帶它），
+回合不存在印「回合不存在：<代號>」exit 3。
 """
 import argparse
 import json
@@ -10,6 +12,7 @@ import os
 from pathlib import Path
 
 from kb import guard
+from kb.cli import NO_SUCH_TURN
 from kb._lib import credentials, journal, turn
 from kb._lib import io as kio
 from kb._lib.io import read_json, write_json_atomic
@@ -24,18 +27,27 @@ def add_arguments(sub):
     cur = subs.add_parser("current", help="印目前回合：代號、問、已備份檔數、上限狀態", description="印目前回合。")
     cur.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
     ap = subs.add_parser("approve", help="客戶同意後解除這一回合的綜合卡張數上限", description="解除這一回合的綜合卡張數上限。")
+    ap.add_argument("--turn", dest="target_turn", help="改這個回合（整批整理的回合）；沒給是這一句")
     ap.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
     no = subs.add_parser("note", help="給這一句的「做了」一句白話，寫進工作日誌", description="給這一句的「做了」一句白話。")
     no.add_argument("text", help="白話一句")
+    no.add_argument("--turn", dest="target_turn", help="記在這個回合（整批整理的回合）；沒給是這一句")
     rd = subs.add_parser("redact", help="把這一句的「問」換成遮好的句子", description="把這一句的「問」換成遮好的句子。")
     rd.add_argument("text", help="遮好的句子")
 
 
-def _note(vault, text):
-    t = turn.current(vault)
+def _note(vault, text, target=None):
+    t = turn.turn_data(vault, target) if target else turn.current(vault)
+    if t is None:
+        print(NO_SUCH_TURN.format(target))
+        return 3
     note = credentials.mask_secrets(" ".join(str(text).split()))  # 先壓空白再遮（M2「一律」，驗收 37）
     journal.update_turn(vault, turn.journal_key(t), note=note, note_by="ai")  # 退回後接著的回合寫回原回合那行
-    turn.set_note(vault, t.get("session_id"), note)
+    if target:
+        t["note"] = note
+        turn.save_turn(vault, t)
+    else:
+        turn.set_note(vault, t.get("session_id"), note)
     print("記下了")
     return 0
 
@@ -69,14 +81,18 @@ def run(args):
     as_json = getattr(args, "json", False)
     try:
         if args.turn_command == "note":
-            return _note(vault, args.text)
+            return _note(vault, args.text, args.target_turn)
         if args.turn_command == "redact":
             return _redact(vault, args.text)
     except TimeoutError:
         print(LOCK_BUSY)
         return 3
     if args.turn_command == "approve":
-        t = turn.approve(vault)
+        try:
+            t = turn.approve(vault, turn_id=args.target_turn)
+        except turn.NoSuchTurn:
+            print(NO_SUCH_TURN.format(args.target_turn))
+            return 3
         if as_json:
             print(json.dumps({"turn": t["turn"], "approved": True}, ensure_ascii=False))
         else:

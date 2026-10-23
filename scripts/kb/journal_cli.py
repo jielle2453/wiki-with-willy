@@ -135,7 +135,10 @@ def run(args):
 
 def in_conversation(vault):
     """對話裡叫的（D-085 補）：current.json 有 session_id 且 done 為 false，改動併進那一句、Stop 會補記，不另寫程式段。
-    對話答完（done true）後在終端機跑的不算。只讀不開新回合；versions 在動作前判斷。"""
+    對話答完（done true）後在終端機跑的不算。只讀不開新回合；versions 在動作前判斷。
+    kb.py 帶 --turn（card-maker 的呼叫，守門插的）一律算對話裡：改動已備進那個回合，不另寫程式段（D-195）。"""
+    if turn.OVERRIDE:
+        return True
     try:
         data = turn._read_turn(turn._current_file(vault))
     except OSError:

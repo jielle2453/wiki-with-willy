@@ -262,3 +262,42 @@ class SelfTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+AGENT_DESC_MAX_CHARS = 600
+AGENT_BODY_MAX_CHARS = 3000
+CARD_MAKER = ROOT / "agents" / "card-maker.md"
+SUBAGENT_HOOK = ROOT / "hooks" / "subagent.py"
+
+
+class CardMakerBudget(unittest.TestCase):
+    """card-maker（驗收 15）：描述 600 字內、本文 3000 字內；SubagentStart 注入的狀態部分守開場預算、core 守 core 預算。"""
+
+    def test_agent_description_and_body(self):
+        if not CARD_MAKER.exists():
+            self.skipTest("agents/card-maker.md 尚未建立")
+        desc, body = split_skill(read(CARD_MAKER))
+        self.assertTrue(desc)
+        self.assertLessEqual(len(desc), AGENT_DESC_MAX_CHARS)
+        self.assertLessEqual(len(body), AGENT_BODY_MAX_CHARS)
+
+    def test_subagent_start_injection(self):
+        if not SUBAGENT_HOOK.exists():
+            self.skipTest("hooks/subagent.py 尚未建立")
+        tmp = Path(tempfile.mkdtemp(prefix="kbbudget-"))
+        try:
+            vault = tmp / "vault"
+            shutil.copytree(FIXTURE_VAULT, vault)
+            data = {"session_id": "budget", "cwd": str(vault), "hook_event_name": "SubagentStart",
+                    "agent_id": "a1", "agent_type": "wiki-with-willy:card-maker"}
+            r = subprocess.run([sys.executable, str(SUBAGENT_HOOK), "start"], input=json.dumps(data), capture_output=True,
+                               text=True, encoding="utf-8", cwd=str(vault), env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT)))
+            ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        core = read(CORE)
+        self.assertTrue(ctx.endswith(chr(10) * 2 + core))
+        status = ctx[:-len(core) - 2]
+        self.assertLessEqual(count_lines(status), OPENING_MAX_LINES)
+        self.assertLessEqual(len(status), OPENING_MAX_CHARS)
+        self.assertLessEqual(len(ctx), RESIDENT_TOTAL_MAX_CHARS)

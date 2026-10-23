@@ -340,3 +340,29 @@ class IngestStopped(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentMessages(unittest.TestCase):
+    """card-maker（桌面版 D2，驗收 10）：子代理交回的 <agent-message、VS Code 的 [SYSTEM NOTIFICATION 不開回合、日誌不多一段。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        self.turns = self.V / ".system" / "turns"
+        self.J = journal.jsonl_path(self.V, date.today().strftime("%Y-%m"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_not_prompts(self):
+        for text in ('<agent-message from="a0204e72">批次 b-1：做好 18、沒做成 2</agent-message>',
+                     "[SYSTEM NOTIFICATION - NOT USER INPUT]\n<task-notification>done</task-notification>",
+                     "  <task-notification>done</task-notification>"):
+            r = run_hook(prompt_payload(self.V, text))
+            self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+            self.assertFalse(self.turns.exists(), text)
+            self.assertFalse(self.J.exists(), text)
+
+    def test_ordinary_prompt_still_opens(self):
+        r = run_hook(prompt_payload(self.V, "整理到哪了？"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.turns.exists())

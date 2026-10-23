@@ -65,14 +65,14 @@ class Todo(Base):
         data = self.todo()
         self.assertEqual([a["id"] for a in data["asks"]], [])
         (step,) = data["plan"]
-        self.assertEqual((step["step"], step["items"]), ("cards", len(data["new"])))
+        self.assertEqual((step["step"], step["items"]), ("dispatch", len(data["new"])))  # card-maker（D-196）
 
     def test_over_the_limit_asks_batch_first_and_clips_plan(self):
         self.set_max(1)
         data = self.todo()
         self.assertEqual(data["asks"][0]["id"], "batch")
         self.assertEqual([s["step"] for s in data["plan"]], [])
-        self.assertEqual([s["step"] for s in data["asks"][0]["results"][0]["then"]], ["cards"])
+        self.assertEqual([s["step"] for s in data["asks"][0]["results"][0]["then"]], ["dispatch"])
 
     def test_json_and_read_only(self):
         before = snapshot(self.V)

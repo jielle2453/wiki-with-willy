@@ -605,8 +605,15 @@ def todo(vault, sources, tell_all=True):
     entities 塊的事類條目多 progress 與 asked_evidence；agenda_unscanned（D-140）列還沒抽過日期的卡。
     最後併進 plan、asks、tell 三鍵（plan.build，整理 ingest；tell_all 是 False 時 tell 只帶這一回合做了什麼，D-141，kb asks 用）。
     不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
+    from kb._lib import plan
+    out = collect(vault, sources, _restore_pdf(vault))
+    out.update(plan.build(out, vault, config, tell_all=tell_all))
+    return out
+
+
+def collect(vault, sources, restored=0):
+    """todo 的材料（plan、asks、tell 之外的全部鍵），不寫檔：kb cards dispatch／batch 用同一套項目組法（card-maker，D-197）。"""
     from kb._lib import agenda, entities, inventory, ledger, plan, synthesis
-    restored = _restore_pdf(vault)
     ent_data = entities.load(vault)
     entries = inventory.load(vault)["entries"]
     out, groups, data = _sort_files(vault, sources, ent_data, entries, restored)
@@ -629,7 +636,6 @@ def todo(vault, sources, tell_all=True):
         out["agenda_recheck"], out["agenda_unscanned"] = [], []
         out["agenda_counts"] = {"overdue": 0, "today": 0, "upcoming": 0}
     out[plan.UNLOCK_STEP], out["unlock_kinds"] = plan.locked_same_kind(vault, out)  # 密碼與守門 D-181 第 2 點
-    out.update(plan.build(out, vault, config, tell_all=tell_all))
     return out
 
 

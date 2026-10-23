@@ -8,7 +8,11 @@ skip <編號> --kind <種類>：客戶設定檔第三節說不整理的種類，
 redo <編號>：客戶說卡讀錯了（D-147 第一種），清冊記 redo，下次 todo 把它列進 stale、帶 reason；
 mount <編號> --entity <名>…：卡掛錯實體，重設檔頭的 實體 欄，重寫總目錄與兩邊綜合卡的快取（note 改知識第 5 點）。
 list：列卡（answer 第 2 點，D-153、D-157），按卡型、年、實體、來源篩，窮舉不挑；另回庫裡實際有的卡型與份數，只讀、不開回合。
-todo 在對話裡跑時在目前回合記 ingest（turn.mark，回合狀態不是知識）：客戶按了停止，下一句的 UserPromptSubmit 才認得出來（D-156）。
+todo 在對話裡跑時在目前回合記 ingest（turn.mark，回合狀態不是知識）：主對話自己整理時被按停止，下一句的 UserPromptSubmit 認得出來（D-156）。
+整批製卡（card-maker，D-195～D-200）：dispatch 開或沿用 job、切批、回每批給 Agent 工具的 prompt（終端機跑拒絕）；
+batch <批次> 給 card-maker 自己那批的材料（只讀，帶 --agent 記上 agent_id）；status 看進度（只讀）；
+stop 放掉這個 session 的批次、關 job、目前回合記 ingest_stopped（背景整理要停：說一聲，D-200）。
+unreadable <編號> --reason：線上文件（link 條目）讀不到記進待處理（B-415；檔案讀不到由 convert 記）。
 todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變、日程待重對、日程待抽；drop 拿掉卡也把從那張卡抽的推測日程改成取消（D-130）；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
@@ -18,7 +22,7 @@ from datetime import date
 from pathlib import Path
 
 from kb import journal_cli
-from kb._lib import agenda, cards, config, inventory, pending, turn
+from kb._lib import agenda, batches, cards, config, inventory, pending, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault, name_of
@@ -66,7 +70,16 @@ def add_arguments(sub):
     ls.add_argument("--year", type=_year, help="文件日期的年 YYYY；沒寫日期的另外講份數")
     ls.add_argument("--entity", action="append", default=[], help="掛的實體名稱，可以重複")
     ls.add_argument("--source", help="原檔的來源別名")
-    for p in (td, sy, dr, ix, sk, rd, mt, ls):
+    dp = subs.add_parser("dispatch", help="派背景製卡（對話裡用）", description="切批交給 card-maker，回每批的 prompt。")
+    dp.add_argument("--source", help="只整理這個來源（別名）")
+    bt = subs.add_parser("batch", help="card-maker 拿自己那批的材料（只讀）", description="列這一批要做的項目與要讀的規則。")
+    bt.add_argument("batch", help="批次編號（b-…）")
+    st = subs.add_parser("status", help="背景整理到哪了（只讀）", description="還在跑幾批、這次做好幾份、還剩幾份。")
+    sp = subs.add_parser("stop", help="停背景整理", description="放掉這個對話的批次；回要停的子代理。")
+    ur = subs.add_parser("unreadable", help="線上文件讀不到，記進待處理", description="只收線上文件（link 條目）。")
+    ur.add_argument("id", help="清冊編號（out-… 或 f-…）")
+    ur.add_argument("--reason", required=True, help="讀不到的原因，例：線上文件打不開")
+    for p in (td, sy, dr, ix, sk, rd, mt, ls, dp, bt, st, sp, ur):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -344,6 +357,109 @@ def _mount(vault, fid, names, as_json, conversation):
     return 0
 
 
+# ---------- 背景製卡（card-maker） ----------
+
+NOT_IN_CONVERSATION = "整理要在對話裡派"
+NOT_RUNNING = "現在沒有在整理"
+LINK_ONLY = "這個指令只收線上文件；檔案讀不到由 convert 記"
+
+
+def _session(vault):
+    """主對話的 session：current.json 的 session_id；終端機跑的沒有。"""
+    data = turn._read_turn(turn._current_file(vault))
+    return data.get("session_id") if data else None
+
+
+def _left_text(left):
+    parts = [f"{batches.KIND_TEXT[k]} {n}" for k, n in left.items() if n]
+    return "還剩 " + "、".join(parts) if parts else "還剩 0"
+
+
+def _dispatch(vault, source, as_json):
+    sid = _session(vault)
+    if not sid:
+        print(NOT_IN_CONVERSATION)
+        return 3
+    got = batches.dispatch(vault, sid, turn.current(vault, sid)["turn"], source)
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+        return 0
+    if got["done"]:
+        print("整理完了")
+        return 0
+    made = got["batches"]
+    head = (f"派了 {len(made)} 批（{batches.KIND_TEXT[made[0]['kind']]} " + "、".join(str(b["items"]) for b in made) + "）"
+            if made else "沒有新派的")
+    print(f"{head}；還在跑 {got['running']} 批；{_left_text(got['left'])}")
+    if got["approval"]:
+        print(got["approval"]["question"])
+    return 0
+
+
+def _batch(vault, batch_id, agent, as_json):
+    try:
+        got = batches.batch_view(vault, batch_id, agent)
+    except batches.Refused as e:
+        print(str(e))
+        return 3
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+    else:
+        print(f"批次 {batch_id}：{batches.KIND_TEXT[got['kind']]} {len(got['items'])} 項；先讀 " + "、".join(got["read"]))
+    return 0
+
+
+def _status(vault, as_json):
+    got = batches.status(vault, _session(vault))
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+    elif got["job"] is None:
+        print(f"{NOT_RUNNING}；還有 {got['waiting']} 份沒整理")
+    else:
+        run = "、".join(f"{batches.KIND_TEXT[b['kind']]} {b['items']}" for b in got["running"])
+        print(f"正在整理：還在跑 {len(got['running'])} 批" + (f"（{run}）" if run else "")
+              + f"；這次做好 {got['done']} 份；{_left_text(got['left'])}")
+    return 0
+
+
+def _stop(vault, as_json):
+    got = batches.stop(vault, _session(vault))
+    try:  # 這個對話不再自動整理（D-200）：照 D-156 的記號
+        turn.mark(vault, "ingest_stopped")
+    except OSError:
+        pass
+    if got is None:
+        print(json.dumps({"agents": [], "done": 0, "left": None}, ensure_ascii=False) if as_json else NOT_RUNNING)
+        return 0
+    if as_json:
+        print(json.dumps({"agents": got["agents"], "done": got["done"], "left": got["left"]}, ensure_ascii=False))
+    else:
+        print(f"已停：這次做好 {got['done']} 份，還剩 {got['left']} 份；這個對話不再自動整理，說「整理」再接著做")
+    return 0
+
+
+def _unreadable(vault, fid, reason, as_json, conversation):
+    entry = next((e for e in inventory.load(vault)["entries"] if e.get("id") == fid), None)
+    if entry is None:
+        print(f"清冊沒有 {fid}")
+        return 3
+    if not inventory.is_link(entry) or entry.get("status") != "active":
+        print(LINK_ONLY)
+        return 3
+    reason = " ".join(str(reason).split())
+    label = f"「{entry.get('title') or entry['locations'][0]['uri']}」"
+    turn_id = turn.current(vault)["turn"]
+    pid = pending.add(vault, "unreadable", [fid], f"{label}讀不到", reason, turn_id)
+    journal_cli.record_program_or_warn(vault, f"記下線上文件讀不到：{label}",
+                                       [{"path": pending.PENDING_POSIX, "action": "modify"},
+                                        {"path": pending.MD_POSIX, "action": "modify"}], "cards unreadable", conversation)
+    if as_json:
+        print(json.dumps({"id": fid, "pending_id": pid}, ensure_ascii=False))
+    else:
+        print(f"已記進待處理（{pid}）")
+    return 0
+
+
 def run(args):
     vault = find_vault(args)
     if vault is None:
@@ -357,6 +473,14 @@ def run(args):
             return _todo(vault, args, as_json)
         if command == "list":
             return _list(vault, args, as_json)
+        if command == "dispatch":
+            return _dispatch(vault, args.source.strip() if args.source else None, as_json)
+        if command == "batch":
+            return _batch(vault, args.batch, getattr(args, "agent", None), as_json)
+        if command == "status":
+            return _status(vault, as_json)
+        if command == "stop":
+            return _stop(vault, as_json)
         conversation = journal_cli.in_conversation(vault)
         if command == "sync":
             return _sync(vault, as_json, conversation)
@@ -368,6 +492,8 @@ def run(args):
             return _redo(vault, args.id, as_json, conversation)
         if command == "mount":
             return _mount(vault, args.id, [n.strip() for n in args.entity], as_json, conversation)
+        if command == "unreadable":
+            return _unreadable(vault, args.id, args.reason, as_json, conversation)
         return _index(vault, as_json, conversation)
     except cards.CardRefused as e:
         print(str(e))

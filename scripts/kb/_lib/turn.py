@@ -3,6 +3,9 @@
 folders.jsonl（kb 程式改的資料夾，一行一個動作，D-142）。
 大改動攔截（D-075）：同回合用檔案工具修改既有綜合卡達 big_change_synthesis_max 張就擋，approve 後解除。
 相對路徑保留原始大小寫（I-027：paths.normalize 會小寫，備份與還原不能用它）。
+整批製卡（card-maker，D-195）：kb.py 收全域 --turn 時 OVERRIDE 是那個回合，current() 回它、這次呼叫的備份都進它；
+那個回合已經不是 session 檔的目前回合時，它的欄位（approved、ai_synthesis、note、job_result）存在 versions/<回合>/turn.json
+（turn_data／save_turn）。agent_turn 從 batches.json 的 agents 查子代理算哪個回合。
 """
 import json
 import os
@@ -82,9 +85,25 @@ def start(vault, session_id, prompt, inherit=None):
                 data[flag] = True
     (Path(vault) / TURNS_REL).mkdir(parents=True, exist_ok=True)
     if session_id:
+        _keep(vault, _read_turn(_session_file(vault, session_id)))
         write_json_atomic(_session_file(vault, session_id), data)
     write_json_atomic(_current_file(vault), data)
     return data
+
+
+def _keep(vault, old):
+    """回合檔要被下一句換掉前：那個回合有 versions/<回合>/turn.json（整批整理的 job 回合一定有）就把欄位併進去，
+    之後 turn_data 才讀得到它的 approved、ai_synthesis、secret_shown（card-maker）。寫不了不擋開新回合。"""
+    if not old:
+        return
+    meta = _meta_file(vault, old["turn"])
+    try:
+        if meta.is_file():
+            kept = read_json(meta, {}) or {}
+            kept.update(old)
+            write_json_atomic(meta, kept)
+    except (OSError, ValueError) as e:
+        ledger.log_error(vault, f"回合 {old['turn']} 的欄位沒留到 versions：{type(e).__name__}: {e}")
 
 
 _TURN_TIME = re.compile(r"^(\d{8}-\d{6})-")
@@ -126,8 +145,21 @@ def _latest_turn_time(vault, session_id, now):
     return max(times) if times else None
 
 
+OVERRIDE = None  # kb.py --turn 給的回合代號（cli 設，一次呼叫一個行程）
+
+
+class NoSuchTurn(ValueError):
+    pass
+
+
 def current(vault, session_id=None):
-    """有 sid 讀 turns/<sid>.json；沒有或檔不存在讀 current.json；都沒有就開一個（hook 沒跑到也要有回合）。"""
+    """有 --turn（OVERRIDE）回那個回合；有 sid 讀 turns/<sid>.json；沒有或檔不存在讀 current.json；
+    都沒有就開一個（hook 沒跑到也要有回合）。"""
+    if OVERRIDE:
+        data = turn_data(vault, OVERRIDE)
+        if data is None:
+            raise NoSuchTurn(OVERRIDE)
+        return data
     if session_id:
         data = _read_turn(_session_file(vault, session_id))
         if data:
@@ -160,11 +192,73 @@ def _write_turn(vault, data):
         write_json_atomic(_current_file(vault), data)
 
 
-def approve(vault, session_id=None):
-    data = current(vault, session_id)
+def approve(vault, session_id=None, turn_id=None):
+    """解除大改動上限；turn_id 給了就改那個回合（kb turn approve --turn，job 回合）。"""
+    data = turn_data(vault, turn_id) if turn_id else current(vault, session_id)
+    if data is None:
+        raise NoSuchTurn(turn_id)
     data["approved"] = True
-    _write_turn(vault, data)
+    save_turn(vault, data)
     return data
+
+
+def _meta_file(vault, turn_id):
+    return Path(vault) / VERSIONS_REL / str(turn_id) / "turn.json"
+
+
+def exists(vault, turn_id):
+    """回合在嗎：turns/ 底下哪個回合檔是它，或 versions/<回合>/turn.json 在。代號只收回合代號的字元。"""
+    if not turn_id or _UNSAFE.search(str(turn_id)):
+        return False
+    return _find_turn(vault, turn_id) is not None or _meta_file(vault, turn_id).is_file()
+
+
+def turn_data(vault, turn_id):
+    """某個回合的資料：還是哪個 session 的目前回合就讀回合檔，否則讀 versions/<回合>/turn.json；都沒有回 None。"""
+    if not turn_id or _UNSAFE.search(str(turn_id)):
+        return None
+    live = _find_turn(vault, turn_id)
+    if live is not None:
+        return live
+    try:
+        meta = read_json(_meta_file(vault, turn_id))
+    except ValueError:
+        return None
+    if not (isinstance(meta, dict) and meta.get("turn") == turn_id):
+        return None
+    meta.setdefault("note", "")
+    meta.setdefault("done", True)
+    return meta
+
+
+def save_turn(vault, data):
+    """寫回某個回合：還是 session 的目前回合就寫回合檔（同 _write_turn）；versions/<回合>/turn.json 在或回合已經不是目前的，
+    一起寫那份（換了句話之後 job 回合的 approved、ai_synthesis 才留得住）。"""
+    live = _find_turn(vault, data["turn"])
+    if live is not None:
+        _write_turn(vault, data)
+    meta = _meta_file(vault, data["turn"])
+    if live is None or meta.is_file():
+        turn_dir(vault, data["turn"], data)
+        old = read_json(meta, {}) or {}
+        old.update(data)
+        write_json_atomic(meta, old)
+
+
+def agent_turn(vault, session_id, agent_id):
+    """子代理（card-maker）的寫入算哪個回合（D-195）：batches.json 的 agents 有這個 agent_id（session 也對）就回它記的回合，
+    沒有回 None。batches.json 讀不到也回 None（守門照主對話的回合備份）。"""
+    if not agent_id:
+        return None
+    from kb._lib import batches
+    try:
+        data = batches.load(vault)
+    except ValueError:
+        return None
+    for a in data["agents"]:
+        if a.get("agent_id") == agent_id and (not session_id or a.get("session_id") == session_id):
+            return a.get("turn")
+    return None
 
 
 def _set(vault, session_id, **fields):
@@ -431,15 +525,16 @@ def zone_of(vault, rel, sources=None):
 
 def modified_synthesis_count(vault, turn_id):
     """這回合 AI 用檔案工具改過的既有綜合卡張數：數回合檔的 ai_synthesis 清單（測試後修正裁定 7），不看 manifest——
-    程式先備份（by program）、AI 後改同一張照樣算。"""
-    data = _find_turn(vault, turn_id) or {}
+    程式先備份（by program）、AI 後改同一張照樣算。回合已經不是目前的照 versions 那份數（card-maker）。"""
+    data = turn_data(vault, turn_id) or {}
     return len(data.get("ai_synthesis") or [])
 
 
-def before_write(vault, target, cwd, zone, session_id):
+def before_write(vault, target, cwd, zone, session_id, turn_id=None):
     """守門放行後、真的寫之前：大改動門檻（數 ai_synthesis）、回合備份。回 (ok, code, reason)。
-    Z1 既有檔放行時把路徑記進回合檔的 ai_synthesis（去重）；同一張再改不重複算。"""
-    t = current(vault, session_id)
+    Z1 既有檔放行時把路徑記進回合檔的 ai_synthesis（去重）；同一張再改不重複算。
+    turn_id（子代理的寫入，D-195）給了就算那個回合；那個回合不在了照 session 的目前回合。"""
+    t = (turn_data(vault, turn_id) if turn_id else None) or current(vault, session_id)
     rel = rel_path(vault, target, cwd)
     if zone == "Z1" and (Path(vault) / rel).is_file():
         done = list(t.get("ai_synthesis") or [])
@@ -448,7 +543,7 @@ def before_write(vault, target, cwd, zone, session_id):
             if not t.get("approved") and n >= config.get(vault, "big_change_synthesis_max"):
                 return False, "big_change", BIG_CHANGE_REASON.format(n=n)
             t["ai_synthesis"] = done + [rel]
-            _write_turn(vault, t)
+            save_turn(vault, t)
     try:
         backup(vault, rel, t["turn"], None)
     except OSError as e:

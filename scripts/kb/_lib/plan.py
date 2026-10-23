@@ -1,6 +1,7 @@
 """整理 ingest 的介面（D-132、D-134、D-135）：cards.todo 的結果算成 plan、asks、tell 三樣，併進 --json。
 
-plan：照順序要做的事，每步 {"step","items","do","read"}；多量先問時只留 sync。
+plan：照順序要做的事，每步 {"step","items","do","read"}；多量先問時只留 sync。做卡、抽日程、寫綜合卡收成一步 dispatch
+      （kb cards dispatch --json，交給背景的 card-maker，D-196～D-198）；link 條目、檔名像密碼的、記過有密碼的留一步 cards 給主對話。
 asks：排好序、編好號的問題，每題 {"id","kind","question","results":[{"n","label","do","strict","fill"}]}；
       順序：實體夾或綜合卡不見 → 原檔不見 → 裁示遇到原檔改版（ruling_recheck）→ 逾期、日程有出入、結案 → 草稿還在等（draft，
       produce）→ 名字確認；
@@ -9,7 +10,7 @@ tell：回答末尾要講的現成句子；kb asks（tell_all 是 False）多一
 密碼與守門（D-181、D-182、D-183）：plan 多 unlock_same_kind（授權過的種類在、待處理有新的「有密碼」PDF：列檔與每一種的例子給 AI 判斷，
 排在寫卡之前、份數算進 ingest_auto_max）；asks 多 credential_same_kind（有帶 label 的「可以讀」裁示時，每份新的檔名像密碼的檔一題，
 排在原檔不見之後）；tell 的「有密碼」PDF 與 Word／Excel 分開講、不製卡的密碼檔接「要讓我讀哪一份跟我說」、這一回合用存好的密碼開了的講一句。
-announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先說的一句（份數、大約多久、要停按停止，D-100 修訂），否則 None；
+announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先說的一句（份數、大約多久、要停說一聲，D-199、D-200），否則 None；
       kb asks（tell_all 是 False）不帶這鍵。
 只讀：不寫任何檔，不開原檔。
 """
@@ -18,7 +19,7 @@ import os
 import re
 from pathlib import Path
 
-from kb._lib import agenda, cards, entities, inventory, pending, rulings, turn
+from kb._lib import agenda, batches, cards, entities, inventory, pending, rulings, turn
 from kb._lib.paths import plugin_root
 
 SYNC = "kb cards sync"
@@ -30,8 +31,9 @@ AGENDA_RECHECK = "agenda_recheck"
 AGENDA_UNSCANNED = "agenda_unscanned"
 PURGE_STEPS = ("purge_synthesis", "purge")
 PURGE_NO_CMD = "夾名同時有 $ 或反引號和單引號，清殘留的指令給不出來；請她先在檔案總管改夾名，再說一次不想讓 AI 看到"
-BATCH_SECONDS = 10  # 一份抓 10 秒（D-100）
-ANNOUNCE = "有 {n} 份要整理，大約{how_long}；要停的話按停止"  # 門檻內開始前先說（D-100 修訂）：整理中打字要等回合結束，停止鈕才停得下來
+DISPATCH = "kb cards dispatch --json"
+ANNOUNCE = "有 {n} 份要整理，大約{how_long}；要停的話跟我說一聲"  # 門檻內開始前先說（D-199、D-200）：背景整理時打字就停得下來
+BATCH_QUESTION = "有 {n} 份要整理，大約{how_long}；份數多，會用掉比平常多的額度。現在做嗎？"  # D-199：只講時間，用量一句話
 UNREADABLE_LISTED = 5
 PENDING_FILE = "記在 系統/待處理.md"
 # 讀不到的原因（convert 會記進待處理的那幾種）→ 客戶怎麼辦；這是講法的唯一來源，commands.md 只指向 tell
@@ -52,6 +54,7 @@ UNREADABLE_ADVICE = (
     ("檔案壞了", "換一份，或跟我說先跳過"),
     ("檔案太大", "這版讀不了，跟我說先跳過"),
     ("編碼", "換一份檔，或跟我說先跳過"),
+    ("線上文件打不開", "到 claude.ai 確認那份還在、有分享給這個帳號，或跟我說先跳過"),  # B-415：kb cards unreadable 記的
 )
 SKIPPED_TEXT = (("credential", "檔名像密碼或金鑰"), ("placeholder", "只在雲端"), ("too_large", "太大"),
                 ("error", "讀不到"))
@@ -105,14 +108,14 @@ def build(out, vault, config, tell_all=True):
     """回 {"plan","asks","tell","announce"}；config 是 kb._lib.config（取 ingest_auto_max）。
     tell_all 是 False 時 tell 只帶這一回合做了什麼（加進日程、照新版改了），整理狀態那些句子不帶（D-141，kb asks 用），
     也不帶 announce。"""
-    full = _plan(out)
+    full = _plan(out, vault)
     asks = _asks(out, vault, config, full)
     batch = bool(asks) and asks[0]["id"] == "batch"
     steps = [s for s in full if s["step"] in ("sync",) + PURGE_STEPS] if batch else full  # 清殘留批次時也留（疑義第 8 條）
     if not tell_all:
         return {"plan": steps, "asks": _number(asks), "tell": agenda.tell_lines(vault) + _conflict_tell(vault)}
     waiting = _waiting(out)
-    announce = ANNOUNCE.format(n=waiting, how_long=_how_long(waiting)) if waiting and not batch else None
+    announce = ANNOUNCE.format(n=waiting, how_long=_how_long(waiting, vault, config)) if waiting and not batch else None
     return {"plan": steps, "asks": _number(asks), "tell": _tell(out, vault), "announce": announce}
 
 
@@ -121,8 +124,9 @@ def _waiting(out):
     return sum(len(out.get(k) or []) for k in ("new", "stale", "unlinked", AGENDA_UNSCANNED, UNLOCK_STEP))
 
 
-def _how_long(waiting):
-    seconds = waiting * BATCH_SECONDS
+def _how_long(waiting, vault, config):
+    """秒數 = 份數 × card_seconds_per_file + card_batch_overhead_seconds（D-199，spike 第 7 題）；不到 60 秒說一兩分鐘。"""
+    seconds = waiting * config.get(vault, "card_seconds_per_file") + config.get(vault, "card_batch_overhead_seconds")
     return "一兩分鐘" if seconds < 60 else f" {math.ceil(seconds / 60)} 分鐘"
 
 
@@ -139,7 +143,10 @@ def _synthesis_rules():
     return str(plugin_root() / "rules" / "synthesis.md")
 
 
-def _plan(out):
+MAIN_CARDS = "照 files 的編號寫卡（這幾份不交給製卡助手：線上文件、檔名像密碼的、有密碼的；材料在 new、stale）"
+
+
+def _plan(out, vault):
     steps = _purge_steps(out)
     sync = len(out.get("moved") or []) + len(out.get("duplicates") or [])
     if sync:
@@ -149,22 +156,14 @@ def _plan(out):
                      "對每份判斷是哪一種，是就跑 kb convert <id> --saved <那一種的密碼名稱>；不是任何一種的不動", f"{CARDING} 第十節")
         step.update(files=out[UNLOCK_STEP], kinds=out.get("unlock_kinds") or [])
         steps.append(step)
-    carding = (len(out.get("new") or []) + len(out.get("stale") or [])
-               + sum(1 for b in out.get("broken") or [] if b.get("header")))
-    if carding:
-        steps.append(_step("cards", carding, "照清單寫卡（new、stale、broken）", f"{CARDING} 一～六節"))
-    if out.get(AGENDA_RECHECK):
-        steps.append(_step(AGENDA_RECHECK, len(out[AGENDA_RECHECK]), "照清單重對日程（agenda_recheck）", f"{CARDING} 第九節"))
-    if out.get(AGENDA_UNSCANNED):  # 先重對再抽，重做的卡不會多出重複的條目（D-140）
-        steps.append(_step(AGENDA_UNSCANNED, len(out[AGENDA_UNSCANNED]), "照清單抽日期（agenda_unscanned）", f"{CARDING} 第九節"))
-    for key, read, text in (("unlinked", f"{CARDING} 第七節", "照清單補掛實體（unlinked）"),
-                            ("synthesis_broken", f"{CARDING} 第八節", "照清單處理放錯位置的綜合卡（synthesis_broken）"),
-                            ("synthesis_stale", _synthesis_rules(), "照清單改綜合卡（synthesis_stale）")):
-        if out.get(key):
-            steps.append(_step(key, len(out[key]), text, read))
-    confirmed = [i for i in out.get("synthesis_new") or [] if i.get("confirmed")]
-    if confirmed:
-        steps.append(_step("synthesis_new", len(confirmed), "照清單寫綜合卡（synthesis_new）", _synthesis_rules()))
+    parts = batches.split(vault, out)
+    sent = sum(len(parts[k]) for k in batches.KINDS)
+    if sent:  # 做卡、抽日程、寫綜合卡一律交給 card-maker（D-196、D-198）；清單由 dispatch 切
+        steps.append(_step("dispatch", sent, DISPATCH, None))
+    if parts["main"]:  # card-maker 讀不到線上文件、不碰密碼檔：留給主對話（B-415、card-maker 交界第 1 點）
+        step = _step("cards", len(parts["main"]), MAIN_CARDS, f"{CARDING} 一～六節")
+        step["files"] = [key for _b, key, _i in parts["main"]]
+        steps.append(step)
     return steps
 
 
@@ -209,7 +208,7 @@ def _asks(out, vault, config, full_plan):
     asks = []
     waiting = _waiting(out)
     if waiting > config.get(vault, "ingest_auto_max"):
-        asks.append(_batch(waiting, full_plan))
+        asks.append(_batch(waiting, full_plan, vault, config))
     drifts = out.get("entity_drift") or []
     asks.extend(_drift(d, out) for d in drifts if d["kind"] == "missing")
     asks.extend(_drift(d, out) for d in drifts if d["kind"] != "missing")
@@ -222,8 +221,8 @@ def _asks(out, vault, config, full_plan):
     return asks
 
 
-def _batch(waiting, full_plan):
-    return _ask("batch", "batch", f"有 {waiting} 份要整理，現在做嗎？大約{_how_long(waiting)}", [
+def _batch(waiting, full_plan, vault, config):
+    return _ask("batch", "batch", BATCH_QUESTION.format(n=waiting, how_long=_how_long(waiting, vault, config)), [
         _result("現在做", note="客戶說做就照 then 的步驟做，做的過程這題不再問", then=full_plan),
         _result("之後再說", note="這個對話不再問")])
 
@@ -528,8 +527,9 @@ def _tell(out, vault):
     lines = []
     unreadable = out.get("unreadable") or []
     if unreadable:
+        titles = _link_titles(vault, unreadable)
         for item in unreadable[:UNREADABLE_LISTED]:
-            name = item["uri"].rsplit("/", 1)[-1]
+            name = titles.get(item["id"]) or item["uri"].rsplit("/", 1)[-1]
             lines.append(_unreadable_line(name, item.get("reason")))
         if len(unreadable) > UNREADABLE_LISTED:
             lines.append(f"另有 {len(unreadable) - UNREADABLE_LISTED} 份讀不到")
@@ -551,6 +551,17 @@ def _tell(out, vault):
     lines.extend(agenda.tell_lines(vault))
     lines.extend(_opened_tell(vault))
     return lines
+
+
+def _link_titles(vault, unreadable):
+    """線上文件（link 條目）讀不到時講它的標題，不講網址尾巴（B-415）；清冊讀不到就照舊。"""
+    if all(inventory.is_file_uri(i.get("uri") or "") for i in unreadable):
+        return {}
+    try:
+        return {e.get("id"): e["title"] for e in inventory.load(vault)["entries"]
+                if inventory.is_link(e) and e.get("title")}
+    except (ValueError, OSError):
+        return {}
 
 
 def _opened_tell(vault):

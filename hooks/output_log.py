@@ -1,7 +1,8 @@
 """PostToolUse 入口：檔案工具寫進 AI 產出（Z3）之後把那份檔登進 .system/inventory.json（D-076）；
 寫進 檔案索引（Z5）的 .md 卡驗檔頭（D-104，ingest 製卡第 6 點）；寫進 <型別>/<名稱>/<名稱>.md（Z1）的綜合卡驗檔頭（實體與綜合卡第 6 點）。
 
-只做四個寫入工具；目標檔案真的存在才做；回合代號取 turn.current(vault, session_id)。
+只做四個寫入工具；目標檔案真的存在才做；回合代號取 turn.current(vault, session_id)；payload 帶 agent_id 而且 batches.json 記過它
+（card-maker）就取它記的回合。
 Z5：cards.validate 不過就印一行 {"decision": "block", "reason": "檔頭有錯：<原因>。改好再寫一次。"}；
 過了不印，接著重渲染 總目錄.md（備進目前回合，實作疑義裁定 4）與這張卡新舊 實體 聯集的綜合卡快取（舊的從回合備份讀）。
 實體清單讀不到時兩種卡都 block「實體清單讀不到（.system/entities.json），先停下來說「檢查」」（測試後修正裁定 11）。
@@ -61,7 +62,9 @@ def main():
         rel = turn.rel_path(vault, str(target), cwd)
         if not (vault / rel).is_file():
             return
-        t = turn.current(vault, payload.get("session_id"))
+        # card-maker（D-195 釐清 3b）：子代理寫的照它記的回合（跟 guard.py 同一支），總目錄與綜合卡快取的備份才在同一回合
+        agent_turn = turn.agent_turn(vault, payload.get("session_id"), payload.get("agent_id"))
+        t = (turn.turn_data(vault, agent_turn) if agent_turn else None) or turn.current(vault, payload.get("session_id"))
         if zone == OUTPUT_ZONE:
             inventory.register_output(vault, rel, t["turn"])
         elif zone == SYNTHESIS_ZONE:

@@ -71,56 +71,64 @@ class Plan(Base):
         self.assertEqual(self.steps(duplicates=[{"id": "f-1", "keep": "a", "drop": ["b"]}]), [("sync", 1)])
 
     def test_cards_and_synthesis_stale(self):
+        """card-maker（D-196、D-198）：做卡、日程、綜合卡收成一步 dispatch，清單由程式切。"""
         got = self.build(new=work(2), synthesis_stale=[{"entity_id": "e-1", "name": "信義王"}])["plan"]
-        self.assertEqual(got, [
-            {"step": "cards", "items": 2, "do": "照清單寫卡（new、stale、broken）", "read": "references/carding.md 一～六節"},
-            {"step": "synthesis_stale", "items": 1, "do": "照清單改綜合卡（synthesis_stale）",
-             "read": SYNTHESIS_RULES}])
+        self.assertEqual(got, [{"step": "dispatch", "items": 3, "do": "kb cards dispatch --json", "read": None}])
 
     def test_cards_count_new_stale_and_broken_with_header(self):
         broken = [{"path": "a", "reason": "x", "id": "f-1", "header": "h"}, {"path": "b", "reason": "y"}]
-        self.assertEqual(self.steps(new=work(1), stale=work(2), broken=broken), [("cards", 4)])
+        stale = [{"id": "f-s1"}, {"id": "f-s2"}]
+        self.assertEqual(self.steps(new=work(1), stale=stale, broken=broken), [("dispatch", 4)])
+        self.assertEqual(self.steps(new=work(1), stale=work(1)), [("dispatch", 1)], "同一份只算一次")
 
     def test_broken_without_header_is_not_a_step(self):
         self.assertEqual(self.steps(broken=[{"path": "b", "reason": "y"}]), [])
 
-    def test_agenda_recheck_comes_right_after_cards(self):
+    def test_agenda_and_unlinked_go_into_dispatch(self):
         rows = [{"id": "a-1", "card": "f-1", "card_path": "p", "kind": "到期", "date": "2026-11-30", "text": "交屋",
                  "source": "inferred"}]
-        got = self.build(new=work(1), unlinked=[{"id": "f-2"}], agenda_recheck=rows)["plan"]
-        self.assertEqual([s["step"] for s in got], ["cards", "agenda_recheck", "unlinked"])
-        self.assertEqual(got[1], {"step": "agenda_recheck", "items": 1, "do": "照清單重對日程（agenda_recheck）",
-                                  "read": "references/carding.md 第九節"})
-        self.assertEqual(self.steps(agenda_recheck=rows), [("agenda_recheck", 1)])
+        scanned = [{"id": "f-9", "card_path": "p", "title": "報價", "existing": []}]
+        self.assertEqual(self.steps(new=work(1), unlinked=[{"id": "f-2"}], agenda_recheck=rows, agenda_unscanned=scanned),
+                         [("dispatch", 4)])
+        self.assertEqual(self.steps(agenda_recheck=rows), [("dispatch", 1)])
 
-    def test_agenda_unscanned_follows_recheck_and_precedes_unlinked(self):
-        """確認後裁定 4：cards → agenda_recheck → agenda_unscanned（read 都是第九節）→ 其餘照舊。"""
-        rows = [{"id": "f-1", "card_path": "p", "title": "報價", "existing": []}]
-        got = self.build(new=work(1), agenda_recheck=[{"id": "a-1"}], agenda_unscanned=rows, unlinked=[{"id": "f-2"}])["plan"]
-        self.assertEqual([s["step"] for s in got], ["cards", "agenda_recheck", "agenda_unscanned", "unlinked"])
-        self.assertEqual(got[2], {"step": "agenda_unscanned", "items": 1, "do": "照清單抽日期（agenda_unscanned）",
-                                  "read": "references/carding.md 第九節"})
-        self.assertEqual(self.steps(agenda_unscanned=rows * 2), [("agenda_unscanned", 2)])
-
-    def test_unlinked_and_synthesis_broken_read_sections(self):
+    def test_synthesis_broken_goes_into_dispatch(self):
         got = self.build(unlinked=[{"id": "f-1"}], synthesis_broken=[{"path": "p", "reason": "r"}])["plan"]
-        self.assertEqual([(s["step"], s["read"]) for s in got], [
-            ("unlinked", "references/carding.md 第七節"), ("synthesis_broken", "references/carding.md 第八節")])
+        self.assertEqual([(s["step"], s["items"], s["read"]) for s in got], [("dispatch", 2, None)])
 
     def test_synthesis_new_counts_confirmed_only(self):
         new = [{"entity_id": "e-1", "name": "甲", "confirmed": True}, {"entity_id": "e-2", "name": "乙", "confirmed": False, "question": "Q"}]
-        got = self.build(synthesis_new=new)["plan"]
-        self.assertEqual([(s["step"], s["items"], s["read"]) for s in got],
-                         [("synthesis_new", 1, SYNTHESIS_RULES)])
+        self.assertEqual(self.steps(synthesis_new=new), [("dispatch", 1)])
         self.assertEqual(self.steps(synthesis_new=new[1:]), [])
 
     def test_full_order(self):
         got = self.steps(moved=[{"id": "f-1"}], new=work(1), unlinked=[{"id": "f-2"}], synthesis_broken=[{"path": "p"}],
-                         synthesis_stale=[{"entity_id": "e"}], synthesis_new=[{"entity_id": "e", "confirmed": True}])
-        self.assertEqual([s for s, _n in got],
-                         ["sync", "cards", "unlinked", "synthesis_broken", "synthesis_stale", "synthesis_new"])
-        got = self.steps(moved=[{"id": "f-1"}], new=work(1), agenda_recheck=[{"id": "a-1"}], unlinked=[{"id": "f-2"}])
-        self.assertEqual([s for s, _n in got], ["sync", "cards", "agenda_recheck", "unlinked"])
+                         synthesis_stale=[{"entity_id": "e"}], synthesis_new=[{"entity_id": "e2", "confirmed": True}])
+        self.assertEqual(got, [("sync", 1), ("dispatch", 5)])
+
+    def test_link_entry_stays_with_the_main_conversation(self):
+        """驗收 13c：線上文件（link 條目）不切進批次，plan 另留一步 cards 只列它，read 一～六節。"""
+        t = turn.start(self.V, None, "")["turn"]
+        link = inventory.register_link(self.V, "https://claude.ai/artifact/abc", t, "報價說明")
+        got = self.build(new=[{"id": link["id"], "uri": "https://claude.ai/artifact/abc", "kind": "link"}])["plan"]
+        self.assertEqual(got, [{"step": "cards", "items": 1, "do": plan.MAIN_CARDS, "read": "references/carding.md 一～六節",
+                                "files": [link["id"]]}])
+        got = self.build(new=[{"id": link["id"]}] + work(2))["plan"]
+        self.assertEqual([(s["step"], s["items"]) for s in got], [("dispatch", 2), ("cards", 1)])
+
+    def test_credential_and_locked_entries_stay_with_the_main_conversation(self):
+        """交界第 1 點：檔名像密碼的（含可以讀的）、待處理記過有密碼的不切進批次。"""
+        from kb._lib import pending
+        t = turn.start(self.V, None, "")["turn"]
+        entries = [{"id": "f-c", "status": "active", "read": "credential", "locations": [{"uri": "file://a/密碼.txt"}]},
+                   {"id": "f-p", "status": "active", "read": "ok", "locations": [{"uri": "file://a/保單.pdf"}]}]
+        (self.V / ".system" / "inventory.json").write_text(json.dumps({"schema_version": 2, "entries": entries}),
+                                                            encoding="utf-8")
+        pending.add(self.V, "unreadable", ["f-p"], "「保單.pdf」讀不到", "有密碼", t)
+        pending.auto_done(self.V, "f-p", "unreadable", "用密碼打開了", t)
+        got = self.build(new=[{"id": "f-c"}, {"id": "f-p"}] + work(1))["plan"]
+        self.assertEqual([(s["step"], s["items"], s.get("files")) for s in got],
+                         [("dispatch", 1, None), ("cards", 2, ["f-c", "f-p"])])
 
     def test_pure(self):
         out = base(new=work(2))
@@ -130,13 +138,16 @@ class Plan(Base):
 
 
 class Batch(Base):
+    def question(self, n, how_long):
+        return f"有 {n} 份要整理，大約{how_long}；份數多，會用掉比平常多的額度。現在做嗎？"
+
     def test_over_max_asks_first_and_keeps_only_sync(self):
         self.set_max(1)
         got = self.build(new=work(2), moved=[{"id": "f-1"}], unlinked=[], synthesis_stale=[{"entity_id": "e"}])
         self.assertEqual([s["step"] for s in got["plan"]], ["sync"])
         ask = got["asks"][0]
         self.assertEqual((ask["id"], ask["kind"]), ("batch", "batch"))
-        self.assertEqual(ask["question"], "有 2 份要整理，現在做嗎？大約一兩分鐘")
+        self.assertEqual(ask["question"], self.question(2, "一兩分鐘"))
         self.assertEqual([(r["n"], r["label"], r["do"], r["strict"], r["fill"]) for r in ask["results"]],
                          [(1, "現在做", [], False, []), (2, "之後再說", [], False, [])])
         self.assertEqual(ask["results"][1]["note"], "這個對話不再問")
@@ -145,7 +156,7 @@ class Batch(Base):
         self.set_max(1)
         got = self.build(new=work(2), moved=[{"id": "f-1"}], synthesis_stale=[{"entity_id": "e"}])
         now = got["asks"][0]["results"][0]
-        self.assertEqual([s["step"] for s in now["then"]], ["sync", "cards", "synthesis_stale"])
+        self.assertEqual([s["step"] for s in now["then"]], ["sync", "dispatch"])
 
     def test_then_equals_the_unclipped_plan(self):
         """裁定 6：batch 的「現在做」帶的 then，就是沒超過上限時算出來的那份 plan。"""
@@ -156,8 +167,7 @@ class Batch(Base):
         self.set_max(100)
         unclipped = self.build(**kw)
         self.assertEqual(unclipped["asks"], [])
-        self.assertEqual([s["step"] for s in unclipped["plan"]],
-                         ["sync", "cards", "unlinked", "synthesis_stale", "synthesis_new"])
+        self.assertEqual([s["step"] for s in unclipped["plan"]], ["sync", "dispatch"])
         self.assertEqual(clipped["asks"][0]["results"][0]["then"], unclipped["plan"])
         self.assertEqual(clipped["plan"], unclipped["plan"][:1])
 
@@ -167,9 +177,9 @@ class Batch(Base):
         self.set_max(3)
         self.assertEqual(self.build(agenda_unscanned=rows)["asks"], [])
         got = self.build(agenda_unscanned=rows, new=work(1))
-        self.assertEqual((got["asks"][0]["id"], got["asks"][0]["question"]), ("batch", "有 4 份要整理，現在做嗎？大約一兩分鐘"))
+        self.assertEqual((got["asks"][0]["id"], got["asks"][0]["question"]), ("batch", self.question(4, "一兩分鐘")))
         self.assertEqual(got["plan"], [])
-        self.assertEqual([s["step"] for s in got["asks"][0]["results"][0]["then"]], ["cards", "agenda_unscanned"])
+        self.assertEqual([s["step"] for s in got["asks"][0]["results"][0]["then"]], ["dispatch"])
 
     def test_counts_new_stale_and_unlinked(self):
         self.set_max(2)
@@ -182,12 +192,18 @@ class Batch(Base):
         self.set_max(2)
         got = self.build(new=work(2))
         self.assertEqual(got["asks"], [])
-        self.assertEqual([s["step"] for s in got["plan"]], ["cards"])
+        self.assertEqual([s["step"] for s in got["plan"]], ["dispatch"])
 
-    def test_minutes_round_up(self):
+    def test_minutes_from_config(self):
+        """D-199：秒數 = 份數 × card_seconds_per_file + card_batch_overhead_seconds，不到 60 秒說一兩分鐘。"""
         self.set_max(1)
-        self.assertEqual(self.build(new=work(7))["asks"][0]["question"], "有 7 份要整理，現在做嗎？大約 2 分鐘")
-        self.assertEqual(self.build(new=work(6))["asks"][0]["question"], "有 6 份要整理，現在做嗎？大約 1 分鐘")
+        self.assertEqual(self.build(new=work(5))["asks"][0]["question"], self.question(5, " 1 分鐘"))  # 5×6+30 = 60
+        self.assertEqual(self.build(new=work(4))["asks"][0]["question"], self.question(4, "一兩分鐘"))  # 54
+        self.assertEqual(self.build(new=work(6))["asks"][0]["question"], self.question(6, " 2 分鐘"))  # 66 進位
+        (self.V / ".system" / "config.json").write_text(json.dumps(
+            {"ingest_auto_max": 1, "card_seconds_per_file": 20, "card_batch_overhead_seconds": 0}), encoding="utf-8")
+        self.assertEqual(self.build(new=work(3))["asks"][0]["question"], self.question(3, " 1 分鐘"))
+        self.assertEqual(self.build(new=work(2))["asks"][0]["question"], self.question(2, "一兩分鐘"))
 
     def test_default_max_is_twenty(self):
         """D-100 2026-10-20 修訂：門檻 5 → 20。"""
@@ -196,16 +212,16 @@ class Batch(Base):
 
 
 class Announce(Base):
-    """note 改規則第 5 點（D-100 修訂）：門檻內有要整理的份數時，開始前先說的一句；0 份、超過門檻是 null；kb asks 不帶。"""
+    """note 改規則第 5 點（D-100 修訂、D-199、D-200）：門檻內有要整理的份數時，開始前先說的一句；0 份、超過門檻是 null；kb asks 不帶。"""
 
     def test_zero_is_null(self):
         self.assertIsNone(self.build()["announce"])
 
     def test_within_threshold_has_sentence(self):
-        self.assertEqual(self.build(new=work(3))["announce"], "有 3 份要整理，大約一兩分鐘；要停的話按停止")
+        self.assertEqual(self.build(new=work(3))["announce"], "有 3 份要整理，大約一兩分鐘；要停的話跟我說一聲")
         rows = [{"id": f"f-{i}", "card_path": "p", "title": "t", "existing": []} for i in range(4)]
         got = self.build(new=work(3), stale=work(2), unlinked=[{"id": "f-9"}] * 3, agenda_unscanned=rows)
-        self.assertEqual(got["announce"], "有 12 份要整理，大約 2 分鐘；要停的話按停止")
+        self.assertEqual(got["announce"], "有 12 份要整理，大約 2 分鐘；要停的話跟我說一聲")  # 12×6+30 = 102
         self.assertIsNone(self.build(moved=[{"id": "f-1"}])["announce"], "只有搬卡不算要整理的份數")
 
     def test_over_threshold_is_null_and_batch(self):
@@ -221,7 +237,9 @@ class Announce(Base):
         try:
             todo = json.loads(run_kb("cards", "todo", "--json", cwd=V).stdout)
             n = len(todo["new"]) + len(todo["stale"]) + len(todo["unlinked"]) + len(todo["agenda_unscanned"])
-            self.assertEqual(todo["announce"], f"有 {n} 份要整理，大約 {-(-n * 10 // 60)} 分鐘；要停的話按停止")
+            seconds = n * 6 + 30
+            how = "一兩分鐘" if seconds < 60 else f" {-(-seconds // 60)} 分鐘"
+            self.assertEqual(todo["announce"], f"有 {n} 份要整理，大約{how}；要停的話跟我說一聲")
             self.assertNotIn("announce", json.loads(run_kb("asks", "--json", cwd=V).stdout))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

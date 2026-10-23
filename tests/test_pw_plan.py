@@ -76,7 +76,7 @@ class UnlockSameKind(Base):
         out = self.todo()
         steps = [s["step"] for s in out["plan"]]
         self.assertIn("unlock_same_kind", steps)
-        self.assertLess(steps.index("unlock_same_kind"), steps.index("cards"))
+        self.assertLess(steps.index("unlock_same_kind"), steps.index("dispatch"))  # card-maker：寫卡收成 dispatch
         step = next(s for s in out["plan"] if s["step"] == "unlock_same_kind")
         self.assertEqual(step["items"], 2)
         self.assertEqual({f["name"] for f in step["files"]}, {"保險單_王.pdf", "保險單_陳.pdf"})

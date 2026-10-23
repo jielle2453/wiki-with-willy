@@ -10,6 +10,8 @@ card-maker 第一輪修：記過的子代理只准白名單裡的 kb 子命令�
 也不准讀 .system/unlock.json 與 .system/temp 的密碼檔暫存，其餘 deny「製卡助手不能做這件事」（S3）；指令自己帶了
 --turn／--agent／--session 的（子代理在哪都算，主對話看子命令前的）deny，不改寫（S4）；主對話的 cards dispatch／status／stop
 插 --session <sid>（兩個視窗開同一個知識庫不串）。
+第二輪修：--t、--a、--s 開頭而且是這三個旗標前綴的（--tu=、--ses、--ag=…）一樣算；記過的子代理跑 Bash／PowerShell，
+不是「單一 kb 呼叫而且在白名單裡」的一律 deny（&&、管線、環境變數前綴、cd 再接、python -c 都算），客戶按過一律允許 python 也繞不過。
 永不以非 0 結束，永不丟例外到 Claude Code。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path；hooks/*.py 是唯一准動 sys.path 的地方（CLAUDE.md 三）。
 """
@@ -72,6 +74,10 @@ def main():
         if d.vault is not None and payload.get("agent_id"):
             from kb._lib import turn as turn_lib
             agent_turn = turn_lib.agent_turn(d.vault, payload.get("session_id"), payload.get("agent_id"))
+        if d.vault is not None and agent_turn and tool in SHELL_TOOLS and decision != "deny" and decision != "allow":
+            decision, reason = "deny", AGENT_DENY  # 守門沒意見或要詢問的 shell 指令：子代理一律不准（第二輪修 R3）
+            rows.append({"tool": tool, "decision": "deny", "zone": d.zone, "reason_code": "agent_scope",
+                         "head": str((payload.get("tool_input") or {}).get("command") or "")})
         if decision == "allow" and d.vault is not None:
             why, updated = scope(payload, tool, d, agent_turn)
             if why:
@@ -136,8 +142,18 @@ def split_global(tokens):
     return head, cmd, sub
 
 
+def _flag_name(token):
+    return token.split("=", 1)[0] if token.startswith("--") else None
+
+
 def _has_flag(tokens, flags=GLOBAL_VALUE_FLAGS):
-    return any(t == f or t.startswith(f + "=") for t in tokens for f in flags)
+    """tokens 裡有沒有這些旗標：全名、全名=值，或它們的前綴（至少到第一個字母，--tu、--ses=…；argparse 預設會把縮寫當全名，
+    第二輪修）。"""
+    for t in tokens:
+        name = _flag_name(t)
+        if name and len(name) >= 3 and any(f.startswith(name) for f in flags):
+            return True
+    return False
 
 
 def scope(payload, tool, d, agent_turn):
@@ -147,8 +163,10 @@ def scope(payload, tool, d, agent_turn):
     ti = payload.get("tool_input") or {}
     if agent_turn and tool in FILE_TOOLS and _secret_target(payload, tool, d.vault):
         return AGENT_DENY, None
-    if tool not in SHELL_TOOLS or d.reason != guard.KB_CALL_REASON:
+    if tool not in SHELL_TOOLS:
         return None, None
+    if d.reason != guard.KB_CALL_REASON:
+        return (AGENT_DENY if agent_turn else None), None  # 子代理只准單一 kb 呼叫（第二輪修 R3）
     tokens = kb_args(ti.get("command"), tool)
     if agent_turn:
         if tokens is None:

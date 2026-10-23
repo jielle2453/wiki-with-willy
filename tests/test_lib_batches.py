@@ -301,6 +301,9 @@ class BigChange(Base):
 
     def test_broken_counts_too(self):
         """第一輪修：綜合卡 broken 寫回原路徑也是改既有綜合卡，跟 stale 一起算進門檻。"""
+        orig = batches._fixable
+        batches._fixable = lambda vault, ctx, item: True  # 假的路徑沒有實體：當成修得了
+        self.addCleanup(setattr, batches, "_fixable", orig)
         self.out = {"synthesis_stale": [{"entity_id": f"e-{i}"} for i in range(6)],
                     "synthesis_broken": [{"path": f"案子/甲{i}/甲{i}.md", "reason": "檔頭有錯"} for i in range(6)]}
         got = self.dispatch()
@@ -348,7 +351,7 @@ class Dispatch2(Base):
         self.edit(lambda d: d["batches"][0].update(status="released"))
         again = self.dispatch()
         self.assertEqual(again["batches"][0]["description"], "整理第 4 批（做卡 2 份）")
-        self.assertIsNone(again["say"])
+        self.assertEqual(again["say"], "還在做 3 批", "第二輪修 R2：之後每次都給一句進度")
 
     def test_bucket_key_keeps_entity_type(self):
         """第一輪修：batch_view 不蓋掉 synthesis_new 的 type（實體型別）。"""

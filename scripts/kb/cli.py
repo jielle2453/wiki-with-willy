@@ -1,5 +1,6 @@
 """argparse 主程式。子命令註冊表在 COMMANDS；新子命令加一行，--help 自動列出。
 模組有 add_arguments(sub) 就讓它自己加參數（子子命令、--path 之類），沒有就只給 --json。
+每一層 parser 都 allow_abbrev=False（旗標要寫全名）。
 全域 --turn <回合> --agent <agent_id>（放在子命令前、--help 不列）：守門替 card-maker 的 kb 呼叫插的（D-195）；
 有 --turn 時這次呼叫的備份都進那個回合、算對話裡（不寫程式段）；回合不存在、或不是這個對話（--agent 記的回合、
 這個 session 的目前回合或 job 回合）的 exit 3（第一輪修 S4）。--session <sid>：守門替主對話的 cards dispatch／status／stop 插的。
@@ -52,6 +53,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="kb.py",
         description="wiki-with-willy 的唯一指令入口。",
+        allow_abbrev=False,
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 輸出")
     parser.add_argument("--turn", help=argparse.SUPPRESS)
@@ -65,7 +67,17 @@ def build_parser():
             module.add_arguments(sub)
         else:
             sub.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
+    _no_abbrev(parser)
     return parser
+
+
+def _no_abbrev(parser):
+    """主 parser 與每一層子 parser 都不收縮寫（--tu= 不會被當成 --turn，card-maker 第二輪修）。"""
+    parser.allow_abbrev = False
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for sub in action.choices.values():
+                _no_abbrev(sub)
 
 
 def main(argv=None):

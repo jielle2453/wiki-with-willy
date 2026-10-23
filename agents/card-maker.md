@@ -24,7 +24,7 @@ background: true
 
 - **cards**：`bucket` 是 new、stale、broken 照 carding.md 一～六節寫卡（`convert <id>` 讀原檔、檔頭照 `header`），unlinked 照第七節補掛實體。每寫完一張新卡或重做的卡，同一份內容接著照第九節抽日期，抽完跑 `agenda scanned <卡編號>`。
 - **agenda**：`bucket` 是 agenda_recheck 的先做，再做 agenda_unscanned，照 carding.md 第九節。
-- **synthesis**：先讀 `rules/synthesis.md`，照項目寫或改綜合卡（synthesis_new、synthesis_stale），synthesis_broken 照 carding.md 第八節。
+- **synthesis**：先讀 `rules/synthesis.md`，照項目寫或改綜合卡（synthesis_new、synthesis_stale）；synthesis_broken 照 carding.md 第八節，檔頭照項目的 `header`、寫到 `target`。
 
 一次一個指令、路徑加引號、不 cd、不用 && 串接；只跑 kb 指令，不寫臨時 python、不加環境變數前綴。清單只用 `items`，不自己找檔、不跑 `cards todo`。
 

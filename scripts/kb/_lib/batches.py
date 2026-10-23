@@ -14,7 +14,11 @@ failures：跨 job 的失敗紀錄 {key: {"fp","jobs","reason"}}；同一份（�
 結束超過 card_batch_expire_minutes 的 job、批次、子代理寫入時清掉（每個 session 最後一個關了的 job 留著）。
 派得出去的項目（split）：todo 的 new、stale、有檔頭的 broken、unlinked（cards）；agenda_unscanned、agenda_recheck（agenda）；
 synthesis_broken、synthesis_stale、確認過的 synthesis_new（synthesis）。主對話自己做的（main）：link 條目（線上文件，子代理讀不到）、
-檔名像密碼的（含裁示可以讀的）、待處理記過「有密碼」（還開著或用密碼打開了）的；manage 第二版還沒清的排除夾（purge pending）裡的不切也不算。
+檔名像密碼的（含裁示可以讀的）、待處理記過「有密碼」（還開著或用密碼打開了）的、找不到是哪個實體的壞綜合卡（第二輪修 R1）；
+manage 第二版還沒清的排除夾（purge pending）裡的不切也不算。
+壞的綜合卡（synthesis_broken）派給製卡助手時，batch 給跟 synthesis_stale 一樣齊的材料：該有的檔頭（synthesis.header_for）、
+該放的路徑（target）、掛的檔案卡、有效口述、裁示、推算、段落（第二輪修 R1，之前只給 path 與 reason，十次全做不成）。
+dispatch 每次都給 say：第一次派出去、之後每次收通知再派的進度、做完的收尾，主對話對客戶只說它（第二輪修 R2）。
 """
 import re
 import secrets
@@ -41,6 +45,10 @@ APPROVAL_QUESTION = "這次要更新 {n} 張綜合卡，比平常多；要繼續
 PROMPT = "批次 {batch}：{what}。第一步跑 {prefix} cards batch {batch} --json，照它做，做完照你的說明回報。"
 DESCRIPTION = "整理第 {n} 批（{what}）"  # 給 Agent 工具的 description：繁中，主對話轉述也不會冒英文（S6）
 SAY_FIRST = "交給製卡助手在背景整理，好了跟你說；這期間照常問我"
+SAY_PROGRESS = "做好 {done} 份了{failed}；還在做 {running} 批"
+SAY_RUNNING = "還在做 {running} 批"
+SAY_DONE = "整理完了：做好 {done} 份{failed}"
+SAY_FAILED = "，{n} 份沒做成"
 DEFAULT_FAIL = "製卡助手沒做成"
 TWICE_FAIL = "製卡助手兩次沒做成：{}"
 CARDING = "skills/ingest/references/carding.md"
@@ -232,6 +240,50 @@ def _in_any(uri, prefixes):
     return any(purge._in_folder(uri, p) for p in prefixes)
 
 
+class _SynthesisContext:
+    """壞綜合卡要的材料：實體清單、掛載、設定檔、口述裁示推算、編號 → 綜合卡檔（懶載入，只在有 synthesis_broken 時讀）。"""
+
+    def __init__(self, vault):
+        from kb._lib import cards, entities, synthesis
+        self.vault = vault
+        self.data = entities.load(vault)
+        self.mounts = entities.mounts(vault, self.data)
+        self.prof = cards._profile_or_default(vault)[0]
+        self.know = synthesis.knowledge(vault)
+        self.files = entities.synthesis_files(vault)
+
+    def owner(self, path):
+        """這張綜合卡是誰的：該放在這個路徑的實體，或檔頭編號指到的實體；有型別、還在（不是 merged）才算。"""
+        from kb._lib import synthesis
+        key = str(path).casefold()
+        live = [e for e in self.data["entities"] if e.get("type") and e.get("status") != "merged"]
+        hit = next((e for e in live if synthesis.card_rel(e).casefold() == key), None)
+        if hit is not None:
+            return hit
+        by_id = {e.get("id"): e for e in live}
+        for eid, rels in self.files.items():
+            if any(str(r).casefold() == key for r in rels) and eid in by_id:
+                return by_id[eid]
+        return None
+
+    def material(self, item):
+        from datetime import date
+        from kb._lib import synthesis
+        e = self.owner(item["path"])
+        if e is None:
+            return None
+        ms = self.mounts.get(e["name"], [])
+        stmts, ruls, finds = synthesis.basis(self.know, e["name"], self.mounts)
+        return dict(item, entity_id=e["id"], name=e["name"], type=e["type"],
+                    category=synthesis.category_text(self.prof, e["type"]), target=synthesis.card_rel(e),
+                    header=synthesis.header_for(self.vault, e, ms, date.today().isoformat(), self.data, self.mounts,
+                                                self.prof, self.know),
+                    sections=synthesis.sections_for(self.prof, e["type"]), cards=[synthesis._brief(m) for m in ms],
+                    statements=[synthesis.statement_brief(x) for x in stmts],
+                    rulings=[synthesis.ruling_brief(self.vault, self.know, r) for r in ruls],
+                    findings=[synthesis.finding_brief(self.vault, self.know, c, self.mounts) for c in finds])
+
+
 def main_only(entry, locked):
     """主對話自己做、不切進批次：link 條目、檔名像密碼的、待處理記過有密碼的。"""
     return entry is not None and (inventory.is_link(entry) or entry.get("read") == "credential"
@@ -253,6 +305,7 @@ def split(vault, out, source=None):
     prefixes = _purge_prefixes_of(out.get("purge_pending"))
     got = {k: [] for k in KINDS + ("main",)}
     seen = set()
+    ctx = []  # 有 synthesis_broken 才建 _SynthesisContext
 
     def place(kind, bucket, item):
         key = key_of(bucket, item)
@@ -267,6 +320,8 @@ def split(vault, out, source=None):
         seen.add((kind, key))
         if kind == "cards" and main_only(entry, locked):
             got["main"].append((bucket, key, item))
+        elif bucket == "synthesis_broken" and not _fixable(vault, ctx, item):
+            got["main"].append((bucket, key, item))  # 找不到是誰的綜合卡：製卡助手沒材料修，留給主對話
         else:
             got[kind].append((bucket, key, item))  # 日程照卡抽，主對話做的卡也交得出去
     for bucket in CARD_BUCKETS:
@@ -285,12 +340,21 @@ def split(vault, out, source=None):
     return got
 
 
+def _fixable(vault, ctx, item):
+    try:
+        if not ctx:
+            ctx.append(_SynthesisContext(vault))
+        return ctx[0].owner(item["path"]) is not None
+    except ValueError:  # 實體清單讀不到：照舊交出去，製卡助手回報做不成
+        return True
+
+
 def waiting(vault, out):
     """要整理的份數（plan 的門檻與 announce）：new、stale、unlinked 加 agenda_unscanned，扣掉還沒清的排除夾裡的；
     主對話自己做的（線上文件、可以讀的密碼檔、用密碼打開的）照算，不然它們永遠不會被提醒（22 第一輪驗後）。
     記成有密碼還沒打開、記過讀不到的連結，todo 本來就不列。同一種的加密 PDF 由 plan 另外加。"""
     parts = split(vault, out)
-    return (sum(1 for b, _k, _i in parts["cards"] + parts["main"] if b != "broken")
+    return (sum(1 for b, _k, _i in parts["cards"] + parts["main"] if b in ("new", "stale", "unlinked"))
             + sum(1 for b, _k, _i in parts["agenda"] if b == "agenda_unscanned"))
 
 
@@ -429,6 +493,7 @@ def dispatch(vault, session_id, turn_id, source=None):
             save(vault, data, jt)
     pre = prefix()
     first = fresh and bool(made)
+    say = _say(first, done, approval, made, run, _done_count(data, job, out), len(failed))
     n0 = sum(1 for b in data["batches"] if b.get("job") == job["job"]) - len(made)
     shown = [{"batch": b["batch"], "kind": b["kind"], "items": len(b["items"]), "agent": AGENT,
               "description": DESCRIPTION.format(n=n0 + i + 1, what=_what(b["kind"], len(b["items"]))),
@@ -439,7 +504,22 @@ def dispatch(vault, session_id, turn_id, source=None):
             "approval": approval, "done": done,
             "note_cmd": f'kb turn note --turn {jt} "{{做了什麼}}"' if done and not fresh else None, "stopped": False,
             "failed": [{"id": k, "kind": v["kind"], "reason": v["reason"]} for k, v in failed.items()],
-            "say": SAY_FIRST if first else None}
+            "say": say}
+
+
+def _say(first, done, approval, made, run, done_n, failed_n):
+    """給客戶的那一句（繁中，第二輪修 R2）：第一次派出去說交給製卡助手；之後每次（收通知再派）說進度；做完說收尾；
+    要問大改動、或什麼都沒做的不說（approval 有自己的問句）。"""
+    tail = SAY_FAILED.format(n=failed_n) if failed_n else ""
+    if first:
+        return SAY_FIRST
+    if approval is not None:
+        return None
+    if done:
+        return SAY_DONE.format(done=done_n, failed=tail) if (done_n or failed_n) else None
+    if not (done_n or failed_n):
+        return SAY_RUNNING.format(running=len(run) + len(made))
+    return SAY_PROGRESS.format(done=done_n, failed=tail, running=len(run) + len(made))
 
 
 def _approval(vault, jt, items, st):
@@ -478,10 +558,14 @@ def batch_view(vault, batch_id, agent_id=None):
     want = list(b.get("items") or [])
     buckets = {"cards": CARD_BUCKETS, "agenda": AGENDA_BUCKETS, "synthesis": SYNTHESIS_BUCKETS}[b["kind"]]
     found = {}
+    ctx = None
     for bucket in buckets:
         for item in out.get(bucket) or []:
             k = key_of(bucket, item)
             if k in want and k not in found:
+                if bucket == "synthesis_broken":
+                    ctx = ctx or _SynthesisContext(vault)
+                    item = ctx.material(item) or item
                 found[k] = dict(item, bucket=bucket)
     root = plugin_root().as_posix()
     return {"batch": batch_id, "kind": b["kind"], "prefix": prefix(), "read": [f"{root}/{r}" for r in READ[b["kind"]]],

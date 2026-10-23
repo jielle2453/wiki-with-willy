@@ -93,9 +93,10 @@ class Plan(Base):
                          [("dispatch", 4)])
         self.assertEqual(self.steps(agenda_recheck=rows), [("dispatch", 1)])
 
-    def test_synthesis_broken_goes_into_dispatch(self):
+    def test_synthesis_broken_without_owner_stays_with_main(self):
+        """第二輪修 R1：找不到是哪個實體的壞綜合卡，製卡助手沒材料修，留在主對話的 cards 步。"""
         got = self.build(unlinked=[{"id": "f-1"}], synthesis_broken=[{"path": "p", "reason": "r"}])["plan"]
-        self.assertEqual([(s["step"], s["items"], s["read"]) for s in got], [("dispatch", 2, None)])
+        self.assertEqual([(s["step"], s["items"], s.get("files")) for s in got], [("dispatch", 1, None), ("cards", 1, ["p"])])
 
     def test_synthesis_new_counts_confirmed_only(self):
         new = [{"entity_id": "e-1", "name": "甲", "confirmed": True}, {"entity_id": "e-2", "name": "乙", "confirmed": False, "question": "Q"}]
@@ -105,7 +106,7 @@ class Plan(Base):
     def test_full_order(self):
         got = self.steps(moved=[{"id": "f-1"}], new=work(1), unlinked=[{"id": "f-2"}], synthesis_broken=[{"path": "p"}],
                          synthesis_stale=[{"entity_id": "e"}], synthesis_new=[{"entity_id": "e2", "confirmed": True}])
-        self.assertEqual(got, [("sync", 1), ("dispatch", 5)])
+        self.assertEqual(got, [("sync", 1), ("dispatch", 4), ("cards", 1)])  # 假路徑 p 沒有實體：主對話
 
     def test_link_entry_stays_with_the_main_conversation(self):
         """驗收 13c：線上文件（link 條目）不切進批次，plan 另留一步 cards 只列它，read 一～六節。"""

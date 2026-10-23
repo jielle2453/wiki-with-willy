@@ -148,3 +148,93 @@ fixture：`llm-wiki-test/build-e2e/`：`客戶夾`（空）、`來源`（46 份�
 - 名字題的「掛了 N 份檔」措辭、`accept`、`names` 步、`ai_judged` 當確認：真跑與 B-412 都對。
 - `fixture` 說明：舊 wiki 的 `hot.md` 提到的「業主電話不寫進 wiki 頁」，AI 判斷設定檔已有，沒列給客戶；沒有出問題。
 - `entity accept` 對已是 AI 判斷的再叫一次，回的是 `已登記：…（AI 判斷）` 而不是「已經確認過了」，spec 只規定已確認的那句，沒衝突。
+
+## 回測第一輪
+
+日期：2026-10-24
+測的版本：`f7c65d3`（`6e8a502..f7c65d3`：`d75a14f` 主體、`f7c65d3` 補修）；跑前樹乾淨，沒改任何程式。
+範圍：22 派的 7 項（S1、S2、S3、S4～S10、plugin-dev 文字、真跑加 B-412、validate）。
+
+### 結論
+
+- **S1、S3、S4、S6～S10 都過；S2 有 1 件沒過、1 件新發現；S5 沒完全好。** 沒有新的高等級問題。
+- 沒過的兩件：
+  - **R1（中）`帳密.md` 沒被跳過。** 密碼樣式只有 `*密碼*`、`*password*`…，沒有 `帳密`；真跑時它整份被切進 `.system/temp/adopt/004.txt`，內容（假值）原文在裡面，製卡助手讀到了。`密碼清單.md` 有跳過。
+  - **S5（低）通知之後的英文轉場還有。** B-412 長指示那次又出現 1 段：`Back to getting the plan, since confirming names can bring up new steps.`（出現在 names 之後、不是 dispatch 的 `say` 那一段）。
+- 新發現 2 件（低）：R2 連結點過去的夾（junction）會被跟進去讀；R3 終端機的 `build status|done|redo|set` 在鎖空著或過期時會認領成「終端機」，之後對話那邊反而被擋 30 分鐘。
+- 全部測試：exit 0，**Ran 2339，OK（skipped=2）**，543 秒；`claude plugin validate` 通過（警告同前）。
+- 真跑（`claude -p`，刻意走接手建置，舊 wiki 有密碼清單頁）一路走到報告，**接手之後 `done cards` 立刻過**，沒再被舊批次擋。
+- settings.json 跑前跑後 sha256 相同：`8ae82f7a69eea7b8…`（跑前全文存在 scratchpad `settings_before_build_r1.json`）。
+
+### 逐項
+
+| # | 結果 | 證據 |
+|---|---|---|
+| S1 接手 | **過** | 腳本：A 派 3 批（20＋20＋2）、子代理認領後 B `status --takeover` → 那 3 批 `released`、A 的 job `closed`（`released_by_takeover`）；B 的 `cards status` 與 `build done cards` 說同一件事（沒在跑、還有 42 份）；B `dispatch` 切出同樣 3 批；做完 `done cards` 過。鎖過期、沒用 `--takeover`、舊批次 45 分鐘：B 照樣切得出來、`done cards` 只看自己的批次。真跑：第 9 輪 70 秒砍掉 claude（兩批 open、子代理已死）→ 新對話 `build` 被擋（`另一個對話正在建置（全量整理，最後動作 01:02）…`，AI 原句照貼）→ 說「接手建置」→ 剩下 26 份重派（兩批 20＋9 加 2 張綜合卡）→ 收完通知後 `build done cards` **第一次就過**。接手後原對話再動 → 被擋 |
+| S2 密碼頁跳過 | **部分過（R1）** | `密碼清單.md`、`wiki/credentials.md`、`wiki/topics/credentials.md`、`id_rsa.md` 都跳過，列在 `adopt --check` 的 `skipped`、`--extract` 的 `skipped`（人讀多一行「檔名像密碼、沒讀：…」）、`report --facts` 的 `adopt_skipped`（數字段有「舊 wiki 裡檔名像密碼、沒讀的：…」）；真跑報告「讀不到的」也寫了。**`帳密.md` 沒跳過**（見 R1） |
+| S2 遮值 | **過（有誤傷，已記）** | `pwd: …`、`PWD=…`、`Authorization: Bearer …`、`解鎖碼 …`、`解鎖碼：…` 都遮；私鑰 `-----BEGIN RSA PRIVATE KEY-----` 到 `-----END…` 整段遮、**沒有 END 的 `BEGIN OPENSSH PRIVATE KEY` 遮到檔尾**；CLAUDE.md 與 hot.md 裡的也遮；舊 vault 雜湊不變（比對 fixture 與整棵樹）；公鑰區塊、`cwd`、`load-bearing wall` 沒被誤遮 |
+| S2 「寧可多遮」的誤傷 | 記下（低） | 正常句 `今天的 pwd 命令列出目前資料夾` 變成 `今天的 pwd ███。`（命令名後面那一串被吃掉）；`bearer of bad news` 變成 `bearer ███ bad news`。設計師的舊 wiki 出現這兩個字的機率很低，影響是少一個詞，不是漏 |
+| S3 | **過** | 抽樣批次還在跑時 `done sample` → exit 3 `抽樣還在背景做，做完再往下`；job 開著時帶不存在的編號（單獨或混在好的裡）→ exit 3 `這幾份不在要整理的清單裡：…`；同樣的編號再給一次不報錯（`沒有新派的`）；`done sample` 後第一次 `cards dispatch` 切出 20＋18（不再說「整理完了」），`cards todo` 的 new 38 份；先叫一次收尾 dispatch 再 `done sample` 的老路也對 |
+| S4 原句照貼 | **過** | 真跑：新對話被擋時 AI 只貼了那一句（沒有重寫、沒有簡體）；兩輪真跑共 73 段給客戶的文字，簡體 0、英文自言自語 0、步驟編號 0、內部編號 0 |
+| S5 通知後只說 `say` | **部分（低）** | 真跑：收到通知後的主對話文字是 `做好 10 份了；還在做 1 批`、`做好 29 份了；還在做 1 批`、`交給製卡助手在背景整理，好了跟你說；這期間照常問我`，都是 `say`。B-412 長指示（328 秒，先整理、dispatch 4 次、派 2 次、18 張卡＋3 張綜合卡、三個名字都 `ai_judged`、`asks` 空）：6 段主對話文字裡 **1 段英文** `Back to getting the plan, since confirming names can bring up new steps.`（names 之後、派綜合卡之前）；其餘 5 段都是中文，沒有 `hook-errors.log`、沒有權限拒絕。這個轉場發生在「名字登記完要再拿一次計畫」的時候，SKILL／ingest 都只管 dispatch 的 `say` |
+| S6 repr 密碼 | **過** | `Pw#9x'q\z` 的原字、`repr`、`json.dumps`（含 `ensure_ascii=False`）形式都被換成 `＊＊＊`；帶非 ASCII 的前綴也行 |
+| S7 `given_up` | **過** | 12 份被打回後 `report --facts` 的 `given_up` 有 12 筆（`id`、`kind`、`reason`、`name`），人讀數字段多一行 `製卡助手沒做成 12 份：…`；沒有失敗時沒有這行 |
+| S8 adopt 子代理 | **過** | 認領 adopt 批次的子代理：Write、Edit、MultiEdit、NotebookEdit 都 deny `製卡助手不能做這件事`；Read 段檔、`cards batch` 仍 allow。認領做卡批次的子代理 Write／Edit `檔案索引/…` 照常 allow |
+| S9 建好的知識庫 | **過** | `done` 之後與沒有 build.json 的一般知識庫：`status|facts|report --facts|report --from|set|redo|done|adopt --check|adopt --extract` 全 exit 3 `這裡已經是建好的知識庫，要加資料夾、整理檔案直接跟我說`；`env` 仍可跑；空資料夾 `adopt --check` 仍可跑。`hot.md`／`log.md`／`agenda.md`／`CLAUDE.md` 改成不跟檔案連結（符號連結沒法在這台建，用讀碼加單元測試）；**目錄連結（junction）沒擋，見 R2** |
+| S10 並行 start／終端機 | **過（R3 新發現）** | 並行 `start` ×4 輪：慢的那個回 `另一個對話正在建置（訪談，最後動作 00:47）…`、沒有路徑；終端機（沒 `--session`）在別的對話持鎖時 `build status` → 被擋（不再被當成同一個對話）、`env`／`facts` 不動鎖 |
+| plugin-dev 文字 | **大致過** | 見下 |
+| 真跑 | **過**（R1 除外） | 見下 |
+| validate | **過** | `Validation passed with warnings`（沒有 icon、README 沒有安裝行） |
+
+### 沒過與新發現
+
+| # | 等級 | 問題 | 重現 | 建議 |
+|---|---|---|---|---|
+| R1 | **中** | `帳密.md`（舊 wiki 常見的檔名）不在憑證檔名樣式裡（`CREDENTIAL_PATTERNS` 只有 `*密碼*`、`*password*`、`*passwd*`、`*secret*`、`*credential*`、`.env`、`*.pem`…，沒有 `*帳密*`、`*金鑰*`），所以 `adopt` 不跳過、`convert` 也不擋。內容沒有關鍵字時（`雲端相簿 abc / <值>`）遮值也抓不到，整份進 `.system/temp/adopt/` 讓製卡助手讀 | 腳本：舊 wiki 加 `wiki/projects/帳密.md`（`user abc / Zq8kd91nn`）→ `--check` 的 `skipped` 沒有它、`--extract` 切進去、值留在段檔。真跑：`帳密.md` 內容（`Zq8kd91ooREAL`）在 `004.txt` 原文；製卡助手回報「舊 wiki 有一頁帳密（值沒有抄）」，AI 對客戶說了「帳密那頁…沒有抄」，沒有進卡或口述 | `CREDENTIAL_PATTERNS` 加 `*帳密*`、`*金鑰*`（這是守門共用的樣式表，spec 不准動 `guard.py`／守門，所以請設計 session 決定；或只在 adopt 另加一份舊 wiki 專用樣式） |
+| R2 | 低 | 舊 wiki 的 `wiki/` 底下若有目錄連結（Windows junction），`rglob` 會跟進去，連結外面的檔被切進段檔（`is_symlink()` 對 junction 回 False） | 腳本：`mklink /J <舊wiki>/wiki/junc <外面夾>`，外面夾放 `外檔.md` → `--extract` 的 `files` 有 `wiki/junc/外檔.md`，內容在段檔 | `_wiki_pages` 對每一層用 `os.path.realpath` 與 `root` 比（跟 `_plain` 同一招），或跳過 junction |
+| R3 | 低 | 終端機（沒有 `--session`）跑 `build status|done|redo|set`，在鎖空著或過期時會把鎖認領成 `終端機`，之後原本的對話再動就被擋 30 分鐘（要說「接手建置」才解開） | 腳本：`start` 後（鎖空著）終端機 `kb build set people x` → `owner: 終端機` → 對話 A `build status` → `另一個對話正在建置…` | 終端機只讀（`status` 不認領），或終端機的寫入不覆蓋對話的 `session_id` |
+
+### plugin-dev 文字（`plugin-dev:skill-reviewer`，14 項逐項對照）
+
+審查員只讀檔、無 shell；字數是估的，我另外量過：SKILL.md 本文現在約 2050 字（≤ 3000）、`steps.md` 70 行、`adopt.md` 29 行、`build-report.md` 20 行。
+
+- **已修**：`then` 的出處（steps.md 說明它在「現在做」那個結果裡）、`--takeover`（SKILL 分辨多一條）、`ruling`／`statement` 的旗標與實體「無」的做法、`profile add` 欄名改指向 `kb profile show --json`（steps.md）、沒資料夾又記了舊 wiki 的走法、`done sample` 的前提、抽樣列進 SKILL 骨架且 id 來自 `cards todo`、「你」「她」稱呼、原句照貼與「只說 say」兩條原則、報告範本多了舊 wiki 被跳過、`given_up` 的提示。
+- **還部分／沒修（都低）**：
+  - references 裡的 `${CLAUDE_PLUGIN_ROOT}/…` 路徑（steps.md:23、:68、adopt.md:23）在 Read 進來的檔裡不會被代換；SKILL.md 的備援只講 kb.py。
+  - adopt.md 還寫死 `kb profile add 偏好 偏好=<一句>` 與 statement／ruling／agenda 的旗標。
+  - `八項` 沒講 python 太舊、kb 起不來、`kb build start` 被擋怎麼說；sac「評估中」沒提。
+  - 還有重複寫的（三句重點、報告 Write 路徑、不講英文不唸編號）。
+  - steps.md 的「ingest 的 carding.md 第十一節」「照 ingest 自己做」沒給路徑。
+  - SKILL.md 的 description 沒列「收舊 wiki」；報告範本「讀不到的」沒提 sac 擋住功能。
+- **審查員新提的（低到中）**：
+  - 日程那行永遠帶 `--entity <名>`，但候選的實體可能是「無」（`--entity` 對日程是選填）；
+  - 「份數多那題在盤點時已經說好」，但盤點那節沒要 AI 問；
+  - `done` 的 `建置：X 做完了，下一步 Y` 要不要原句講沒寫；
+  - env 有 `fail` 時可不可以 `build start` 沒寫；
+  - 抽樣的 `new` 少於 10 或空（重新抽樣）沒寫。
+
+  真跑中這幾點都沒造成問題：AI 自己加了 `--entity`、自己問了份數多那題或直接做。
+
+### 真跑（`claude -p`，第二輪）
+
+fixture：`llm-wiki-test/build-e2e2/`：`來源` 46 份（含 1 份有密碼 PDF、2 份舊 `.doc`、`私人/`、`公司行政/薪資/`）、舊 wiki（`tests/fixtures/old_vault` 加 `wiki/projects/密碼清單.md`、`帳密.md`）、`外部案子`。第一個對話跑到全量整理，第 9 輪 70 秒時砍掉 claude；新對話打 `/wiki-with-willy:build` → 被擋 → 「接手建置」→ 走完。
+
+| 步 | 秒 | 結果 |
+|---|---|---|
+| 環境→建→訪談（4 輪） | 22＋17＋21＋39 | 逐項中文講，sac 只提醒、不建議關；訪談一次講完 5 點，**AI 自己注意到薪資夾與「密碼清單」那頁（檔名像密碼，不讀）**問客戶 |
+| 登記、盤點 | 45＋22 | 3 個資料夾、2 個 `exclude --kind hidden`；盤點 41 份、讀不到 3 份、約 5 分鐘、一句用量；AI 主動更正「薪資夾 3 份」是只算檔名有「薪資」的，實際拿掉 5 份 |
+| 抽樣 | 221＋75 | 挑 12 份（跨夾跨格式），列「我猜的」四項；客戶改完（工程、請款、同一家、別名）寫進去，`done sample` |
+| 全量整理（被砍） | 70 | 派 2 批（20＋12）後 claude 被砍 |
+| 新對話 | 9 | `build status` 被擋，原句照貼：`另一個對話正在建置（全量整理，最後動作 01:02）；那個對話還開著就回那邊繼續，已經關掉了就說『接手建置』` |
+| 接手 | 39 | `status --takeover`、看 `cards todo`，講剩下 26 份與讀不到 3 份，問要不要開始 |
+| **全量整理（接手後）** | 409 | 派 2 批（20＋9）＋綜合卡 2 張，收到兩次通知都只說 `say`（`做好 10 份了；還在做 1 批`、`做好 29 份了；還在做 1 批`），**`build done cards` 第一次就過** |
+| 名字 | 36＋36 | 直接 `entity accept` 3 家廠商（`明亮燈飾`、`大成磁磚`、`順發水電工程行`），有疑慮的 1 題（大安陳宅跟「陳宅」是不是同一件）列出並教怎麼回；答完 `entity merge`、`rename`、`done names` |
+| 綜合卡 | 105 | 派 1 批 4 張，`done synthesis` |
+| 收舊 wiki | 74＋42 | `--extract` 切 7 段（跳過密碼清單）、派 2 批；收回報、跟 `statement list`／`agenda list`／`entity list` 比對後列 9 條分四類（包含「帳密那頁有，值沒抄」）；客戶「1 到 6 都記，尾款 1/15，第 8 條放著，帳密不存」→ 記 4 條口述、2 條偏好、1 條日程；其中第 5 條找不到第一版的卡就改記成口述（AI 自己說明） |
+| 報告 | 42 | 六段齊；數字段有「舊 wiki 裡檔名像密碼、沒讀的：wiki/projects/密碼清單.md」；對話講三句重點、問要不要試問 |
+
+- 給客戶看的文字（兩輪真跑共 30 段加上第一輪的 43 段）：簡體 0、英文自言自語 0、步驟編號 0、內部編號 0；自己跳步 0。
+- 權限：沒有被擋的客戶動作。製卡助手有 2 次想 `grep carding.md` 找章節被守門擋，改用 Read，無影響；主對話有 1 次 `PYTHONIOENCODING=… python -c …` 被「requires approval」擋，改用 Read 同一個檔，在桌面版會跳一次要不要允許。
+- `hook-errors.log` 不存在；舊 wiki 一個檔都沒變（只比 fixture 多我加的兩頁，雜湊與內容都沒變）；來源夾只多我放的私人帳單；`私人`、`薪資` 沒有任何東西進清冊、卡或暫存。
+- 花了多久：claude 實際跑約 23 分鐘（牆鐘 00:55～01:18，接手之後 21 分鐘走完）。
+- 沒做到：同第一次，不能在桌面版關視窗（用砍行程代替）、舊 llm-wiki 開著只用替身驗。

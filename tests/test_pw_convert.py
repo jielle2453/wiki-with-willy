@@ -146,5 +146,49 @@ class Readable(Base):
         self.assertEqual(_pw.leaks(self.V), [])
 
 
+
+class ConfirmTurnAndStop(Base):
+    """桌面版確認落差 D：回答中途客戶插話，secret_shown 帶到下一個回合（上一句沒答完才帶）；
+    縱深防禦：Stop 寫結果前比對這個知識庫存在憑證管理員的值，回答裡出現一模一樣的（4 字以上）整欄換掉。"""
+
+    def journal_results(self):
+        rows = []
+        for p in (self.V / ".system" / "journal").glob("*.jsonl"):
+            rows += [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return [r.get("result") for r in rows]
+
+    def test_flag_follows_interrupted_turn(self):
+        from tests.test_hooks_stop import HOOK as STOP, run as run_hook, stop_payload
+        from tests.test_hooks_turn import prompt_payload, run_hook as run_turn
+        sid = "cut-sid"
+        run_turn(prompt_payload(self.V, "工地大門密碼多少", session_id=sid))
+        turn.mark(self.V, "secret_shown")
+        run_turn(prompt_payload(self.V, "等一下，順便看日程", session_id=sid))  # 上一句沒等到 Stop
+        sess = json.loads((self.V / ".system" / "turns" / f"{sid}.json").read_text(encoding="utf-8"))
+        self.assertTrue(sess.get("secret_shown"))
+        run_hook(STOP, stop_payload(self.V, "工地大門是 Gate-zq7x-8812，日程沒有新的", sid=sid))
+        self.assertNotIn("Gate-zq7x-8812", "".join(str(r) for r in self.journal_results()))
+        # 上一句答完了（Stop 跑過）：不帶
+        run_turn(prompt_payload(self.V, "謝謝", session_id=sid))
+        sess = json.loads((self.V / ".system" / "turns" / f"{sid}.json").read_text(encoding="utf-8"))
+        self.assertFalse(sess.get("secret_shown"))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows 憑證管理員")
+    def test_stop_drops_result_with_saved_value(self):
+        from tests.test_hooks_stop import HOOK as STOP, run as run_hook, stop_payload
+        from tests.test_hooks_turn import prompt_payload, run_hook as run_turn
+        for name, value in (("測試-工地大門", _pw.GATE_PW), ("測試-短", "zq7")):
+            self.assertEqual(run_kb("unlock", "save", "--kind", "記下的密碼", "--name", name, "--value", value,
+                                    cwd=self.V).returncode, 0)
+        sid = "deep-sid"
+        run_turn(prompt_payload(self.V, "幫我查日誌裡有沒有那串", session_id=sid))
+        run_hook(STOP, stop_payload(self.V, f"搜 {_pw.GATE_PW} 命中兩個回合編號", sid=sid))
+        self.assertIn("（這句回答有密碼，沒記）", self.journal_results())
+        self.assertEqual(_pw.leaks(self.V), [])
+        run_turn(prompt_payload(self.V, "短的呢", session_id=sid))
+        run_hook(STOP, stop_payload(self.V, "zq7 這種三個字的不比", sid=sid))
+        self.assertIn("zq7 這種三個字的不比", self.journal_results())
+
+
 if __name__ == "__main__":
     unittest.main()

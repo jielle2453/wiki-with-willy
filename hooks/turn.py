@@ -68,6 +68,10 @@ def main():
                 _ingest_stopped(vault, previous)
             except BaseException as e:  # noqa: BLE001  沒提醒到只是多整理一次，回合照開
                 _log(e, payload)
+            try:
+                _secret_carried(vault, previous)
+            except BaseException as e:  # noqa: BLE001  沒帶到還有 Stop 的遮值與存值比對，回合照開
+                _log(e, payload)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
         _log(e, payload)
 
@@ -84,6 +88,14 @@ def _ingest_stopped(vault, previous):
     out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": STOPPED}}
     sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")
     sys.stdout.flush()
+
+
+def _secret_carried(vault, previous):
+    """上一句沒答完（客戶在回答中途插話、沒等到 Stop）又記了 secret_shown：帶到這一句，答出密碼的回答落在這一句也不記
+    （桌面版確認落差 D，跟 ingest 旗標一樣）。上一句答完了就不帶。"""
+    from kb._lib import turn
+    if previous.get("secret_shown") and not previous.get("done", True):
+        turn.mark(vault, "secret_shown")
 
 
 def _clean_secrets(vault, payload):

@@ -432,6 +432,60 @@ def _substituted_args(text, runs, powershell):
     return cmdparse.stage_kind(runs, "".join(blanked), "", None, powershell) == "write"
 
 
+# 列檔名後面接的只處理文字的管線（桌面版確認 #10、#11，D-185）：不讀檔案內容，整句照只列檔名放行
+TEXT_FILTERS = {"Bash": {"head", "tail", "sort", "wc", "grep", "egrep", "fgrep", "uniq", "cut"},
+                "PowerShell": {"select-object", "select", "sort-object", "sort", "measure-object", "measure", "where-object",
+                               "where", "?"}}
+# grep 這些旗標會讀檔（-r 讀整個目前目錄、-f 讀樣式檔）；wc、sort 的 --files0-from 讀檔名清單
+_FILTER_READ_LONG = ("--recursive", "--dereference-recursive", "--file", "--directories", "--files0-from", "--include",
+                     "--exclude-from")
+_PS_CMDLET = re.compile(r"^[a-z]+-[a-z]+$")
+_PS_READERS = {"gc", "cat", "type", "sls", "ipcsv", "gi", "gp", "iex", "icm", "saps", "start", "fhx", "%", "&", ".", "foreach",
+               "ii", "invoke-item"}
+
+
+def _text_filter(plan, cwd, tool):
+    """管線後段只處理前一段的文字（head、sort、grep 樣式；Select-Object、Where-Object 比名稱），不讀任何檔：
+    Bash 不帶路徑、不帶萬用字元、grep 不帶 -r／-f；PowerShell 不出現讀內容或跑指令的 cmdlet、別名、.NET 呼叫與括號。"""
+    verb, text = plan["verb"], cmdparse.strip_marks(plan["text"])
+    if plan["kind"] != "read" or verb not in TEXT_FILTERS.get(tool, ()):
+        return False
+    tokens = _tokens_q(text, globs_in_quotes=(tool == "PowerShell"))
+    idx = next((k for k, (t, _q, _g, _a) in enumerate(tokens) if cmdparse._base(t) == verb), None)
+    if idx is None:
+        return False
+    rest = tokens[idx + 1:]
+    if tool == "PowerShell":
+        bare = cmdparse.outside_quotes(text, True)
+        if bare is None or "(" in bare or "[" in bare or "::" in bare:
+            return False
+        for tok, quoted, _g, _a in rest:
+            low = tok.lower()
+            if quoted or low.startswith("-") or low in ("{", "}"):
+                continue
+            if _PS_CMDLET.match(low) or low in _PS_READERS or low in cmdparse.SHELL_WRAPPERS or low in cmdparse.INTERPRETERS:
+                return False
+        return True
+    for tok, _quoted, glob_out, _a in rest:
+        low = tok.lower()
+        if low.startswith("--"):
+            if low.split("=", 1)[0] in _FILTER_READ_LONG:
+                return False
+            continue
+        if low.startswith("-") and len(low) > 1:
+            if verb in ("grep", "egrep", "fgrep") and any(c in tok[1:] for c in "rRfd"):
+                return False
+            continue
+        if glob_out or "/" in tok or "\\" in tok or tok in (".", ".."):
+            return False
+        try:
+            if os.path.exists(normalize(tok, cwd)):
+                return False  # 是存在的檔或夾：會被讀
+        except (OSError, ValueError):
+            return False
+    return True
+
+
 def body_paths(body):
     """heredoc／here-string 內文裡的絕對路徑（D-186 (d)：內文照舊抽路徑判斷讀），同 cmdparse.code_paths。"""
     return cmdparse.code_paths(body)
@@ -460,7 +514,8 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
     plans = _plan_stages(cleaned, bodies, tool == "PowerShell")
     out["stages"] = plans
     out["list_only"] = bool(plans) and not bodies and all(
-        not p["redirect"] and cmdparse.list_only(p["verb"], p["words"]) for p in plans) and all(p["stage"] == 0 for p in plans)
+        not p["redirect"] and (cmdparse.list_only(p["verb"], p["words"]) if p["stage"] == 0 else _text_filter(p, cwd, tool))
+        for p in plans)
     sub_paths, sub_globs, sub_write_empty = {}, {}, {}
     uncertain, cd_written = [], set()
 

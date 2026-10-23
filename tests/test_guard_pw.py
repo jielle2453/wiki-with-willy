@@ -416,5 +416,22 @@ class SecretReadLabel(unittest.TestCase):
                 self.assertTrue(d.reason.startswith("需要客戶按允許才會執行："), d.reason)
 
 
+
+class ConfirmListPipe(Base):
+    """桌面版確認 #10、#11：有密碼檔的夾，列檔名接只處理文字的管線照 D-185 放行；接讀內容的照擋。語料同一批。"""
+
+    def test_list_then_text_filters(self):
+        r = (self.raw / "客戶案件").as_posix()
+        for tool, cmd in (("Bash", f'ls "{r}" | head -5'), ("Bash", f'ls "{r}" | sort | wc -l'),
+                          ("PowerShell", f'Get-ChildItem "{r}" | Select-Object -ExpandProperty Name'),
+                          ("PowerShell", f"Get-ChildItem \"{r}\" | Where-Object {{ $_.Name -like '*報價*' }} | Sort-Object Name")):
+            self.assertDecision(tool, cmd, "pass")
+        for tool, cmd in (("Bash", f'ls "{r}" | xargs cat'), ("Bash", f'ls "{r}" | grep -r 密碼'),
+                          ("PowerShell", f'Get-ChildItem "{r}" | Get-Content'),
+                          ("PowerShell", f'Get-ChildItem "{r}" | ForEach-Object {{ Get-Content $_ }}'),
+                          ("PowerShell", f"Get-ChildItem \"{r}\" | Where-Object {{ (Get-Content $_) -match 'x' }}")):
+            self.assertDecision(tool, cmd, "deny")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -286,10 +286,11 @@ def split(vault, out, source=None):
 
 
 def waiting(vault, out):
-    """要整理的份數（plan 的門檻與 announce）：派得出去的 new、stale、unlinked 加 agenda_unscanned（跟 dispatch 同一套排除，
-    第一輪修）；主對話的同一種加密 PDF 由 plan 另外加。"""
+    """要整理的份數（plan 的門檻與 announce）：new、stale、unlinked 加 agenda_unscanned，扣掉還沒清的排除夾裡的；
+    主對話自己做的（線上文件、可以讀的密碼檔、用密碼打開的）照算，不然它們永遠不會被提醒（22 第一輪驗後）。
+    記成有密碼還沒打開、記過讀不到的連結，todo 本來就不列。同一種的加密 PDF 由 plan 另外加。"""
     parts = split(vault, out)
-    return (sum(1 for b, _k, _i in parts["cards"] if b != "broken")
+    return (sum(1 for b, _k, _i in parts["cards"] + parts["main"] if b != "broken")
             + sum(1 for b, _k, _i in parts["agenda"] if b == "agenda_unscanned"))
 
 
@@ -651,8 +652,8 @@ def active_job(vault, session_id, within_minutes=None):
 # ---------- 開場數字 ----------
 
 def opening_counts(vault, sources, deadline=None):
-    """開場那行（D-161、B-415）：(還沒整理的份數, 要跟著搬的卡)。份數是 todo 的 new＋stale，跟 dispatch 同一套排除
-    （link、檔名像密碼的、記過有密碼的、還沒清的排除夾，第一輪修）；搬的是 moved。只讀，不寫檔。"""
+    """開場那行（D-161、B-415）：(還沒整理的份數, 要跟著搬的卡)。份數是 todo 的 new＋stale 扣掉還沒清的排除夾裡的；
+    主對話自己做的照算（記成有密碼還沒打開、記過讀不到的連結 todo 本來就不列，22 第一輪驗後）；搬的是 moved。只讀，不寫檔。"""
     from kb._lib import cards, entities
     from kb._lib import sources as sources_lib
     entries = inventory.load(vault)["entries"]
@@ -663,12 +664,11 @@ def opening_counts(vault, sources, deadline=None):
     if pend:
         from kb._lib import purge
         prefixes = [purge.folder_uri(p["alias"], p["spec"]) for p in pend]
-    locked = _locked_ids(vault)
     n = 0
     for item in out["new"] + out["stale"]:
         e = by_id.get(item["id"])
         uri = e["locations"][0]["uri"] if e and e.get("locations") else ""
-        if main_only(e, locked) or (prefixes and _in_any(uri, prefixes)):
+        if prefixes and _in_any(uri, prefixes):
             continue
         n += 1
     return n, len(out["moved"])

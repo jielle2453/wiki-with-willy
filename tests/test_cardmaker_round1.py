@@ -359,7 +359,8 @@ class SameExclusionsEverywhere(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_opening_count_and_waiting_skip_link_and_credential(self):
+    def test_opening_count_and_waiting_include_main_conversation_items(self):
+        """22 第一輪驗後：線上文件、可以讀的密碼檔不進批次，但照樣要製卡，開場份數與門檻都算它們。"""
         from kb._lib import cards, config, plan, rulings
         from kb._lib import sources as sources_lib
         before, _m = batches.opening_counts(self.V, sources_lib.load(self.V))
@@ -372,12 +373,47 @@ class SameExclusionsEverywhere(unittest.TestCase):
         cid = _cards.entry_of(self.V, "客戶案件/信義王/網站密碼.txt")["id"]
         rulings.add(self.V, "可以讀", [], [], "網站密碼.txt 可以讀", self.t, files=[cid])
         after, _m = batches.opening_counts(self.V, sources_lib.load(self.V))
-        self.assertEqual(after, before)
+        self.assertEqual(after, before + 2)
         out = cards.todo(self.V, sources_lib.load(self.V))
-        self.assertEqual(len(out["new"]), before + 2, "todo 照列（主對話做）")
-        self.assertEqual(plan._waiting(out, self.V), before)
+        self.assertEqual(len(out["new"]), before + 2)
+        self.assertEqual(plan._waiting(out, self.V), before + 2)
         steps = {st["step"]: st for st in plan.build(out, self.V, config)["plan"]}
         self.assertEqual(len(steps["cards"]["files"]), 2, "兩份留給主對話")
+        self.assertEqual(steps["dispatch"]["items"], before, "dispatch 不切它們")
+
+
+class OnlyOneLinkLeft(unittest.TestCase):
+    """22 第一輪驗後：只剩一份線上文件時，開場「還有 1 份沒整理完」、plan 有 cards 步沒有 dispatch 步；
+    cards unreadable 記過之後開場不算它（13c）。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+        p = self.V / ".system" / "inventory.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        for e in data["entries"]:
+            e["skip_kind"] = "請款"  # 其他每份都記成依設定不整理
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        self.t = turn.start(self.V, SID, "好")["turn"]
+        self.link = inventory.register_link(self.V, "https://claude.ai/artifact/abc", self.t, "報價說明")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def opening(self):
+        out = hook("session.py", {"session_id": SID, "cwd": str(self.V), "hook_event_name": "SessionStart",
+                                  "source": "startup"})
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"].split("\n\n", 1)[0].split("\n")
+
+    def test_link_counted_until_marked_unreadable(self):
+        self.assertIn("還有 1 份沒整理完", self.opening())
+        todo = json.loads(run_kb("cards", "todo", "--json", cwd=self.V).stdout)
+        self.assertEqual([(s["step"], s.get("files")) for s in todo["plan"]], [("cards", [self.link["id"]])])
+        self.assertEqual(todo["announce"], "有 1 份要整理，大約一兩分鐘；要停的話跟我說一聲")
+        r = run_kb("cards", "unreadable", self.link["id"], "--reason", "線上文件打不開", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse(any(ln.startswith("還有 ") for ln in self.opening()))
+        todo = json.loads(run_kb("cards", "todo", "--json", cwd=self.V).stdout)
+        self.assertEqual(todo["plan"], [])
 
 
 if __name__ == "__main__":

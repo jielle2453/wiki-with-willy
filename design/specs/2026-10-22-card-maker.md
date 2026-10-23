@@ -149,7 +149,7 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - `INGEST_HINT`：`有變動：先照 ingest skill 整理（開始前照 announce 說一句，交給 card-maker 在背景做），做完再完整回答客戶；超過 {n} 份不整理，先用現有資料答、末尾問要不要整理。`
 
 ## 可以動 / 不可以動
-實作在 worktree：`git worktree add ..\llm-wiki-j-cardmaker -b spec/card-maker`，之後全部在 `C:\Users\Jie\Desktop\llm-wiki-j-cardmaker` 做；commit 一律 `git -c user.name=…`，不要用 `git config`。
+實作在 worktree：`git worktree add ..\llm-wiki-j-cardmaker -b spec/card-maker c3fdf63`（底是密碼與守門的最終版，見開工條件），之後全部在 `C:\Users\Jie\Desktop\llm-wiki-j-cardmaker` 做；commit 一律 `git -c user.name=…`，不要用 `git config`。
 
 可以動：`agents/card-maker.md`（新）、`hooks/subagent.py`（新）、`hooks/hooks.json`、`hooks/guard.py`、`hooks/turn.py`、`hooks/stop.py`、`hooks/session.py`（只 `INGEST_HINT` 與 B-412 那幾行）、`scripts/kb/cli.py`、`scripts/kb/cards.py`、`scripts/kb/turn_cli.py`、`scripts/kb/journal_cli.py`、`scripts/kb/_lib/batches.py`（新）、`scripts/kb/_lib/plan.py`、`scripts/kb/_lib/cards.py`（只為 `materials` 重用）、`scripts/kb/_lib/turn.py`、`scripts/kb/_lib/journal.py`、`config/defaults.json`、`skills/ingest/`、`README.md`、`CLAUDE.md`、`tests/`。
 

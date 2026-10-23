@@ -60,7 +60,8 @@ skill 只給「使用者說一句話，要認出意圖再走需要判斷的程�
 | 從 | 到 | 性質 |
 |---|---|---|
 | manage 加來源 | ingest 製卡該區 | 機器觸發的 skill 交 skill：登記完成 |
-| ingest `kb changes` 查無變動 | note | 機器觸發的 skill 交 skill：誤路由。只有這兩個 skill 交 skill |
+| ingest `kb changes` 查無變動 | note | 機器觸發的 skill 交 skill：誤路由 |
+| lint 查到整理該做的事 | ingest | skill 交 skill：健檢時查整體，交給 ingest 照原本的流程做（D-220）。只有這三條 skill 交 skill |
 | ingest 改卡、note 糾正、lint 重寫過期頁 | `rules/synthesis.md` | 讀共用規則；變動不論來自檔案或口述，對綜合卡的反查與連帶處理都在這裡，skill 本文只留指針 |
 | produce 定稿、收件匣的檔要放到別處 | `kb source-edit move` | 呼叫腳本；移動不複製，目標是實體夾或已登記未排除的 raw 夾 |
 | ingest 收件 | `kb intake` | 呼叫腳本，存原文進收件匣 |
@@ -211,7 +212,7 @@ llm-wiki-j/
 │  └─ manage/SKILL.md + references/{sources,files,ops}.md
 ├─ commands/                          全部 disable-model-invocation
 │  ├─ build.md                        建置五步一個指令（D-190）
-│  └─ upgrade.md  backup.md  restore.md  relocate.md  migrate.md  account.md
+│  └─ upgrade.md  migrate.md          升級那份 spec 定；備份、還原、搬家、換帳號不做指令（D-203、D-205、D-206、D-210）
 ├─ hooks/{hooks.json,session.py,turn.py,guard.py,output_log.py}
 ├─ agents/card-maker.md
 ├─ scripts/

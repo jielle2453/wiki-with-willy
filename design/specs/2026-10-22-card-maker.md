@@ -1,6 +1,6 @@
 # card-maker 與整批製卡
 日期：2026-10-22
-狀態：approved（2026-10-22；開工條件見下：密碼與守門發行之後；確認與 build 併在一起）
+狀態：approved（2026-10-22；開工條件見下，10-23 改成先開工實作；確認與 build 併在一起）
 版本：（發行後填）
 
 ## 目的
@@ -9,7 +9,7 @@
 ## 決策
 D-195（背景跑，子代理的寫入由程式算回派它的那一句）、D-196（製卡一律交給 card-maker，超過 20 份先問照留）、D-197（分批由程式切，每批清單程式直接給）、D-198（card-maker 做卡也抽日程；綜合卡也交子代理，材料程式給；ingest 管派工、問客戶、回答）、D-199（整理前只講時間，用量一句話提醒，不另設計分天）、D-200（背景整理要停：說一聲，AI 停子代理並照指令記號）。相關的既有決策：D-022、D-053、D-073、D-074、D-075、D-084、D-100、D-104、D-114、D-115、D-132、D-134、D-135、D-147、D-156、D-161、D-133（10-22 補：實作測試與 build 分開、確認併在一起）。
 
-**開工條件**：密碼與守門發行之後（它改 `hooks/guard.py` 一帶、`_lib/turn.py`、`hooks/stop.py`；本題以它發行後的版本為底，一題一題來）。spike 報告已收：`design/reports/card-maker-spike.md`（CLI 九題加桌面版一節）。
+**開工條件**（2026-10-23 使用者同意改）：實作現在就開工，底用 `spec/密碼與守門` 的 c3fdf63（測了六輪的最終版，只差桌面版確認）：`git worktree add ..\llm-wiki-j-cardmaker -b spec/card-maker c3fdf63`；密碼與守門確認後若再修，a2 給 commit、合進本分支。實作 session 只跑單元測試、不另開 Claude；測試 session（會開 Claude、跑 run_eval 與 `claude -p`）與桌面版確認等密碼與守門發行之後。發行順序不變：先密碼與守門，再本題與 build 一起。spike 報告已收：`design/reports/card-maker-spike.md`（CLI 九題加桌面版一節）。
 
 ### 例句（設計 session 2026-10-22 列，使用者 10-22 定範圍；林小姐：接案室內設計師；服務人員：建置那天在場的人）
 card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那天服務人員打 build 指令），ingest 照程式的 `plan` 派 card-maker。下表是客戶看得到的部分。
@@ -53,6 +53,7 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - **回合歸屬（D-195）**：
   1. `kb cards dispatch` 開一個 job（`batches.json`）：這個 session 有 open 的 job 就沿用，否則新開一個，`turn` 記目前回合；同一個 job 的批次都算這個回合，不管中間客戶說了什麼。job 在 dispatch 發現什麼都不剩、或 `cards stop` 時關。
   2. `SubagentStart`（card-maker）把 `agent_id` 記進 `batches.json` 的 `agents`：`turn` 取這個 session open 的 job 的回合，沒有 job 取目前回合。
+  3b. PostToolUse（`hooks/output_log.py`）同理：驗卡後重寫總目錄、重渲染綜合卡快取、`register_output` 的備份與找舊卡備份，都用 `agent_turn` 找到的回合（同一支函式）。
   3. 守門（`hooks/guard.py`）的輸入帶 `agent_id` 且在 `agents` 裡：檔案工具寫入的備份與大改動計數用那個回合（`turn.before_write` 收回合代號）；Bash 放行的單一 kb 呼叫用 PreToolUse 的 `updatedInput` 在 `kb.py` 路徑後面插 `--turn <回合> --agent <agent_id>`（整個 input 照抄、只換 `command`，`permissionDecision` 仍是 allow）。主對話與其他子代理的呼叫不改。
   4. `kb.py` 收全域 `--turn`、`--agent`（放在子命令前、`--help` 不列）：有 `--turn` 時這次呼叫的備份進那個回合、算「對話裡」（不寫程式段，D-085）；回合不存在 exit 3「回合不存在：<代號>」。
   - 實作先驗 `updatedInput` 在子代理的 Bash 呼叫生效（官方文件沒寫子代理會不會不同）；不生效就停下來回報，不自己換做法。
@@ -62,10 +63,10 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - **大改動（D-075）**：子代理不能問客戶，所以 `dispatch` 派 synthesis 批次前先算：這個 job 回合已改的既有綜合卡（`ai_synthesis`）加這次要派的 `synthesis_stale` 張數超過 `big_change_synthesis_max`、回合沒 approve → 不派 synthesis，回 `approval`（問句與 `kb turn approve --turn <回合>`；`turn approve` 收 `--turn`），主對話問客戶、說好才 approve 再 dispatch。
 - **只整理一部分（例句 3）**：`dispatch --source <別名>` 只從那個來源的項目切批；synthesis 不受 `--source` 限制但照樣等 cards 都做完。
 - **估時（D-199）**：`plan.py` 的 `BATCH_SECONDS` 拿掉，改讀 `card_seconds_per_file` 與 `card_batch_overhead_seconds`：秒數 = 份數 × 每份秒數 + 準備秒數；不到 60 秒說「一兩分鐘」。
-- **B-412 的其他資料與 B-415（a2 轉來 manage 第二版確認第 0～0c 節，10-22）**：三次開場兩次照做，沒照做的那次第一句是一大段接手指示（任務書），AI 先處理那段才整理——B-412 重現時也要試「第一句很長」的情況。另外兩件併進這題：(1) 開場的數字要對：`cards.unsorted` 只算 `dispatch` 真的派得出去的（讀不到的、包括 produce 連結型條目打不開的，記進待處理後不再算，B-415），另外把要跟著原檔搬的卡算出來，開場行改成「還有 N 份沒整理完、M 張卡要跟著搬」（0 的那半不印）；(2) 連結型條目讀不到時 `convert` 記 unreadable，原因「線上文件打不開」，`plan.py` 的 `UNREADABLE_ADVICE` 加一句怎麼辦（到 claude.ai 確認那份還在、有分享給這個帳號，或跟我說先跳過）。確認時另記：主對話有沒有英文自言自語（a2 看到「Carding says to run `convert`.」，R-10）。
+- **B-412 的其他資料與 B-415（a2 轉來 manage 第二版確認第 0～0c 節，10-22）**：三次開場兩次照做，沒照做的那次第一句是一大段接手指示（任務書），AI 先處理那段才整理——B-412 重現時也要試「第一句很長」的情況。另外兩件併進這題：(1) 開場的數字要對：`cards.unsorted` 只算 `dispatch` 真的派得出去的（讀不到的、包括 produce 連結型條目打不開的，記進待處理後不再算，B-415），另外把要跟著原檔搬的卡算出來，開場行改成「還有 N 份沒整理完、M 張卡要跟著搬」（0 的那半不印）；(2) 連結型條目（produce 登記的 claude.ai 線上文件）不切進批次、留給主對話（card-maker 沒有讀線上文件的工具，`convert` 也不處理 link 條目）：`plan` 在 `dispatch` 之外留一步 `cards`，只列 link 項、`read` 指 carding.md 一～六節；主對話讀不到時跑新指令 `kb cards unreadable <編號> --reason "線上文件打不開"`（只收 link 條目，其他回 exit 3「這個指令只收線上文件；檔案讀不到由 convert 記」），記進待處理 unreadable、之後不再算進開場數字；`plan.py` 的 `UNREADABLE_ADVICE` 加一句怎麼辦（到 claude.ai 確認那份還在、有分享給這個帳號，或跟我說先跳過）。確認時另記：主對話有沒有英文自言自語（a2 看到「Carding says to run `convert`.」，R-10）。
 - **B-412**：開場有「還有 N 份沒整理完」（門檻內）時 AI 沒照 D-161 直接整理。開場指示照 D-196 改寫（見要做的事 8）；實作先用 `claude -p` 在測試知識庫重現（19 份沒整理、說「你好」跑 5 次），找出原因再改，改完同法再跑 5 次（驗收 14）。
 - **跟密碼與守門、manage 第二版的交界**（a2 10-22 看過 spec 後提，兩題發行後都在 main）：
-  1. **加密檔**：背景子代理不能問客戶，`convert` 一律不帶 `--password`、`--saved`；`dispatch` 切批時排除清冊或待處理已記成讀不到（含有密碼）的條目，留給主對話照 `plan`／`asks`（`unlock_same_kind` 等）問客戶。第一次遇到、還不知道有密碼的，子代理 `convert` 失敗照記讀不到、回報沒做成，下次 dispatch 就排除。
+  1. **加密檔**：背景子代理不能問客戶，`convert` 一律不帶 `--password`、`--saved`；`dispatch` 切批時排除清冊或待處理已記成讀不到（含有密碼）的條目，留給主對話照 `plan`／`asks`（`unlock_same_kind` 等）問客戶。第一次遇到、還不知道有密碼的，子代理 `convert` 失敗照記讀不到、回報沒做成，下次 dispatch 就排除。檔名是憑證樣式的檔（含裁示「可以讀」的密碼檔，D-183、D-184）也不切進批次、留給主對話：它們的暫存是 `.system/temp/*.secret.md`，密碼與守門在每句話開頭與 Stop 時刪掉，子代理跑到一半可能被主對話那句的 Stop 刪掉（a2 10-23）。
   2. **密碼顯示過的回合（`secret_shown`）**：`refresh_changed` 與 `job_result` 照 `agent_turn` 找到的回合，回合檔記了 `secret_shown` 就不寫結果（跟 `stop.py` 同一條規矩），只更新改了。
   3. **守門的順序**：`updatedInput` 只加在 `scripts/kb/guard.py` 的判斷已經放行、而且是單一 kb 呼叫的指令上；排在密碼與守門加的 `onFailure: block` 與「shell 工具內部出錯也擋」之後；插進去的值照 `plan.py` 那套加引號（`shell_arg`）；PowerShell 裡有彎引號的 kb 指令照 manage 第二版擋下，不改寫。`is_single_plugin_call` 照它發行後的介面（多 `tool` 參數）。
   4. **plan 的順序**：manage 第二版排除時的兩步（`purge: "pending"` 先重寫綜合卡、再 `folders purge`）排最前面、不算門檻；`dispatch` 排在它們後面，而且不把 `purge: "pending"` 那夾的條目切進批次。
@@ -80,7 +81,7 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 5. **`scripts/kb/cli.py`**：全域 `--turn`、`--agent`。**`scripts/kb/_lib/turn.py`**：`current` 收覆寫的回合代號、`before_write` 收回合代號、`agent_turn(vault, session_id, agent_id)`；`turn_cli.py` 的 `note`、`approve` 收 `--turn`。**`scripts/kb/journal_cli.py`**：`in_conversation` 認 `--turn`。**`scripts/kb/_lib/journal.py`**：`refresh_changed(vault, turn_id)`。
 6. **`scripts/kb/_lib/batches.py`（新）**：`batches.json` 的讀寫（鎖、寫前備份進回合、壞檔丟 `Unreadable` 帶檔名）、`claims`、`make_batches`、`materials`、`release`、`done_by_agent`、`expire`。**`scripts/kb/cards.py`**：子子命令 `dispatch`、`batch`、`status`、`stop`（介面見下）。`scripts/kb/_lib/cards.py` 只在 `materials` 要重用 todo 的項目組法時動（不改 todo 既有輸出）。
 7. **`scripts/kb/_lib/plan.py`**：`cards`、`agenda_recheck`、`agenda_unscanned`、`unlinked`、`synthesis_broken`、`synthesis_stale`、`synthesis_new` 這幾步收成一步 `dispatch`（`do` 是 `kb cards dispatch --json`，`read` 是 null），`sync` 照留在前；多量先問那題的 `then` 是 `[sync, dispatch]`；`ANNOUNCE` 與先問題的句子照 D-199、D-200（見介面）；估時照釐清；模組說明的「按停止」改掉。
-8. **`hooks/session.py`**：`INGEST_HINT` 照 D-196 改寫（見介面）；B-412 照釐清查、改。
+8. **`hooks/session.py`**：`INGEST_HINT` 照舊（見介面）；B-412 照釐清查、改，改句子不能超過開場預算。
 9. **`config/defaults.json`**：`card_batch_size` 20、`card_parallel` 3、`synthesis_batch_size` 5、`card_batch_expire_minutes` 30、`card_seconds_per_file` 6、`card_batch_overhead_seconds` 30，各帶 `_why_`（引 D-197、D-199 與 spike 數字）；`ingest_auto_max` 的 `_why_` 改掉「按停止」、改成「派 card-maker」。
 10. **`skills/ingest/`**：先讀 `plugin-dev:skill-development` 與 `skill-creator:skill-creator`，照 D-132 五條自查。`SKILL.md` 骨架改成：changes → todo → 有 `announce` 先講 → `sync` 照做 → `dispatch`：每個批次用 Agent 工具派（`subagent_type` 用輸出的 `agent`、`prompt` 原樣），派完一句告訴客戶、照常回答她這期間問的（用現有資料、末尾一句還在整理）→ 每收到一個子代理做完或停了的通知就再 `dispatch`（有新批次就派、有 `approval` 就問客戶）→ `done` 才 `todo --json` 拿 `asks`、`tell` 完整回答、跑 `note_cmd`；客戶說停 → `cards stop` → 逐個停 `agents`；問進度 → `cards status`。原則加三條（理由加編號）：製卡交給 card-maker、自己不讀原檔（D-022、D-196）；派工照程式給的 prompt、不自己拆批（D-197）；子代理的回報不轉述檔案內容（D-022）。描述不改。`references/commands.md`：加 `dispatch`、`batch`、`status`、`stop` 四節；todo 的 `new`、`stale`、`synthesis_*` 等欄位說明搬到 `carding.md`（主對話不再用、製卡者用），commands.md 只留一句指向；≤ 150 行。`references/carding.md`：開頭改成寫給 card-maker（仍寫「製卡者」）；加一節「批次」：`cards batch` 的輸出欄位、三種工作各讀哪幾節、回報格式；第九節「每寫完一張卡接著抽」；≤ 150 行。
 11. **`README.md`**：「怎麼用」整理那段改成「交給背景的製卡助手、要停跟我說」；終端機指令清單加 `kb cards dispatch|batch|status|stop`。repo **`CLAUDE.md`** 地圖：加 `agents/card-maker.md`、`hooks/subagent.py`、`_lib/batches.py`，照改 `hooks/guard.py`、`turn.py`、`stop.py`、`session.py`、`cards.py`、`plan.py`、`_lib/turn.py`、`journal.py`、`cli.py`、`skills/ingest/` 那幾列；`agents/` 那列不再是「尚未」。
@@ -146,12 +147,12 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 ### 句子
 - `ANNOUNCE`：`有 {n} 份要整理，大約{how_long}；要停的話跟我說一聲`
 - 先問題：`有 {n} 份要整理，大約{how_long}；份數多，會用掉比平常多的額度。現在做嗎？`
-- `INGEST_HINT`：`有變動：先照 ingest skill 整理（開始前照 announce 說一句，交給 card-maker 在背景做），做完再完整回答客戶；超過 {n} 份不整理，先用現有資料答、末尾問要不要整理。`
+- `INGEST_HINT`：照舊句不改（開場句只叫它走 ingest skill，怎麼派 card-maker 是 skill 本文的事；加字會超過 D-070 開場 400 字，實作疑義 10-23）。B-412 查出原因要改句子時，改完照樣過 `test_budget`。
 
 ## 可以動 / 不可以動
-實作在 worktree：`git worktree add ..\llm-wiki-j-cardmaker -b spec/card-maker`，之後全部在 `C:\Users\Jie\Desktop\llm-wiki-j-cardmaker` 做；commit 一律 `git -c user.name=…`，不要用 `git config`。
+實作在 worktree：`git worktree add ..\llm-wiki-j-cardmaker -b spec/card-maker c3fdf63`（底是密碼與守門的最終版，見開工條件），之後全部在 `C:\Users\Jie\Desktop\llm-wiki-j-cardmaker` 做；commit 一律 `git -c user.name=…`，不要用 `git config`。
 
-可以動：`agents/card-maker.md`（新）、`hooks/subagent.py`（新）、`hooks/hooks.json`、`hooks/guard.py`、`hooks/turn.py`、`hooks/stop.py`、`hooks/session.py`（只 `INGEST_HINT` 與 B-412 那幾行）、`scripts/kb/cli.py`、`scripts/kb/cards.py`、`scripts/kb/turn_cli.py`、`scripts/kb/journal_cli.py`、`scripts/kb/_lib/batches.py`（新）、`scripts/kb/_lib/plan.py`、`scripts/kb/_lib/cards.py`（只為 `materials` 重用）、`scripts/kb/_lib/turn.py`、`scripts/kb/_lib/journal.py`、`config/defaults.json`、`skills/ingest/`、`README.md`、`CLAUDE.md`、`tests/`。
+可以動：`agents/card-maker.md`（新）、`hooks/subagent.py`（新）、`hooks/hooks.json`、`hooks/guard.py`、`skills/note/references/preference.md`（只第 46 行「要停可以按停止」改成「要停跟我說一聲」，D-200）、`tests/test_skill_note.py`（跟著那一句）、`hooks/output_log.py`（只改取回合：payload 有 `agent_id` 且 `turn.agent_turn` 查得到就用它，否則照舊）、`hooks/turn.py`、`hooks/stop.py`、`hooks/session.py`（只 `INGEST_HINT` 與 B-412 那幾行）、`scripts/kb/cli.py`、`scripts/kb/cards.py`、`scripts/kb/turn_cli.py`、`scripts/kb/journal_cli.py`、`scripts/kb/_lib/batches.py`（新）、`scripts/kb/_lib/plan.py`、`scripts/kb/_lib/cards.py`（只為 `materials` 重用）、`scripts/kb/_lib/turn.py`、`scripts/kb/_lib/journal.py`、`config/defaults.json`、`skills/ingest/`、`README.md`、`CLAUDE.md`、`tests/`。
 
 不可以動：`scripts/kb/guard.py`、`scripts/kb/_lib/cmdparse.py`、`scripts/kb/_lib/credentials.py`（守門判斷）、`rules/core.md`、其他 skill、`tests/evals/` 其他四份、`skeleton/`、`.claude-plugin/plugin.json`（版號發行時才動）。
 
@@ -160,7 +161,7 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 
 1. [ ] `cards todo --json` 的 `plan`：有新檔時是 `[sync?, dispatch]`；45 份時 `asks` 第一題是先問題（句子一字不差）、`then` 是 `[sync, dispatch]`；10 份時 `announce` 一字不差、秒數照 config 算。
 2. [ ] `cards dispatch --json`（回合在對話裡）：45 份 → 3 批（20、20、5）、`prompt` 含 `cards batch <批次>` 與完整前綴；再跑一次 → 不建新批（都被認領）、`running` 3；終端機（current.json 沒 session_id）跑 → 拒絕一字不差。
-2b. [ ] 交界：清冊記成讀不到（有密碼）的條目不進批次；`purge: "pending"` 那夾的條目不進批次、`plan` 裡 purge 兩步排在 `dispatch` 前面；job 回合記了 `secret_shown` 時 `refresh_changed` 與 `job_result` 不寫結果。
+2b. [ ] 交界：清冊記成讀不到（有密碼）的條目與憑證樣式檔名（含裁示可以讀的）不進批次；`purge: "pending"` 那夾的條目不進批次、`plan` 裡 purge 兩步排在 `dispatch` 前面；job 回合記了 `secret_shown` 時 `refresh_changed` 與 `job_result` 不寫結果。
 3. [ ] 認領：把一批改 `done` 再 dispatch → 只從沒卡、沒認領的切；把批次 `created` 改成 31 分鐘前 → 當放掉、項目回來；換一個 session 的 current 跑 → 舊 session 的 open 批次不算。
 4. [ ] 順序：還有 cards 時不建 synthesis 批次；cards 全做完（替身寫卡）後才建，大小照 `synthesis_batch_size`；`--source` 只切那個來源。
 5. [ ] 大改動：job 回合的 `ai_synthesis` 已 9 張、這次 synthesis_stale 3 張 → 不派、回 `approval`（`--turn` 是 job 回合）；`turn approve --turn <回合>` 後再 dispatch → 派。
@@ -172,6 +173,7 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 11. [ ] 日誌：派工那句 Stop 時「改了」是無；子代理寫 3 張卡後跑 `subagent.py stop` → 那句的「改了」有 3 張卡；job 關掉後主對話下一次 Stop → 那句的結果換成最後回答，再一次 Stop 不換。
 12. [ ] `cards stop --json`：open 批次改 released、job 關、目前回合記 `ingest_stopped`、輸出 agents 與份數；之後同一 session 的 `cards todo` 開場指示不印（D-156 那套）。
 13. [ ] 退回：一個 job 寫了 20 張卡、中途客戶開了新回合（只讀）→ `versions revert` 一次退掉 20 張（卡、總目錄、實體清單回來）。
+13c. [ ] 連結型：todo 有一份 link 條目 → `dispatch` 不切它、`plan` 有一步 `cards` 只列它；`cards unreadable <它> --reason "線上文件打不開"` → 待處理多一筆、`tell` 是新那句、開場數字不再算它；對一般檔跑 → exit 3 那句。
 13b. [ ] 開場數字：清冊有 2 份讀不到（一份有密碼、一份連結型 404）、3 份新、5 張卡要搬 → 開場行「還有 3 份沒整理完、5 張卡要跟著搬」；連結型那份的 `tell` 是新加的那句。
 14. [ ] B-412：測試知識庫 19 份沒整理，`claude -p --plugin-dir <ROOT>` 說「你好」跑 5 次、第一句是一段 300 字的指示再跑 5 次，各至少 4 次開始整理（跑了 `cards dispatch`）；報告寫 5 次各自的開頭。
 15. [ ] card-maker 本文與 SubagentStart 注入過 `test_budget`；`claude plugin validate` 通過、`plugin-dev:plugin-validator` 沒有錯。
@@ -223,3 +225,9 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-22：a2 看過 spec，補「跟密碼與守門、manage 第二版的交界」五點（加密檔不進批次、secret_shown、守門順序與引號、plan 排在 purge 兩步後、不讀的夾不走訪）與驗收 2b。
 - 2026-10-22：使用者說可以，狀態改 approved。
 - 2026-10-22（approved 後）：a2 轉來 manage 第二版確認的開場三次（兩次照做、第一句是長指示那次沒照做）；B-415（連結型讀不到每次都算進還有 N 份）與開場沒算要搬的卡，併進 B-412 那條；驗收加 13b、14 多試長指示。範圍跟開場整理同一處，不另開題。
+- 2026-10-23（approved 後）：a2 提憑證樣式檔（可以讀的密碼檔）的暫存會被 Stop 刪，補進交界第 1 點與驗收 2b：不切進批次、留給主對話；`hooks/turn.py` 以密碼與守門發行版為底（它加了刪 `.secret.md` 那幾行）。
+- 2026-10-23：開工條件改（a2 轉、使用者向 22 確認「可以」）：實作先開工、底用 c3fdf63；測試與確認等密碼與守門發行。
+- 2026-10-23（實作中疑義，22 定）：連結型條目不進批次、主對話照舊做；讀不到用新指令 `kb cards unreadable` 記（在 `cards.py`，不動 `convert.py`）；驗收加 13c。
+- 2026-10-23（實作中疑義，22 定）：新 INGEST_HINT 讓開場最壞 416 字超過 D-070 的 400；選 (c) 開場句照舊、不提 card-maker，派工只寫在 ingest 本文。
+- 2026-10-23（實作中疑義，22 定）：`hooks/output_log.py` 也照子代理的回合（總目錄、綜合卡快取、AI 產出登記的備份），加進可以動、只改取回合那一行；否則驗收 13 退不乾淨。
+- 2026-10-23：實作回報（5aca4f2、e6b1fcd，commit 後全部測試 exit 0 由實作自報，22 另跑核對中）。疑義 13 條，22 定：1～9 照它的解讀（plan 的 cards 步也列憑證樣式檔與記過有密碼的、開場份數在記成讀不到前照算、approval 算全部未派的 stale、--source 時綜合卡只等範圍內、batches.json 備份但不算「改了」、`turn.start` 把舊回合欄位併進 versions 的 turn.json、dispatch 多 stopped、tell 講標題、只有 output_log 有取回合問題）；10 note 的 preference.md 第 46 行「按停止」加進可以動、照 D-200 改（I-116）；11～13 照記。`_lib/turn.py` 的改動跟密碼與守門確認後的修正（secret_shown 跨回合）同一支，合併時注意。

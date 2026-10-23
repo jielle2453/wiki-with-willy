@@ -8,7 +8,7 @@
 做了：模型叫過 kb turn note 就用它（note_by ai），否則程式地板句（note_by program，D-084）；改了：這回合的 manifest。
 只收第一次 Stop：回合檔 done 已是 true 就不做；turns/<sid>.json 不存在也不做，不退到 current.json（會記到別的對話）。
 整批製卡（card-maker，D-195）：這個 session open 或剛關的 job 回合補「改了」（journal.refresh_changed，背景後來寫的才算得到）；
-job 關了之後的第一次 Stop 把派工那句的結果換成這次的最後回答，只換一次（那個回合記 job_result）；那個回合記了 secret_shown
+job 關了之後的第一次 Stop 把派工那句的結果換成這次的最後回答，只換一次（那個回合記 job_result）；那個回合或這一句記了 secret_shown
 或這次的回答有存著的密碼值就不寫結果（同上），只補改了。這段不管這回合 done 了沒都做，各自 try。
 stop_hook_active 不理：從不 block。任何例外寫 .system/hook-errors.log（source stop），永遠 exit 0、不輸出。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -52,8 +52,11 @@ def main():
         try:
             if data and not data.get("done"):
                 _finish(vault, sid, data, message, payload)
+            elif data:  # 已經答完的那句（背景整理的通知回合）：主對話後來跑的 kb 改了的照補（card-maker 第一輪修）
+                from kb._lib import journal
+                journal.refresh_changed(vault, data["turn"])
         finally:
-            _jobs(vault, sid, message, payload)
+            _jobs(vault, sid, message, payload, data)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
         _log(e, payload)
 
@@ -75,8 +78,9 @@ def _finish(vault, sid, data, message, payload):
     turn.set_done(vault, sid)
 
 
-def _jobs(vault, sid, message, payload):
-    """card-maker 的 job 回合：補改了；關了的換一次結果。出錯寫 log，不擋。"""
+def _jobs(vault, sid, message, payload, here=None):
+    """card-maker 的 job 回合：補改了；關了的換一次結果。這一句（here）記了 secret_shown、派工那句記了、或回答有存著的密碼值，
+    都不換結果、只補改了（第一輪修 S1：值單獨出現時遮值擋不到）。出錯寫 log，不擋。"""
     try:
         from kb._lib import batches, config, journal, turn
 
@@ -88,14 +92,15 @@ def _jobs(vault, sid, message, payload):
             data = turn.turn_data(vault, tid)
             if data is None:
                 continue
-            if not data.get("secret_shown") and not (isinstance(message, str) and _has_saved_value(vault, message, payload)):
+            secret = (data.get("secret_shown") or (here or {}).get("secret_shown")
+                      or (isinstance(message, str) and _has_saved_value(vault, message, payload)))
+            if not secret:
                 if isinstance(message, str):
                     result, truncated = journal.cut_result(message, config.get(vault, "journal_result_max"), vault)
                 else:
                     result, truncated = NO_MESSAGE, False
                 journal.update_turn(vault, turn.journal_key(data), result=result, result_truncated=truncated)
-            data["job_result"] = True
-            turn.save_turn(vault, data)
+            turn.change_turn(vault, tid, lambda d: d.update(job_result=True) or True)
     except BaseException as e:  # noqa: BLE001
         _log(e, payload)
 

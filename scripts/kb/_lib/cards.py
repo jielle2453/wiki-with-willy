@@ -447,6 +447,23 @@ def _mtime(vault, rel):
         return 0
 
 
+def not_for_card(vault, sources, entry):
+    """這份不是要製卡的檔嗎：跟 kb convert 同一個判斷（guard.classify 落在 convert.NOT_CARD_ZONES，例如型別夾根直接放的檔）。
+    只看總資料夾自己的條目（知識庫、收件匣、AI 產出）；登記來源的檔不會落在這幾區。card-maker 第一輪修 S2(c)：todo 列了、
+    convert 卻拒絕，製卡助手一直重做同一份。"""
+    from kb import convert, guard
+    from kb._lib import inventory
+    from kb._lib.paths import normalize
+    uri = (entry.get("locations") or [{}])[0].get("uri") or ""
+    if inventory.split_uri(uri)[0] not in (inventory.KNOWLEDGE, inventory.INBOX, inventory.OUTPUT):
+        return False
+    path = inventory.path_of(vault, sources, uri)
+    if path is None:
+        return False
+    zone, _alias = guard.classify(normalize(str(path), None), normalize(str(vault), None), sources)
+    return zone in convert.NOT_CARD_ZONES
+
+
 def _profile_or_default(vault):
     """回 (設定檔, 讀不到嗎)：沒檔或壞了用 profile.defaults，製卡者拿到的 profile 塊永遠有東西（客戶設定檔與型別第 5 點）。"""
     try:
@@ -589,7 +606,7 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
             continue
         if is_draft(entry["locations"][0].get("uri", "")):
             continue  # 草稿還在改，定稿才製卡（produce 第 5 點）
-        if ok and eid not in carded and eid not in unreadable_skip:
+        if ok and eid not in carded and eid not in unreadable_skip and not not_for_card(vault, sources, entry):
             out["new"].append(work_item(entry, None))
             if entry.get("unbacked"):
                 out["unbacked"] += 1

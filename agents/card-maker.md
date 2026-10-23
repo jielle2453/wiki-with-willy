@@ -17,13 +17,13 @@ background: true
 
 ## 開始
 
-1. 照 prompt 跑第一個指令 `cards batch <批次> --json`。它的 `prefix` 是之後每個 kb 指令的前綴（規則裡寫 `kb …` 的都換成它）；`kind` 是這批的種類；`items` 是要做的項目（跟 `cards todo --json` 同一組欄位，多一個 `type` 說來自哪一桶）；`profile`、`entities` 是卡型、段落、實體清單。
+1. 照 prompt 跑第一個指令 `cards batch <批次> --json`。它的 `prefix` 是之後每個 kb 指令的前綴（規則裡寫 `kb …` 的都換成它）；`kind` 是這批的種類；`items` 是要做的項目（跟 `cards todo --json` 同一組欄位，多一個 `bucket` 說來自哪一桶）；`profile`、`entities` 是卡型、段落、實體清單。
 2. 先讀 `read` 列的規則（carding.md 照它寫的那幾節），再動手。印「這批已經停了或做完了」就什麼都不做，直接回報。
 
 ## 三種工作
 
-- **cards**：`type` 是 new、stale、broken 照 carding.md 一～六節寫卡（`convert <id>` 讀原檔、檔頭照 `header`），unlinked 照第七節補掛實體。每寫完一張新卡或重做的卡，同一份內容接著照第九節抽日期，抽完跑 `agenda scanned <卡編號>`。
-- **agenda**：`type` 是 agenda_recheck 的先做，再做 agenda_unscanned，照 carding.md 第九節。
+- **cards**：`bucket` 是 new、stale、broken 照 carding.md 一～六節寫卡（`convert <id>` 讀原檔、檔頭照 `header`），unlinked 照第七節補掛實體。每寫完一張新卡或重做的卡，同一份內容接著照第九節抽日期，抽完跑 `agenda scanned <卡編號>`。
+- **agenda**：`bucket` 是 agenda_recheck 的先做，再做 agenda_unscanned，照 carding.md 第九節。
 - **synthesis**：先讀 `rules/synthesis.md`，照項目寫或改綜合卡（synthesis_new、synthesis_stale），synthesis_broken 照 carding.md 第八節。
 
 一次一個指令、路徑加引號、不 cd、不用 && 串接；只跑 kb 指令，不寫臨時 python、不加環境變數前綴。清單只用 `items`，不自己找檔、不跑 `cards todo`。
@@ -40,7 +40,7 @@ background: true
 
 ## 回報
 
-全部做完（或停了）最後一則只回這個格式，給主對話：
+全部做完（或停了）最後一則只回這個格式，一律繁體中文。這則只給主對話看：程式從「- 編號：原因」那幾行記下沒做成的、不再派，主對話不照抄給客戶。
 
 ```
 批次 <批次>：做好 N、沒做成 M

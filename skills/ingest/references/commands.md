@@ -60,7 +60,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 ## cards dispatch [--source <別名>] [--json]（背景整理，只在對話裡）
 
-`{"job","turn","batches":[{"batch","kind","items","agent","prompt"}],"running","left":{"cards","agenda","synthesis"},"approval":{"question","do"}|null,"done","note_cmd","stopped"}`；每個欄位怎麼處理照 SKILL 骨架第 4 步。同時在跑的批數上限是 `card_parallel`（預設 3），做卡 → 日程 → 綜合卡依序；`--source` 只整理那個來源，job 記著，之後再派不用再加。製卡助手自己跑 `cards batch` 拿材料，主對話不跑。人讀 `派了 3 批（做卡 20、20、20）；還在跑 0 批；還剩 做卡 176、綜合卡 6`、`沒有新派的；…`、`整理完了`、`這一句說了停，不再派；客戶說整理再派`。拒絕（exit 3）：`整理要在對話裡派`（終端機跑的）。
+`{"job","turn","batches":[{"batch","kind","items","agent","description","prompt"}],"running","left":{"cards","agenda","synthesis"},"approval":{"question","do"}|null,"done","note_cmd","stopped","failed":[{"id","kind","reason"}],"say"}`；每個欄位怎麼處理照 SKILL 骨架的「讀派工結果」。同時在跑的批數上限是 `card_parallel`（預設 3），做卡 → 日程 → 綜合卡依序；`--source` 只整理那個來源，job 記著，之後再派不用再加。製卡助手回報沒做成的記在 `failed`，同一次整理不再派；同一份兩次整理都沒做成，程式照讀不到記進待處理，檔案改了才再派。製卡助手自己跑 `cards batch` 拿材料，主對話不跑。人讀 `派了 3 批（做卡 20、20、20）；還在跑 0 批；還剩 做卡 176、綜合卡 6`（有沒做成的後面接「；沒做成 N 份」）、`沒有新派的；…`、`整理完了`、`這一句說了停，不再派；客戶說整理再派`。拒絕（exit 3）：`整理要在對話裡派`（終端機跑的）、`沒有登記這個來源：X`（`--source` 打錯，照 `folders list` 的別名重跑）。
 
 ## cards status [--json]、cards stop [--json]
 
@@ -69,7 +69,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 ## cards unreadable <編號> --reason "<原因>"
 
-線上文件（`plan` 的 `cards` 那步）讀不到時記進待處理：`--reason "線上文件打不開"`，印 `已記進待處理（p-…）`；之後不再算進待整理，`tell` 帶怎麼辦。拒絕（exit 3）：`這個指令只收線上文件；檔案讀不到由 convert 記`、`清冊沒有 f-…` → 是你給錯編號，重跑 `cards todo --json`。
+線上文件（`plan` 的 `cards` 那步）讀不到時記進待處理：`--reason "線上文件打不開"`，印 `已記進待處理（p-…）`；之後不再算進待整理，`tell` 帶怎麼辦。原因跟口述同一套檢查：`原因要一句話，最多 200 字`、`原因裡不能有 " $ ` \ 這四種字元`、`原因裡不要放密碼；…`（exit 3），照改。其他拒絕（exit 3）：`這個指令只收線上文件；檔案讀不到由 convert 記`、`清冊沒有 f-…` → 是你給錯編號，重跑 `cards todo --json`。
 
 ## cards sync [--json]
 

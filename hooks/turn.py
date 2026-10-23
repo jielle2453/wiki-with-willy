@@ -86,6 +86,9 @@ def _ingest_stopped(vault, previous):
         return
     if previous.get("done", True) or not previous.get("ingest"):
         return
+    from kb._lib import batches
+    if batches.active_job(vault, previous.get("session_id")):
+        return  # 背景整理中客戶打字不是按停止（D-200：要停走 kb cards stop）
     turn.mark(vault, "ingest_stopped")
     out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": STOPPED}}
     sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")

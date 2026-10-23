@@ -6,6 +6,7 @@ import unittest
 
 from tests import _cards
 from tests.test_scripts_inventory_cli import run_kb
+from kb import convert  # noqa: E402
 from kb._lib import batches, inventory, journal, pending, rulings, turn  # noqa: E402
 from kb._lib.paths import plugin_root  # noqa: E402
 
@@ -30,6 +31,9 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def kb(self, *args):
+        """對話裡的呼叫：守門會替主對話的 cards dispatch／status／stop 插 --session，這裡照插。"""
+        if args[:1] == ("cards",) and args[1:2] in (("dispatch",), ("status",), ("stop",)):
+            args = ("--session", SID) + args
         return run_kb(*args, cwd=self.V)
 
     def ok(self, *args):
@@ -64,9 +68,11 @@ class Dispatch(Base):
         self.assertEqual(self.ok("cards", "status"), "正在整理：還在跑 3 批（做卡 20、做卡 20、做卡 5）；這次做好 0 份；還剩 0")
 
     def test_terminal_refused(self):
-        turn.start(self.V, None, "")
-        r = self.kb("cards", "dispatch", "--json")
-        self.assertEqual((r.returncode, r.stdout.strip()), (3, "整理要在對話裡派"))
+        """終端機跑的沒有 --session（守門只替對話裡插）：拒絕；current.json 有 session 也一樣（第一輪修：兩個視窗不串）。"""
+        for _ in range(2):
+            r = run_kb("cards", "dispatch", "--json", cwd=self.V)
+            self.assertEqual((r.returncode, r.stdout.strip()), (3, "整理要在對話裡派"))
+            turn.start(self.V, None, "")
 
     def test_plan_is_one_dispatch_step_and_batch_question(self):
         """驗收 1：45 份 asks 第一題是先問題、then 是 [dispatch]；10 份時 announce 照 config 算。"""
@@ -90,8 +96,8 @@ class Batch(Base):
         todo_new = {i["id"]: i for i in self.todo()["new"]}
         self.assertEqual(len(got["items"]), 5)
         for item in got["items"]:
-            self.assertEqual(item["type"], "new")
-            self.assertEqual({k: v for k, v in item.items() if k != "type"}, todo_new[item["id"]])
+            self.assertEqual(item["bucket"], "new")
+            self.assertEqual({k: v for k, v in item.items() if k != "bucket"}, todo_new[item["id"]])
         self.assertEqual(set(got), {"batch", "kind", "prefix", "read", "items", "profile", "entities"})
         mine = next(x for x in batches.load(self.V)["batches"] if x["batch"] == b)
         self.assertEqual(mine["agent_id"], "a0204e72")
@@ -145,7 +151,7 @@ class Boundary(Base):
         rulings.add(self.V, "可以讀", [], [], "網站密碼.txt 可以讀", self.t, files=[cid])
         lid = self.todo()["new"][0]["id"]
         pending.add(self.V, "unreadable", [lid], "x 讀不到", "有密碼", self.t)
-        pending.auto_done(self.V, lid, "unreadable", "用密碼打開了", self.t)
+        pending.auto_done(self.V, lid, "unreadable", convert.OPENED_HOW, self.t)
         data = self.todo()
         self.assertIn(cid, [i["id"] for i in data["new"]])
         (cards_step,) = [s for s in data["plan"] if s["step"] == "cards"]

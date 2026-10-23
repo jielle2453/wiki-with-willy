@@ -114,14 +114,15 @@ def build(out, vault, config, tell_all=True):
     steps = [s for s in full if s["step"] in ("sync",) + PURGE_STEPS] if batch else full  # 清殘留批次時也留（疑義第 8 條）
     if not tell_all:
         return {"plan": steps, "asks": _number(asks), "tell": agenda.tell_lines(vault) + _conflict_tell(vault)}
-    waiting = _waiting(out)
+    waiting = _waiting(out, vault)
     announce = ANNOUNCE.format(n=waiting, how_long=_how_long(waiting, vault, config)) if waiting and not batch else None
     return {"plan": steps, "asks": _number(asks), "tell": _tell(out, vault), "announce": announce}
 
 
-def _waiting(out):
-    """要整理的份數（門檻與 announce 共用）：new＋stale＋unlinked＋agenda_unscanned＋同一種的加密 PDF。"""
-    return sum(len(out.get(k) or []) for k in ("new", "stale", "unlinked", AGENDA_UNSCANNED, UNLOCK_STEP))
+def _waiting(out, vault):
+    """要整理的份數（門檻與 announce 共用）：new＋stale＋unlinked＋agenda_unscanned＋同一種的加密 PDF；前四種跟 dispatch
+    同一套排除（線上文件、檔名像密碼的、有密碼的、還沒清的排除夾不算，card-maker 第一輪修）。"""
+    return batches.waiting(vault, out) + len(out.get(UNLOCK_STEP) or [])
 
 
 def _how_long(waiting, vault, config):
@@ -206,7 +207,7 @@ def _ask(ask_id, kind, question, results):
 
 def _asks(out, vault, config, full_plan):
     asks = []
-    waiting = _waiting(out)
+    waiting = _waiting(out, vault)
     if waiting > config.get(vault, "ingest_auto_max"):
         asks.append(_batch(waiting, full_plan, vault, config))
     drifts = out.get("entity_drift") or []

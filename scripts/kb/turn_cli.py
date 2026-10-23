@@ -44,8 +44,7 @@ def _note(vault, text, target=None):
     note = credentials.mask_secrets(" ".join(str(text).split()))  # 先壓空白再遮（M2「一律」，驗收 37）
     journal.update_turn(vault, turn.journal_key(t), note=note, note_by="ai")  # 退回後接著的回合寫回原回合那行
     if target:
-        t["note"] = note
-        turn.save_turn(vault, t)
+        turn.change_turn(vault, t["turn"], lambda d: d.update(note=note) or True)
     else:
         turn.set_note(vault, t.get("session_id"), note)
     print("記下了")

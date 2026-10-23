@@ -146,6 +146,7 @@ def _latest_turn_time(vault, session_id, now):
 
 
 OVERRIDE = None  # kb.py --turn 給的回合代號（cli 設，一次呼叫一個行程）
+SESSION = None  # kb.py --session 給的 session（守門替主對話的 cards dispatch／status／stop 插的；兩個視窗不會串）
 
 
 class NoSuchTurn(ValueError):
@@ -194,12 +195,11 @@ def _write_turn(vault, data):
 
 def approve(vault, session_id=None, turn_id=None):
     """解除大改動上限；turn_id 給了就改那個回合（kb turn approve --turn，job 回合）。"""
-    data = turn_data(vault, turn_id) if turn_id else current(vault, session_id)
+    tid = turn_id or current(vault, session_id)["turn"]
+    data = change_turn(vault, tid, lambda d: d.update(approved=True) or True)
     if data is None:
         raise NoSuchTurn(turn_id)
-    data["approved"] = True
-    save_turn(vault, data)
-    return data
+    return turn_data(vault, tid)
 
 
 def _meta_file(vault, turn_id):
@@ -231,9 +231,41 @@ def turn_data(vault, turn_id):
     return meta
 
 
+def _turn_lock(vault, turn_id):
+    """回合檔讀改寫的鎖：那個回合還是哪個 session 的目前回合就鎖那個 session 檔（跟 mark 同一把），否則鎖 versions 那份。"""
+    d = Path(vault) / TURNS_REL
+    for p in sorted(d.glob("*.json")) if d.is_dir() else []:
+        if p.name == CURRENT_NAME:
+            continue
+        t = _read_turn(p)
+        if t and t.get("turn") == turn_id:
+            return FileLock(p)
+    meta = _meta_file(vault, turn_id)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    return FileLock(meta)
+
+
+def change_turn(vault, turn_id, change):
+    """在鎖裡讀那個回合、change(data) 回真就寫回（第一輪修：並行的子代理與主對話不互相蓋掉旗標）。回合不在回 None，
+    否則回 change 的結果。等不到鎖丟 TimeoutError。"""
+    with _turn_lock(vault, turn_id):
+        data = turn_data(vault, turn_id)
+        if data is None:
+            return None
+        got = change(data)
+        if got:
+            _save_turn(vault, data)
+        return got
+
+
 def save_turn(vault, data):
+    """把 data 的欄位併進那個回合（在鎖裡重讀再寫）。"""
+    return change_turn(vault, data["turn"], lambda d: d.update(data) or True)
+
+
+def _save_turn(vault, data):
     """寫回某個回合：還是 session 的目前回合就寫回合檔（同 _write_turn）；versions/<回合>/turn.json 在或回合已經不是目前的，
-    一起寫那份（換了句話之後 job 回合的 approved、ai_synthesis 才留得住）。"""
+    一起寫那份（換了句話之後 job 回合的 approved、ai_synthesis 才留得住）。呼叫端拿著 _turn_lock。"""
     live = _find_turn(vault, data["turn"])
     if live is not None:
         _write_turn(vault, data)
@@ -243,6 +275,24 @@ def save_turn(vault, data):
         old = read_json(meta, {}) or {}
         old.update(data)
         write_json_atomic(meta, old)
+
+
+def owned(vault, turn_id, agent_id=None):
+    """kb.py --turn 收不收這個回合（第一輪修 S4）：帶 --agent 而 agents 記的就是這個回合；或是這個對話的回合
+    （session 取 --session，沒有取 current.json）：它目前的回合，或它的 job 回合。"""
+    if agent_id and agent_turn(vault, None, agent_id) == turn_id:
+        return True
+    sid = SESSION
+    if not sid:
+        cur = _read_turn(_current_file(vault))
+        sid = cur.get("session_id") if cur else None
+    if not sid:
+        return False
+    now = _read_turn(_session_file(vault, sid))
+    if now and now.get("turn") == turn_id:
+        return True
+    from kb._lib import batches
+    return turn_id in batches.job_turns_of_session(vault, sid)
 
 
 def agent_turn(vault, session_id, agent_id):
@@ -537,13 +587,21 @@ def before_write(vault, target, cwd, zone, session_id, turn_id=None):
     t = (turn_data(vault, turn_id) if turn_id else None) or current(vault, session_id)
     rel = rel_path(vault, target, cwd)
     if zone == "Z1" and (Path(vault) / rel).is_file():
-        done = list(t.get("ai_synthesis") or [])
-        if rel not in done:
-            n = len(done)
-            if not t.get("approved") and n >= config.get(vault, "big_change_synthesis_max"):
-                return False, "big_change", BIG_CHANGE_REASON.format(n=n)
-            t["ai_synthesis"] = done + [rel]
-            save_turn(vault, t)
+        limit = config.get(vault, "big_change_synthesis_max")
+        over = {}
+
+        def count(data):  # 數與記在同一把鎖裡（第一輪修）
+            done = list(data.get("ai_synthesis") or [])
+            if rel in done:
+                return False
+            if not data.get("approved") and len(done) >= limit:
+                over["n"] = len(done)
+                return False
+            data["ai_synthesis"] = done + [rel]
+            return True
+        change_turn(vault, t["turn"], count)
+        if over:
+            return False, "big_change", BIG_CHANGE_REASON.format(n=over["n"])
     try:
         backup(vault, rel, t["turn"], None)
     except OSError as e:

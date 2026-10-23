@@ -93,7 +93,7 @@
 | `skills/answer/` | 第四個 skill（D-151～D-161）：問自己的資料（現況、找檔、數字與統計、比較、日程、最近改了什麼與聊過什麼、有沒有要我確認的），只讀；本文分辨、原則（D-153、D-155、D-159、D-160…）與骨架；`references/find.md` 是 lookup、cards list、agenda list、journal recent、asks 的參數與輸出怎麼讀、起點三種；`references/verify.md` 是粗估、核對、`kb tally`、對不上三種（redo、pending add conflict、原檔改過）、短標；`tests/evals/answer.json` 20 句，`test_skill_answer` 守形狀 |
 | `skills/produce/` | 第五個 skill（D-162～D-170）：做成文件（新做、照舊的寫新的、改原檔、轉格式、把回答存成檔、草稿與定稿），本文分辨、原則（各帶理由與編號）、骨架；`references/draft.md` 是草稿放哪與檔名、短標、核對、剛回答過的、定稿與跨對話；`references/make.md` 是用途對成品、推薦線上文件講清楚三件事、本機做檔的 Windows 坑、改 Word／Excel／PowerPoint、沒有工具的說法、程式的話轉白話；`tests/evals/produce.json` 20 句，`test_skill_produce` 守形狀；定稿要放進她的夾交給 manage 搬（D-164 補） |
 | `commands/` | 尚未。build（一個指令走五步，D-190）與 upgrade、backup、restore、relocate、migrate、account（D-028），沒有 manage 指令 |
-| `agents/card-maker.md` | 製卡子代理（D-195～D-198）：只照 `kb cards dispatch` 給的 prompt 派、背景跑；tools 只有 Read、Write、Edit、Bash；三種批次（做卡、日程、綜合卡），回報只給份數與沒做成的原因（D-022） |
+| `agents/card-maker.md` | 製卡子代理（D-195～D-198）：只照 `kb cards dispatch` 給的 prompt 派、背景跑；tools 只有 Read、Write、Edit、Bash；`background: true` 不在 plugin-dev 文件的欄位裡，來源是 spike 實測（`design/reports/card-maker-spike.md`）；三種批次（做卡、日程、綜合卡），回報只給份數與沒做成的原因（D-022）；守門只准它跑白名單裡的 kb 子命令（`hooks/guard.py` 的 `AGENT_ALLOW`） |
 | `templates/` | `card.md` 檔案卡範本（檔頭中文鍵名，D-101，第二版）、`synthesis.md` 綜合卡範本；報告範本尚未 |
 | `skeleton/` | 客戶端總資料夾骨架：`CLAUDE.md`（身分與五區、沒有開場段就不改檔的哨兵句，D-080、D-088，`test_budget` 量）、`.claude/settings.json`（空殼 deny 清單）、四區的 `.gitkeep`（只為 git 留空夾，`kb init` 不複製）；`CLAUDE.md` 第一段多一句「工具之間的過場也是給客戶看的，一律繁體中文、不唸步驟編號」（B-064）；哨兵句補「Python 正常就請服務人員看 Claude 的外掛畫面」（B-093 3-3） |
 | `scripts/kb/sources/` `sinks/` `lint/` | 尚未。其餘子命令與 `_lib` 模組 |

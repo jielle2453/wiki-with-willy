@@ -8,6 +8,7 @@ from pathlib import Path
 from tests import _cards
 from tests.test_scripts_inventory_cli import run_kb
 from kb._lib import cards, inventory, journal, pending, turn  # noqa: E402
+from kb._lib import sources as sources_lib  # noqa: E402
 
 
 class Base(unittest.TestCase):
@@ -78,7 +79,9 @@ class Todo(Base):
         before = snapshot(self.V)
         data = self.todo()
         self.assertEqual(snapshot(self.V), before)
-        n_ok = sum(1 for e in inventory.load(self.V)["entries"] if e["status"] == "active" and e["read"] == "ok")
+        srcs = sources_lib.load(self.V)
+        n_ok = sum(1 for e in inventory.load(self.V)["entries"] if e["status"] == "active" and e["read"] == "ok"
+                   and not cards.not_for_card(self.V, srcs, e))  # 型別夾根直接放的檔不製卡（card-maker 第一輪修 S2c）
         self.assertEqual(len(data["new"]), n_ok)
         for item in data["new"]:
             self.assertTrue(item["dir"] and item["filename_pattern"] and item["header"])

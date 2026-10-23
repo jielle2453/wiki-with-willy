@@ -52,7 +52,7 @@ class Revert(unittest.TestCase):
         ent = self.V / ".system" / "entities.json"
         entities_before = ent.read_bytes() if ent.exists() else None
         job = self.prompt("好，現在做")
-        got = json.loads(run_kb("cards", "dispatch", "--json", cwd=self.V).stdout)
+        got = json.loads(run_kb("--session", SID, "cards", "dispatch", "--json", cwd=self.V).stdout)
         self.assertEqual(got["turn"], job)
         hook("subagent.py", {"session_id": SID, "cwd": str(self.V), "hook_event_name": "SubagentStart",
                              "agent_id": AGENT, "agent_type": batches.AGENT})

@@ -1,13 +1,15 @@
 """argparse 主程式。子命令註冊表在 COMMANDS；新子命令加一行，--help 自動列出。
 模組有 add_arguments(sub) 就讓它自己加參數（子子命令、--path 之類），沒有就只給 --json。
 全域 --turn <回合> --agent <agent_id>（放在子命令前、--help 不列）：守門替 card-maker 的 kb 呼叫插的（D-195）；
-有 --turn 時這次呼叫的備份都進那個回合、算對話裡（不寫程式段），回合不存在 exit 3。
+有 --turn 時這次呼叫的備份都進那個回合、算對話裡（不寫程式段）；回合不存在、或不是這個對話（--agent 記的回合、
+這個 session 的目前回合或 job 回合）的 exit 3（第一輪修 S4）。--session <sid>：守門替主對話的 cards dispatch／status／stop 插的。
 """
 import argparse
 import importlib
 import os
 
 NO_SUCH_TURN = "回合不存在：{}"
+NOT_THIS_TURN = "這個回合不是這個對話的：{}"
 
 # 名稱: (模組, 一句說明)
 COMMANDS = {
@@ -54,6 +56,7 @@ def build_parser():
     parser.add_argument("--json", action="store_true", help="以 JSON 輸出")
     parser.add_argument("--turn", help=argparse.SUPPRESS)
     parser.add_argument("--agent", help=argparse.SUPPRESS)
+    parser.add_argument("--session", help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="command", metavar="<子命令>", required=True)
     for name, (module_name, doc) in COMMANDS.items():
         sub = subparsers.add_parser(name, help=doc, description=doc)
@@ -67,12 +70,18 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.session is not None:
+        from kb._lib import turn
+        turn.SESSION = args.session
     if args.turn is not None:
         from kb import guard
         from kb._lib import turn
         vault = guard.find_vault(os.getcwd())
         if vault is None or not turn.exists(vault, args.turn):
             print(NO_SUCH_TURN.format(args.turn))
+            return 3
+        if not turn.owned(vault, args.turn, args.agent):
+            print(NOT_THIS_TURN.format(args.turn))
             return 3
         turn.OVERRIDE = args.turn
     module_name, _doc = COMMANDS[args.command]

@@ -11,6 +11,7 @@ from pathlib import Path
 from tests import _cards
 from tests import _entities as E
 from tests.test_scripts_inventory_cli import run_kb
+from kb import convert  # noqa: E402
 from kb._lib import agenda, config, inventory, plan, turn  # noqa: E402
 from kb._lib.paths import plugin_root  # noqa: E402
 
@@ -125,7 +126,7 @@ class Plan(Base):
         (self.V / ".system" / "inventory.json").write_text(json.dumps({"schema_version": 2, "entries": entries}),
                                                             encoding="utf-8")
         pending.add(self.V, "unreadable", ["f-p"], "「保單.pdf」讀不到", "有密碼", t)
-        pending.auto_done(self.V, "f-p", "unreadable", "用密碼打開了", t)
+        pending.auto_done(self.V, "f-p", "unreadable", convert.OPENED_HOW, t)
         got = self.build(new=[{"id": "f-c"}, {"id": "f-p"}] + work(1))["plan"]
         self.assertEqual([(s["step"], s["items"], s.get("files")) for s in got],
                          [("dispatch", 1, None), ("cards", 2, ["f-c", "f-p"])])
@@ -183,8 +184,9 @@ class Batch(Base):
 
     def test_counts_new_stale_and_unlinked(self):
         self.set_max(2)
-        self.assertEqual(self.build(new=work(1), stale=work(1))["asks"], [])
-        got = self.build(new=work(1), stale=work(1), unlinked=[{"id": "f-9"}])
+        stale = [{"id": "f-s1"}]
+        self.assertEqual(self.build(new=work(1), stale=stale)["asks"], [])
+        got = self.build(new=work(1), stale=stale, unlinked=[{"id": "f-9"}])
         self.assertEqual(got["asks"][0]["id"], "batch")
         self.assertEqual(got["plan"], [])
 
@@ -220,7 +222,8 @@ class Announce(Base):
     def test_within_threshold_has_sentence(self):
         self.assertEqual(self.build(new=work(3))["announce"], "有 3 份要整理，大約一兩分鐘；要停的話跟我說一聲")
         rows = [{"id": f"f-{i}", "card_path": "p", "title": "t", "existing": []} for i in range(4)]
-        got = self.build(new=work(3), stale=work(2), unlinked=[{"id": "f-9"}] * 3, agenda_unscanned=rows)
+        got = self.build(new=work(3), stale=[{"id": "f-s1"}, {"id": "f-s2"}],
+                         unlinked=[{"id": f"f-u{i}"} for i in range(3)], agenda_unscanned=rows)
         self.assertEqual(got["announce"], "有 12 份要整理，大約 2 分鐘；要停的話跟我說一聲")  # 12×6+30 = 102
         self.assertIsNone(self.build(moved=[{"id": "f-1"}])["announce"], "只有搬卡不算要整理的份數")
 

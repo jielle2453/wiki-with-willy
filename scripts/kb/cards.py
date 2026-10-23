@@ -22,7 +22,7 @@ from datetime import date
 from pathlib import Path
 
 from kb import journal_cli
-from kb._lib import agenda, batches, cards, config, inventory, pending, turn
+from kb._lib import agenda, batches, cards, config, credentials, inventory, pending, statements, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault, name_of
@@ -363,12 +363,28 @@ NOT_IN_CONVERSATION = "整理要在對話裡派"
 NOT_RUNNING = "現在沒有在整理"
 LINK_ONLY = "這個指令只收線上文件；檔案讀不到由 convert 記"
 STOPPED_HERE = "這一句說了停，不再派；客戶說整理再派"
+REASON_LABEL = "原因"
 
 
-def _session(vault):
-    """主對話的 session：current.json 的 session_id；終端機跑的沒有。"""
+class UnreadableRefused(Exception):
+    pass
+
+
+def _session(vault, args, strict=False):
+    """主對話的 session（第一輪修：兩個視窗開同一個知識庫不串）：守門插的 --session 優先；製卡助手的呼叫從 agents 反查；
+    strict（dispatch）到這裡就沒有了（終端機跑的）。不 strict 才退到 current.json。"""
+    if turn.SESSION:
+        return turn.SESSION
+    agent = getattr(args, "agent", None)
+    if agent:
+        sid = batches.session_of_agent(vault, agent)
+        if sid:
+            return sid
+    if strict:
+        return None
     data = turn._read_turn(turn._current_file(vault))
     return data.get("session_id") if data else None
+
 
 
 def _left_text(left):
@@ -376,12 +392,17 @@ def _left_text(left):
     return "還剩 " + "、".join(parts) if parts else "還剩 0"
 
 
-def _dispatch(vault, source, as_json):
-    sid = _session(vault)
+def _dispatch(vault, args, as_json):
+    source = args.source.strip() if args.source else None
+    sid = _session(vault, args, strict=True)
     if not sid:
         print(NOT_IN_CONVERSATION)
         return 3
-    got = batches.dispatch(vault, sid, turn.current(vault, sid)["turn"], source)
+    try:
+        got = batches.dispatch(vault, sid, turn.current(vault, sid)["turn"], source)
+    except batches.Refused as e:
+        print(str(e))
+        return 3
     if as_json:
         print(json.dumps(got, ensure_ascii=False))
         return 0
@@ -389,12 +410,13 @@ def _dispatch(vault, source, as_json):
         print(STOPPED_HERE)
         return 0
     if got["done"]:
-        print("整理完了")
+        print("整理完了" + (f"；沒做成 {len(got['failed'])} 份" if got["failed"] else ""))
         return 0
     made = got["batches"]
     head = (f"派了 {len(made)} 批（{batches.KIND_TEXT[made[0]['kind']]} " + "、".join(str(b["items"]) for b in made) + "）"
             if made else "沒有新派的")
-    print(f"{head}；還在跑 {got['running']} 批；{_left_text(got['left'])}")
+    print(f"{head}；還在跑 {got['running']} 批；{_left_text(got['left'])}"
+          + (f"；沒做成 {len(got['failed'])} 份" if got["failed"] else ""))
     if got["approval"]:
         print(got["approval"]["question"])
     return 0
@@ -413,8 +435,8 @@ def _batch(vault, batch_id, agent, as_json):
     return 0
 
 
-def _status(vault, as_json):
-    got = batches.status(vault, _session(vault))
+def _status(vault, args, as_json):
+    got = batches.status(vault, _session(vault, args))
     if as_json:
         print(json.dumps(got, ensure_ascii=False))
     elif got["job"] is None:
@@ -426,8 +448,8 @@ def _status(vault, as_json):
     return 0
 
 
-def _stop(vault, as_json):
-    sid = _session(vault)
+def _stop(vault, args, as_json):
+    sid = _session(vault, args)
     got = batches.stop(vault, sid, turn.current(vault, sid)["turn"] if sid else None)
     try:  # 這個對話不再自動整理（D-200）：照 D-156 的記號
         turn.mark(vault, "ingest_stopped")
@@ -451,7 +473,12 @@ def _unreadable(vault, fid, reason, as_json, conversation):
     if not inventory.is_link(entry) or entry.get("status") != "active":
         print(LINK_ONLY)
         return 3
-    reason = " ".join(str(reason).split())
+    try:  # 跟口述同一套（第一輪修 S5）：一句、200 字內、不收密碼與 " $ ` \
+        reason = statements.check_text(reason, REASON_LABEL, UnreadableRefused)
+    except UnreadableRefused as e:
+        print(str(e))
+        return 3
+    reason = credentials.mask_secrets(reason, credentials.known_names(vault))
     label = f"「{entry.get('title') or entry['locations'][0]['uri']}」"
     turn_id = turn.current(vault)["turn"]
     pid = pending.add(vault, "unreadable", [fid], f"{label}讀不到", reason, turn_id)
@@ -479,13 +506,13 @@ def run(args):
         if command == "list":
             return _list(vault, args, as_json)
         if command == "dispatch":
-            return _dispatch(vault, args.source.strip() if args.source else None, as_json)
+            return _dispatch(vault, args, as_json)
         if command == "batch":
             return _batch(vault, args.batch, getattr(args, "agent", None), as_json)
         if command == "status":
-            return _status(vault, as_json)
+            return _status(vault, args, as_json)
         if command == "stop":
-            return _stop(vault, as_json)
+            return _stop(vault, args, as_json)
         conversation = journal_cli.in_conversation(vault)
         if command == "sync":
             return _sync(vault, as_json, conversation)

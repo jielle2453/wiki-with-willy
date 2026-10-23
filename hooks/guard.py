@@ -1,4 +1,4 @@
-"""PreToolUse 守門入口。讀 stdin 的 payload，交給 kb.guard.decide，印 allow／deny 的 JSON 或不印，永遠 exit 0。
+"""PreToolUse 守門入口。讀 stdin 的 payload，交給 kb.guard.decide，印 allow／deny／ask 的 JSON 或不印，永遠 exit 0。
 
 守門內部出錯：寫 .system/hook-errors.log 一行；知識庫裡一律印 deny（fail closed，D-034、I-101；Bash／PowerShell 也擋，
 密碼與守門 D-186 第 4 點），知識庫外不表態。hook 本身起不來或逾時由 hooks.json 的 onFailure: block 擋。
@@ -65,7 +65,7 @@ def main():
                 ledger.touch_status(d.vault)
             except BaseException as e:  # noqa: BLE001  留痕失敗不改決定
                 ledger.log_error(d.vault, f"{type(e).__name__}: {str(e)[:200]}")
-        if decision in ("allow", "deny"):
+        if decision in ("allow", "deny", "ask"):  # ask：開新口子的密碼動作，Claude Code 跳允許詢問（D-212）
             emit(decision, reason)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
         _on_error(e, payload, tool)

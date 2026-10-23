@@ -22,6 +22,7 @@
 - 存密碼、忘掉密碼改的是這台電腦的憑證管理員，「退回上一版」救不回；不要說「不對可以退回」，要改就再存一次、不要就忘掉。只有 `authorize`、`revoke`（記在知識庫裡）退得回。
 - 她給的密碼只在那一個指令裡出現：不寫進卡、口述、裁示、偏好、`kb turn note`、任何檔；回答裡完全不出現密碼值，唯一例外是 `kb unlock get` 印出的那一行（她問的那一組）；存好了說「記好了」就好。
 - 種類兩種：門禁、Wi-Fi 這類她要你記的叫「記下的密碼」；開 PDF 用的叫「PDF 密碼」。同一個名稱只留一組，換種類也是換掉。
+- `kb unlock get`、`kb unlock authorize`、`kb convert --saved … --explicit` 這幾個動作會跳出允許詢問，請客戶按允許（D-212：防檔案裡夾的指令讓 AI 自己開口子）；她沒按就照沒做講。`save`、`list`、`forget`、`revoke` 與授權範圍內的 `convert --saved` 不問。
 - 「同一種」只授權她說過的那一種；哪一份算同一種由你判斷（整理時 `plan` 的 `unlock_same_kind` 會列，ingest 的 `references/carding.md` 第十節）。
 
 ## 二、成功句與拒絕句

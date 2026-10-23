@@ -850,6 +850,87 @@ def _interpreter_ok(token):
 CURLY_QUOTES = frozenset(chr(c) for c in range(0x2018, 0x2020))  # ‘’‚‛“”„‟
 
 
+# 引號外會被殼展開的字（D-212：認不出實際的參數）：Bash 的變數、萬用字元、大括號、~；PowerShell 的變數、@ 展開、逗號陣列
+_BARE_UNCERTAIN = {False: set("$*?[{~"), True: set("$@,{(")}
+
+
+def shell_words(command, powershell):
+    """照工具的引號規則把一句拆成字（給單一 kb 呼叫認參數，D-212）：回 [(字, 不確定)]；引號沒成對回 None。
+    不確定：字裡有會被展開的東西（引號外的 $、萬用字元…，雙引號裡的 $），實際傳給程式的是什麼看不出來。
+    呼叫端先過 is_single_plugin_call（引號外沒有反斜線、反引號、串接與導向），這裡只處理引號。"""
+    words, buf, uncertain, have, i, n = [], [], False, False, 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch.isspace():
+            if have:
+                words.append(("".join(buf), uncertain))
+            buf, uncertain, have = [], False, False
+            i += 1
+            continue
+        have = True
+        if ch == "'":
+            j = i + 1
+            while True:
+                k = command.find("'", j)
+                if k < 0:
+                    return None
+                buf.append(command[j:k])
+                if powershell and command.startswith("''", k):
+                    buf.append("'")
+                    j = k + 2
+                    continue
+                i = k + 1
+                break
+            continue
+        if ch == '"':
+            j = i + 1
+            while True:
+                if j >= n:
+                    return None
+                c = command[j]
+                if c == '"':
+                    if powershell and command.startswith('""', j):
+                        buf.append('"')
+                        j += 2
+                        continue
+                    break
+                if not powershell and c == "\\" and j + 1 < n and command[j + 1] in '"\\$`\n':
+                    buf.append(command[j + 1])
+                    j += 2
+                    continue
+                if c == "$":
+                    uncertain = True
+                buf.append(c)
+                j += 1
+            i = j + 1
+            continue
+        if ch in _BARE_UNCERTAIN[powershell]:
+            uncertain = True
+        buf.append(ch)
+        i += 1
+    if have:
+        words.append(("".join(buf), uncertain))
+    return words
+
+
+def kb_argv(command, tool=None):
+    """單一 kb 呼叫傳給 kb.py 的參數（腳本之後的字）：回 [(字, 不確定)]；拆不出來回 None。
+    tool 不知道時 Bash、PowerShell 兩種拆法要一樣，不一樣的字算不確定。"""
+    results = []
+    for powershell in ((False,) if tool == "Bash" else (True,) if tool == "PowerShell" else (False, True)):
+        words = shell_words(command, powershell)
+        if not words:
+            return None
+        k = 1
+        while k < len(words) and words[k][0].startswith("-"):
+            k += 2 if words[k][0] == "-X" else 1  # python -I -u -X utf8 kb.py …
+        results.append(words[k + 1:])
+    argv = results[0]
+    if len(results) > 1 and results[0] != results[1]:
+        argv = [(w, True) for w, _u in argv]
+    return argv
+
+
 def is_single_plugin_call(command, plugin_root, cwd=None, tool=None):
     """整句是不是只有「python <plugin>/scripts/kb.py …」這一個呼叫。串接、導向、子運算式、反引號都不算；
     引號外出現任何反斜線也不算（N-a：kb.py 路徑在引號內，用不到跳脫）。"""

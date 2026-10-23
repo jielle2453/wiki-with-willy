@@ -295,5 +295,80 @@ class Round28d(Base):
             self.assertDecision(tool, cmd, "deny")
 
 
+class SecretActionAsk(Base):
+    """D-212（測試 28 F7）：kb unlock get、kb ruling add --kind 可以讀、kb unlock authorize、kb convert --saved … --explicit
+    回 ask（客戶按允許才跑），理由句說是哪個動作、不帶密碼值；其他 kb 呼叫照舊 allow。子命令與旗標照 kb 自己的 argparse 認
+    （縮寫、--x=值、順序），引號照工具的規則；認不出來的照 ask。"""
+
+    def kb(self, rest):
+        return f'python "{ROOT.as_posix()}/scripts/kb.py" {rest}'
+
+    def test_four_actions_ask_with_reason(self):
+        cases = (
+            ("unlock get --name 工地大門", "要把存好的「工地大門」密碼顯示出來"),
+            ("ruling add --kind 可以讀 --file 網站密碼.xlsx --text \"網站密碼.xlsx 可以讀\"", "要讓 AI 讀「網站密碼.xlsx」"),
+            ("ruling add --text x --kind=可以讀 --file \"客戶案件/網站密碼.xlsx\"", "要讓 AI 讀「網站密碼.xlsx」"),
+            ("ruling add --kin 可以讀 --file 網站密碼.xlsx --text x", "要讓 AI 讀「網站密碼.xlsx」"),
+            ("unlock authorize --name 保險單 --label 保險單 --example f-1a2b3c4d", "要讓「保險單」這一種的檔都用「保險單」這組密碼自動開"),
+            ("convert 保險單_陳.pdf --saved 保險單 --explicit", "要用存好的「保險單」密碼開「保險單_陳.pdf」這一份"),
+            ("convert --explicit 保險單_陳.pdf --saved=保險單", "要用存好的「保險單」密碼開「保險單_陳.pdf」這一份"),
+            ("convert 保險單_陳.pdf --saved 保險單 --exp", "要用存好的「保險單」密碼開「保險單_陳.pdf」這一份"),
+            ("--json unlock get --name 工地大門", "要把存好的「工地大門」密碼顯示出來"),
+        )
+        for tool in ("Bash", "PowerShell"):
+            for rest, reason in cases:
+                d = self.assertDecision(tool, self.kb(rest), "ask")
+                with self.subTest(tool=tool, rest=rest):
+                    self.assertEqual((d.reason_code, d.reason), ("secret_action", reason))
+        self.assertDecision("Bash", self.kb("'unlock' \"get\" --name '工地大門'"), "ask")
+        self.assertDecision("PowerShell", self.kb("'unlock' 'get' --name '工地''大門'"), "ask")
+
+    def test_unknown_or_uncertain_asks(self):
+        for tool, rest in (("Bash", "unlock $x --name a"), ("Bash", "ruling add --kind \"$k\" --file a --text x"),
+                           ("PowerShell", "unlock $x --name a"), ("Bash", "$c get --name a"),
+                           ("Bash", "ruling add --kind 可以* --file a --text x")):
+            self.assertDecision(tool, self.kb(rest), "ask")
+        # argparse 拆不過的（打錯子命令、多了不認得的旗標）：守門用的就是 kb.py 那一份 argparse，kb 什麼都不做，照常放行
+        for rest in ("convert a.pdf --saved n --explicit --bogus", "unlok get --name a"):
+            self.assertDecision("Bash", self.kb(rest), "allow")
+        # 不是這三個子命令的，其他參數有變數照常放行
+        for tool, rest in (("Bash", "version {a,b}"), ("PowerShell", "version @args"), ("Bash", "cards list --entity \"$e\"")):
+            self.assertDecision(tool, self.kb(rest), "allow")
+
+    def test_other_kb_calls_still_allowed(self):
+        for rest in ("convert 保險單_陳.pdf --saved 保險單", "convert 保險單_王.pdf --password \"Zq7x-only\"",
+                     "unlock save --kind 記下的密碼 --name 工地大門 --value \"Zq7x-gate\"", "unlock list",
+                     "unlock forget --name 工地大門", "unlock revoke --label 保險單", "ruling decline --file 網站密碼.xlsx",
+                     "ruling add --kind 口述為準 --entity 信義王 --text x", "ruling add --kind 不採用 --card f-1a2b3c4d --text x",
+                     "ruling list", "version", "cards todo --json", "unlock get --help", "--help"):
+            for tool in ("Bash", "PowerShell"):
+                d = self.assertDecision(tool, self.kb(rest), "allow")
+                with self.subTest(tool=tool, rest=rest):
+                    self.assertNotIn("Zq7x", d.reason)
+
+    def test_reason_never_carries_a_value(self):
+        d = self.assertDecision("Bash", self.kb("convert a.pdf --saved 保險單 --explicit --password \"Zq7x-secret\""), "ask")
+        self.assertNotIn("Zq7x", d.reason)
+        d = self.assertDecision("Bash", self.kb("unlock authorize --name 門 --label 門禁 --example \"Zq7x-secret\""), "ask")
+        self.assertNotIn("Zq7x", d.reason)
+
+
+class Round28e(Base):
+    """測試 28 第四輪三件小的：unparsed 理由句不叫 AI 去問客戶；Bash 動詞本身是變數、eval 間接展開照 unparsed 擋；
+    PowerShell Set-Content／Add-Content 位置參數與巢狀括號的值不算目標。語料同一批。"""
+
+    def test_reason_variable_verb_and_positional_values(self):
+        v, o = self.V.as_posix(), self.out.as_posix()
+        d = self.assertDecision("Bash", f"cmd='rm'; $cmd \"{v}/系統/待處理.md\"", "deny")
+        self.assertEqual((d.reason_code, d.reason), ("unparsed", "看不出這個指令會寫到哪；請用檔案工具，或把完整路徑直接寫在指令裡（不要用 $(…)、反引號或變數）"))
+        self.assertDecision("Bash", "v=c; c='rm x'; eval \"${!v}\"", "deny")
+        for cmd in (f'Set-Content "{o}/d.txt" (Get-Date)', f'Add-Content "{o}/d.txt" (Get-Date)',
+                    f"Set-Content \"{o}/d.txt\" -Value ((Get-Date).ToString('o'))"):
+            self.assertDecision("PowerShell", cmd, "pass")
+        for cmd in (f'Set-Content "{v}/系統/x.txt" (Get-Date)', 'Set-Content (Get-Content list.txt) "x"',
+                    "Remove-Item -Recurse (Get-Content list.txt)"):
+            self.assertDecision("PowerShell", cmd, "deny")
+
+
 if __name__ == "__main__":
     unittest.main()

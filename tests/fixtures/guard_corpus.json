@@ -9062,6 +9062,126 @@
    "expect": "pass",
    "來源": "密碼與守門-測試.md（28 第三輪，附錄 C）",
    "note": "N6 對照：xargs -a 只讀"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cmd='rm'; $cmd \"<V>/系統/待處理.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R1 小：動詞是變數（底版擋）"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cmd='rm'; \"$cmd\" \"<V>/系統/待處理.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R1 小：動詞是加引號的變數"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cmd='rm'; ${cmd} \"<V>/系統/待處理.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R1 小：${cmd}"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "v=c; c='rm x'; eval \"${!v}\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R1 小：eval 間接展開（底版擋）"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Set-Content \"<OUT>/d.txt\" (Get-Date)"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R4：位置參數的值不是目標（誤擋）"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Add-Content \"<OUT>/d.txt\" (Get-Date)"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R4"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Set-Content \"<OUT>/d.txt\" -Value ((Get-Date).ToString('o'))"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R4：巢狀括號"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Set-Content -Path \"<OUT>/d.txt\" -Encoding utf8 (Get-Date)"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R4：具名參數之後的位置參數"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Set-Content \"<V>/系統/x.txt\" (Get-Date)"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R4 對照：寫到系統/ 照擋"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Set-Content (Get-Content list.txt) \"x\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R4 對照：第一個位置參數是路徑"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Set-Content -Path (Get-Content list.txt) -Value x"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R4 對照：-Path 的值"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Remove-Item -Recurse (Get-Content list.txt)"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試.md（28 第四輪）",
+   "note": "R4 對照：Remove-Item 照擋"
   }
  ]
 }

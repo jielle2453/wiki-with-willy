@@ -34,6 +34,7 @@
 | 「那份密碼檔不要讀了」 | `kb ruling list --json` 找到那條，`kb ruling remove <編號>`；卡上本來就沒有密碼，不用清 |
 | 「那份不要讀」（還沒說過可以讀的） | `kb ruling decline --file <那份>`，之後不再問 |
 
+- `kb ruling add --kind 可以讀` 這幾個動作會跳出允許詢問，請客戶按允許（D-212，跟 `kb unlock get`、`authorize`、`convert --saved … --explicit` 一樣）；她沒按就照沒做講。`kb ruling decline` 不問。
 - 找那份：還沒做卡，總目錄沒有它；用 `ls` 或 Glob 列那個夾的檔名（只列檔名守門放行，D-185），把路徑給 `--file`；找不到就請她說在哪個夾、叫什麼。
 - 可以讀跟著那份檔走：搬到別的登記夾、改名、內容改了都照樣讀得到；搬進她說不讀的夾就不讀（不讀最優先，D-184）。
 - 記了以後照 ingest 整理那份（卡上只寫這份是什麼、列了哪些項目的名字，任何值都不抄，ingest 的 `references/carding.md` 第十節）。

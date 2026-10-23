@@ -358,14 +358,49 @@ def _plan_stages(command, bodies, powershell=False):
                 var_code = False
         else:
             var_code = False
+        # 跑什麼看不出來（測試 28 第四輪）：Bash 的動詞本身是變數（cmd='rm'; $cmd T），或殼的程式碼是間接展開（eval "${!v}"）
+        opaque = (not powershell and verb.startswith("$")) or (
+            runs in cmdparse.SHELL_WRAPPERS and "${!" in text + "\n" + code)
         bare = cmdparse.outside_quotes(cmdparse.strip_marks(text), powershell)
         out.append({"sub": sub, "stage": stage, "text": text, "verb": verb, "words": words, "runs": runs, "var_code": var_code,
+                    "opaque": opaque,
                     "kind": cmdparse.stage_kind(runs, cmdparse.strip_marks(text), code, args, powershell),
                     "redirect": bare is None or ">" in bare, "marks": cmdparse.data_marks(text)})
     return out
 
 
 _VALUE_PARAM = re.compile(r"-(?:value|inputobject)\s*:?\s*$", re.IGNORECASE)
+
+
+# Set-Content／Add-Content：第一個位置參數是 -Path、第二個是 -Value；這些具名參數後面跟一個值（測試 28 第四輪 R4）
+_CONTENT_CMDLETS = {"set-content", "sc", "add-content", "ac"}
+_CONTENT_VALUED = {"-path", "-literalpath", "-pspath", "-lp", "-value", "-encoding", "-filter", "-include", "-exclude",
+                   "-credential", "-stream", "-delimiter"}
+
+
+def _content_value(before):
+    """PowerShell 的 Set-Content／Add-Content：before 是替換之前的字，替換落在第二個以後的位置參數（-Value）就回 True；
+    落在第一個位置參數、-Path 這類後面，或認不出來回 False（照目標算）。"""
+    words = [t for t, _q, _g, _a in _tokens_q(before, globs_in_quotes=True)]
+    if not words or cmdparse.verb_of(words) not in _CONTENT_CMDLETS:
+        return False
+    rest = words[next(k for k, w in enumerate(words) if cmdparse._base(w) in _CONTENT_CMDLETS) + 1:]
+    positional, path_named, k = 0, False, 0
+    while k < len(rest):
+        w = rest[k].lower()
+        if w.startswith("-"):
+            name = w.split(":", 1)[0]
+            path_named = path_named or name in ("-path", "-literalpath", "-pspath", "-lp")
+            if name in _CONTENT_VALUED and ":" not in w:
+                if k + 1 == len(rest):
+                    return name == "-value"  # 替換緊接在這個具名參數後面
+                k += 2
+                continue
+            k += 1
+            continue
+        positional += 1
+        k += 1
+    return path_named or positional >= 1  # -Path 已經具名給了，位置參數就綁到 -Value
 
 
 def _substituted_args(text, runs, powershell):
@@ -376,15 +411,17 @@ def _substituted_args(text, runs, powershell):
         subs = cmdparse.substitutions(text, powershell)
     except cmdparse.Unbalanced:
         return True
-    spans = []
+    spans, seen = [], []
     for pos, inner in subs:
+        end = text.find(inner, pos) + len(inner) + 1
+        if any(a <= pos < b for a, b in seen):
+            continue  # 包在外層裡的（-Value ((Get-Date).ToString('o')) 的 (Get-Date)）跟著外層算
+        seen.append((pos, end))
         if powershell and not (text.startswith(("$(", "@("), pos) or text[pos] == "("):
             continue
-        if powershell and _VALUE_PARAM.search(text[:pos]):
+        if powershell and (_VALUE_PARAM.search(text[:pos]) or _content_value(text[:pos])):
             continue
-        end = text.find(inner, pos) + len(inner) + 1
-        if not any(a <= pos < b for a, b in spans):
-            spans.append((pos, end))
+        spans.append((pos, end))
     if not spans:
         return False
     blanked, last = [], 0
@@ -439,6 +476,8 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         write_verb = stage_write  # 只有寫入那一段才讓隱含的讀取範圍不走訪
         if stage_write or any(a for _t, _q, _g, a in tokens):
             out["has_write"] = True
+        if plan["opaque"]:
+            out["has_write"] = out["unparsed"] = True  # 跑的是什麼看不出來：當成寫到不明的地方
         if stage_write and plan["stage"] > 0 and (tool == "PowerShell" or verb in cmdparse.PIPE_ARG_VERBS) \
                 and verb not in cmdparse.CONTENT_SINKS:
             # 目標從前一段的輸出來（| xargs rm、| Remove-Item、| % { rm $_ }、kb … | xargs rm -rf）：推不出會寫到哪，一律擋，
@@ -616,8 +655,18 @@ def _original_segment(target, seg):
     return seg
 
 
-UNPARSED_REASON = "看不出這個指令會寫到哪，請用檔案工具或告訴我路徑。"
+UNPARSED_REASON = "看不出這個指令會寫到哪；請用檔案工具，或把完整路徑直接寫在指令裡（不要用 $(…)、反引號或變數）"
 KB_CALL_REASON = "知識庫腳本"
+# D-212：開新口子的密碼動作要客戶按允許（PreToolUse 回 ask）；理由句只用名稱、檔名，不帶密碼值
+SECRET_ACTION = "secret_action"
+SECRET_COMMANDS = ("unlock", "ruling", "convert")
+ASK_GET = "要把存好的「{}」密碼顯示出來"
+ASK_READ = "要讓 AI 讀「{}」"
+ASK_READ_ANY = "要讓 AI 讀一份檔名像密碼的檔"
+ASK_AUTHORIZE = "要讓「{}」這一種的檔都用「{}」這組密碼自動開"
+ASK_EXPLICIT = "要用存好的「{}」密碼開「{}」這一份"
+ASK_UNKNOWN = "認不出這個知識庫指令要做什麼，可能是密碼相關的動作；請確認再按允許"
+_FILE_ID = re.compile(r"^f-[0-9a-f]{8}$")
 CURLY_REASON = "PowerShell 會把彎引號（“ ” ‘ ’）當成引號拆開指令；改用「」或直引號，或改用 Bash 再跑"
 ERROR_REASON = "守門出錯，這次不放行。說「檢查」我看原因"
 
@@ -1002,6 +1051,70 @@ def _shell_tool(tool, command, cwd, vault, sources, depth=0):
     return Decision("pass", "", "", "", rows, vault)
 
 
+def _file_label(vault, arg):
+    """理由句裡的檔名：清冊編號換成清冊裡的檔名（找不到回 None，編號不給客戶看）；uri、路徑取最後一段。"""
+    text = str(arg or "").strip()
+    if _FILE_ID.match(text):
+        try:
+            import json
+            with open(os.path.join(str(vault), ".system", "inventory.json"), encoding="utf-8") as f:
+                entries = json.load(f).get("entries") or []
+            for e in entries:
+                if isinstance(e, dict) and e.get("id") == text and e.get("locations"):
+                    return str(e["locations"][0].get("uri", "")).rsplit("/", 1)[-1] or None
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+        return None
+    return text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or None
+
+
+def secret_action(command, tool, vault):
+    """D-212：單一 kb 呼叫是不是四種開新口子的密碼動作（kb unlock get、kb ruling add --kind 可以讀、kb unlock authorize、
+    kb convert --saved … --explicit）。是回理由句，不是回 None。參數照 kb 自己的 argparse 認（縮寫、--x=值、順序都一樣）；
+    子命令那個字、或 unlock／ruling／convert 的參數裡有看不出實際值的字（變數、萬用字元），認不出來，照 ask。
+    argparse 拆不過的不問：守門用的就是 kb.py 跑的那一份 argparse，拆不過 kb 就什麼都不做。"""
+    parsed = cmdparse.kb_argv(command, tool)
+    if parsed is None:
+        return ASK_UNKNOWN
+    from kb import cli
+    first = next((k for k, (a, _u) in enumerate(parsed) if not a.startswith("-")), None)
+    if first is not None and parsed[first][1]:
+        return ASK_UNKNOWN  # 子命令本身看不出來
+    lead_ok = all(not u and (a in ("-h", "--help") or (a.startswith("--") and "--json".startswith(a) and len(a) > 2))
+                  for a, u in parsed[:first or 0])
+    if first is not None and lead_ok and parsed[first][0] in cli.COMMANDS and parsed[first][0] not in SECRET_COMMANDS:
+        return None  # 認得、又不是這三個子命令：照常放行，不用載入整個 argparse
+    if any(u for _a, u in parsed):
+        return ASK_UNKNOWN
+    argv = [a for a, _u in parsed]
+    import contextlib
+    import io
+    sink = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            args = cli.build_parser().parse_args(argv)
+    except SystemExit:
+        return None  # --help 只印說明；拆不過的 kb 也拆不過，什麼都不做
+    command_name = getattr(args, "command", None)
+    if command_name == "unlock" and getattr(args, "unlock_command", None) == "get":
+        return ASK_GET.format(args.name)
+    if command_name == "unlock" and getattr(args, "unlock_command", None) == "authorize":
+        return ASK_AUTHORIZE.format(args.label, args.name)
+    if command_name == "ruling" and getattr(args, "ruling_command", None) == "add":
+        from kb._lib import rulings
+        try:
+            kind = rulings.kind_of(args.kind)  # 跟 kb ruling add 同一套（中文、英文值都認）
+        except Exception:  # noqa: BLE001  不認得的種類 kb 會拒絕，照 ask 也無妨
+            kind = None
+        if kind in ("spoken_wins", "ruled_out"):
+            return None
+        names = [x for x in (_file_label(vault, f) for f in args.file or []) if x]
+        return ASK_READ.format("、".join(dict.fromkeys(names))) if names else ASK_READ_ANY
+    if command_name == "convert" and args.saved is not None and args.explicit:
+        return ASK_EXPLICIT.format(args.saved, _file_label(vault, args.target) or "那份檔")
+    return None
+
+
 def decide(payload):
     """照 tool_name 分流。回 Decision(decision, zone, reason_code, reason, ledger_rows, vault)。"""
     tool = payload.get("tool_name", "") or ""
@@ -1018,6 +1131,9 @@ def decide(payload):
             # PowerShell 把彎引號當引號：任何子命令的文字參數都拆得開、能夾帶別的陳述式，直接擋；Bash 裡是普通字，照常認（第四輪）
             return Decision("deny", "", "curly_quote", CURLY_REASON, [_row(tool, "deny", "", "curly_quote", command)], vault)
         if cmdparse.is_single_plugin_call(command, root, cwd, tool):
+            ask = secret_action(command, tool, vault)
+            if ask is not None:  # D-212：開新口子的密碼動作要客戶按允許
+                return Decision("ask", "", SECRET_ACTION, ask, [_row(tool, "ask", "", SECRET_ACTION, command)], vault)
             return Decision("allow", "", "", KB_CALL_REASON, [], vault)
         if vault is None:
             return Decision("pass", "", "", "", [], None)

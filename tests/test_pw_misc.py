@@ -68,6 +68,16 @@ class Round28bDocs(unittest.TestCase):
             self.assertIn(want, part)
 
 
+class D212Docs(unittest.TestCase):
+    """D-212：README 的「kb.py 不用按允許」補例外；note 的 password.md、ruling.md 說這幾個動作會跳出允許詢問。"""
+
+    def test_docs(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("`kb.py` 不用按允許（顯示存好的密碼、讓 AI 讀密碼檔、讓同一種檔自動開、用存好的密碼開沒授權過的檔，這四種要按允許）", readme)
+        for rel in ("skills/note/references/password.md", "skills/note/references/ruling.md"):
+            self.assertIn("這幾個動作會跳出允許詢問，請客戶按允許", (ROOT / rel).read_text(encoding="utf-8"), rel)
+
+
 class NoOldPhrases(unittest.TestCase):
     """驗收 15：skills 與程式裡「這版還不能開放」「這版記不起來」「等密碼與守門那一版」為 0（只在 design/）。"""
 

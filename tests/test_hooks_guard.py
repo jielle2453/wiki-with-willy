@@ -92,6 +92,19 @@ class Hook(unittest.TestCase):
         for h in hooks:
             self.assertEqual(h.get("onFailure"), "block", h)
 
+
+    def test_secret_action_asks_and_ledger_records_ask(self):
+        """D-212：四種密碼動作印 ask（Claude Code 跳允許詢問），ledger 記 ask；理由句與 ledger 都不帶密碼值。"""
+        r = run_hook(payload("Bash", f'python "{ROOT}/scripts/kb.py" unlock get --name 工地大門', self.V))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(decision_of(r)[1:], ("ask", "要把存好的「工地大門」密碼顯示出來"))
+        r = run_hook(payload("Bash", f'python "{ROOT}/scripts/kb.py" convert a.pdf --saved 門 --explicit --password "zq-7731-secret"', self.V))
+        self.assertEqual(decision_of(r)[1], "ask")
+        self.assertNotIn("zq-7731-secret", r.stdout)
+        rows = [line.split("\t") for line in (self.V / ".system" / "ledger.tsv").read_text(encoding="utf-8").splitlines()[1:]]
+        self.assertEqual([(row[2], row[4]) for row in rows], [("ask", "secret_action")] * 2, rows)
+        self.assertNotIn("zq-7731-secret", (self.V / ".system" / "ledger.tsv").read_text(encoding="utf-8"))
+
     def test_ledger_head_is_masked(self):
         """密碼與守門 8：擋下時 ledger 記的指令開頭先遮值（--value、密碼：…）。"""
         cmd = f'python “{ROOT}/scripts/kb.py” unlock save --kind 記下的密碼 --name 門 --value "zq-7731-secret"'

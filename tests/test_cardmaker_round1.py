@@ -178,6 +178,10 @@ class GuardScope(unittest.TestCase):
                     self.assertEqual(out["updatedInput"]["command"], f"{KB} --session {SID} cards {sub}")
         out = self.call(f"{KB} cards todo --json", agent=None)
         self.assertNotIn("updatedInput", out)
+        for sub in ("status --json", "status --takeover --json", "done setup", "set people 兩個人", "env --json"):  # build 驗後修
+            with self.subTest(build=sub):
+                out = self.call(f"{KB} build {sub}", agent=None)
+                self.assertEqual(out["updatedInput"]["command"], f"{KB} --session {SID} build {sub}")
 
     def test_powershell_with_turn(self):
         out = self.call(f"{KB} cards batch b-1 --json", tool="PowerShell")

@@ -4,8 +4,9 @@
 → synthesis → adopt（記了舊 wiki 才有）→ finish → done；setup 做完時沒登記任何資料夾（no_sources）就跳過 inventory～synthesis（D-044）。
 認知識庫只看 .system/（D-190 再補）：cwd 有 .system/ 但沒有 build.json、或建置做完了 → 擋（ALREADY）；cwd 在別的知識庫裡面也擋。
 build.json 讀改寫都在它的鎖裡、寫前備進回合（by program）；壞檔丟 Unreadable 帶檔名。同時兩個建置（D-194）：記著的 session
-不是這一個、lock_until 還沒到 → BUSY；這個 session 每打一次 kb build 就把 lock_until 往後推 LOCK_MINUTES。
-session 取守門插的 --session，沒有就讀 current.json（不開新回合）。
+不是這一個、lock_until 還沒到 → BUSY（說最後動作的時間；那個對話關掉了就說「接手建置」）；這個 session 每打一次 kb build
+就把 last_action 記成現在、lock_until 往後推 LOCK_MINUTES。status --takeover：鎖換成這個 session、takeovers 記一行，其他不動。
+session 取守門插的 --session（build 每個子子命令都插），沒有才讀 current.json（不開新回合）。
 env（D-189）只讀、不碰 build.json、哪裡都能跑（建好的知識庫也行，換電腦 D-208 會叫它）；PDF 元件在子行程實跑一頁，
 智慧型應用程式控制讀登錄檔，信任讀 ~/.claude.json，舊 llm-wiki 讀外掛清單與 enabledPlugins。外部的東西都經 _ 開頭的函式，測試換掉。
 facts 只讀：每個來源的份數、格式、第一二層夾、讀不到的原因與估時（D-199 的算法，同 plan）。
@@ -43,7 +44,7 @@ OFFICE_POSIX = ".system/temp/office"
 TIME = "%Y-%m-%dT%H:%M:%S"
 
 ALREADY = "這裡已經是建好的知識庫，要加資料夾、整理檔案直接跟我說"
-BUSY = "另一個建置正在跑（{step}），等它做完或關掉那個對話再打一次"
+BUSY = "另一個對話正在建置（{step}，最後動作 {time}）；那個對話還開著就回那邊繼續，已經關掉了就說『接手建置』"
 NOT_STARTED = "還沒開始建置，先跑 kb build start"
 DONE_LINE = "建置：{step} 做完了，下一步 {next}"
 FINISHED_LINE = "建置：{step} 做完了，建置完成"
@@ -167,24 +168,37 @@ def _vault_or_refuse(cwd):
     return p, data
 
 
-def _claim(data, session):
-    """同時兩個建置（D-194）：記著的 session 不是這一個、lock_until 還沒到就擋；否則記成這一個、往後推。"""
+def _last_action(data):
+    t = _parse(data.get("last_action"))
+    if t is None:
+        until = _parse(data.get("lock_until"))
+        t = until - timedelta(minutes=LOCK_MINUTES) if until is not None else None
+    return t.strftime("%H:%M") if t is not None else "不明"
+
+
+def _claim(data, session, takeover=False):
+    """同時兩個建置（D-194）：記著的 session 不是這一個、lock_until 還沒到就擋（takeover 例外：換成這一個、記一行接手）；
+    否則記成這一個、最後動作記現在、lock_until 往後推。"""
     now = _now()
     owner, until = data.get("session_id"), _parse(data.get("lock_until"))
-    if owner and session and owner != session and until is not None and until > now:
-        raise Refused(BUSY.format(step=STEP_TEXT[data["step"]]))
+    busy = owner and session and owner != session and until is not None and until > now
+    if busy and not takeover:
+        raise Refused(BUSY.format(step=STEP_TEXT[data["step"]], time=_last_action(data)))
+    if takeover and owner and owner != session:
+        data.setdefault("takeovers", []).append({"time": _stamp(now), "from": owner, "to": session})
     data["session_id"] = session or owner
+    data["last_action"] = _stamp(now)
     data["lock_until"] = _stamp(now + timedelta(minutes=LOCK_MINUTES))
 
 
-def _locked(cwd, change):
+def _locked(cwd, change, takeover=False):
     """拿 build.json 的鎖、認領、做 change(vault, data, turn_id)、寫回。回 (vault, data, change 的回傳值)。"""
     vault, _data = _vault_or_refuse(cwd)
     with lock(vault):
         data = load(vault)
         if data is None or data["step"] == "done":
             raise Refused(ALREADY)
-        _claim(data, session_of(vault))
+        _claim(data, session_of(vault), takeover)
         tid = _turn_id(vault)
         got = change(vault, data, tid)
         save(vault, data, tid)
@@ -238,8 +252,9 @@ def view(vault, data):
             "no_sources": bool(data.get("no_sources"))}
 
 
-def status(cwd):
-    """kb build status：還沒建（沒有 .system/）回 env 那步與 not_empty；建置中認領後回 view；別的擋。"""
+def status(cwd, takeover=False):
+    """kb build status：還沒建（沒有 .system/）回 env 那步與 not_empty；建置中認領後回 view；別的擋。
+    takeover（客戶或服務人員說「接手建置」）：別的對話拿著鎖也換成這一個。"""
     p = Path(cwd).resolve()
     if _above(p) is not None:
         raise Refused(ALREADY)
@@ -247,7 +262,7 @@ def status(cwd):
         return {"step": "env", "not_empty": not_empty(p), "do": ["kb build env --json"],
                 "read": f"references/steps.md {STEP_TEXT['env']}", "after": "kb build start", "done": {},
                 "people": None, "adopt": None, "no_sources": False}
-    vault, data, _got = _locked(p, lambda v, d, t: None)
+    vault, data, _got = _locked(p, lambda v, d, t: None, takeover)
     return view(vault, data)
 
 

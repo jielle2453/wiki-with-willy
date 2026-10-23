@@ -79,11 +79,16 @@ class StatusStart(Base):
         got = json.loads(self.ok("build", "status", "--json"))
         self.assertEqual((got["step"], got["after"], got["read"]), ("setup", "kb build done setup", "references/steps.md 訪談"))
 
-    def test_second_session_busy(self):
+    def test_second_session_busy_and_takeover(self):
+        """守門替 build 插 --session（這裡照插）；另一個對話拿著鎖就擋，說「接手建置」才換；接手後原本那個再打被擋。"""
         self.start("sid-a")
-        self.ok("build", "status", "--json")
-        turn.start(self.D, "sid-b", "/wiki-with-willy:build")
-        self.assertEqual(self.refused("build", "status", "--json"), "另一個建置正在跑（訪談），等它做完或關掉那個對話再打一次")
+        self.ok("--session", "sid-a", "build", "status", "--json")
+        out = self.refused("--session", "sid-b", "build", "status", "--json")
+        self.assertRegex(out, r"^另一個對話正在建置（訪談，最後動作 \d\d:\d\d）；那個對話還開著就回那邊繼續，已經關掉了就說『接手建置』$")
+        self.assertEqual(json.loads(self.ok("--session", "sid-b", "build", "status", "--takeover", "--json"))["step"], "setup")
+        self.assertEqual(self.data()["session_id"], "sid-b")
+        self.assertTrue(self.refused("--session", "sid-a", "build", "set", "people", "x").startswith("另一個對話正在建置"))
+        self.assertEqual(self.ok("--session", "sid-b", "build", "set", "people", "兩個人"), "記下了：幾個人用：兩個人")
 
     def test_done_wrong_step_and_redo(self):
         self.start()

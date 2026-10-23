@@ -199,8 +199,10 @@ class Lock(Base):
         self.assertEqual(build.status(self.D)["step"], "setup")
         self.assertEqual(self.data()["session_id"], "sid-a")
         turn.start(self.D, "sid-b", "/wiki-with-willy:build")
-        self.assertEqual(self.refused(build.status, self.D), "另一個建置正在跑（訪談），等它做完或關掉那個對話再打一次")
-        self.assertEqual(self.refused(build.done, self.D, "setup"), build.BUSY.format(step="訪談"))
+        last = datetime.strptime(self.data()["last_action"], build.TIME).strftime("%H:%M")
+        self.assertEqual(self.refused(build.status, self.D),
+                         f"另一個對話正在建置（訪談，最後動作 {last}）；那個對話還開著就回那邊繼續，已經關掉了就說『接手建置』")
+        self.assertEqual(self.refused(build.done, self.D, "setup"), build.BUSY.format(step="訪談", time=last))
         self.put(lock_until=(datetime.now() - timedelta(minutes=1)).strftime(build.TIME))
         self.assertEqual(build.status(self.D)["step"], "setup")
         self.assertEqual(self.data()["session_id"], "sid-b")
@@ -217,7 +219,30 @@ class Lock(Base):
         self.started("sid-a")
         build.status(self.D)
         turn.SESSION = "sid-other"
-        self.assertEqual(self.refused(build.status, self.D), build.BUSY.format(step="訪談"))
+        self.assertTrue(self.refused(build.status, self.D).startswith("另一個對話正在建置（訪談，最後動作 "))
+
+    def test_takeover_then_old_session_refused(self):
+        """build 驗後修：關掉視窗再開一個對話，說「接手建置」就換成這個對話；原本那個再打會被擋。"""
+        turn.SESSION = "sid-a"
+        self.started("sid-a")
+        build.status(self.D)
+        turn.SESSION = "sid-b"
+        self.assertTrue(self.refused(build.status, self.D).startswith("另一個對話正在建置"))
+        got = build.status(self.D, takeover=True)
+        self.assertEqual(got["step"], "setup")
+        data = self.data()
+        self.assertEqual((data["session_id"], [(t["from"], t["to"]) for t in data["takeovers"]]), ("sid-b", [("sid-a", "sid-b")]))
+        self.assertEqual((data["step"], data["done"]), ("setup", {"env": data["done"]["env"]}), "其他不動")
+        self.assertEqual(build.done(self.D, "setup")[2], "建置：訪談 做完了，下一步 交付報告")
+        turn.SESSION = "sid-a"
+        self.assertTrue(self.refused(build.status, self.D).startswith("另一個對話正在建置（交付報告，最後動作 "))
+        self.assertTrue(self.refused(build.done, self.D, "finish").startswith("另一個對話正在建置"))
+
+    def test_takeover_by_owner_records_nothing(self):
+        turn.SESSION = "sid-a"
+        self.started("sid-a")
+        build.status(self.D, takeover=True)
+        self.assertNotIn("takeovers", self.data())
 
 
 class SetValue(Base):

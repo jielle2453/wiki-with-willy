@@ -9,7 +9,7 @@
 card-maker 第一輪修：記過的子代理只准白名單裡的 kb 子命令（AGENT_ALLOW；convert 不收 --password／--saved／--explicit），
 也不准讀 .system/unlock.json 與 .system/temp 的密碼檔暫存，其餘 deny「製卡助手不能做這件事」（S3）；指令自己帶了
 --turn／--agent／--session 的（子代理在哪都算，主對話看子命令前的）deny，不改寫（S4）；主對話的 cards dispatch／status／stop
-插 --session <sid>（兩個視窗開同一個知識庫不串）。
+與 build 的每個子子命令插 --session <sid>（兩個視窗開同一個知識庫不串；build 認哪個對話在建置，build 驗後修）。
 第二輪修：--t、--a、--s 開頭而且是這三個旗標前綴的（--tu=、--ses、--ag=…）一樣算；記過的子代理跑 Bash／PowerShell，
 不是「單一 kb 呼叫而且在白名單裡」的一律 deny（&&、管線、環境變數前綴、cd 再接、python -c 都算），客戶按過一律允許 python 也繞不過。
 永不以非 0 結束，永不丟例外到 Claude Code。
@@ -43,6 +43,7 @@ AGENT_ALLOW = {("cards", "batch"), ("cards", "list"), ("cards", "todo"), ("cards
 NO_SUB = ("convert", "version")
 CONVERT_DENY = ("--password", "--saved", "--explicit")
 SESSION_SUBS = {("cards", "dispatch"), ("cards", "status"), ("cards", "stop")}
+SESSION_CMDS = ("build",)  # 這個子命令的每個子子命令都插
 QUOTES = "\"'"
 
 
@@ -185,7 +186,7 @@ def scope(payload, tool, d, agent_turn):
     if _has_flag(head):
         return SELF_FLAGS, None
     sid = payload.get("session_id")
-    if not payload.get("agent_id") and sid and (cmd, sub) in SESSION_SUBS:
+    if not payload.get("agent_id") and sid and ((cmd, sub) in SESSION_SUBS or cmd in SESSION_CMDS):
         return None, with_flags(ti, ("--session", sid))
     return None, None
 

@@ -24,6 +24,7 @@ STEP_CHOICES = [s for s in lib.STEPS if s != "done"]
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="build_command", metavar="<子子命令>", required=True)
     st = subs.add_parser("status", help="建置做到哪、這一步做什麼", description="印目前這一步與要跑的指令；還沒開始從環境那步起。")
+    st.add_argument("--takeover", action="store_true", help="接手建置：另一個對話已經關掉了，鎖換成這個對話")
     sa = subs.add_parser("start", help="開始建置：在這個資料夾建知識庫", description="在目前的資料夾跑 kb init、記下環境檢查。")
     ev = subs.add_parser("env", help="檢查這台電腦（只讀）", description="Python、kb、信任、智慧型應用程式控制、PDF 元件、Office、磁碟、舊 llm-wiki。")
     se = subs.add_parser("set", help="記下幾個人用、舊 wiki 在哪", description="people：幾個人用（她的原話）；adopt：舊 llm-wiki 的資料夾。")
@@ -58,8 +59,8 @@ def _journal(vault, note, changed, command):
 BUILD_CHANGED = [{"path": lib.BUILD_POSIX, "action": "modify"}]
 
 
-def _status(cwd, as_json):
-    got = lib.status(cwd)
+def _status(cwd, args, as_json):
+    got = lib.status(cwd, args.takeover)
     lines = [f"建置：現在是「{lib.STEP_TEXT[got['step']]}」"] + [f"- {d}" for d in got["do"]] + \
         [f"讀：{got['read']}", f"做完跑：{got['after']}"]
     if got["not_empty"]:
@@ -159,7 +160,7 @@ def run(args):
     command = args.build_command
     try:
         if command == "status":
-            return _status(cwd, as_json)
+            return _status(cwd, args, as_json)
         if command == "start":
             return _start(cwd, as_json)
         if command == "env":

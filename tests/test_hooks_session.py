@@ -134,7 +134,7 @@ class SessionHook(unittest.TestCase):
         self.assertEqual(hooks[0]["command"], 'python "${CLAUDE_PLUGIN_ROOT}/hooks/session.py"')
         self.assertEqual(hooks[0]["timeout"], 10)
         self.assertTrue(cfg["description"].startswith("開場帶入核心規則與 kb 指令前綴；"))
-        self.assertEqual(len(cfg["hooks"]), 7)  # card-maker 加 SubagentStart、SubagentStop
+        self.assertEqual(len(cfg["hooks"]), 8)  # card-maker 加 SubagentStart、SubagentStop；B 段第 6 步加 SessionEnd
 
 
 KB = ROOT / "scripts" / "kb.py"

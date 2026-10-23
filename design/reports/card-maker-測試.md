@@ -257,3 +257,51 @@ done 之後同一回合再叫（現在沿用 `failed`、不重切，是對的）
 
 **觀察：`--json` 縮寫不再收**
 `kb.py … --js` 現在 exit 2。skills 與 plan 給的指令都寫全名，沒有影響；使用者在終端機手打縮寫會失敗。
+
+## 回測第三輪
+
+日期：2026-10-23
+測的版本：`bcab389`（`ad5e73a..bcab389`，只動 `batches.py`、`plan.py` 與測試）；跑前樹乾淨，沒改任何程式。
+範圍：22 派的 4 項（R5、R4、B-412 兩次加確認名字、validate）。
+
+### 結論
+
+- **4 項全過，沒有新問題。** R5 從單元到實跑都對了：名字沒確認的壞綜合卡不派，`asks` 先問名字，客戶說「對」之後主對話確認、派出去、製卡助手把信義王那頁修好，`synthesis_broken` 清空。
+- 全部測試 `python -m unittest discover tests`：exit 0，Ran 2240，OK（skipped=1），502 秒（bcab389，樹乾淨）。`claude plugin validate`：通過（警告同前：根目錄 CLAUDE.md 不載入、沒有 icon、README 安裝行）。
+- settings.json：跑前全文存在 scratchpad `settings_before_round4.json`（sha256 `8ae82f7a69eea7b8321459b4a81b9d734c934bcbe188794b63816af6e2cf4039`），跑後同值，`diff` 逐行相同。舊 `llm-wiki@llm-wiki` 仍是停用。
+
+### 逐項
+
+| # | 結果 | 證據 |
+|---|---|---|
+| 1a R5 不派、不進 cards 步、asks 有名字題 | 過 | 知識庫自帶的壞卡 `案子/信義王/信義王.md`、實體「信義王」登記成 inferred：`todo.synthesis_broken` 列它（原因 `檔頭解析不了：第一行不是 ---`）；`plan` 只有 `dispatch`（沒有 `cards` 步、`files` 沒有它）；`asks` 有一題 `name:e-…`「我要幫「信義王」（案子，掛了 N 份檔）整理一頁現況：名字這樣叫對嗎？它跟其他案子是同一件嗎？」，結果三個：`名字對`（`do` 是 `kb entity confirm 信義王`）、`跟已有的另一個是同一個`（`entity merge 信義王 --into {同一個}`）、`名字改成別的`（`entity rename … --to {新名字}` 加 `entity confirm {新名字}`）；`dispatch` 只切 cards（12 份），cards 做完後再 dispatch：`batches: []`、`done: true`、`say` = `整理完了：做好 12 份`，那張卡不在任何批次 |
+| 1b confirm 之後派、修好、broken 清空 | 過 | 跑問題結果的 `do`（`kb entity confirm 信義王` → `已確認：信義王（案子）`）後，下一次 dispatch 切出 `synthesis` 批次（1 項），`say` = 第一次派出的句子；`cards batch` 的項目有 `bucket: synthesis_broken`、`target`、`header`（`---` 開頭）、`cards`；照批次材料寫（檔頭用項目的 `header` 加正文）並過 PostToolUse 驗卡（沒有 block）、子代理停止後：`todo` 的 `synthesis_broken` = `[]`、`synthesis_stale` = `[]`、`synthesis_new` = `[]`，再 dispatch → `batches: []`、`done: true`、`failed: []` |
+| 1c stale | 過 | 實體已確認、再掛一張新卡 → `synthesis_stale` 列「信義王」、沒有名字題、dispatch 先派 agenda、synthesis 排在後面（照順序）。實體改回 inferred（在拷貝的知識庫改 `entities.json` 當測試設定）後：`todo` 不再列 stale，而是 `synthesis_broken`，原因 `還沒跟客戶確認名稱，先問再寫`；`asks` 一題名字題；agenda 做完後 dispatch → `batches: []`（不派 synthesis）；`entity confirm` 後 dispatch → 派 `synthesis 1` |
+| 1d 同一實體只出一題 | 過 | 呼叫 `batches.unconfirmed_names`：`synthesis_new` 已有同一個未確認實體 → 回 `[]`（不重複）；沒有 `synthesis_new`、同一個實體既有 `synthesis_broken` 又有 `synthesis_stale` → 只回 1 題。實跑的 `asks` 裡每個實體各 1 題（B-412 的最後回答列出三個名字題，大安陳、內湖李、信義王各一次） |
+| 2 R4 | 過 | 12 份全被製卡助手略過：第一次 dispatch（done）`say` = `整理完了：12 份沒做成`；同一回合再叫 3 次：`say` 全是 null、`batches: []`、`done: true`、`failed` 仍 12 筆、待處理沒有新增（0 筆 unreadable）。12 份只有 1 份略過：第一次 `整理完了：做好 11 份，1 份沒做成`，同回合再叫 3 次 `say` 全 null、`failed` 仍 1 筆、待處理 0 筆 |
+| 3 B-412 | 過 | 見下 |
+| 4 validate | 過 | `claude plugin validate`：Validation passed with warnings |
+
+### B-412 第四輪（2 次）加確認名字
+
+方法同前：每次全新 tmp 知識庫（`cards todo` 的 `new` 恰為 19），`claude -p "<prompt>" --plugin-dir <worktree> --permission-mode acceptEdits --allowedTools "Bash(python *)" Read Glob Grep Skill Agent --output-format stream-json --verbose`，逾時 480 秒；只用 `--plugin-dir`。「你好」1 次（#1）、237 字長指示 1 次（#2）。
+
+| 次 | prompt | 秒 | `cards dispatch` | 派 card-maker | 卡 | 英文／步驟編號 | 重複派 | 最後回答問了三個名字？ |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 你好 | 254 | 2 | 1 | 18 | 0／0 | 0 | 是 |
+| 2 | 長指示 | 244 | 2 | 1 | 18 | 0／0 | 0 | 是 |
+
+- (a) 兩次都先整理（Skill ingest → `changes` → `cards todo` → announce → `cards dispatch` → Agent）。派工次數從上輪的 3 次降成 2 次：信義王的壞綜合卡不再被派出去做不成。
+- (b) **最後回答有問名字，也給得出選項**：兩次都問了三個名字（大安陳、內湖李、信義王），每題 A 名字對／B 跟另一個是同一個（請說是哪個）／C 改成別的（請給新名字），並教「回覆像「1A、2A、3C 改成信義王宅」這樣就可以」。#1 的格式完整展開；#2 把 A／B／C 寫成一行（`A 名字對／B 跟另一個案子是同一件（請說是哪個）／C 改成別的名字（請給新名字）`、「信義王」「內湖李」寫「A／B／C 同上」），也看得懂。信義王那題不再缺。
+- (c) 對客戶說的每一段文字（排除子代理內部的話）逐段看過：英文 0、步驟編號 0。最後回答有講「18 份做好卡、合約.docx 讀不到及原因」。
+- (d) 重複派同一份：0（每個 job 一個 cards 批次，19 份）。
+- 權限拒絕沒有；`hook-errors.log` 沒有。
+- 另一個小觀察：#2 最後回答的「建議下一步：請林小姐重新存一份正常的信義王合約…」是主對話自己加的，內容合理，不算問題。
+
+### 確認名字那一步（`claude -p --resume`）
+
+在 #1 的同一個 tmp 知識庫，用 `claude -p "對，三個名字都沒錯" --resume <#1 的 session_id> --plugin-dir <worktree>`（同樣的權限參數）：
+- 主對話跑了 `entity confirm 大安陳`、`entity confirm 內湖李`、`entity confirm 信義王`（客戶只說「對，三個名字都沒錯」，它對到了 1A、2A、3A）→ `cards todo` → `cards dispatch`（派 1 個 Agent，3 張綜合卡）→ 收通知後再 `cards dispatch` → `cards todo` → `turn note --turn <回合> "確認大安陳、內湖李、信義王三個案子名字，並各整理一頁現況綜合卡"`。
+- 結果：實體三個都 `confirmed`；三張綜合卡 `案子/信義王/信義王.md`、`案子/內湖李/內湖李.md`、`案子/大安陳/大安陳.md` 都有檔頭；`todo` 的 `synthesis_broken` 空、名字題都沒了；`hook-errors.log` 沒有。107 秒。
+- 對客戶說的話（2 段）：「好，三個名字都確認了：大安陳、內湖李、信義王。現在要幫三個案子各整理一頁現況。交給製卡助手在背景整理，好了跟你說；這期間照常問我。」，做完「三個案子的現況頁都整理好了：…之前信義王那頁的開頭格式壞掉，程式讀不了，這次重寫後已經修好。」，英文 0、步驟編號 0。
+- 沒有做不到的地方。

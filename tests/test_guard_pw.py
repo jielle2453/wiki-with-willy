@@ -463,5 +463,26 @@ class Round28g(Base):
             self.assertDecision("PowerShell", gci + cmd, "pass")
 
 
+
+class Round28h(Base):
+    """28 第八輪 H3：filter 段的動詞要是打出來的原樣名稱（sort.exe、C:\...\sort.exe、.\sort.exe、& sort、/usr/bin/head、./grep 都不算）；
+    PowerShell 引號外有 ? * [ 也不算（-like '*.pdf' 在引號裡不受影響）。語料同一批。"""
+
+    def test_verb_must_be_plain(self):
+        d = self.raw / "客戶案件" / "信義王"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "網銀密碼.txt").write_text("x", encoding="utf-8")
+        sl = f"Set-Location '{d}'; Get-ChildItem | "
+        for cmd in ("sort.exe 網銀密碼.tx?", "Sort.EXE 網銀密?.txt", "C:\\Windows\\System32\\sort.exe 網銀密碼.tx?",
+                    ".\\sort.exe 網銀密碼.tx?", "& sort 網銀密碼.tx?", "sort 網銀密碼.tx?", "Select-Object 網銀*"):
+            self.assertDecision("PowerShell", sl + cmd, "deny")
+        for cmd in ("Where-Object Name -like '*.pdf'", "? Name -like '*.pdf'", "Sort-Object Length"):
+            self.assertDecision("PowerShell", sl + cmd, "pass")
+        cd = f'cd "{d.as_posix()}" && ls | '
+        for cmd in ("/usr/bin/head -n 5", "./grep 報價", "head.exe -n 5"):
+            self.assertDecision("Bash", cd + cmd, "deny")
+        self.assertDecision("Bash", cd + "head -n 5", "pass")
+
+
 if __name__ == "__main__":
     unittest.main()

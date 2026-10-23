@@ -152,7 +152,7 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 ## 可以動 / 不可以動
 實作在 worktree：`git worktree add ..\llm-wiki-j-cardmaker -b spec/card-maker c3fdf63`（底是密碼與守門的最終版，見開工條件），之後全部在 `C:\Users\Jie\Desktop\llm-wiki-j-cardmaker` 做；commit 一律 `git -c user.name=…`，不要用 `git config`。
 
-可以動：`agents/card-maker.md`（新）、`hooks/subagent.py`（新）、`hooks/hooks.json`、`hooks/guard.py`、`hooks/output_log.py`（只改取回合：payload 有 `agent_id` 且 `turn.agent_turn` 查得到就用它，否則照舊）、`hooks/turn.py`、`hooks/stop.py`、`hooks/session.py`（只 `INGEST_HINT` 與 B-412 那幾行）、`scripts/kb/cli.py`、`scripts/kb/cards.py`、`scripts/kb/turn_cli.py`、`scripts/kb/journal_cli.py`、`scripts/kb/_lib/batches.py`（新）、`scripts/kb/_lib/plan.py`、`scripts/kb/_lib/cards.py`（只為 `materials` 重用）、`scripts/kb/_lib/turn.py`、`scripts/kb/_lib/journal.py`、`config/defaults.json`、`skills/ingest/`、`README.md`、`CLAUDE.md`、`tests/`。
+可以動：`agents/card-maker.md`（新）、`hooks/subagent.py`（新）、`hooks/hooks.json`、`hooks/guard.py`、`skills/note/references/preference.md`（只第 46 行「要停可以按停止」改成「要停跟我說一聲」，D-200）、`tests/test_skill_note.py`（跟著那一句）、`hooks/output_log.py`（只改取回合：payload 有 `agent_id` 且 `turn.agent_turn` 查得到就用它，否則照舊）、`hooks/turn.py`、`hooks/stop.py`、`hooks/session.py`（只 `INGEST_HINT` 與 B-412 那幾行）、`scripts/kb/cli.py`、`scripts/kb/cards.py`、`scripts/kb/turn_cli.py`、`scripts/kb/journal_cli.py`、`scripts/kb/_lib/batches.py`（新）、`scripts/kb/_lib/plan.py`、`scripts/kb/_lib/cards.py`（只為 `materials` 重用）、`scripts/kb/_lib/turn.py`、`scripts/kb/_lib/journal.py`、`config/defaults.json`、`skills/ingest/`、`README.md`、`CLAUDE.md`、`tests/`。
 
 不可以動：`scripts/kb/guard.py`、`scripts/kb/_lib/cmdparse.py`、`scripts/kb/_lib/credentials.py`（守門判斷）、`rules/core.md`、其他 skill、`tests/evals/` 其他四份、`skeleton/`、`.claude-plugin/plugin.json`（版號發行時才動）。
 
@@ -230,3 +230,4 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-23（實作中疑義，22 定）：連結型條目不進批次、主對話照舊做；讀不到用新指令 `kb cards unreadable` 記（在 `cards.py`，不動 `convert.py`）；驗收加 13c。
 - 2026-10-23（實作中疑義，22 定）：新 INGEST_HINT 讓開場最壞 416 字超過 D-070 的 400；選 (c) 開場句照舊、不提 card-maker，派工只寫在 ingest 本文。
 - 2026-10-23（實作中疑義，22 定）：`hooks/output_log.py` 也照子代理的回合（總目錄、綜合卡快取、AI 產出登記的備份），加進可以動、只改取回合那一行；否則驗收 13 退不乾淨。
+- 2026-10-23：實作回報（5aca4f2、e6b1fcd，commit 後全部測試 exit 0 由實作自報，22 另跑核對中）。疑義 13 條，22 定：1～9 照它的解讀（plan 的 cards 步也列憑證樣式檔與記過有密碼的、開場份數在記成讀不到前照算、approval 算全部未派的 stale、--source 時綜合卡只等範圍內、batches.json 備份但不算「改了」、`turn.start` 把舊回合欄位併進 versions 的 turn.json、dispatch 多 stopped、tell 講標題、只有 output_log 有取回合問題）；10 note 的 preference.md 第 46 行「按停止」加進可以動、照 D-200 改（I-116）；11～13 照記。`_lib/turn.py` 的改動跟密碼與守門確認後的修正（secret_shown 跨回合）同一支，合併時注意。

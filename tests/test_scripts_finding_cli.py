@@ -55,7 +55,8 @@ class Add(Base):
         self.assertEqual([c["id"] for c in stale["findings"]], [item["id"]])
         self.assertIn(f"  - {item['id']} -\n", stale["header"])
         turn.start(self.V, "test-sid", "整理")
-        r = write_via_tools(self.V, self.V / XINYI_REL, E.synthesis_text(stale["header"], "信義王"))
+        body = "一句講這是什麼。\n\n## 現況\n- 一點〔f-00000000〕\n\n## 紀事\n- 2026-10-20 登記這個案子\n"  # 紀事只增
+        r = write_via_tools(self.V, self.V / XINYI_REL, E.synthesis_text(stale["header"], "信義王", body))
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stdout)
 
     def test_repeated_flags_also_work(self):

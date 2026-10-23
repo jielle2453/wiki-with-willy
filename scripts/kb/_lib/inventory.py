@@ -9,6 +9,9 @@ produce 第 4 點的三個選填欄同樣保留：kind（只有 "link"：Claude 
 derived_from（成品改自哪份原檔的清冊編號）、unbacked（AI 產出裡沒經程式放進來、掃描才看到的檔，退回拿不掉）；
 link 條目另帶 title、type、entities、basis（output link 給的，製卡時預填）。
 redo（note 改知識第 5 點）記的是標記當時卡檔的 sha256 前 12 碼，卡重寫過就不算，下一次寫清冊時拿掉（_drop_stale_redo）。
+密碼與守門（D-183、D-184）：有效「可以讀」裁示掛的條目，掃描不記 credential（照一般檔算指紋）；搬到別處、改名後檔名仍像密碼的新位置，
+只要內容指紋對得上那筆有裁示的條目就認成同一份（裁示跟著檔走）。選填欄 credential_declined（客戶說這份不要讀的日期，
+kb ruling decline 寫）同樣保留。
 load 時把 schema 1 在記憶體遷移成 2（I-049），形狀不對一律丟 ValueError（I-046）；寫一律寫 2。
 
 scan 是純函式（不寫檔、不碰回合）：走訪來源與總資料夾三區，跟清冊比出新增、修改、搬動、重複、不見；
@@ -386,6 +389,33 @@ def set_agenda_fp(vault, fid, fp, turn_id):
     return True
 
 
+def set_credential_declined(vault, fid, day, turn_id):
+    """選填欄 credential_declined（密碼與守門 D-181 第 1 點）：檔名像密碼、客戶說不要讀（或 AI 判斷不是同一種）的日期，
+    之後 asks 不再問。鎖裡備份再寫，已經記過就不改；回有沒有寫。清冊沒有這個編號丟 KeyError。"""
+    p = _path(vault)
+    with FileLock(p):
+        data = load(vault)
+        entry = next((e for e in data["entries"] if e.get("id") == fid), None)
+        if entry is None:
+            raise KeyError(fid)
+        if entry.get("credential_declined"):
+            return False
+        from kb._lib import turn
+        turn.backup(vault, INVENTORY_POSIX, turn_id)
+        entry["credential_declined"] = day
+        _write(vault, data["entries"])
+    return True
+
+
+def _readable_ids(vault):
+    """有效「可以讀」裁示掛的編號；rulings.json 讀不到當沒有（照記 credential）。"""
+    try:
+        from kb._lib import rulings
+        return rulings.readable_ids(vault)
+    except Exception:  # noqa: BLE001  裁示讀不到不能讓掃描掛掉
+        return set()
+
+
 def set_redo(vault, fid, value, turn_id):
     """選填欄 redo（kb cards redo，D-147 第一種）：value 是那張卡檔現在的 sha256 前 12 碼。鎖裡備份再寫，值沒變什麼都不做；
     回有沒有寫。清冊沒有這個編號丟 KeyError。"""
@@ -645,6 +675,7 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
     budget = {"left": config.get(vault, "changes_quick_hash_budget_bytes") if quick else None, "out": False}
     stopper = _Stopper(config.get(vault, "changes_quick_seconds") if quick else None)
     entries = copy.deepcopy(load(vault)["entries"])
+    readable = _readable_ids(vault)  # 密碼與守門：有「可以讀」裁示的條目
     all_roots, missing_sources, root_errors = roots(vault, sources)
     if only_roots is not None:
         wanted = {a.casefold() for a in only_roots}
@@ -744,6 +775,8 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
         seen.add(rec["key"])
         idx = next(i for i, loc in enumerate(e["locations"]) if uri_key(loc.get("uri", "")) == rec["key"])
         old = e["locations"][idx]
+        if rec["read"] == "credential" and e.get("id") in readable:
+            rec["read"] = "ok"  # 有「可以讀」裁示：照一般檔（D-183）
         same = old.get("size") == rec["loc"]["size"] and old.get("mtime") == rec["loc"]["mtime"]
         e["locations"][idx] = rec["loc"]  # 只改大小寫的改名：鍵相同算不動，存新大小寫（審閱裁定 12）
         if rec["read"] != "ok":
@@ -842,8 +875,15 @@ def scan(vault, sources, *, quick=False, only_roots=None, now=None):
 
     for rec in unknown:
         digest = text = None
-        if rec["read"] == "ok" and (not quick or rec["st"].st_size in sizes):
+        # 檔名像密碼的新位置：有「可以讀」裁示的條目在時才算指紋，對得上那筆才當同一份（搬、改名，D-184），對不上就丟掉不記
+        probe = rec["read"] == "credential" and bool(readable)
+        if (rec["read"] == "ok" or probe) and (not quick or rec["st"].st_size in sizes):
             digest = digest_of(rec)
+            if digest and probe:
+                if any(e.get("id") in readable for e in by_fp.get(digest, [])):
+                    rec["read"] = "ok"
+                else:
+                    digest = None
             if digest:
                 text = text_of(rec)
         target = None

@@ -79,13 +79,23 @@ class StopHook(unittest.TestCase):
     def test_result_is_masked(self):
         self.prompt()
         run(HOOK, stop_payload(self.V, "已用密碼 abc123 登入"))
-        self.assertEqual(self.rows()[0]["result"], "已用密碼███")
+        self.assertEqual(self.rows()[0]["result"], "已用密碼 ███ 登入")
+
+    def test_secret_shown_result_not_recorded(self):
+        """密碼與守門（釐清「答密碼時工作日誌不記答案」、驗收 6）：回合記了 secret_shown，結果欄只記固定句。"""
+        from kb._lib import turn
+        self.prompt("工地大門密碼多少")
+        self.assertTrue(turn.mark(self.V, "secret_shown"))
+        run(HOOK, stop_payload(self.V, "工地大門：zq-1234-x"))
+        self.assertEqual(self.rows()[0]["result"], "（這句回答有密碼，沒記）")
+        for p in (self.J, self.M):
+            self.assertNotIn("zq-1234-x", p.read_text(encoding="utf-8"))
 
     def test_acceptance_29_value_after_blank_line_is_masked(self):
         """測試後修正 M2：先壓空白再遮；jsonl、md 都 grep 不到值。"""
         self.prompt()
         run(HOOK, stop_payload(self.V, "密碼如下：\n\nabc123"))
-        self.assertEqual(self.rows()[0]["result"], "密碼███")
+        self.assertEqual(self.rows()[0]["result"], "密碼如下： ███")
         self.assertNotIn("abc123", self.J.read_text(encoding="utf-8"))
         self.assertNotIn("abc123", self.M.read_text(encoding="utf-8"))
 

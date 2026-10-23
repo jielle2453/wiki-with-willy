@@ -518,6 +518,11 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
         return {"id": entry["id"], "path": card["path"], "reason": reason, "types": types,
                 "prefill": prefill_entities(entry, ent_data)}
 
+    try:  # 密碼與守門：有「可以讀」裁示的那份照一般檔整理（D-183），下次掃描前清冊可能還記著 credential
+        from kb._lib import rulings
+        readable = rulings.readable_ids(vault)
+    except ValueError:
+        readable = set()
     carded = set()
     for cid, group in groups.items():
         check_time()
@@ -570,7 +575,8 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
             continue
         if status != "active" or not entry.get("locations"):
             continue
-        if entry.get("read") in SKIPPED_READS:
+        ok = entry.get("read") == "ok" or (entry.get("read") == "credential" and eid in readable)
+        if entry.get("read") in SKIPPED_READS and not ok:
             out["skipped"][entry["read"]] += 1
             continue
         if entry.get("skip_kind"):  # 客戶設定檔說不整理的種類（D-113）：只數份數
@@ -583,7 +589,7 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
             continue
         if is_draft(entry["locations"][0].get("uri", "")):
             continue  # 草稿還在改，定稿才製卡（produce 第 5 點）
-        if entry.get("read") == "ok" and eid not in carded and eid not in unreadable_skip:
+        if ok and eid not in carded and eid not in unreadable_skip:
             out["new"].append(work_item(entry, None))
             if entry.get("unbacked"):
                 out["unbacked"] += 1
@@ -622,6 +628,7 @@ def todo(vault, sources, tell_all=True):
         ledger.log_error(vault, f"日程讀不到，agenda_recheck 與 agenda_unscanned 先給空的：{e}", source="cards")
         out["agenda_recheck"], out["agenda_unscanned"] = [], []
         out["agenda_counts"] = {"overdue": 0, "today": 0, "upcoming": 0}
+    out[plan.UNLOCK_STEP], out["unlock_kinds"] = plan.locked_same_kind(vault, out)  # 密碼與守門 D-181 第 2 點
     out.update(plan.build(out, vault, config, tell_all=tell_all))
     return out
 

@@ -823,7 +823,7 @@ class VersionsJournal(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("abc123", r.stdout)
         line = r.stdout.splitlines()[0]
-        self.assertTrue(line.endswith("（問：「帳號███」）：還原 1、移除 0、成品 0 份"), line)  # 只遮問那段，數字留著
+        self.assertTrue(line.endswith("（問：「帳號 ███ 密碼 ███」）：還原 1、移除 0、成品 0 份"), line)  # 只遮問那段，數字留著
         notes = [x["note"] for x in self.program_rows()]
         self.assertEqual(notes, [line])
 

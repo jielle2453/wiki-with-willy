@@ -81,7 +81,7 @@ class Add(Base):
     def test_password_refused_and_left_nowhere(self):
         """測試第一輪後裁定 3（F-1）：被拒的那次，狀態檔、工作日誌 jsonl 與月檔、ledger.tsv 都沒有那串密碼。"""
         self.assertEqual(self.kb("add", "--entity", "信義王", "--text", "門禁密碼 password: Abc12345678", code=3),
-                         ["口述裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版"])
+                         ["口述裡不要放密碼；要記的話跟我說『記下來』，我存進這台電腦的憑證管理員"])
         self.assertEqual(leaks(self.V, "Abc12345678"), [])
 
     def test_two_entities(self):

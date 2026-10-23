@@ -1,6 +1,7 @@
-"""PreToolUse 守門入口。讀 stdin 的 payload，交給 kb.guard.decide，印 allow／deny 的 JSON 或不印，永遠 exit 0。
+"""PreToolUse 守門入口。讀 stdin 的 payload，交給 kb.guard.decide，印 allow／deny／ask 的 JSON 或不印，永遠 exit 0。
 
-守門內部出錯：寫 .system/hook-errors.log 一行；檔案工具印 deny（fail closed，D-034、I-101），Bash／PowerShell 不印。
+守門內部出錯：寫 .system/hook-errors.log 一行；知識庫裡一律印 deny（fail closed，D-034、I-101；Bash／PowerShell 也擋，
+密碼與守門 D-186 第 4 點），知識庫外不表態。hook 本身起不來或逾時由 hooks.json 的 onFailure: block 擋。
 事務層：檔案工具寫 Z1／Z3／Z5 放行後先 kb._lib.turn.before_write 備份；大改動（big_change）或備份失敗（backup_failed）改印 deny。
 永不以非 0 結束，永不丟例外到 Claude Code。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path；hooks/*.py 是唯一准動 sys.path 的地方（CLAUDE.md 三）。
@@ -64,7 +65,7 @@ def main():
                 ledger.touch_status(d.vault)
             except BaseException as e:  # noqa: BLE001  留痕失敗不改決定
                 ledger.log_error(d.vault, f"{type(e).__name__}: {str(e)[:200]}")
-        if decision in ("allow", "deny"):
+        if decision in ("allow", "deny", "ask"):  # ask：開新口子的密碼動作，Claude Code 跳允許詢問（D-212）
             emit(decision, reason)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
         _on_error(e, payload, tool)
@@ -84,17 +85,15 @@ def _on_error(e, payload, tool):
             ti = payload.get("tool_input") or {}
             if isinstance(ti, dict):
                 head = ti.get("command") or ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or ""
-            ledger.append(vault, {"tool": tool, "decision": "pass" if tool in SHELL_TOOLS else "deny", "zone": "",
-                                  "reason_code": "guard_error", "head": head})
+            ledger.append(vault, {"tool": tool, "decision": "deny", "zone": "", "reason_code": "guard_error", "head": head})
     except BaseException:  # noqa: BLE001
         pass
     if vault is None:
         return  # 不在知識庫裡：任何錯誤一律不表態，只留 %TEMP% 的錯誤檔（P2）
-    if tool not in SHELL_TOOLS:
-        try:
-            emit("deny", ERROR_REASON)
-        except BaseException:  # noqa: BLE001
-            pass
+    try:
+        emit("deny", ERROR_REASON)
+    except BaseException:  # noqa: BLE001
+        pass
 
 
 if __name__ == "__main__":

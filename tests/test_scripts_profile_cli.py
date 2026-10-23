@@ -512,7 +512,7 @@ class Edit(Base):
         self.assertIn(profile.PROFILE_POSIX, {e["path"] for e in turn.entries(self.V, "20261020-100000-test")})
 
 
-SECRET = "偏好裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版"
+SECRET = "偏好裡不要放密碼；要記的話跟我說『記下來』，我存進這台電腦的憑證管理員"
 CHARS = '偏好裡不能有 " $ ` \\ 這四種字元'
 
 

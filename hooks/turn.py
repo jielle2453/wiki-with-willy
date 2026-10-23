@@ -40,6 +40,7 @@ def main():
         vault = guard.find_vault(payload.get("cwd") or os.getcwd())
         if vault is None:
             return
+        _clean_secrets(vault, payload)  # 上一句的 Stop 沒跑到（中斷）時留下的密碼檔暫存，先刪（密碼與守門）
         source = payload.get("source")
         if source is not None and source not in USER_SOURCES:
             return
@@ -67,6 +68,10 @@ def main():
                 _ingest_stopped(vault, previous)
             except BaseException as e:  # noqa: BLE001  沒提醒到只是多整理一次，回合照開
                 _log(e, payload)
+            try:
+                _secret_carried(vault, previous)
+            except BaseException as e:  # noqa: BLE001  沒帶到還有 Stop 的遮值與存值比對，回合照開
+                _log(e, payload)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
         _log(e, payload)
 
@@ -83,6 +88,27 @@ def _ingest_stopped(vault, previous):
     out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": STOPPED}}
     sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")
     sys.stdout.flush()
+
+
+def _secret_carried(vault, previous):
+    """上一句沒答完（客戶在回答中途插話、沒等到 Stop）又記了 secret_shown：帶到這一句，答出密碼的回答落在這一句也不記
+    （桌面版確認落差 D，跟 ingest 旗標一樣）。上一句答完了就不帶。"""
+    from kb._lib import turn
+    if previous.get("secret_shown") and not previous.get("done", True):
+        turn.mark(vault, "secret_shown")
+
+
+def _clean_secrets(vault, payload):
+    """刪 .system/temp/*.secret*；刪不掉的寫 hook-errors.log，不擋這一句。"""
+    try:
+        from kb import convert
+        from kb._lib import ledger
+
+        failed = convert.clean_secrets(vault)
+        if failed:
+            ledger.log_error(vault, f"密碼檔暫存刪不掉：{len(failed)} 個", source="turn")
+    except BaseException as e:  # noqa: BLE001
+        _log(e, payload)
 
 
 def _log(e, payload):

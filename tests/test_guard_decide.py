@@ -9,7 +9,7 @@ from kb import guard  # noqa: E402
 from kb._lib.paths import normalize as paths_normalize  # noqa: E402
 
 
-KB_WORDS = {"kb", "office", "copy", "output", "save"}
+KB_WORDS = {"kb", "office", "copy", "output", "save", "source", "edit", "move"}
 
 
 class DecideBase(unittest.TestCase):
@@ -204,7 +204,7 @@ class Shell(DecideBase):
     def test_shell_read_of_backed_up_zones_still_pass(self):
         v = str(self.V).replace("\\", "/")
         self.expect("Bash", f"cat {v}/案子/信義王/信義王.md", "pass")
-        self.expect("Bash", f'cat "{v}/AI 產出/x.md"', "deny", "Z3", "output_shell")  # produce：讀 AI 產出用 Read
+        self.expect("Bash", f'cat "{v}/AI 產出/x.md"', "pass")  # D-186 補：已知只讀指令當讀
         self.expect("Bash", f'cat "{v}/檔案索引/x.md"', "pass")
 
     def test_write_without_parsable_path_deny_unparsed(self):
@@ -359,7 +359,7 @@ class Round1(DecideBase):
 
     def test_30_r1_z9_reason(self):
         d = self.decide("Write", self.raw / "客戶案件" / "a.txt")
-        self.assertEqual(d.reason, "客戶原檔只讀；要改先用 kb office copy 拿一份副本")  # produce 改
+        self.assertEqual(d.reason, "客戶原檔的夾只讀；要放新檔進去用 kb source-edit move（或請客戶自己放），要改內容先用 kb office copy 拿副本")  # produce 改；密碼與守門 B-093 (e) 再改
 
 
 
@@ -576,7 +576,11 @@ class CredentialRound1(unittest.TestCase):
         hits = ("grep -r 帳號 .", "grep -rn 帳號", "rg -i 帳號", "cat *", "time rg 帳號", "LC_ALL=C grep -r 帳號", "sudo grep -r 帳號",
                 'rg "2026/10"', "grep -rn TODO/FIXME", "dir -r | sls 帳號", "ls -R | sls 帳號", "Get-ChildItem -Recurse | Select-String 帳號",
                 "$f = Get-ChildItem -Recurse -File; $f | Select-String 帳號", 'grep -r "" 子夾', "rg 帳號 | grep 案子",
-                "findstr /s 帳號", "tree", "find . -name '*.md'")
+                "findstr /s 帳號")
+        for cmd in ("tree", "find . -name '*.md'"):  # D-185：只列檔名，範圍照算、不走第三道
+            with self.subTest(cmd=cmd):
+                self.assertTrue(any(d in (client_n, client_n + "/子夾") for d in self.analyze(cmd)["read_dirs"]), cmd)
+                self.assertEqual(self.decide("Bash", self.in_client(cmd)).decision, "pass")
         for cmd in hits:
             with self.subTest(cmd=cmd):
                 dirs = self.analyze(cmd)["read_dirs"]
@@ -675,9 +679,11 @@ class CredentialRound1(unittest.TestCase):
         self.assertNotIn(client_n, info["write_targets"], info)
         d = self.decide("Bash", self.in_client("ls . | tee /tmp/a"))
         self.assertNotEqual(d.reason_code, "protected", d)
-        # 第八輪：寫入判定退回守門題原版——整條指令 is_write 為真，所有抽出的路徑都套寫入欄；誤擋併 B-110
-        for cmd in ("ls . | tee /tmp/a", "grep -r X . | tee /tmp/h", "tar czf ../bak.tgz .", "echo x > CLAUDE.md", "rm -rf .",
-                    "echo x > 新檔.md"):
+        # 第八輪的「整條指令 is_write 為真全部套寫入欄」由密碼與守門 D-186 改成照角色：管線前面只讀的 . 不是寫的目標（B-024）
+        for cmd in ("ls . | tee /tmp/a", "grep -r X . | tee /tmp/h"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.decide("Bash", cmd).decision, "pass")
+        for cmd in ("tar czf ../bak.tgz .", "echo x > CLAUDE.md", "rm -rf .", "echo x > 新檔.md"):
             with self.subTest(cmd=cmd):
                 d = self.decide("Bash", cmd)
                 self.assertEqual((d.decision, d.reason_code), ("deny", "protected"), d)
@@ -710,6 +716,8 @@ class CredentialRound1(unittest.TestCase):
         self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
         self.assertIn(".env", d.reason)
         d = self.decide("PowerShell", f'Set-Location "{self.raw.as_posix()}/客戶*"; Get-ChildItem -Recurse')
+        self.assertEqual(d.decision, "pass", d)  # D-185：只列檔名
+        d = self.decide("PowerShell", f'Set-Location "{self.raw.as_posix()}/客戶*"; Get-ChildItem -Recurse | Get-Content')
         self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
 
     # 第五輪 V6：推不出效用 cwd 時第二道照跑、不豁免；Push-Location 也是 cd
@@ -765,7 +773,10 @@ class CredentialRound1(unittest.TestCase):
         d = self.decide("Bash", f'cd "{self.raw.as_posix()}"/行*/請款 && ls')
         self.assertNotIn(d.reason_code, ("credential_inside", "credential_scan_limit"), d)
         d = self.decide("Bash", f'cd "{self.raw.as_posix()}"/客戶* && ls')
-        self.assertEqual((d.decision, d.reason_code), ("deny", "credential_inside"), d)
+        self.assertEqual(d.decision, "pass", d)  # D-185、B-093 (b)：只切目錄與列檔名
+        d = self.decide("Bash", f'cd "{self.raw.as_posix()}"/客戶* && cat *')
+        self.assertEqual(d.decision, "deny", d)
+        self.assertIn(d.reason_code, ("credential", "credential_inside"), d)
         d = self.decide("Bash", f'cd "{self.raw.as_posix()}"/行*/薪資 && ls')  # 展開後是排除夾：交 Z10
         self.assertEqual((d.decision, d.zone), ("deny", "Z10"), d)
 
@@ -807,7 +818,7 @@ class CredentialRound1(unittest.TestCase):
         src = inspect.getsource(guard)
         for name in ("_stage_write", "WRITE_VERBS", "_special_roles"):
             self.assertNotIn(name, src, name)
-        self.assertEqual(src.count("cmdparse.is_write("), 1)
+        self.assertEqual(src.count("cmdparse.is_write("), 0)  # 密碼與守門 D-186：改成每段照 cmdparse.stage_kind 分角色
 
     # 第九輪 Z1／驗收 83：寫入指令裡萬用字元的展開命中與前綴夾也套寫入欄（fixture 的來源在 ../raw/ 底下，spec 的 ../客戶* 對應 ../raw/客戶*）
     def test_83_wildcard_hits_and_prefix_get_write_column(self):
@@ -1139,7 +1150,9 @@ class CredentialRound1(unittest.TestCase):
         cfg.write_text('{"credential_scan_max_entries": 1}', encoding="utf-8")
         d = self.grep(self.client)
         self.assert_deny(d, "credential_scan_limit", "Z9", "範圍太大")
-        d = self.decide("Bash", f'ls "{self.client}"')
+        d = self.decide("Bash", f'ls "{self.client}"')  # D-185：只列檔名不走第三道
+        self.assertEqual(d.decision, "pass", d)
+        d = self.decide("Bash", f'grep -r x "{self.client}"')
         self.assert_deny(d, "credential_scan_limit", "Z9", "範圍太大")
         cfg.unlink()
         self.assertEqual((self.grep(self.client).decision, self.grep(self.client).zone), ("allow", "Z9"))

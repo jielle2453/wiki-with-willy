@@ -161,25 +161,26 @@ def _find_turn(items, turn_id):
     return None
 
 
-def _mask(text):
-    return credentials.mask_secrets(str(text or ""))
+def _mask(text, vault=None):
+    """遮值；給了 vault 就把清冊裡的檔名當不遮的字（D-187 (c)）。"""
+    return credentials.mask_secrets(str(text or ""), credentials.known_names(vault))
 
 
-def _mask_result(result, truncated):
+def _mask_result(result, truncated, vault=None):
     """截斷尾句不能被遮值吃掉：有尾句時只遮前面那段。"""
     result = str(result or "")
     if truncated and result.endswith(TRUNCATED_TAIL):
-        return _mask(result[:-len(TRUNCATED_TAIL)]) + TRUNCATED_TAIL
-    return _mask(result)
+        return _mask(result[:-len(TRUNCATED_TAIL)], vault) + TRUNCATED_TAIL
+    return _mask(result, vault)
 
 
-def _open_row(turn_data):
+def _open_row(turn_data, vault=None):
     """這一行的 turn 是 journal_key：退回自己這句時開的新回合，寫回原回合那一行（第二輪 R2-M2）。"""
     return {
         "schema_version": SCHEMA_VERSION, "kind": "turn", "turn": turn.journal_key(turn_data),
         "session_id": turn_data.get("session_id") or "",
         "time": turn_data.get("started") or _iso(_now()),
-        "prompt": _mask(turn_data.get("prompt_head", "")),
+        "prompt": _mask(turn_data.get("prompt_head", ""), vault),
         "done": False,
     }
 
@@ -201,17 +202,17 @@ def _clean_changed(changed):
     return [{"path": c.get("path"), "action": c.get("action")} for c in (changed or [])]
 
 
-def _complete_row(turn_data, result, note, note_by, changed, interrupted, result_truncated=None):
+def _complete_row(turn_data, result, note, note_by, changed, interrupted, result_truncated=None, vault=None):
     if result_truncated is None:
         result_truncated = str(result or "").endswith(TRUNCATED_TAIL)
-    row = _open_row(turn_data)
+    row = _open_row(turn_data, vault)
     row.update({
         "done": True,
         "ended": _iso(_now()),
-        "result": _mask_result(result, result_truncated),
+        "result": _mask_result(result, result_truncated, vault),
         "result_truncated": bool(result_truncated),
         "interrupted": bool(interrupted),
-        "note": str(note or "") if note_by == "program" else _mask(note),
+        "note": str(note or "") if note_by == "program" else _mask(note, vault),
         "note_by": note_by,
         "changed": _clean_changed(changed),
     })
@@ -220,7 +221,7 @@ def _complete_row(turn_data, result, note, note_by, changed, interrupted, result
 
 def complete_turn(vault, turn_data, result, note, note_by, changed, interrupted, result_truncated=None):
     """回合補完（Stop 或中斷補記）：同一行換成完整的一行，done true。"""
-    row = _complete_row(turn_data, result, note, note_by, changed, interrupted, result_truncated)
+    row = _complete_row(turn_data, result, note, note_by, changed, interrupted, result_truncated, vault)
     _locked_edit(vault, month_of(row["turn"]), _upsert_rows([row]))  # row["turn"] 是 journal_key：跨月的退回寫回原月（R3-L1）
 
 
@@ -251,11 +252,11 @@ def update_turn(vault, turn_id, **fields):
         row = dict(items[i][1])
         for key, value in fields.items():
             if key == "prompt":
-                value = _mask(value)
+                value = _mask(value, vault)
             elif key == "result":
-                value = _mask_result(value, fields.get("result_truncated", row.get("result_truncated")))
+                value = _mask_result(value, fields.get("result_truncated", row.get("result_truncated")), vault)
             elif key == "note" and fields.get("note_by", row.get("note_by")) != "program":
-                value = _mask(value)
+                value = _mask(value, vault)
             row[key] = value
         items[i] = (None, row)
         return True
@@ -270,8 +271,8 @@ def begin_turn(vault, previous, turn_data):
     rows = []
     if previous and not previous.get("done", True):
         note, note_by, changed = finish_fields(vault, previous)
-        rows.append(_complete_row(previous, INTERRUPTED_RESULT, note, note_by, changed, True, False))
-    opened = _open_row(turn_data)
+        rows.append(_complete_row(previous, INTERRUPTED_RESULT, note, note_by, changed, True, False, vault))
+    opened = _open_row(turn_data, vault)
     month = month_of(opened["turn"])
     if not rows or month_of(rows[0]["turn"]) == month:
         _locked_edit(vault, month, _upsert_rows(rows + [opened]))
@@ -331,13 +332,13 @@ def _floor(vault, rows):
     return "、".join(parts) if parts else NO_CHANGES
 
 
-def cut_result(text, max_chars):
+def cut_result(text, max_chars, vault=None):
     """結果截斷（D-061）：全文壓成一行再遮得 M；M 跟壓過的原文不同（全文有任何一處被遮）就不抽段、直接用 M 截，
     抽段會把關鍵詞和值切開（第二輪 R2-M1 裁定）。沒有被遮才取「結論」或「摘要」標題那一段（要換行才抽得到），
     沒有標題取整段，再壓空白；超過 max_chars 截掉加尾句。結果一律一行。"""
     text = str(text or "")
     flat = " ".join(text.split())
-    masked = _mask(flat)
+    masked = _mask(flat, vault)
     if masked != flat:
         return _cut(masked, max_chars)
     lines = text.split("\n")

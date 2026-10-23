@@ -75,10 +75,11 @@ class Add(Base):
 
     def test_refusals_exact(self):
         cases = [
-            (["--kind", "可以讀", "--card", self.cid, "--text", "密碼檔可以讀"], "「可以讀」「可以記」這兩種要等密碼與守門那一版"),
+            (["--kind", "可以讀", "--card", self.cid, "--text", "密碼檔可以讀"], "可以讀要指定是哪一份檔（--file）"),
+            (["--kind", "可以記", "--entity", "信義王", "--text", "這組密碼記下來"], "裁示種類要是 口述為準、不採用、可以讀 之一"),
             (["--kind", "不採用", "--text", "別信"], "不採用要指定是哪幾張卡（--card）"),
             (["--kind", "口述為準", "--text", "以口述為準"], "口述為準要掛實體或卡"),
-            (["--kind", "以後都這樣", "--card", self.cid, "--text", "x"], "裁示種類要是 口述為準、不採用 之一"),
+            (["--kind", "以後都這樣", "--card", self.cid, "--text", "x"], "裁示種類要是 口述為準、不採用、可以讀 之一"),
             (["--kind", "不採用", "--card", "f-00000000", "--text", "別信"], "清冊沒有 f-00000000"),
             (["--kind", "口述為準", "--entity", "內湖李", "--text", "以口述為準"], "實體清單沒有「內湖李」，先 kb entity add"),
             (["--kind", "口述為準", "--entity", "信義王", "--text", "字" * 201], "裁示要一句話，最多 200 字"),
@@ -95,7 +96,7 @@ class Secrets(Base):
         """測試第一輪後裁定 3（F-1）：裁示原話也不收密碼；rulings.json、裁示.md、工作日誌、ledger 都沒有那串。"""
         from tests.test_scripts_statement_cli import leaks
         self.assertEqual(self.kb("add", "--kind", "口述為準", "--entity", "信義王", "--text", "Wi-Fi 密碼 password: Abc12345678",
-                                 code=3), ["裁示裡不要放密碼或帳號；這種要記的話等「密碼與守門」那一版"])
+                                 code=3), ["裁示裡不要放密碼；要記的話跟我說『記下來』，我存進這台電腦的憑證管理員"])
         self.assertEqual(leaks(self.V, "Abc12345678"), [])
 
 

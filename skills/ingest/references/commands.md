@@ -22,10 +22,11 @@
 - `圖片：用 Read 看：<絕對路徑>`。
 
 讀不到（exit 3）第一行「讀不到：<原因>」；記進待處理的第二行 `已記進待處理（p-…）`。記進待處理的原因（只在雲端、舊格式、有密碼、還沒裝 PDF 元件、不支援的格式、檔案壞了、抽到一半才發現太大、編碼）重跑 `cards todo --json` 後由 `tell` 帶「怎麼辦」，講法以它為準；第二行沒有「已記進待處理」時 `tell` 不會帶這份，直接用「讀不到：」後面那句原因告訴客戶，這份先略過。下表是不記待處理的情況。`convert` 不收 `--vault`，總資料夾一律從目前目錄往上找。
+加密的 PDF（只解 PDF，加密的 Word、Excel 這版打不開）：`--password "<她剛給的>"` 用那組開，成功多一行 `這組密碼還沒記住：回答末尾問她要不要記住`（`--json` 的 `ask_save` 是 true），照問、她說記住才照 note 的 `references/password.md` 存；`--saved <名稱>` 用憑證管理員存的那組，要授權過的種類（plan 的 `unlock_same_kind`），或她這句明說要試才加 `--explicit`。密碼錯印一行 `密碼不對`、不記待處理；`這組密碼沒說過可以用在別的檔`、`這台電腦沒有記「X」`、`「X」不是 PDF 密碼` 照 note 的 `references/password.md` 說。開成功會關掉那份的「讀不到：有密碼」。她給的密碼不放進卡、`turn note`，回答裡也不複述。「可以讀」的密碼檔暫存叫 `<編號>.secret.md`，那一句答完程式就刪。
 
 | 原因（不記待處理） | 跟客戶說 |
 |---|---|
-| 檔名像密碼或金鑰，預設不讀 | 「檔名像密碼或金鑰的預設不讀，這版還不能開放。」 |
+| 檔名像密碼或金鑰，預設不讀 | 「檔名像密碼或金鑰的預設不讀；要讓我讀哪一份跟我說「X 可以讀」。」她說了照 note 的 `references/ruling.md` 第三節記，再重跑 |
 | 檔案太大（清冊標太大，沒記待處理） | 「這份太大，這版讀不了，跟我說先跳過。」 |
 | 檔案被別的程式開著或沒有權限，關掉 Word／Excel 再試 | 「這份正被 Word／Excel 開著（或沒有權限），關掉後跟我說，我再整理。」 |
 | 暫存位置不對 | 「知識庫的暫存夾不對勁，我先停下來；說「檢查」我看原因。」 |
@@ -37,7 +38,7 @@
 | 清冊沒有 f-… | 不用跟客戶說；重跑 `cards todo --json` 拿現在的編號 |
 | 狀態檔壞了（…） | 「知識庫的狀態檔讀不了，我先停下來；說「檢查」我看原因。」 |
 
-`--json`：`{"id","uri","path","kind","temp","chars","parts","encoding","pages","big","unreadable","pending_id","scanned_pages","images"}`（`scanned_pages` 是掃描頁的頁碼清單、`images` 是轉出的 PNG 路徑清單，PDF 才有），沒有的欄是 null，失敗時也印這份（`unreadable` 是原因）；`kind` 是 docx｜xlsx｜pptx｜text｜pdf｜image｜legacy_office｜encrypted｜unsupported。
+`--json`：`{"id","uri","path","kind","temp","chars","parts","encoding","pages","big","unreadable","pending_id","scanned_pages","images","ask_save","unlocked"}`（`unlocked` 是 password｜saved｜null）（`scanned_pages` 是掃描頁的頁碼清單、`images` 是轉出的 PNG 路徑清單，PDF 才有），沒有的欄是 null，失敗時也印這份（`unreadable` 是原因）；`kind` 是 docx｜xlsx｜pptx｜text｜pdf｜image｜legacy_office｜encrypted｜unsupported。
 
 ## cards todo [--json] [--limit N]
 
@@ -56,7 +57,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - `unreadable`：`{"id","uri","reason","pending_id"}`，已在待處理，講法在 `tell`；客戶說先跳過（`pending dismiss <pending_id>`）的不再列進 `new`，檔案換了才重讀。
 - `orphans`：卡的編號不在清冊或原檔已不在；這版不處理，不用動它。
 - `broken`：`{"path","reason"}`，檔頭有問題的卡；編號對得到清冊的多帶 `id`、`header`（carding.md 第六節）。
-- `skipped`：`{"credential","placeholder","too_large","error","skipped"}` 份數；`skipped` 是跑過 `cards skip` 的（依設定不整理）。
+- `skipped`：`{"credential","placeholder","too_large","error","skipped"}` 份數；`skipped` 是跑過 `cards skip` 的（依設定不整理）。說過「可以讀」的密碼檔不算在 `credential`，列進 `new`（carding.md 第十節）。
 - `profile`：客戶設定檔的 `card_types`（`[{"name","sections":[{"name","required","hint"}]}]`，卡型與段落照它）與 `exclusions`（`[{"kind","action"}]`，`action` 是 `kind_only` 或 `no_card`）。`profile_missing` 是 true 時設定檔讀不到、這塊是預設值，人讀最後多一行 `客戶設定檔讀不到，卡型用預設`；照常做卡，不用跟客戶說。另有 `types`（`[{"name","category"}]`）、`synthesis_sections`（`[{"type","sections"}]`，設定檔第四節）、`about`（`[{"name","kind","aliases"}]`，客戶自己）。
 - `entities`：`[{"name","type","aliases","self"}]`，登記的實體（`self` 是 false、company 或 person）；檔案卡 `實體` 欄照 `name` 寫。案子這類「事」的另有 `progress`（ongoing｜closed｜paused）與 `asked_evidence`（問過結案的依據，同一份不再問）。
 - 日程（carding.md 第九節）：`agenda_recheck`：`{"id"（日程條目）,"card","card_path","kind","date","text","source"}`，出處卡重做後待重對的條目。`agenda_unscanned`：`{"id"（卡編號）,"card_path","title","existing":[{"id","kind","date","text"}]}`，還沒抽過日期的卡，`existing` 是這張卡已加進日程、還 open 的條目。`agenda_counts`：`{"overdue","today","upcoming"}`，開場日程行的三個數字，做卡時不用管。
@@ -65,9 +66,9 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 `--json` 另有 `plan`、`asks`、`tell`、`announce` 四樣程式算好的，照著做（`new`、`stale` 等是做事的材料，這四樣才是順序與問法；第一條是日程的指引）：
 - 日程（`kb agenda`、`kb entity progress`、`kb asks`）的指令與逾期題的答法看 note skill 的 `references/agenda.md`；日程有出入、結案兩種題照 `asks` 的結果做；`plan` 的 `agenda_recheck`、`agenda_unscanned` 兩步照 carding.md 第九節做（`kb agenda scanned` 的說明在 note 的 `references/agenda.md`）。
-- `plan`：照順序要做的事，每步 `{"step","items","do","read"}`；`read` 是先讀的那份（null 不用讀；`references/…` 相對本 skill 資料夾，`rules/synthesis.md` 是實際路徑）。全空是 `[]`；份數超過 `ingest_auto_max` 時只剩 sync，其餘在 `asks` 第一題「現在做」的 `then` 裡。例：`{"step":"cards","items":2,"do":"照清單寫卡（new、stale、broken）","read":"references/carding.md 一～六節"}`。
-- `asks`：要問客戶的題，已排好序（份數多先問、實體夾或綜合卡不見、其他實體夾有變、原檔不見、裁示蓋的檔改版了（`ruling_recheck`）、逾期、日程有出入、結案、名字確認），每題 `{"id","kind","question","results":[{"n","label","do","strict","fill"}]}`。`n` 從 1 一路編下去，是程式用來對結果的內部編號，不必給客戶看；`do` 是選了這個結果要依序執行的指令（`kb ` 開頭，空是不跑指令），`fill` 列 `do` 裡 `{新名字}` 這類空格，每個空格都是 `{"name","rule"}`，照 `rule` 寫（自由文字寫成一句白話，名字有空白就加雙引號）；`strict` 是會刪東西的；結果可帶 `note`（給你的一句話）或 `then`（接著要做的 `plan` 步驟）。例：`{"n":2,"label":"沒刪，先留著","do":["kb pending resolve p-1a2b3c4d --how \"{客戶的話}\""],"strict":false,"fill":[{"name":"客戶的話","rule":"一句白話，不含 \" $ ` \\ 這四種字元"}]}`。
-- `tell`：回答末尾要講的句子（讀不到，每份帶原因與怎麼辦、不製卡的份數、依設定不整理、型別表沒有、PDF 元件裝好、加進日程、照新版改了日期），順序排好、0 的不列，照講。例：`["合約_加密.pdf 讀不到：有密碼；另存一份沒密碼的，或跟我說先跳過；記在 系統/待處理.md","請款類 4 份依你的設定不整理"]`。
+- `plan`：照順序要做的事，每步 `{"step","items","do","read"}`；`read` 是先讀的那份（null 不用讀；`references/…` 相對本 skill 資料夾，`rules/synthesis.md` 是實際路徑）。全空是 `[]`；份數超過 `ingest_auto_max` 時只剩 sync，其餘在 `asks` 第一題「現在做」的 `then` 裡。例：`{"step":"cards","items":2,"do":"照清單寫卡（new、stale、broken）","read":"references/carding.md 一～六節"}`。`unlock_same_kind` 一步（排在寫卡之前）多 `files`（每份 `{"id","name","folder","size","date"}`，有密碼讀不到的 PDF）與 `kinds`（每種 `{"label","credential","examples":[{"name","folder"}]}`），照 carding.md 第十節判斷與開。
+- `asks`：要問客戶的題，已排好序（份數多先問、實體夾或綜合卡不見、其他實體夾有變、原檔不見、同一種的密碼檔（`credential_same_kind`，多 `file`、`labels`、`note`，先判斷再問，note 的 `references/ruling.md` 第三節）、裁示蓋的檔改版了（`ruling_recheck`）、逾期、日程有出入、結案、名字確認），每題 `{"id","kind","question","results":[{"n","label","do","strict","fill"}]}`。`n` 從 1 一路編下去，是程式用來對結果的內部編號，不必給客戶看；`do` 是選了這個結果要依序執行的指令（`kb ` 開頭，空是不跑指令），`fill` 列 `do` 裡 `{新名字}` 這類空格，每個空格都是 `{"name","rule"}`，照 `rule` 寫（自由文字寫成一句白話，名字有空白就加雙引號）；`strict` 是會刪東西的；結果可帶 `note`（給你的一句話）或 `then`（接著要做的 `plan` 步驟）。例：`{"n":2,"label":"沒刪，先留著","do":["kb pending resolve p-1a2b3c4d --how \"{客戶的話}\""],"strict":false,"fill":[{"name":"客戶的話","rule":"一句白話，不含 \" $ ` \\ 這四種字元"}]}`。
+- `tell`：回答末尾要講的句子（讀不到，每份帶原因與怎麼辦、不製卡的份數、依設定不整理、型別表沒有、PDF 元件裝好、加進日程、照新版改了日期），順序排好、0 的不列，照講。例：`["合約_加密.pdf 讀不到：有密碼；給我密碼就能打開，要我記住也可以；記在 系統/待處理.md","請款類 4 份依你的設定不整理"]`；用存好的密碼開了同一種的有一句「「X」我判斷跟之前的保險單是同一種，用那組密碼打開了」。
 - `announce`：要整理的份數（新、重做、待掛實體、待抽日期）大於 0、不超過 `ingest_auto_max`（預設 20）時，開始整理前照貼的一句，例：`"有 12 份要整理，大約 2 分鐘；要停的話按停止"`；0 份或超過門檻是 null（超過時 `asks` 第一題是「現在做嗎」，0 份就照 `plan` 剩下的做）。
 
 ## cards sync [--json]

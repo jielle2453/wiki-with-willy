@@ -31,6 +31,7 @@ MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 TOO_LARGE = "檔案太大"
 PDF_MISSING = "還沒裝 PDF 元件（pip install pypdfium2）"
 PDF_ENCRYPTED = "有密碼"
+PDF_WRONG_PASSWORD = "密碼不對"  # 密碼與守門：帶了密碼還開不了
 PDF_BROKEN = "檔案壞了：PDF 打不開"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 CHECK_EVERY = 1000
@@ -450,20 +451,32 @@ def _pdfium():
     return pypdfium2
 
 
-def _open_pdf(pdfium, path):
+def _open_pdf(pdfium, path, password=None):
+    """password（密碼與守門 D-182）：加密的 PDF 帶密碼開；錯的密碼丟 Unreadable(PDF_WRONG_PASSWORD)，沒帶丟 PDF_ENCRYPTED。"""
     try:
-        return pdfium.PdfDocument(long_path(path))
+        return pdfium.PdfDocument(long_path(path), password=password)
     except pdfium.PdfiumError as e:
         if "password" in str(e).lower():
-            raise Unreadable(PDF_ENCRYPTED) from None
+            raise Unreadable(PDF_WRONG_PASSWORD if password else PDF_ENCRYPTED) from None
         raise Unreadable(PDF_BROKEN) from None
 
 
-def pdf_pages_text(path, min_chars, should_stop=None):
-    """回 (text, 頁數, 掃描頁清單)。每頁前面一行 <!-- 第 N 頁 -->；去空白後少於 min_chars 字的頁算掃描頁，只留頁碼註解。
-    should_stop 每頁問一次，回真就停在那頁之前。"""
+def pdf_opens_without_password(path):
+    """只有擁有者密碼的 PDF（不用密碼就能看）：/Encrypt 在，但不帶密碼開得了。沒裝元件丟 Unreadable(PDF_MISSING)。"""
     pdfium = _pdfium()
-    doc = _open_pdf(pdfium, path)
+    try:
+        doc = _open_pdf(pdfium, path)
+    except Unreadable:
+        return False
+    doc.close()
+    return True
+
+
+def pdf_pages_text(path, min_chars, should_stop=None, password=None):
+    """回 (text, 頁數, 掃描頁清單)。每頁前面一行 <!-- 第 N 頁 -->；去空白後少於 min_chars 字的頁算掃描頁，只留頁碼註解。
+    should_stop 每頁問一次，回真就停在那頁之前。password：加密的 PDF 帶密碼開。"""
+    pdfium = _pdfium()
+    doc = _open_pdf(pdfium, path, password)
     try:
         parts, scanned = [], []
         total = len(doc)
@@ -519,13 +532,13 @@ def _rgb_rows(bitmap):
         yield bytes(out)
 
 
-def render_pages(path, pages, out_dir, stem, scale, limit):
+def render_pages(path, pages, out_dir, stem, scale, limit, password=None):
     """掃描頁轉 PNG：<out_dir>/<stem>_p<N>.png，最多 limit 頁。回 [(頁碼, 絕對路徑)]。stem 由呼叫端驗過（裁定 16）。"""
     pages = list(pages)[:max(limit, 0)]
     if not pages:
         return []
     pdfium = _pdfium()
-    doc = _open_pdf(pdfium, path)
+    doc = _open_pdf(pdfium, path, password)
     out = []
     try:
         for n in pages:

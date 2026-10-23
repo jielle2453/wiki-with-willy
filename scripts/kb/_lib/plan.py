@@ -6,6 +6,9 @@ asks：排好序、編好號的問題，每題 {"id","kind","question","results"
       produce）→ 名字確認；
       號碼從 1 一路編下去不管挑哪幾題，do 的指令以 kb 開頭，要客戶給的值寫成 {新名字} 這種空格，fill 列有哪些。
 tell：回答末尾要講的現成句子；kb asks（tell_all 是 False）多一句還有幾件兩份寫法不同的（待處理 conflict，不進 asks，answer 第 6 點）。
+密碼與守門（D-181、D-182、D-183）：plan 多 unlock_same_kind（授權過的種類在、待處理有新的「有密碼」PDF：列檔與每一種的例子給 AI 判斷，
+排在寫卡之前、份數算進 ingest_auto_max）；asks 多 credential_same_kind（有帶 label 的「可以讀」裁示時，每份新的檔名像密碼的檔一題，
+排在原檔不見之後）；tell 的「有密碼」PDF 與 Word／Excel 分開講、不製卡的密碼檔接「要讓我讀哪一份跟我說」、這一回合用存好的密碼開了的講一句。
 announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先說的一句（份數、大約多久、要停按停止，D-100 修訂），否則 None；
       kb asks（tell_all 是 False）不帶這鍵。
 只讀：不寫任何檔，不開原檔。
@@ -32,8 +35,16 @@ ANNOUNCE = "有 {n} 份要整理，大約{how_long}；要停的話按停止"  # 
 UNREADABLE_LISTED = 5
 PENDING_FILE = "記在 系統/待處理.md"
 # 讀不到的原因（convert 會記進待處理的那幾種）→ 客戶怎麼辦；這是講法的唯一來源，commands.md 只指向 tell
+PDF_LOCKED_ADVICE = "給我密碼就能打開，要我記住也可以"  # 密碼與守門：只解 PDF（D-182）
+OFFICE_LOCKED_ADVICE = "這種檔這版還打不開，用 Office 打開另存一份沒密碼的再放進來"
+CREDENTIAL_TAIL = "；要讓我讀哪一份跟我說「X 可以讀」"
+SAME_KIND_OPENED = "「{name}」我判斷跟之前的{label}是同一種，用那組密碼打開了"
+SAME_KIND_QUESTION = "又有一份「{name}」，跟之前的{label}一樣可以讀嗎？"
+SAME_KIND_NOTE = ("先判斷這份是不是 labels 裡的哪一種（看檔名、夾、例子）；是就用那一種的 label 問與記，"
+                  "都不是就跑「不是同一種」那個結果、不問她")
+UNLOCK_STEP = "unlock_same_kind"
 UNREADABLE_ADVICE = (
-    ("有密碼", "另存一份沒密碼的，或跟我說先跳過"),
+    ("有密碼", PDF_LOCKED_ADVICE),
     ("舊格式", "用 Word／Excel 另存成新格式就讀得到"),
     ("不支援的格式", "這種格式還讀不了，跟我說先跳過，或換一份檔"),
     ("只在雲端", "請在檔案上按右鍵選保留在這台電腦上，我再整理"),
@@ -106,8 +117,8 @@ def build(out, vault, config, tell_all=True):
 
 
 def _waiting(out):
-    """要整理的份數（門檻與 announce 共用）：new＋stale＋unlinked＋agenda_unscanned。"""
-    return sum(len(out.get(k) or []) for k in ("new", "stale", "unlinked", AGENDA_UNSCANNED))
+    """要整理的份數（門檻與 announce 共用）：new＋stale＋unlinked＋agenda_unscanned＋同一種的加密 PDF。"""
+    return sum(len(out.get(k) or []) for k in ("new", "stale", "unlinked", AGENDA_UNSCANNED, UNLOCK_STEP))
 
 
 def _how_long(waiting):
@@ -133,6 +144,11 @@ def _plan(out):
     sync = len(out.get("moved") or []) + len(out.get("duplicates") or [])
     if sync:
         steps.append(_step("sync", sync, SYNC, None))
+    if out.get(UNLOCK_STEP):  # 解開才寫得了卡：排在寫卡之前（D-181 第 2 點）
+        step = _step(UNLOCK_STEP, len(out[UNLOCK_STEP]),
+                     "對每份判斷是哪一種，是就跑 kb convert <id> --saved <那一種的密碼名稱>；不是任何一種的不動", f"{CARDING} 第十節")
+        step.update(files=out[UNLOCK_STEP], kinds=out.get("unlock_kinds") or [])
+        steps.append(step)
     carding = (len(out.get("new") or []) + len(out.get("stale") or [])
                + sum(1 for b in out.get("broken") or [] if b.get("header")))
     if carding:
@@ -198,6 +214,7 @@ def _asks(out, vault, config, full_plan):
     asks.extend(_drift(d, out) for d in drifts if d["kind"] == "missing")
     asks.extend(_drift(d, out) for d in drifts if d["kind"] != "missing")
     asks.extend(_missing(m) for m in out.get("missing") or [])
+    asks.extend(_credential_asks(vault, out))  # 密碼與守門：排在原檔不見之後、逾期之前
     asks.extend(_ruling_asks(vault))  # 「別信」蓋在新版上會讓綜合卡漏掉新內容，排在逾期之前（note 改知識釐清）
     asks.extend(_agenda_asks(vault))
     asks.extend(_draft_asks(vault))
@@ -263,6 +280,94 @@ def _name(item):
                 fill=[_fill("同一個", NAME_RULE)]),
         _result("名字改成別的", [_rename(name, Slot("新名字")), cmd("entity", "confirm", Slot("新名字"))],
                 fill=[_fill("新名字", NAME_RULE)])])
+
+
+# ---------- 同一種的密碼檔（密碼與守門，D-181 第 1 點） ----------
+
+def credential_kinds(vault):
+    """有帶 label 的有效「可以讀」裁示：[{"label","examples":[檔名]}]（同 label 併起來）；讀不到回空。"""
+    try:
+        data = rulings.load(vault)
+    except ValueError:
+        return []
+    names = rulings.file_names(vault)
+    kinds = {}
+    for r in data["rulings"]:
+        if r.get("status") == "active" and r.get("kind") == "credential_read" and r.get("label"):
+            k = kinds.setdefault(r["label"], {"label": r["label"], "examples": []})
+            k["examples"] += [names.get(f) or f for f in r.get("files") or [] if (names.get(f) or f) not in k["examples"]]
+    return list(kinds.values())
+
+
+def _credential_asks(vault, out):
+    """每份新的檔名像密碼的檔（清冊 read credential、沒有裁示、沒說過不要）一題，附 labels 給 AI 判斷是不是同一種。"""
+    kinds = credential_kinds(vault)
+    if not kinds:
+        return []
+    try:
+        entries = inventory.load(vault)["entries"]
+        readable = rulings.readable_ids(vault)
+    except (ValueError, OSError):
+        return []
+    asks = []
+    for e in entries:
+        if (e.get("status") != "active" or e.get("read") != "credential" or e.get("id") in readable
+                or e.get("credential_declined") or not e.get("locations")):
+            continue
+        name = rulings.file_name(e)
+        fid, label = e["id"], kinds[0]["label"]
+        ask = _ask(f"credential:{fid}", "credential_same_kind", SAME_KIND_QUESTION.format(name=name, label=label), [
+            _result("可以讀", [cmd("ruling", "add", "--kind", "可以讀", "--file", fid, "--label", Slot("那一種"), "--text")
+                              + ' "{客戶的話}"'],
+                    fill=[_fill("那一種", NAME_RULE), _fill("客戶的話", FREE_TEXT_RULE)]),
+            _result("不要", [cmd("ruling", "decline", "--file", fid)]),
+            _result("不是同一種（不問）", [cmd("ruling", "decline", "--file", fid, "--quiet")],
+                    note="你判斷不是 labels 裡任何一種時跑這個，不問她，之後也不再列")])
+        ask.update(file={"id": fid, "name": name, "folder": _folder(e)}, labels=kinds, note=SAME_KIND_NOTE)
+        asks.append(ask)
+    return asks
+
+
+def _folder(entry):
+    """「別名/相對夾」（manage 的寫法）。"""
+    alias, rel = inventory.split_uri(entry["locations"][0]["uri"])
+    folder = rel.rpartition("/")[0]
+    return f"{alias}/{folder}" if folder else alias
+
+
+def locked_same_kind(vault, out):
+    """unlock_same_kind 的材料（D-181 第 2 點）：授權過的種類在、待處理有 open 的「有密碼」PDF（這一回合還沒開過）。
+    回 (files, kinds)；unlock.json 或清冊讀不到回 ([], [])。"""
+    from kb._lib import unlock
+    try:
+        kinds = unlock.load(vault)["kinds"]
+    except ValueError:
+        return [], []
+    if not kinds:
+        return [], []
+    locked = [u for u in out.get("unreadable") or [] if str(u.get("reason") or "").startswith("有密碼")
+              and str(u.get("uri") or "").lower().endswith(".pdf")]
+    if not locked:
+        return [], []
+    try:
+        by_id = {e.get("id"): e for e in inventory.load(vault)["entries"]}
+    except (ValueError, OSError):
+        return [], []
+    files = []
+    for u in locked:
+        e = by_id.get(u["id"])
+        if e is None or not e.get("locations"):
+            continue
+        loc = e["locations"][0]
+        files.append({"id": e["id"], "name": rulings.file_name(e), "folder": _folder(e), "size": loc.get("size"),
+                      "date": str(loc.get("mtime") or "")[:10]})
+    shown = []
+    for k in kinds:
+        examples = [{"name": rulings.file_name(by_id[x]), "folder": _folder(by_id[x])} for x in k.get("examples") or []
+                    if x in by_id and by_id[x].get("locations")]
+        shown.append({"label": k.get("label"), "credential": str(k.get("credential") or "").partition("/")[2],
+                      "examples": examples})
+    return files, shown
 
 
 # ---------- 裁示遇到原檔改版（note 改知識第 7 點，D-150） ----------
@@ -432,7 +537,7 @@ def _tell(out, vault):
     skipped = out.get("skipped") or {}
     counted = [f"{text} {skipped[k]}" for k, text in SKIPPED_TEXT if skipped.get(k)]
     if counted:
-        lines.append("不製卡：" + "、".join(counted))
+        lines.append("不製卡：" + "、".join(counted) + (CREDENTIAL_TAIL if skipped.get("credential") else ""))
     if skipped.get("placeholder"):
         lines.append(CLOUD_SENTENCE)
     lines.extend(_by_setting(skipped.get("skipped") or 0, vault))
@@ -444,7 +549,21 @@ def _tell(out, vault):
     if out.get("unbacked"):
         lines.append(UNBACKED_TELL.format(n=out["unbacked"]))
     lines.extend(agenda.tell_lines(vault))
+    lines.extend(_opened_tell(vault))
     return lines
+
+
+def _opened_tell(vault):
+    """這一回合用存好的密碼開了同一種的（unlock.json 的 opened）：每份一句（D-181 第 2 點「直接開、末尾講」）。"""
+    from kb._lib import unlock
+    try:
+        now = turn._read_turn(turn._current_file(vault))
+        opened = unlock.opened_in_turn(vault, now["turn"]) if now else []
+        names = rulings.file_names(vault) if opened else {}
+    except (OSError, ValueError, KeyError):
+        return []
+    return [SAME_KIND_OPENED.format(name=names.get(o.get("id")) or o.get("id"), label=o.get("label"))
+            for o in opened if o.get("label")]
 
 
 CONFLICT_TELL = "還有 {n} 件兩份寫法不同的，在待處理"
@@ -463,6 +582,8 @@ def _conflict_tell(vault):
 def _unreadable_line(name, reason):
     if not reason:
         return f"{name} 讀不到"
+    if reason.startswith("有密碼") and not name.lower().endswith(".pdf"):
+        return f"{name} 讀不到：{reason}；{OFFICE_LOCKED_ADVICE}"  # 加密的 Word、Excel 這版打不開（D-182）
     advice = next((text for head, text in UNREADABLE_ADVICE if reason.startswith(head)), None)
     return f"{name} 讀不到：{reason}；{advice}" if advice else f"{name} 讀不到：{reason}"
 

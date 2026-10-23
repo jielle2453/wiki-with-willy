@@ -46,7 +46,7 @@ def prompt_head(vault, prompt):
     換空格不換空字串：abc</pasted_content>otp 998877 黏成 abcotp 就遮不到（開場注入測試後修正 M1）。
     先壓再遮：值跟關鍵詞隔一個空行時 mask_secrets 會停在空行，壓成一行才遮得到（工作日誌測試後修正 M2）。"""
     text = re.sub(r"</?pasted_content\b[^>]*>", " ", str(prompt or ""), flags=re.IGNORECASE)
-    return credentials.mask_secrets(" ".join(text.split()))[:config.get(vault, "prompt_head_max")]
+    return credentials.mask_secrets(" ".join(text.split()), credentials.known_names(vault))[:config.get(vault, "prompt_head_max")]
 
 
 def journal_key(data):
@@ -190,7 +190,8 @@ def set_prompt_head(vault, session_id, text):
     return _set(vault, session_id, prompt_head=text)
 
 
-MARK_FLAGS = ("ingest", "ingest_stopped")  # mark 記的回合旗標；退回自己這句時 start(inherit=) 帶過去
+# mark 記的回合旗標；退回自己這句時 start(inherit=) 帶過去。secret_shown（密碼與守門）：這句回答給了密碼，Stop 不記結果
+MARK_FLAGS = ("ingest", "ingest_stopped", "secret_shown")
 
 
 def mark(vault, key):

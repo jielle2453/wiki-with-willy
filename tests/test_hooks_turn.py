@@ -52,7 +52,7 @@ class TurnHook(unittest.TestCase):
         r = run_hook(prompt_payload(self.V, "幫我登入 ERP，帳號 jie 密碼 abc123"))
         self.assertEqual(r.returncode, 0, r.stderr)
         sess = json.loads((self.turns / f"{SID}.json").read_text(encoding="utf-8"))
-        self.assertEqual(sess["prompt_head"], "幫我登入 ERP，帳號███")  # 第六輪 W3：遮到子句尾
+        self.assertEqual(sess["prompt_head"], "幫我登入 ERP，帳號 ███ 密碼 ███")  # D-187：只遮值
         self.assertNotIn("jie", sess["prompt_head"])
         from kb._lib import turn
         turn.backup(self.V, "案子/信義王/信義王.md", sess["turn"])
@@ -148,7 +148,7 @@ class TurnHook(unittest.TestCase):
 
     def test_journal_prompt_is_masked(self):
         run_hook(prompt_payload(self.V, "幫我登入 ERP，帳號 jie 密碼 abc123"))
-        self.assertEqual(self.journal_rows()[0]["prompt"], "幫我登入 ERP，帳號███")
+        self.assertEqual(self.journal_rows()[0]["prompt"], "幫我登入 ERP，帳號 ███ 密碼 ███")
 
     def test_acceptance_29_prompt_value_after_blank_line_is_masked(self):
         """測試後修正 M2：回合檔、versions/<回合>/turn.json、jsonl 三處都 grep 不到值。"""
@@ -160,7 +160,7 @@ class TurnHook(unittest.TestCase):
         self.assertTrue(meta.is_file())
         for p in (self.turns / f"{SID}.json", meta, journal.jsonl_path(self.V, date.today().strftime("%Y-%m"))):
             self.assertNotIn("abc123", p.read_text(encoding="utf-8"), p)
-        self.assertEqual(sess["prompt_head"], "幫我登入，密碼███")
+        self.assertEqual(sess["prompt_head"], "幫我登入，密碼如下： ███")
 
     def test_previous_turn_without_stop_is_flushed_as_interrupted(self):
         run_hook(prompt_payload(self.V, "第三句"))

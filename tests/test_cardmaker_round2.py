@@ -129,6 +129,7 @@ class R1BrokenSynthesisMaterial(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_batch_item_has_header_target_and_basis(self):
+        self.assertEqual(run_kb("entity", "confirm", "信義王", cwd=self.V).returncode, 0)  # 名字確認過才派（R5）
         todo = json.loads(run_kb("cards", "todo", "--json", cwd=self.V).stdout)
         (broken,) = todo["synthesis_broken"]
         self.assertEqual(broken["path"], "案子/信義王/信義王.md")
@@ -191,7 +192,7 @@ class R2SayEveryDispatch(unittest.TestCase):
         (self.V / batches.BATCHES_POSIX).write_text(json.dumps(data), encoding="utf-8")
         last = self.dispatch()
         self.assertTrue(last["done"])
-        self.assertEqual(last["say"], f"整理完了：做好 0 份，{len(last['failed'])} 份沒做成")
+        self.assertEqual(last["say"], f"整理完了：{len(last['failed'])} 份沒做成")  # 一份都沒做好不說「做好 0 份」（R4）
         self.assertGreater(len(first["batches"]), 0)
 
     def test_skeleton_says_only_say_after_notifications(self):
@@ -216,6 +217,68 @@ class AbbrevSecretActionsRejectedByKb(unittest.TestCase):
             r = run_kb(*args, cwd=self.V)
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
             self.assertIn("error:", r.stderr)
+
+
+class R5UnconfirmedNameAskedFirst(unittest.TestCase):
+    """回測第二輪 R5：信義王這一輪才登記（inferred），它的壞綜合卡製卡助手寫對了還是列在 broken（「還沒跟客戶確認名稱，先問再寫」）。
+    名字沒確認的不派、asks 出名字題；客戶確認之後下一次 dispatch 才派。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+        p = self.V / ".system" / "inventory.json"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        for e in data["entries"]:
+            e["skip_kind"] = "請款"
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        turn.start(self.V, SID, "好")
+        self.assertEqual(run_kb("entity", "add", "--type", "案子", "--name", "信義王", cwd=self.V).returncode, 0)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def todo(self):
+        return json.loads(run_kb("cards", "todo", "--json", cwd=self.V).stdout)
+
+    def dispatch(self):
+        return json.loads(run_kb("--session", SID, "cards", "dispatch", "--json", cwd=self.V).stdout)
+
+    def test_inferred_not_sent_name_asked_then_sent_after_confirm(self):
+        todo = self.todo()
+        (broken,) = todo["synthesis_broken"]
+        self.assertEqual(broken["path"], "案子/信義王/信義王.md")
+        self.assertNotIn("dispatch", [s["step"] for s in todo["plan"]])
+        names = [a for a in todo["asks"] if a["kind"] == "name"]
+        self.assertEqual(len(names), 1)
+        self.assertTrue(names[0]["question"].startswith("我要幫「信義王」（案子，"), names[0]["question"])
+        self.assertEqual(names[0]["results"][0]["do"], ["kb entity confirm 信義王"])
+        got = self.dispatch()
+        self.assertEqual((got["batches"], got["done"]), ([], True))
+        self.assertEqual(run_kb("entity", "confirm", "信義王", cwd=self.V).returncode, 0)
+        turn.start(self.V, SID, "名字對")
+        todo = self.todo()
+        self.assertEqual([a for a in todo["asks"] if a["kind"] == "name"], [])
+        got = self.dispatch()
+        self.assertEqual([(b["kind"], b["items"]) for b in got["batches"]], [("synthesis", 1)])
+
+    def test_one_question_per_entity(self):
+        from kb._lib import entities
+        eid = entities.find(entities.load(self.V), "信義王")[0]["id"]
+        out = {"synthesis_broken": [{"path": "案子/信義王/信義王.md", "reason": "x"}],
+               "synthesis_stale": [{"entity_id": eid, "name": "信義王", "path": "案子/信義王/信義王.md"}],
+               "synthesis_new": []}
+        self.assertEqual([n["entity_id"] for n in batches.unconfirmed_names(self.V, out)], [eid])
+        out["synthesis_new"] = [{"entity_id": eid, "confirmed": False}]
+        self.assertEqual(batches.unconfirmed_names(self.V, out), [], "synthesis_new 已經在問就不重複")
+
+    def test_stale_with_unconfirmed_entity_not_sent(self):
+        from kb._lib import entities
+        eid = entities.find(entities.load(self.V), "信義王")[0]["id"]
+        out = {"synthesis_stale": [{"entity_id": eid, "name": "信義王", "path": "案子/信義王/信義王.md"}]}
+        parts = batches.split(self.V, out)
+        self.assertEqual((parts["synthesis"], parts["main"]), ([], []))
+        self.assertEqual([n["name"] for n in batches.unconfirmed_names(self.V, out)], ["信義王"])
+        run_kb("entity", "confirm", "信義王", cwd=self.V)
+        self.assertEqual([k for _b, k, _i in batches.split(self.V, out)["synthesis"]], [eid])
 
 
 if __name__ == "__main__":

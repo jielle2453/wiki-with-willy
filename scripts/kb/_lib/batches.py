@@ -19,6 +19,8 @@ manage 第二版還沒清的排除夾（purge pending）裡的不切也不算。
 壞的綜合卡（synthesis_broken）派給製卡助手時，batch 給跟 synthesis_stale 一樣齊的材料：該有的檔頭（synthesis.header_for）、
 該放的路徑（target）、掛的檔案卡、有效口述、裁示、推算、段落（第二輪修 R1，之前只給 path 與 reason，十次全做不成）。
 dispatch 每次都給 say：第一次派出去、之後每次收通知再派的進度、做完的收尾，主對話對客戶只說它（第二輪修 R2）。
+壞的與要更新的綜合卡（synthesis_broken、synthesis_stale），實體還沒跟客戶確認名字（source inferred）的不切：
+plan 的 asks 出名字題（unconfirmed_names），客戶確認之後下一次 dispatch 才派（第三輪修 R5）。
 """
 import re
 import secrets
@@ -48,6 +50,7 @@ SAY_FIRST = "交給製卡助手在背景整理，好了跟你說；這期間照�
 SAY_PROGRESS = "做好 {done} 份了{failed}；還在做 {running} 批"
 SAY_RUNNING = "還在做 {running} 批"
 SAY_DONE = "整理完了：做好 {done} 份{failed}"
+SAY_DONE_NONE = "整理完了：{n} 份沒做成"
 SAY_FAILED = "，{n} 份沒做成"
 DEFAULT_FAIL = "製卡助手沒做成"
 TWICE_FAIL = "製卡助手兩次沒做成：{}"
@@ -252,6 +255,9 @@ class _SynthesisContext:
         self.know = synthesis.knowledge(vault)
         self.files = entities.synthesis_files(vault)
 
+    def entity(self, entity_id):
+        return next((e for e in self.data["entities"] if e.get("id") == entity_id), None)
+
     def owner(self, path):
         """這張綜合卡是誰的：該放在這個路徑的實體，或檔頭編號指到的實體；有型別、還在（不是 merged）才算。"""
         from kb._lib import synthesis
@@ -322,6 +328,8 @@ def split(vault, out, source=None):
             got["main"].append((bucket, key, item))
         elif bucket == "synthesis_broken" and not _fixable(vault, ctx, item):
             got["main"].append((bucket, key, item))  # 找不到是誰的綜合卡：製卡助手沒材料修，留給主對話
+        elif bucket in ("synthesis_broken", "synthesis_stale") and _unconfirmed(vault, ctx, bucket, item) is not None:
+            return  # 名字還沒確認：asks 先問（R5）
         else:
             got[kind].append((bucket, key, item))  # 日程照卡抽，主對話做的卡也交得出去
     for bucket in CARD_BUCKETS:
@@ -342,11 +350,45 @@ def split(vault, out, source=None):
 
 def _fixable(vault, ctx, item):
     try:
-        if not ctx:
-            ctx.append(_SynthesisContext(vault))
-        return ctx[0].owner(item["path"]) is not None
+        return _context(vault, ctx).owner(item["path"]) is not None
     except ValueError:  # 實體清單讀不到：照舊交出去，製卡助手回報做不成
         return True
+
+
+def _context(vault, ctx):
+    if not ctx:
+        ctx.append(_SynthesisContext(vault))
+    return ctx[0]
+
+
+def _unconfirmed(vault, ctx, bucket, item):
+    """壞的或要更新的綜合卡，它的實體還沒確認名字（source inferred）就回那個實體，否則 None；實體清單讀不到回 None。"""
+    try:
+        c = _context(vault, ctx)
+    except ValueError:
+        return None
+    e = c.entity(item.get("entity_id")) if bucket == "synthesis_stale" else c.owner(item["path"])
+    return e if e is not None and e.get("source") == "inferred" else None
+
+
+NAME_QUESTION = "我要幫「{name}」（{type}，掛了 {n} 份檔）整理一頁現況：名字這樣叫對嗎？它跟其他{type}是同一件嗎？"
+
+
+def unconfirmed_names(vault, out):
+    """synthesis_broken、synthesis_stale 裡實體還沒確認名字的：[{"entity_id","name","type","question"}]，同一個實體一題，
+    synthesis_new 已經在問的不重複（plan 的名字題，第三輪修 R5）。問法跟 synthesis_new 的同一句。"""
+    asked = {i.get("entity_id") for i in out.get("synthesis_new") or [] if not i.get("confirmed")}
+    ctx, got = [], []
+    for bucket in ("synthesis_broken", "synthesis_stale"):
+        for item in out.get(bucket) or []:
+            e = _unconfirmed(vault, ctx, bucket, item)
+            if e is None or e["id"] in asked:
+                continue
+            asked.add(e["id"])
+            n = len(_context(vault, ctx).mounts.get(e["name"], []))
+            got.append({"entity_id": e["id"], "name": e["name"], "type": e.get("type"),
+                        "question": NAME_QUESTION.format(name=e["name"], type=e.get("type"), n=n)})
+    return got
 
 
 def waiting(vault, out):
@@ -496,7 +538,7 @@ def dispatch(vault, session_id, turn_id, source=None):
             save(vault, data, jt)
     pre = prefix()
     first = fresh and bool(made)
-    say = _say(first, done, approval, made, run, _done_count(data, job, out), len(failed))
+    say = None if (fresh and not made) else _say(first, done, approval, made, run, _done_count(data, job, out), len(failed))
     n0 = sum(1 for b in data["batches"] if b.get("job") == job["job"]) - len(made)
     shown = [{"batch": b["batch"], "kind": b["kind"], "items": len(b["items"]), "agent": AGENT,
               "description": DESCRIPTION.format(n=n0 + i + 1, what=_what(b["kind"], len(b["items"]))),
@@ -519,7 +561,9 @@ def _say(first, done, approval, made, run, done_n, failed_n):
     if approval is not None:
         return None
     if done:
-        return SAY_DONE.format(done=done_n, failed=tail) if (done_n or failed_n) else None
+        if not done_n:
+            return SAY_DONE_NONE.format(n=failed_n) if failed_n else None
+        return SAY_DONE.format(done=done_n, failed=tail)
     if not (done_n or failed_n):
         return SAY_RUNNING.format(running=len(run) + len(made))
     return SAY_PROGRESS.format(done=done_n, failed=tail, running=len(run) + len(made))

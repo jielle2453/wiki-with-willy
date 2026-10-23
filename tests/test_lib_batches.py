@@ -152,7 +152,7 @@ class Claims(Base):
         again = self.dispatch()  # 同一回合又叫一次
         self.assertEqual((again["batches"], again["done"]), ([], True))
         self.assertEqual([f["id"] for f in again["failed"]], [item[0]["id"]])
-        self.assertEqual(again["say"], "整理完了：做好 0 份，1 份沒做成")
+        self.assertIsNone(again["say"], "第三輪修 R4：沒切任何東西、只沿用上次的 failed，不說話（最後的回答照 tell）")
         self.assertEqual(len(self.data()["batches"]), n_batches)
         self.assertEqual(len(self.data()["failures"][item[0]["id"]]["jobs"]), 1)
         self.assertEqual([i for i in pending.load(self.V)["items"] if i["kind"] == "unreadable"], [])

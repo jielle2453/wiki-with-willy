@@ -220,6 +220,7 @@ def _asks(out, vault, config, full_plan):
     asks.extend(_agenda_asks(vault))
     asks.extend(_draft_asks(vault))
     asks.extend(_name(i) for i in out.get("synthesis_new") or [] if not i.get("confirmed"))
+    asks.extend(_name(i) for i in batches.unconfirmed_names(vault, out))  # 壞的、要更新的綜合卡也先問名字（card-maker R5）
     return asks
 
 

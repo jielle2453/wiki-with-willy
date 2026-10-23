@@ -100,7 +100,7 @@ def _jobs(vault, sid, message, payload, here=None):
                 else:
                     result, truncated = NO_MESSAGE, False
                 journal.update_turn(vault, turn.journal_key(data), result=result, result_truncated=truncated)
-            turn.change_turn(vault, tid, lambda d: d.update(job_result=True) or True)
+            turn.change_turn(vault, tid, lambda d, j=job.get("job") or True: d.update(job_result=j) or True)
     except BaseException as e:  # noqa: BLE001
         _log(e, payload)
 

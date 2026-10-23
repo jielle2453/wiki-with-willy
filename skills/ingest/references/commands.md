@@ -53,7 +53,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 `--json` 另有 `plan`、`asks`、`tell`、`announce` 四樣程式算好的，照著做（`new`、`stale` 等是做事的材料，這四樣才是順序與問法；第一條是日程的指引）：
 - 日程（`kb agenda`、`kb entity progress`、`kb asks`）的指令與逾期題的答法看 note skill 的 `references/agenda.md`；日程有出入、結案兩種題照 `asks` 的結果做；`plan` 的 `agenda_recheck`、`agenda_unscanned` 兩步照 carding.md 第九節做（`kb agenda scanned` 的說明在 note 的 `references/agenda.md`）。
-- `plan`：照順序要做的事，每步 `{"step","items","do","read"}`；`read` 是先讀的那份（null 不用讀；`references/…` 相對本 skill 資料夾，`rules/synthesis.md` 是實際路徑）。全空是 `[]`；份數超過 `ingest_auto_max` 時只剩 sync，其餘在 `asks` 第一題「現在做」的 `then` 裡。做卡、抽日程、寫綜合卡是一步 `{"step":"dispatch","items":45,"do":"kb cards dispatch --json","read":null}`；線上文件、檔名像密碼的、有密碼的那幾份留一步 `cards`（多 `files`：編號清單，材料在 `new`、`stale`），主對話自己照 `read` 做。`unlock_same_kind` 一步（排在寫卡之前）多 `files`（每份 `{"id","name","folder","size","date"}`，有密碼讀不到的 PDF）與 `kinds`（每種 `{"label","credential","examples":[{"name","folder"}]}`），照 carding.md 第十節判斷與開。到門檻還沒確認的新名字時最前面一步 `names`（多 `names`：每個 `{"entity_id","name","type","cards"}`，`cards` 是掛的卡標題），照 carding.md 第十一節判斷，有把握的 `entity accept`。
+- `plan`：照順序要做的事，每步 `{"step","items","do","read"}`；`read` 是先讀的那份（null 不用讀；`references/…` 相對本 skill 資料夾，`rules/synthesis.md` 是實際路徑）。全空是 `[]`；份數超過 `ingest_auto_max` 時只剩 sync，其餘在 `asks` 第一題「現在做」的 `then` 裡（這個對話已經在整理、或說過停，就不再問這題）。說過停的對話最前面一步 `resume`（`do` 是 `kb cards dispatch --json`，帶 `note`）：客戶說「整理」「繼續整理」才跑，沒說不做（D-200）。做卡、抽日程、寫綜合卡是一步 `{"step":"dispatch","items":45,"do":"kb cards dispatch --json","read":null}`；線上文件、檔名像密碼的、有密碼的那幾份留一步 `cards`（多 `files`：編號清單，材料在 `new`、`stale`），主對話自己照 `read` 做。`unlock_same_kind` 一步（排在寫卡之前）多 `files`（每份 `{"id","name","folder","size","date"}`，有密碼讀不到的 PDF）與 `kinds`（每種 `{"label","credential","examples":[{"name","folder"}]}`），照 carding.md 第十節判斷與開。到門檻還沒確認的新名字時最前面一步 `names`（多 `names`：每個 `{"entity_id","name","type","cards"}`，`cards` 是掛的卡標題），照 carding.md 第十一節判斷，有把握的 `entity accept`。
 - `asks`：要問客戶的題，已排好序（份數多先問、實體夾或綜合卡不見、其他實體夾有變、原檔不見、同一種的密碼檔（`credential_same_kind`，多 `file`、`labels`、`note`，先判斷再問，note 的 `references/ruling.md` 第三節）、裁示蓋的檔改版了（`ruling_recheck`）、逾期、日程有出入、結案、名字確認），每題 `{"id","kind","question","results":[{"n","label","do","strict","fill"}]}`。`n` 從 1 一路編下去，是程式用來對結果的內部編號，不必給客戶看；`do` 是選了這個結果要依序執行的指令（`kb ` 開頭，空是不跑指令），`fill` 列 `do` 裡 `{新名字}` 這類空格，每個空格都是 `{"name","rule"}`，照 `rule` 寫（自由文字寫成一句白話，名字有空白就加雙引號）；`strict` 是會刪東西的；結果可帶 `note`（給你的一句話）或 `then`（接著要做的 `plan` 步驟）。例：`{"n":2,"label":"沒刪，先留著","do":["kb pending resolve p-1a2b3c4d --how \"{客戶的話}\""],"strict":false,"fill":[{"name":"客戶的話","rule":"一句白話，不含 \" $ ` \\ 這四種字元"}]}`。
 - `tell`：回答末尾要講的句子（讀不到，每份帶原因與怎麼辦、不製卡的份數、依設定不整理、型別表沒有、PDF 元件裝好、加進日程、照新版改了日期），順序排好、0 的不列，照講。例：`["合約_加密.pdf 讀不到：有密碼；給我密碼就能打開，要我記住也可以；記在 系統/待處理.md","請款類 4 份依你的設定不整理"]`；用存好的密碼開了同一種的有一句「「X」我判斷跟之前的保險單是同一種，用那組密碼打開了」。
 - `announce`：要整理的份數（新、重做、待掛實體、待抽日期）大於 0、不超過 `ingest_auto_max`（預設 20）時，開始整理前照貼的一句，例：`"有 12 份要整理，大約 2 分鐘；要停的話跟我說一聲"`；0 份或超過門檻是 null（超過時 `asks` 第一題是「現在做嗎」，0 份就照 `plan` 剩下的做）。
@@ -64,8 +64,8 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 ## cards status [--json]、cards stop [--json]
 
-- `status`（只讀）：`正在整理：還在跑 2 批（做卡 20、做卡 16）；這次做好 58 份；還剩 做卡 120、綜合卡 6`，沒在整理 `現在沒有在整理；還有 N 份沒整理`；照講。
-- `stop`：`{"agents":[…],"done","left"}`；`agents` 每個用 TaskStop 停掉。人讀 `已停：這次做好 58 份，還剩 158 份；這個對話不再自動整理，說「整理」再接著做`，照講；沒在整理印 `現在沒有在整理`（exit 0）。
+- `status`（只讀）：`正在整理：還在做 36 份（2 批），做好 58 份；還沒輪到的 126 份`，沒在整理 `現在沒有在整理；停下做好 11 份；還有 61 份沒整理完（49 份還沒做卡、1 份我自己做（線上文件或有密碼的）、11 份卡做好了還沒抽日程）`；照講。`--json` 的 `jobs` 是這個對話的每次整理（舊到新 `{"job","turn","created","closed","status","cards"}`，`cards` 是寫好了的卡），`other_jobs` 是別的對話的，整批重做照 `references/redo.md`。
+- `stop`：`{"agents":[…],"done","left","waiting_parts"}`；`agents` 每個用 TaskStop 停掉，停完再跑 `cards status` 照它講（停下前在寫的卡會寫完，stop 那一刻的數字會少算）。人讀 `已停：這次做好 58 份；還有 158 份沒整理完；這個對話不再自動整理，說「整理」再接著做`；沒在整理印 `現在沒有在整理`（exit 0）。
 
 ## cards unreadable <編號> --reason "<原因>"
 

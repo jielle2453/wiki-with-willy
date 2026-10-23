@@ -62,7 +62,9 @@ def add_arguments(sub):
     sk.add_argument("id", help="清冊編號（f-…）")
     sk.add_argument("--kind", required=True, help="客戶設定檔第三節「不整理」的種類")
     rd = subs.add_parser("redo", help="卡讀錯了，標成要重做", description="客戶說卡讀錯原檔：標成要重做，下次整理時照原檔重寫。")
-    rd.add_argument("id", help="清冊編號（f-…）")
+    rd.add_argument("id", nargs="?", help="清冊編號（f-…）")
+    rd.add_argument("--job", action="append", help="整批重做：這次整理的編號（cards status --json 的 jobs），可以重複")
+    rd.add_argument("--check", action="store_true", help="只列要標的卡，不寫")
     mt = subs.add_parser("mount", help="卡掛錯實體，改掛", description="重設這張卡掛的實體；原本與新掛的實體的綜合卡下次整理會更新。")
     mt.add_argument("id", help="清冊編號（f-…）")
     mt.add_argument("--entity", action="append", required=True, help="改掛的實體名稱，可以重複")
@@ -323,6 +325,51 @@ def _skip(vault, fid, kind, as_json, conversation):
 
 # ---------- redo、mount ----------
 
+REDO_WHICH = "給一張卡的編號，或用 --job 給整理的編號，擇一"
+REDO_NO_JOB = "沒有這次整理：{}"
+REDO_NO_CARDS = "這次整理沒有寫好的卡"
+REDO_CHECK = "要標成重做的卡 {n} 張："
+REDO_JOB_DONE = "已標成要重做：{n} 張卡，下次整理時照原檔重寫"
+REDO_SHOWN = 30
+
+
+def _redo_jobs(vault, jobs, check, as_json, conversation):
+    """整批重做（B 段：客戶說剛剛那批整理得不對）：這幾次整理寫好的卡照 D-147 標要重做；--check 只列。"""
+    jobs = list(dict.fromkeys(j.strip() for j in jobs if j.strip()))
+    try:
+        ids, missing = batches.job_cards(vault, jobs)
+    except batches.Unreadable as e:
+        print(str(e))
+        return 3
+    if missing:
+        print(REDO_NO_JOB.format("、".join(missing)))
+        return 3
+    got = cards.mark_redo_many(vault, ids, turn.current(vault)["turn"], check=check)
+    if not got["cards"]:
+        print(REDO_NO_CARDS)
+        return 3
+    if not check and (got["changed"] or got["synthesis_paths"]):
+        changed = ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if got["changed"] else []) + [
+            {"path": rel, "action": "modify"} for rel in got["synthesis_paths"]]
+        journal_cli.record_program_or_warn(vault, REDO_JOB_DONE.format(n=len(got["cards"])), changed, "cards redo --job",
+                                           conversation)
+    if as_json:
+        print(json.dumps({"jobs": jobs, "check": check, "cards": got["cards"], "synthesis": got["synthesis"]},
+                         ensure_ascii=False))
+        return 0
+    if check:
+        print(REDO_CHECK.format(n=len(got["cards"])))
+        for c in got["cards"][:REDO_SHOWN]:
+            print(f"- {c['title']}（{c['source']}）")
+        if len(got["cards"]) > REDO_SHOWN:
+            print(f"……共 {len(got['cards'])} 張")
+        return 0
+    print(REDO_JOB_DONE.format(n=len(got["cards"])))
+    if got["synthesis"]:
+        print("連帶要更新的綜合卡：" + "、".join(got["synthesis"]))
+    return 0
+
+
 def _redo(vault, fid, as_json, conversation):
     got = cards.mark_redo(vault, fid, turn.current(vault)["turn"])
     if got["changed"] or got["synthesis_paths"]:
@@ -390,6 +437,17 @@ def _session(vault, args, strict=False):
 
 
 
+def _waiting_text(parts):
+    """還有幾份沒整理完，拆開講（B 段落差 5）：「還有 61 份沒整理完（49 份還沒做卡、1 份線上文件我自己做、11 份卡做好了還沒抽日程）」。"""
+    if not parts["total"]:
+        return "都整理完了"
+    bits = [f"{parts['cards']} 份還沒做卡" if parts["cards"] else "",
+            f"{parts['main']} 份我自己做（線上文件或有密碼的）" if parts["main"] else "",
+            f"{parts['agenda']} 份卡做好了還沒抽日程" if parts["agenda"] else ""]
+    bits = [b for b in bits if b]
+    return f"還有 {parts['total']} 份沒整理完" + (f"（{'、'.join(bits)}）" if len(bits) > 1 else "")
+
+
 def _left_text(left):
     parts = [f"{batches.KIND_TEXT[k]} {n}" for k, n in left.items() if n]
     return "還剩 " + "、".join(parts) if parts else "還剩 0"
@@ -434,6 +492,9 @@ def _dispatch(vault, args, as_json):
     if got["stopped"]:
         print(STOPPED_HERE)
         return 0
+    if not got["batches"] and not got["running"] and not got["done"] and got["say"]:
+        print(got["say"])  # 別的對話認領著（認領不分對話）
+        return 0
     if got["done"]:
         print(got["say"] if args.adopt else
               "整理完了" + (f"；沒做成 {len(got['failed'])} 份" if got["failed"] else ""))
@@ -466,11 +527,13 @@ def _status(vault, args, as_json):
     if as_json:
         print(json.dumps(got, ensure_ascii=False))
     elif got["job"] is None:
-        print(f"{NOT_RUNNING}；還有 {got['waiting']} 份沒整理")
-    else:
-        run = "、".join(f"{batches.KIND_TEXT[b['kind']]} {b['items']}" for b in got["running"])
-        print(f"正在整理：還在跑 {len(got['running'])} 批" + (f"（{run}）" if run else "")
-              + f"；這次做好 {got['done']} 份；{_left_text(got['left'])}")
+        last = got["last"]
+        done = (f"；{'停下' if last['stopped'] else '上次'}做好 {last['done']} 份" if last else "")
+        print(f"{NOT_RUNNING}{done}；{_waiting_text(got['waiting_parts'])}")
+    else:  # 先講還在做幾份（B 段落差 3：「還剩 0」會被讀成都做完了）
+        left = sum(got["left"].values())
+        print(f"正在整理：還在做 {got['in_progress']} 份（{len(got['running'])} 批），做好 {got['done']} 份"
+              + (f"；還沒輪到的 {left} 份" if left else ""))
     return 0
 
 
@@ -485,9 +548,10 @@ def _stop(vault, args, as_json):
         print(json.dumps({"agents": [], "done": 0, "left": None}, ensure_ascii=False) if as_json else NOT_RUNNING)
         return 0
     if as_json:
-        print(json.dumps({"agents": got["agents"], "done": got["done"], "left": got["left"]}, ensure_ascii=False))
+        print(json.dumps({"agents": got["agents"], "done": got["done"], "left": got["left"],
+                          "waiting_parts": got["waiting_parts"]}, ensure_ascii=False))
     else:
-        print(f"已停：這次做好 {got['done']} 份，還剩 {got['left']} 份；這個對話不再自動整理，說「整理」再接著做")
+        print(f"已停：這次做好 {got['done']} 份；{_waiting_text(got['waiting_parts'])}；這個對話不再自動整理，說「整理」再接著做")
     return 0
 
 
@@ -547,6 +611,11 @@ def run(args):
         if command == "skip":
             return _skip(vault, args.id, args.kind.strip(), as_json, conversation)
         if command == "redo":
+            if bool(args.id) == bool(args.job) or (args.check and not args.job):
+                print(REDO_WHICH)
+                return 3
+            if args.job:
+                return _redo_jobs(vault, args.job, args.check, as_json, conversation)
             return _redo(vault, args.id, as_json, conversation)
         if command == "mount":
             return _mount(vault, args.id, [n.strip() for n in args.entity], as_json, conversation)

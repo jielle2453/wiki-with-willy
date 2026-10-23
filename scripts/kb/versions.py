@@ -96,6 +96,7 @@ def turns(vault):
             "started": info.get("started", ""), "prompt_head": info.get("prompt_head", ""),
             "reverted": (d / "reverted.json").is_file(),
             "reverted_turn": info.get("reverted_turn"),
+            "remarks": info.get("remarks") or {},
             "entries": turn.entries(vault, d.name),
             "folders": turn.folders(vault, d.name),
             "moves": turn.moves(vault, d.name),
@@ -595,26 +596,40 @@ def _reconcile(vault, rels):
         inventory.set_status(vault, to_deleted, "deleted")
 
 
-def _mark_acting_turn(vault, acting_turn, target_turn):
-    """動作回合的 turn.json 記 reverted_turn（第二輪 R2-4）。"""
+def _mark_acting_turn(vault, acting_turn, target_turn, remarks=None):
+    """動作回合的 turn.json 記 reverted_turn（第二輪 R2-4）；退的是「退回」本身時另記 remarks（當時撤掉的標記原文，
+    B 段落差 10）：再退掉這個動作回合時照原文標回去，versions list 的「已退回」才跟實際對得上。"""
     vdir = turn.turn_dir(vault, acting_turn)
     meta = read_json(vdir / "turn.json", {}) or {}
     meta["reverted_turn"] = target_turn
+    if remarks:
+        meta["remarks"] = remarks
     write_json_atomic(vdir / "turn.json", meta)
 
 
-def _undo_revert_marks(vault, original_turn):
-    """退掉「退回」本身：原回合的 reverted.json 撤掉，它留著的成品（檔還在）改回 active（第二輪 R2-4）。"""
+def _undo_revert_marks(vault, target):
+    """退掉「退回」本身：原回合的 reverted.json 撤掉，它留著的成品（檔還在）改回 active（第二輪 R2-4）；
+    那次退回當時撤掉的標記（remarks）照原文標回去、成品改回 turn_reverted（B 段落差 10）。回這一次撤掉的 {回合: 標記原文}。"""
+    original_turn = target["reverted_turn"]
+    unmarked = {}
     marker = Path(vault) / turn.VERSIONS_REL / original_turn / "reverted.json"
-    try:
+    if marker.is_file():
+        unmarked[original_turn] = read_json(marker, {}) or {}
         marker.unlink()
-    except FileNotFoundError:
-        pass
-    back = [e["id"] for e in inventory.load(vault)["entries"]
+    for again, content in (target.get("remarks") or {}).items():
+        if (Path(vault) / turn.VERSIONS_REL / again).is_dir():
+            write_json_atomic(Path(vault) / turn.VERSIONS_REL / again / "reverted.json", content or {})
+    entries_ = inventory.load(vault)["entries"]
+    back = [e["id"] for e in entries_
             if e.get("created_turn") == original_turn and e.get("status") == "turn_reverted"
             and (rel := _rel_of(e)) and (Path(vault) / rel).is_file()]
     if back:
         inventory.set_status(vault, back, "active")
+    again_ids = [e["id"] for e in entries_ if e.get("created_turn") in (target.get("remarks") or {})
+                 and e.get("status") == "active" and e.get("origin") == "ai_output"]
+    if again_ids:
+        inventory.set_status(vault, again_ids, "turn_reverted")
+    return unmarked
 
 
 def revert_lock_path(vault):
@@ -728,8 +743,11 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
             if is_z3:
                 touched_z3.append(rel)
         elif action == "create" and dst.is_file():
-            if is_z3 and not delete_outputs:
-                continue  # 成品照 D-011：沒明說就留著，之後用 delete-outputs 刪
+            # 成品照 D-011：沒明說就留著，之後用 delete-outputs 刪。「退回」本身那回合的 create 是退回時放回去的舊檔
+            # （例如收起來的草稿），不是那回合的成品：清冊沒把它記成那回合的成品就照常拿掉（B 段落差 10）
+            restored_back = target["reverted_turn"] and inv_error is None and rel not in out_rels
+            if is_z3 and not delete_outputs and not restored_back:
+                continue
             if is_z3 and rel in touched_before:
                 kept_msgs.append(TOUCHED_THIS_TURN.format(rel=rel))
                 kept_ids.extend(o["id"] for o in outputs if _rel_of(o) == rel)
@@ -755,12 +773,13 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
     if inv_error is None:
         _reconcile(vault, touched_z3)
         _rescan(vault, target["moves"], rt["turn"])
+    unmarked = {}
     if target["reverted_turn"]:
         try:
-            _undo_revert_marks(vault, target["reverted_turn"])
+            unmarked = _undo_revert_marks(vault, target)
         except ValueError:
             pass  # 標記已撤；清冊讀不到，成品 status 不對帳
-    _mark_acting_turn(vault, rt["turn"], target["turn"])
+    _mark_acting_turn(vault, rt["turn"], target["turn"], unmarked)
     write_json_atomic(target["dir"] / "reverted.json",
                       {"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "by_turn": rt["turn"]})
     _seal(vault, conversation)

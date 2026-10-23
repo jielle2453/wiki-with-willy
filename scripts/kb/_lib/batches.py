@@ -58,6 +58,8 @@ SAY_ADOPT_PROGRESS = "讀好 {done} 段了{failed}；還在讀 {running} 批"
 SAY_ADOPT_DONE = "舊的 wiki 讀完了{failed}"
 SAY_ADOPT_FAILED = "，{n} 段沒讀成"
 TAKEN_OVER = "整理已經交給另一個對話接手，這個對話不再派"
+OTHER_SESSION = "另一個對話正在整理其中 {n} 份，這邊先不派，等那邊做完再說「整理」"
+HISTORY_DAYS = 30  # 整理紀錄留幾天（cards redo --job 找得到那次做了哪些卡）
 ADOPT_REPORT = ("批次 <批次>：讀了 N 段、沒讀成 M\n"
                 "口述｜<實體名稱或「無」>｜<YYYY-MM-DD 或「未載」>｜<一句>\n"
                 "規則｜<一句>\n"
@@ -121,7 +123,7 @@ def load(vault):
         return empty()
     if not (isinstance(data, dict) and all(isinstance(data.get(k), list) for k in ("jobs", "batches", "agents"))):
         raise Unreadable(f"{BATCHES_POSIX}：形狀不對")
-    if not isinstance(data.get("failures", {}), dict):
+    if not isinstance(data.get("failures", {}), dict) or not isinstance(data.get("history", []), list):
         raise Unreadable(f"{BATCHES_POSIX}：形狀不對")
     return data
 
@@ -171,6 +173,12 @@ def live(batch, now, minutes, agents=None):
         return True
     agent = (agents or {}).get(batch.get("agent_id"))
     return bool(agent and not agent.get("stopped")) and age < timedelta(minutes=minutes * HOLD_FACTOR)
+
+
+def _claimed(data, now, minutes):
+    """認領中的項目（不分對話，cards stop 與 job 照舊按對話）：{(kind, key)}。"""
+    agents = _agents(data)
+    return {(b["kind"], k) for b in data["batches"] if live(b, now, minutes, agents) for k in b.get("items") or []}
 
 
 def running(data, session_id, now, minutes):
@@ -231,14 +239,74 @@ def _cleanup(vault, data):
     def old(stamp):
         t = _parse(stamp)
         return t is not None and now - t > limit
-    data["jobs"] = [j for j in data["jobs"] if not (j.get("status") == "closed" and old(j.get("closed"))
-                                                    and last_closed.get(j.get("session_id")) != j.get("job"))]
+    gone = [j for j in data["jobs"] if j.get("status") == "closed" and old(j.get("closed"))
+            and last_closed.get(j.get("session_id")) != j.get("job")]
+    history = data.setdefault("history", [])
+    for j in gone:  # 拿掉前留一筆整理紀錄（cards redo --job 找得到那次做了哪些卡，B 段整批重做）
+        if j.get("kind") != ADOPT:
+            history.append(dict(_brief(j), items=_card_items(data, j)))
+    cutoff = now - timedelta(days=HISTORY_DAYS)
+    data["history"] = [h for h in history if (_parse(h.get("closed")) or now) >= cutoff]
+    data["jobs"] = [j for j in data["jobs"] if j not in gone]
     jobs = {j.get("job") for j in data["jobs"]}
     data["batches"] = [b for b in data["batches"] if b.get("job") in jobs]
     data["agents"] = [a for a in data["agents"] if not (a.get("stopped") and old(a.get("stopped")))]
     revoked = data.get("revoked") or {}
     for sid in [s for s, v in revoked.items() if (lambda t: t is not None and now - t > timedelta(days=1))(_parse(v.get("time")))]:
         revoked.pop(sid)  # 被接手的對話一天後解開（那時建置早就做完，視窗還開著也照常整理）
+
+
+def _brief(job):
+    return {k: job.get(k) for k in ("job", "session_id", "turn", "created", "closed")}
+
+
+def _card_items(data, job):
+    """這個 job 做卡批次的項目（照派的順序、去重）。"""
+    got = []
+    for b in data["batches"]:
+        if b.get("job") == job.get("job") and b.get("kind") == "cards":
+            got += [k for k in b.get("items") or [] if k not in got]
+    return got
+
+
+def jobs_of(data):
+    """整理紀錄（還在的 job 加留下的紀錄，adopt 的不算）：[{"job","session_id","turn","created","closed","status","items"}]，
+    照開始的時間排。"""
+    got = [dict(_brief(j), status=j.get("status"), items=_card_items(data, j)) for j in data["jobs"] if j.get("kind") != ADOPT]
+    seen = {j["job"] for j in got}
+    got += [dict(h, status="closed") for h in data.get("history") or [] if h.get("job") not in seen]
+    got.sort(key=lambda j: str(j.get("created") or ""))
+    later = set()
+    for j in reversed(got):  # 停了放掉、下一次整理才寫好的算後面那次（一份只算一次）
+        j["items"] = [k for k in j["items"] if k not in later]
+        later.update(j["items"])
+    return got
+
+
+def job_cards(vault, job_ids):
+    """cards redo --job：這幾次整理做卡批次的項目裡，現在清冊 active、卡寫好了的（照派的順序）。回 (編號, 找不到的 job)。"""
+    data = load(vault)
+    known = {j["job"]: j for j in jobs_of(data)}
+    missing = [j for j in job_ids if j not in known]
+    items = []
+    for j in job_ids:
+        items += [k for k in (known.get(j) or {}).get("items") or [] if k not in items]
+    return items, missing
+
+
+def session_state(vault, session_id, flags=None):
+    """這個對話的整理狀態（plan 用，B 段落差 4、6）：有 open 的 job 回 "open"（客戶答應過了，不再問批次題）；
+    說過停（回合記 ingest_stopped）回 "stopped"；都不是回 None。讀不到 batches.json 當沒有 job。"""
+    try:
+        data = load(vault)
+    except ValueError:
+        data = empty()
+    if session_id and open_job(data, session_id) is not None:
+        return "open"
+    mine = [j for j in data["jobs"] if j.get("session_id") == session_id and j.get("kind") != ADOPT] if session_id else []
+    if (flags or {}).get("ingest_stopped") or (mine and mine[-1].get("stopped_turn")):
+        return "stopped"
+    return None
 
 
 # ---------- 項目 ----------
@@ -433,13 +501,21 @@ def unconfirmed_names(vault, out):
     return got
 
 
-def waiting(vault, out):
-    """要整理的份數（plan 的門檻與 announce）：new、stale、unlinked 加 agenda_unscanned，扣掉還沒清的排除夾裡的；
-    主對話自己做的（線上文件、可以讀的密碼檔、用密碼打開的）照算，不然它們永遠不會被提醒（22 第一輪驗後）。
-    記成有密碼還沒打開、記過讀不到的連結，todo 本來就不列。同一種的加密 PDF 由 plan 另外加。"""
-    parts = split(vault, out)
-    return (sum(1 for b, _k, _i in parts["cards"] + parts["main"] if b in ("new", "stale", "unlinked"))
-            + sum(1 for b, _k, _i in parts["agenda"] if b == "agenda_unscanned"))
+def waiting(vault, out, parts=None):
+    """要整理的份數（plan 的門檻與 announce、開場、cards status、cards stop 同一個數）：new、stale、unlinked 加 agenda_unscanned，
+    扣掉還沒清的排除夾裡的；一份只算一次。主對話自己做的（線上文件、可以讀的密碼檔、用密碼打開的）照算，不然它們永遠不會被提醒
+    （22 第一輪驗後）。記成有密碼還沒打開、記過讀不到的連結，todo 本來就不列。同一種的加密 PDF 由 plan 另外加。"""
+    return waiting_parts(vault, out, parts)["total"]
+
+
+def waiting_parts(vault, out, parts=None):
+    """waiting 拆開講（B 段落差 5：停完印 61，客戶看不出是 49 份還沒做卡、1 份線上文件、11 份卡做好了還沒抽日程）：
+    {"cards"（交給製卡助手做卡的）,"main"（我自己做的）,"agenda"（卡做好了還沒抽日程的）,"total"}。"""
+    parts = parts if parts is not None else split(vault, out)
+    cards_ = {k for b, k, _i in parts["cards"] if b in ("new", "stale", "unlinked")}
+    main = {k for b, k, _i in parts["main"] if b in ("new", "stale", "unlinked")} - cards_
+    agenda_ = {k for b, k, _i in parts["agenda"] if b == "agenda_unscanned"} - cards_ - main
+    return {"cards": len(cards_), "main": len(main), "agenda": len(agenda_), "total": len(cards_) + len(main) + len(agenda_)}
 
 
 def _collect(vault):
@@ -569,7 +645,7 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
         failed = job.get("failed") or {}
         jt = job["turn"]
         run = running(data, session_id, now, st["card_batch_expire_minutes"])
-        claimed = {(b["kind"], k) for b in run for k in b.get("items") or []}
+        claimed = _claimed(data, now, st["card_batch_expire_minutes"])  # 任何對話認領中的都扣掉（兩個視窗同時整理不切到同一份）
         left = {k: [x for x in parts[k] if (k, x[1]) not in claimed and x[1] not in failed] for k in KINDS}
         slots = max(0, st["card_parallel"] - len(run))
         made, approval = [], None
@@ -593,7 +669,9 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
                 slots -= 1
             break
         counts = {k: len(v) for k, v in left.items()}
-        done = not made and not run and approval is None and not any(counts.values())
+        others = sum(1 for k in KINDS for x in parts[k] if (k, x[1]) in claimed and x[1] not in failed
+                     and not any(x[1] in (b.get("items") or []) and b["kind"] == k for b in run))
+        done = not made and not run and approval is None and not any(counts.values()) and not others
         if fresh and (made or approval):
             data["jobs"].append(job)
             changed = True
@@ -608,6 +686,8 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
     pre = prefix()
     first = fresh and bool(made)
     say = None if (fresh and not made) else _say(first, done, approval, made, run, _done_count(data, job, out), len(failed))
+    if not made and not run and others and approval is None:
+        say = OTHER_SESSION.format(n=others)  # 別的對話認領著：不說整理完了
     n0 = sum(1 for b in data["batches"] if b.get("job") == job["job"]) - len(made)
     shown = [{"batch": b["batch"], "kind": b["kind"], "items": len(b["items"]), "agent": AGENT,
               "description": DESCRIPTION.format(n=n0 + i + 1, what=_what(b["kind"], len(b["items"]))),
@@ -821,7 +901,10 @@ def _done_count(data, job, out):
 
 
 def status(vault, session_id):
-    """只讀：{"job","running":[{"batch","kind","items"}],"done","left":{kind: n},"waiting","failed"}。"""
+    """只讀：{"job","running":[{"batch","kind","items"}],"in_progress"（還在做的份數）,"done","left":{kind: n}（還沒派的）,
+    "waiting","waiting_parts","failed","last"（沒有 open 的 job 時：這個對話最後一次整理 {"job","done","stopped"}）,
+    "jobs"（這個對話的整理紀錄，舊到新：{"job","turn","created","closed","status","cards"（寫好了的卡）}；整批重做照這個標），
+    "other_jobs"（別的對話的，同樣的欄位）}。"""
     st = _settings(vault)
     now = _now()
     data = load(vault)
@@ -829,12 +912,34 @@ def status(vault, session_id):
     parts = split(vault, out)
     job = open_job(data, session_id)
     run = running(data, session_id, now, st["card_batch_expire_minutes"]) if job else []
-    claimed = {(b["kind"], k) for b in run for k in b.get("items") or []}
+    claimed = _claimed(data, now, st["card_batch_expire_minutes"])
     failed = (job or {}).get("failed") or {}
     left = {k: sum(1 for x in parts[k] if (k, x[1]) not in claimed and x[1] not in failed) for k in KINDS}
+    mine = [j for j in data["jobs"] if j.get("session_id") == session_id and j.get("kind") != ADOPT]
+    last = None
+    if job is None and mine:
+        last = {"job": mine[-1]["job"], "done": _done_count(data, mine[-1], out), "stopped": bool(mine[-1].get("stopped_turn"))}
+    pending_keys = {key_of(b, i) for b in CARD_BUCKETS for i in out.get(b) or []}
+    have = set(cards_lib_ids(vault))
+
+    def row(j):
+        return {"job": j["job"], "turn": j.get("turn"), "created": j.get("created"), "closed": j.get("closed"),
+                "status": j.get("status"), "cards": sum(1 for k in j["items"] if k in have and k not in pending_keys)}
+    every = jobs_of(data)
+    pend = {(k, x[1]) for k in KINDS for x in parts[k]}  # 還沒做好的（批次裡做好了的不算還在做）
     return {"job": job["job"] if job else None,
             "running": [{"batch": b["batch"], "kind": b["kind"], "items": len(b["items"])} for b in run],
-            "done": _done_count(data, job, out), "left": left, "waiting": waiting(vault, out), "failed": len(failed)}
+            "in_progress": sum(1 for b in run for k in b.get("items") or [] if (b["kind"], k) in pend),
+            "done": _done_count(data, job, out), "left": left, "waiting": waiting(vault, out, parts),
+            "waiting_parts": waiting_parts(vault, out, parts), "failed": len(failed), "last": last,
+            "jobs": [row(j) for j in every if j.get("session_id") == session_id],
+            "other_jobs": [row(j) for j in every if j.get("session_id") != session_id]}
+
+
+def cards_lib_ids(vault):
+    """寫好了的檔案卡編號（清冊 active 的）。"""
+    from kb._lib import cards
+    return [e["id"] for e, _c in cards.active_cards(vault)]
 
 
 def stop(vault, session_id, turn_id=None):
@@ -866,7 +971,8 @@ def stop(vault, session_id, turn_id=None):
         save(vault, data, job["turn"])
     parts = split(vault, out)
     return {"job": job["job"], "turn": job["turn"], "agents": list(dict.fromkeys(agents)),
-            "done": _done_count(data, job, out), "left": sum(len(parts[k]) for k in KINDS)}
+            "done": _done_count(data, job, out), "left": waiting(vault, out, parts),
+            "waiting_parts": waiting_parts(vault, out, parts)}
 
 
 def release_session(vault, session_id, turn_id, by=None):
@@ -1024,7 +1130,9 @@ def _release_orphans(data, session_id, now, minutes):
 
 
 def job_turns(vault, session_id):
-    """主對話 Stop 要補「改了」的 job：這個 session open 的 job，加上最近一個關了、還沒換過結果的（回合檔沒記 job_result）。
+    """主對話 Stop 要補「改了」的 job：這個 session open 的 job，加上最近一個關了、還沒換過結果的。
+    同一句裡開過好幾個 job（說停又說整理、做完再派綜合卡）時，那句還有 open 的 job 就先不換；回合檔的 job_result 記換結果時的
+    job 編號，後面又關了一個就再換一次（B 段落差 7：第一個 job 關的那次 Stop 拿到的是「還在做 3 批」）。舊版記的 true 當換過。
     回 [(job, 關了嗎)]。"""
     try:
         data = load(vault)
@@ -1035,7 +1143,9 @@ def job_turns(vault, session_id):
     closed = [j for j in mine if j.get("status") == "closed"]
     if closed:
         last = closed[-1]
-        if not (turn.turn_data(vault, last["turn"]) or {}).get("job_result"):
+        still_open = any(j.get("status") == "open" and j.get("turn") == last["turn"] for j in mine)
+        replaced = (turn.turn_data(vault, last["turn"]) or {}).get("job_result")
+        if not still_open and replaced is not True and replaced != last.get("job"):
             got.append((last, True))
     return got
 

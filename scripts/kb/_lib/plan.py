@@ -35,6 +35,8 @@ AGENDA_UNSCANNED = "agenda_unscanned"
 PURGE_STEPS = ("purge_synthesis", "purge")
 PURGE_NO_CMD = "夾名同時有 $ 或反引號和單引號，清殘留的指令給不出來；請她先在檔案總管改夾名，再說一次不想讓 AI 看到"
 DISPATCH = "kb cards dispatch --json"
+RESUME = "resume"
+RESUME_NOTE = "這個對話說過停：客戶說「整理」「繼續整理」才跑 do 接著做；沒說就不做，照常回答"
 NAMES = "names"
 NAMES_DO = "到門檻的新名字：有把握的 kb entity accept，有疑慮的留給 asks"  # D-202
 JUDGED_TELL = "名字有把握的我直接登記了 {n} 個（{names}）；要看名單或有不對的跟我說"
@@ -116,8 +118,9 @@ def build(out, vault, config, tell_all=True):
     """回 {"plan","asks","tell","announce"}；config 是 kb._lib.config（取 ingest_auto_max）。
     tell_all 是 False 時 tell 只帶這一回合做了什麼（加進日程、照新版改了），整理狀態那些句子不帶（D-141，kb asks 用），
     也不帶 announce。"""
-    full = _plan(out, vault)
-    asks = _asks(out, vault, config, full)
+    state = _session_state(vault)
+    full = _plan(out, vault, state)
+    asks = _asks(out, vault, config, full, state)
     batch = bool(asks) and asks[0]["id"] == "batch"
     steps = [s for s in full if s["step"] in ("sync",) + PURGE_STEPS] if batch else full  # 清殘留批次時也留（疑義第 8 條）
     if not tell_all:
@@ -167,7 +170,16 @@ def _names(out, vault):
     return got
 
 
-def _plan(out, vault):
+def _session_state(vault):
+    """這個對話的整理狀態（B 段落差 4、6）：kb.py --session 給的，沒有就讀 current.json 的那個對話；回合旗標從那個對話的回合檔讀。
+    只讀，不開回合。"""
+    sid = turn.SESSION
+    cur = turn._read_turn(turn._session_file(vault, sid)) if sid else None
+    cur = cur or turn._read_turn(turn._current_file(vault)) or {}
+    return batches.session_state(vault, sid or cur.get("session_id"), cur)
+
+
+def _plan(out, vault, state=None):
     steps = _purge_steps(out)
     names = _names(out, vault)
     if names:  # 名字先判斷：有把握的登記了，這一句的 dispatch 就把它們的綜合卡一起派（D-202）
@@ -184,7 +196,11 @@ def _plan(out, vault):
         steps.append(step)
     parts = batches.split(vault, out)
     sent = sum(len(parts[k]) for k in batches.KINDS)
-    if sent:  # 做卡、抽日程、寫綜合卡一律交給 card-maker（D-196、D-198）；清單由 dispatch 切
+    if sent and state == "stopped":  # 說過停：最前面給 resume，客戶說整理才跑（B 段落差 6，D-200）
+        step = _step(RESUME, sent, DISPATCH, None)
+        step["note"] = RESUME_NOTE
+        steps.insert(0, step)
+    elif sent:  # 做卡、抽日程、寫綜合卡一律交給 card-maker（D-196、D-198）；清單由 dispatch 切
         steps.append(_step("dispatch", sent, DISPATCH, None))
     if parts["main"]:  # card-maker 讀不到線上文件、不碰密碼檔：留給主對話（B-415、card-maker 交界第 1 點）
         step = _step("cards", len(parts["main"]), MAIN_CARDS, f"{CARDING} 一～六節")
@@ -230,10 +246,11 @@ def _ask(ask_id, kind, question, results):
     return {"id": ask_id, "kind": kind, "question": question, "results": results}
 
 
-def _asks(out, vault, config, full_plan):
+def _asks(out, vault, config, full_plan, state=None):
     asks = []
     waiting = _waiting(out, vault)
-    if waiting > config.get(vault, "ingest_auto_max"):
+    # 這個對話已經在整理、或說過停（客戶先前答應過）：不再問批次題（B 段落差 4）；說過停的接著做靠 plan 的 resume
+    if waiting > config.get(vault, "ingest_auto_max") and state is None:
         asks.append(_batch(waiting, full_plan, vault, config))
     drifts = out.get("entity_drift") or []
     asks.extend(_drift(d, out) for d in drifts if d["kind"] == "missing")

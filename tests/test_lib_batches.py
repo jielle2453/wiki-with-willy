@@ -186,13 +186,20 @@ class Claims(Base):
         self.assertEqual((len(got["batches"]), got["running"]), (1, 2))
         self.assertEqual(self.data()["batches"][0]["status"], "open", "過期只是讀到時當放掉，不改檔")
 
-    def test_other_session_does_not_see_old_claims(self):
-        self.out = {"new": files(45)}
+    def test_other_session_skips_live_claims(self):
+        """認領不分對話（22 第 2 點）：另一個視窗同時 dispatch，認領中的不再切；全被認領時不說整理完了。"""
+        self.out = {"new": files(70)}
         first = self.dispatch()
         turn.start(self.V, "sid-2", "繼續整理")
         got = self.dispatch("sid-2")
         self.assertNotEqual(got["job"], first["job"])
-        self.assertEqual((len(got["batches"]), got["running"]), (3, 0))
+        mine = {k for b in self.data()["batches"] if b["job"] == first["job"] for k in b["items"]}
+        theirs = {k for b in self.data()["batches"] if b["job"] == got["job"] for k in b["items"]}
+        self.assertEqual((len(mine), len(theirs), mine & theirs), (60, 10, set()))
+        turn.start(self.V, "sid-3", "整理")
+        third = self.dispatch("sid-3")
+        self.assertEqual((third["batches"], third["done"]), ([], False))
+        self.assertEqual(third["say"], "另一個對話正在整理其中 70 份，這邊先不派，等那邊做完再說「整理」")
 
     def test_unknown_source_refused(self):
         """第一輪修：--source 打錯別名不准回整理完了。"""

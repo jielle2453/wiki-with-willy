@@ -434,6 +434,27 @@ def set_redo(vault, fid, value, turn_id):
     return True
 
 
+def set_redo_many(vault, values, turn_id):
+    """整批標要重做（kb cards redo --job，B 段整批重做）：values 是 {編號: 卡檔 sha 前 12 碼}；一把鎖、備份一次、寫一次，
+    值沒變的跳過。回寫了的編號。清冊沒有的編號丟 KeyError。"""
+    p = _path(vault)
+    with FileLock(p):
+        data = load(vault)
+        by_id = {e.get("id"): e for e in data["entries"]}
+        missing = [fid for fid in values if fid not in by_id]
+        if missing:
+            raise KeyError(missing[0])
+        hit = [fid for fid, v in values.items() if by_id[fid].get("redo") != v]
+        if not hit:
+            return []
+        from kb._lib import turn
+        turn.backup(vault, INVENTORY_POSIX, turn_id)
+        for fid in hit:
+            by_id[fid]["redo"] = values[fid]
+        _write(vault, data["entries"])
+    return hit
+
+
 def follow_redo(vault, changes, turn_id, undo=None):
     """程式自己改寫了卡檔（改掛、改名、搬卡；測試第一輪後裁定 6）：changes 是 {卡編號: (改寫前 sha, 改寫後 sha)}，
     redo 記號等於改寫前的就換成改寫後的，記號照樣有效。有動到才在鎖裡備份、寫；undo（entities._Undo）給了先記舊內容。回有沒有寫。"""

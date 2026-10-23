@@ -12,7 +12,7 @@ from kb._lib import cards  # noqa: E402
 
 SKILL_DIR = ROOT / "skills" / "ingest"
 SKILL = SKILL_DIR / "SKILL.md"
-REFS = ("references/carding.md", "references/commands.md")
+REFS = ("references/carding.md", "references/commands.md", "references/redo.md")
 EVALS = ROOT / "tests" / "evals" / "ingest.json"
 TEMPLATE = ROOT / "templates" / "card.md"
 MANAGE = ROOT / "skills" / "manage" / "SKILL.md"

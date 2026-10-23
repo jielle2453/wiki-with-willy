@@ -65,7 +65,7 @@ class Dispatch(Base):
     def test_human_lines(self):
         self.assertEqual(self.ok("cards", "dispatch"), "派了 3 批（做卡 20、20、5）；還在跑 0 批；還剩 0")
         self.assertEqual(self.ok("cards", "dispatch"), "沒有新派的；還在跑 3 批；還剩 0")
-        self.assertEqual(self.ok("cards", "status"), "正在整理：還在跑 3 批（做卡 20、做卡 20、做卡 5）；這次做好 0 份；還剩 0")
+        self.assertEqual(self.ok("cards", "status"), "正在整理：還在做 45 份（3 批），做好 0 份")
 
     def test_terminal_refused(self):
         """終端機跑的沒有 --session（守門只替對話裡插）：拒絕；current.json 有 session 也一樣（第一輪修：兩個視窗不串）。"""
@@ -117,11 +117,11 @@ class Stop(Base):
         b = self.js("cards", "dispatch")["batches"][0]["batch"]
         self.ok("--turn", self.t, "--agent", "a-1", "cards", "batch", b)
         got = self.js("cards", "stop")
-        self.assertEqual(got, {"agents": ["a-1"], "done": 0, "left": 45})
+        self.assertEqual(got, {"agents": ["a-1"], "done": 0, "left": 45, "waiting_parts": {"cards": 45, "main": 0, "agenda": 0, "total": 45}})
         self.assertEqual({x["status"] for x in batches.load(self.V)["batches"]}, {"released"})
         self.assertTrue(turn._read_turn(turn._session_file(self.V, SID)).get("ingest_stopped"))
         self.assertEqual(self.ok("cards", "stop"), "現在沒有在整理")
-        self.assertEqual(self.ok("cards", "status"), "現在沒有在整理；還有 45 份沒整理")
+        self.assertEqual(self.ok("cards", "status"), "現在沒有在整理；停下做好 0 份；還有 45 份沒整理完")
 
     def test_no_dispatch_after_stop_in_the_same_turn(self):
         """審閱修：停掉的子代理也送通知；同一句收通知再 dispatch 不重派，客戶下一句說整理才派。"""
@@ -135,7 +135,7 @@ class Stop(Base):
 
     def test_stop_human(self):
         self.ok("cards", "dispatch")
-        self.assertEqual(self.ok("cards", "stop"), "已停：這次做好 0 份，還剩 45 份；這個對話不再自動整理，說「整理」再接著做")
+        self.assertEqual(self.ok("cards", "stop"), "已停：這次做好 0 份；還有 45 份沒整理完；這個對話不再自動整理，說「整理」再接著做")
 
 
 class Boundary(Base):

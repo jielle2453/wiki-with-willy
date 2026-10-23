@@ -25,6 +25,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 - 客戶說「我改了報價單」但 `changes` 查無變動 → 先跑 `cards todo --json`，`plan` 有 `dispatch` 或 `cards` 這步就照骨架做（之前可能沒做完）；沒有才說「檔案看起來跟上次一樣，是不是還沒存檔？」；說的是口頭的事（付款條件談好了、會改期）就照 note skill 做，不做別的事。
 - 客戶問卡裡的內容（「上次那份報價在哪」）是回答的事，不是整理；直接讀卡回答。
 - 「先整理報價那夾就好」→ `cards dispatch --source <那個來源的別名>`；「整理到哪了」→ `cards status`；「先停」「今天先到這裡」→ 骨架的「客戶說停」。
+- 「剛剛那批整理得不對」「全部退回」「退到整理之前」→ 照 `references/redo.md` 先問是卡寫錯要重做、還是這些檔本來就不想讓我整理；不用 `versions revert` 一句一句往前退。
 
 ## 原則
 
@@ -50,7 +51,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
   - `dispatch`：跑 `cards dispatch --json`，照「讀派工結果」做；用現有資料回答客戶這句、末尾說還在整理。
   - `cards`（線上文件、密碼檔）：照 carding.md 自己寫卡；某份打回後還是不行，或讀不到又沒記進待處理，只停那一份、告訴客戶。
 - **讀派工結果**（`cards dispatch --json`）：`batches` 每一批用 Agent 工具派（`subagent_type` 照 `agent`、`description` 與 `prompt` 原樣、背景跑）；`say` 有句子就照講一次，收到通知之後對客戶只說 `say`、不另外加話（沒有就不說話，`announce` 講過的也不再講），最後的回答照「回答」用 `tell`；`batches` 空、沒有 `approval` 是還在跑，等通知；`approval` 照它的問句問客戶，說好跑它的 `do` 再 dispatch，說不要就照「客戶說停」做（綜合卡留到下次）；`stopped` 是這一句說了停，不派（帶 `taken_over` 是整理交給了另一個對話，照 `say` 講一次，之後收到通知也不再派）；`done` 是都做完了，到「回答」。`failed` 是製卡助手回報沒做成的，程式不會再派它們，你也不要再派，原因留到「回答」講。之後每收到一個製卡助手做完或停了的通知，就再跑一次 `cards dispatch --json` 照這段讀（範圍程式記著，不用再加 `--source`）。這期間客戶問別的照常回答、末尾一句還在整理；問進度跑 `cards status` 照講。
-- **客戶說停**（「先停」「今天先到這裡」）：跑 `cards stop --json`，`agents` 每個用 TaskStop 停掉，照人讀那句講做好幾份、還剩幾份；這個對話之後不自動整理，客戶說「整理」再從「拿計畫」做。
+- **客戶說停**（「先停」「今天先到這裡」）：跑 `cards stop --json`，`agents` 每個用 TaskStop 停掉，再跑 `cards status` 照它那句講做好幾份、還有幾份（停下前在寫的卡會寫完）；這個對話之後不自動整理。客戶說「整理」「繼續整理」就直接跑 `cards dispatch --json`，照「讀派工結果」做（`plan` 最前面的 `resume` 就是這步，D-200）。
 - **回答**：`plan` 做完（有 `dispatch` 就等到 `done`），重跑 `cards todo --json`，用整理後的資料完整回答派工那一句客戶問的，答案在前；一句講做了什麼（檔名最多列 5 個，多的講份數），`failed` 裡 `tell` 沒帶到的那幾份照原因一起講；`tell` 的句子原樣貼；`asks` 從前面照順序取（名額是 3 減去你自己問的題數），問 `question`，把結果的 `label` 列成選項。選項怎麼排都可以，但回答裡說的回覆方式要跟畫面上的一致；`n` 是程式用來對結果的，不必給客戶看。
 - **客戶回了**：
   - 客戶的回覆要對到你上一句列出的唯一一個結果才照做，對不到或有兩個可能就問清楚；對之前不要重跑 `cards todo --json`，結果會變。對到了就照它的 `do` 依序執行，`fill` 的空格填客戶說的：`fill` 裡帶 `rule` 的空格（自由文字）照 `rule` 寫成一句白話，其他有空白或特殊字元加雙引號；客戶沒給就先問。
@@ -71,4 +72,5 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 
 - `references/carding.md`：製卡規則（批次、材料的欄位、讀法、檔頭、正文、個資、特殊情況、補掛實體、綜合卡放錯位置、日程、密碼檔），寫給製卡助手；`plan` 的 `cards` 那步會指到哪一節。
 - `${CLAUDE_PLUGIN_ROOT}/rules/synthesis.md`：綜合卡怎麼寫。
+- `references/redo.md`：整批不對時的分辨與兩條路（整批重做 `cards redo --job`、不想讓我整理走 manage）。
 - `references/commands.md`：各子命令的參數、輸出、拒絕原因怎麼跟客戶說；`cards todo` 一節有 `plan`、`asks`、`tell`、`announce` 的欄位，`cards dispatch`、`status`、`stop`、`unreadable` 各一節。

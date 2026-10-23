@@ -840,6 +840,48 @@ def mark_redo(vault, fid, turn_id):
             "synthesis": names, "synthesis_paths": paths}
 
 
+def mark_redo_many(vault, fids, turn_id, check=False):
+    """kb cards redo --job（B 段整批重做）：這幾張（清冊 active、卡寫好了的；其餘跳過）照 mark_redo 標要重做，讀一次卡、清冊寫一次，
+    每張綜合卡只改一次。check 只回要標的卡、不寫。回 {"cards":[{"id","title","source"}],"changed","synthesis","synthesis_paths"}。"""
+    from kb._lib import entities, inventory, synthesis, turn
+    groups = _scan_groups(vault)[0]
+    by_id = {e.get("id"): e for e in inventory.load(vault)["entries"]}
+    picked = [(fid, groups[fid][0]) for fid in dict.fromkeys(fids)
+              if fid in groups and (by_id.get(fid) or {}).get("status") == "active"]
+    shown = [{"id": fid, "title": _title(card), "source": str((by_id[fid].get("locations") or [{}])[0].get("uri", "")).rpartition("/")[2]}
+             for fid, card in picked]
+    if check or not picked:
+        return {"cards": shown, "changed": False, "synthesis": [], "synthesis_paths": []}
+    changed = bool(inventory.set_redo_many(vault, {fid: inventory.card_sha(vault, card["path"]) for fid, card in picked},
+                                           turn_id))
+    ids = {fid for fid, _c in picked}
+    names, paths = [], []
+    with entities.lock(vault):
+        data = entities.load(vault)
+        for name in entity_names_of([card for _f, card in picked]):
+            e, _hit = entities.find(data, name)
+            if e is None or e.get("status") != "active" or entities.is_self(e) or not e.get("type"):
+                continue
+            loc = entities.locate(vault, e)
+            if not loc or e["name"] in names:
+                continue
+            text = _read(vault, loc)
+            try:
+                lines = parse_front(text).get("整理到")
+            except ValueError:
+                continue
+            if not isinstance(lines, list):
+                continue
+            new = [f"{str(x).split(' ')[0]} {synthesis.REDO}" if str(x).split(" ")[0] in ids else x for x in lines]
+            if new == lines:
+                continue
+            turn.backup(vault, loc, turn_id, by="program")
+            write_text_atomic(Path(vault) / loc, synthesis.replace_front(text, {"整理到": new}))
+            names.append(e["name"])
+            paths.append(loc)
+    return {"cards": shown, "changed": changed, "synthesis": names, "synthesis_paths": paths}
+
+
 def mount(vault, fid, names, turn_id):
     """kb cards mount：這張卡掛的實體換成 names（登記且 active 的名稱，客戶自己可以；別名轉成登記的名稱、去重）。
     在實體清單的鎖裡改檔頭（rewrite_entities，備份 by program），內容沒變不寫。總目錄、綜合卡快取、日誌由呼叫端做。

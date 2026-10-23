@@ -196,3 +196,64 @@ S2 讓它不會再重切、`failed` 有列、主對話有講；但這份留在 `
 
 **R3（低，觀察）守門的 scoping 只管「單一 kb 呼叫」**
 `kb.py … && …`、`| head`、前面加環境變數的 kb 呼叫，守門回「無意見」（我測 `chain &&`、`pipe`、`env prefix`、`cd + call` 都是），交給 Claude Code 一般權限流程。製卡助手在背景、沒人按允許，一般會被自動拒絕；但使用者的設定若允許 `Bash(python *)`（本輪測試用 `--allowedTools "Bash(python *)"` 就是），這類指令不會被 AGENT_ALLOW 管。沒有實測子代理真的這樣跑，只是守門的行為；是否要處理由設計 session 決定。另外 `python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" cards dispatch` 字面寫法守門同樣無意見（不會插 `--session`，會得到 `整理要在對話裡派`）；B-412 十次都用開場給的絕對路徑，沒遇到。
+
+## 回測第二輪
+
+日期：2026-10-23
+測的版本：`ddf4b47`（`f68f131..ddf4b47` = f15086e 主體、f908066、ddf4b47）；跑前樹乾淨，沒改任何程式。
+範圍：22 派的 7 項。
+
+### 結論
+
+- 7 項裡 **6 項過，第 3 項（R1）材料這半過、端到端沒達成**：壞綜合卡現在拿得到 `target`、`header`、`cards` 等全套材料，製卡助手也把卡寫對了（檔頭、正文都對），但卡還是「壞的」，因為那個實體是這輪才登記的、名字還沒跟客戶確認，驗卡說 `還沒跟客戶確認名稱，先問再寫`；而 `asks` 裡沒有問「信義王」這個名字（只問另外兩個沒卡的），客戶沒有機會確認它。見 **R5**。
+- B-412 第三輪六次：**六次都先整理**；對客戶說的話**英文 0／6、步驟編號 0／6**（上輪 1／10、第一輪 3／10）；收到通知後那句全是程式給的 `say`（繁中）；重複派同一份 **0 次**。
+- 全部測試 `python -m unittest discover tests`：exit 0，Ran 2237，OK（skipped=1），554 秒（ddf4b47，樹乾淨）。`claude plugin validate`：通過（警告同上輪）。
+- settings.json：跑前全文存在 scratchpad `settings_before_round3.json`（sha256 `8ae82f7a69eea7b8321459b4a81b9d734c934bcbe188794b63816af6e2cf4039`），跑後同一個值，`diff` 逐行相同。舊 `llm-wiki@llm-wiki` 的 `enabledPlugins` 仍是 false。
+
+### 逐項
+
+| # | 結果 | 證據 |
+|---|---|---|
+| 1 S4 縮寫 | 過 | **守門**：子代理（Bash 與 PowerShell 各 13 種寫法 × 子命令前與後，共 52 條）帶 `--tu=X`、`--tur=X`、`--tu X`、`--tur X`、`--ses=s`、`--ses s`、`--sess=s`、`--ag=x`、`--ag x`、`--age=x`、`--t=X`、`--a=x`、`--s=s` 全 deny（`kb 指令不能自己帶 --turn、--agent 或 --session`）；主對話帶 `--tu=X`／`--ses=evil`／`--ag=x` 也 deny。**kb 本身**：`--tu=X`、`--tur X`、`--ses=s`、`--ag=x` 都 exit 2（`unrecognized arguments`／`invalid choice`）；連 `--js`、`--jso` 都 exit 2（不再收 `--json` 的縮寫）。**沒有誤擋**：子代理（Bash 與 PowerShell）跑 `entity add --type --name`、`agenda add --kind --date --text`、`agenda list --from --to`、`cards list --source`、`cards todo --json`、`convert --json`、`entity suggest-close --evidence`、`agenda edit --card`、`cards skip --kind`，18 條全 allow。**實測寫進別的 session 的回合**：session A 的子代理、`current.json` 是 session B；守門對 `--tu=<B 的回合> --ses=sid-B --ag=x entity add …` deny；繞過守門直接給 kb：縮寫 exit 2，完整旗標 `--turn <B 的回合> --agent agt-1 --session sid-A` exit 3（`這個回合不是這個對話的：…`）；B 回合的 manifest 沒變。上輪的洞補上了 |
+| 2 R3 | 過 | 子代理 Bash：`&&`、管線 `\| head`、環境變數前綴、`cd` 再接 kb、`python -c`、分號串兩個 kb、`ls`、`echo`、`cat`、`python x.py` 全 deny `製卡助手不能做這件事`；`>` 重導、`$( )`、`pip install` 也 deny（理由是守門本來就有的「不直接放檔」「看不出會寫到哪」，不是 agent 句，結果同樣擋）。PowerShell：`$env:…; kb`、`kb; kb`、`Get-ChildItem`、`ls`、`echo`、`kb \| Select-Object`、`& kb`、`python -c`、`cd; kb` 全 deny `製卡助手不能做這件事`。單一白名單 kb 呼叫（Bash、PowerShell）allow；子代理的 Read 暫存檔／Write 檔案索引的卡仍 allow。**主對話不受影響**：同樣的 13 種 Bash 與 9 種 PowerShell 寫法，結果跟上輪相同（多數 `none` 無意見，`>`、`$( )`、`pip` 照守門原本判斷 deny） |
+| 3 R1 | **材料過；端到端未達成（見 R5）** | **材料**：知識庫自帶 `案子/信義王/信義王.md`（沒有檔頭）、實體「信義王」登記後：`cards batch` 的 synthesis 項目有 `bucket: synthesis_broken`、`path`、`target: 案子/信義王/信義王.md`、`entity_id`、`name`、`type`、`category`、`header`（`---/編號: e-…/型別: 案子/大類: 事/名稱: 信義王/…`）、`sections`、`cards`（1 張）、`statements`、`rulings`、`findings`。**對不到實體**：`案子/無名氏/無名氏.md`（檔頭編號 `e-deadbeef`，沒有這個實體）：`todo.synthesis_broken` 列它；`plan` 在 `dispatch` 之後多一步 `cards`、`files: ["案子/無名氏/無名氏.md"]`；`dispatch` 只切 cards 12 份，它不在任何批次。**實跑**：B-412 六次的製卡助手都把信義王那張卡寫對了（檔頭 `編號／型別／大類／名稱／整理到／檔案卡`，正文有現況、紀事、金額），每次也都回報；但 `cards todo` 之後仍列它為 `synthesis_broken`，原因 `還沒跟客戶確認名稱，先問再寫`。見 R5 |
+| 4 R2 say | 過 | 45 份（3 批同時）：第一次派出 `交給製卡助手在背景整理，好了跟你說；這期間照常問我`；做到一半（1 批做完、2 批還在跑）`做好 20 份了；還在做 2 批`（再叫一次沒變化也同一句）；做完 `整理完了：做好 45 份`；有 1 份沒做成 `整理完了：做好 11 份，1 份沒做成`；要大改動核准的那次（9 張已改 + 3 張 stale）`say` 是 null、`approval` 有問句。全部繁中。副作用見 R4 |
+| 5 同回合再 dispatch | 過 | 12 份、1 份被製卡助手略過：第一次 dispatch（done）`failed` 有它、`note_cmd` 有；同一回合再叫 3 次：`batches: []`、`done: true`、`failed` 仍 1 筆、沒有新 job、沒切它、`pending.json` 沒有東西；`batches.json` 的 `failures` 只有 1 個 job。**換一個回合**：重新 dispatch → 切了它（`batches [1]`）；再略過一次 → `failed` 有它、待處理多一筆 `unreadable`「製卡助手兩次沒做成：讀不到（測試）」；之後再叫兩次不重記（待處理仍 1 筆） |
+| 6 B-412 | 過（6／6 先整理） | 見下 |
+| 7 validate | 過 | `claude plugin validate`：Validation passed with warnings（根目錄 CLAUDE.md 不載入、沒有 icon、README 安裝行，都是既有） |
+
+### B-412 第三輪（6 次）
+
+方法同前兩輪：每次全新 tmp 知識庫（`cards todo` 的 `new` 恰為 19，來源 `客戶案件`），`claude -p "<prompt>" --plugin-dir <worktree> --permission-mode acceptEdits --allowedTools "Bash(python *)" Read Glob Grep Skill Agent --output-format stream-json --verbose`，逾時 480 秒，一次一個；只用 `--plugin-dir`。「你好」3、237 字長指示 3。
+
+| 次 | prompt | 秒 | `cards dispatch` 次數 | 派 card-maker | 卡 | 信義王綜合卡 | 對客戶說的英文／步驟編號 | 重複派 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 你好 | 313 | 3 | 2 | 18 | 寫對、被驗卡擋（R5） | 0／0 | 0 |
+| 2 | 你好 | 246 | 3 | 2 | 18 | 同上 | 0／0 | 0 |
+| 3 | 你好 | 251 | 3 | 2 | 18 | 同上 | 0／0 | 0 |
+| 4 | 長指示 | 255 | 3 | 2 | 18 | 同上 | 0／0 | 0 |
+| 5 | 長指示 | 301 | 3 | 2 | 18 | 同上 | 0／0 | 0 |
+| 6 | 長指示 | 266 | 3 | 2 | 18 | 同上 | 0／0 | 0 |
+
+- (a) **六次都先整理**：Skill ingest → `changes` → `cards todo` → 說 announce（`有 19 份要整理，大約 3 分鐘；要停的話跟我說一聲`）→ `cards dispatch` → 派 Agent；之後每次收到通知又 `cards dispatch`（共 3 次：初派、cards 做完派綜合卡、綜合卡做完）。
+- (b) 英文與步驟編號：對客戶說的每一段文字（排除子代理內部的話）我逐段看過：**英文 0／6、步驟編號 0／6**。收到通知後那句都是程式的 `say`（`做好 19 份了；還在做 1 批`，長指示的有句號或「還有 1 批在做」的小變化），沒有自己加的英文（上輪的 `Thanks for waiting…` 這輪沒出現）。另外有一句 `已核對完原檔，記一筆工作日誌後回覆您。`（長指示第 1 次，繁中、無編號，但是內部過程的話，客戶其實不需要聽到；觀察，不算違規）。
+- (c) **信義王綜合卡：製卡助手六次都寫對了內容，但六次都沒算修好**。原因與建議見 R5。其他三張綜合卡（大安陳、內湖李）還沒建，因為名字還沒確認，這是正確的（`asks` 有問這兩個）。
+- (d) **重複派同一份：0**。每個 job 的 cards 批次 1 個（19 份）、synthesis 批次 1 個（1 項）；沒有同一份出現在兩個批次。
+- (e) 19 份做出 18 張卡，另 1 份是知識庫自帶的壞檔 `信義王/合約.docx`（原因 `檔案壞了：不是完整的 Office 檔`，已記待處理，最後一則回答有講）。權限拒絕沒有；`hook-errors.log` 六個知識庫都沒有。
+- 最後回答把 R5 的狀況講出來了（例：`「信義王」那頁現況被程式擋下來了，因為這個案子的名稱還沒跟你確認過。所以那頁目前不算整理好。`），但**沒有問名字**，因為 `asks` 裡沒有這一題；客戶不知道怎麼讓它過。
+
+### 新發現
+
+**R5（中）已有壞綜合卡、實體沒確認過：派給製卡助手一定做不成，也沒有任何一題問客戶確認名字**
+情境：綜合卡已經存在（人手放的或舊版留下）、實體剛登記（`source: inferred`）。
+1. `dispatch` 把它切成 `synthesis_broken` 批次（`synthesis_new` 有 `if not item.get("confirmed"): continue`，`synthesis_broken` 沒有同樣的檢查）。
+2. 製卡助手拿到完整材料、寫對了，但 PostToolUse 驗卡回 `還沒跟客戶確認名稱，先問再寫`（或它自己看到 `header`／`name` 還沒確認而停下，六次的回報原因各不同，見 `batches.json` 的 `failed`）。
+3. `cards todo` 的 `asks` 只有 `synthesis_new` 會產生「名字這樣叫對嗎」那題；這張卡已存在，不是 new，所以沒有問題。客戶永遠不會被問到「信義王」這個名字。
+4. 我驗證過：對這個知識庫跑 `kb entity confirm 信義王`，`synthesis_broken` 立刻變空、`stale` 也空（也就是卡本身是好的）。所以出路只有手動確認，客戶看不到選項。
+建議（任一）：(a) `synthesis_broken` 的項目對應實體未確認時不切批次，並在 `asks` 加一題「名字這樣叫對嗎」（跟 `synthesis_new` 同一個 `name` 題，結果的 `do` 是 `entity confirm`）；(b) 或確認名字這題對「已有卡檔、實體 inferred」的情況也出（`entities` 的 inferred 且有 `synthesis_broken`／`synthesis_stale` 的都問）。同一個情況也適用 `synthesis_stale`（我沒有另外跑，read-only 看 `batches.dispatch`：`synthesis_stale` 也沒有 `confirmed` 檢查）。
+
+**R4（低）同一回合重複叫 dispatch，`say` 的份數是 0**
+done 之後同一回合再叫（現在沿用 `failed`、不重切，是對的），新開的空 job 的 `say` 是 `整理完了：做好 0 份，1 份沒做成`，第一次是 `做好 11 份`。因為份數只數當前 job 的批次。對客戶看起來像「什麼都沒做」；若主對話照骨架「同一回合只講一次 `say`」就不會重複講到，B-412 沒遇到。建議第二次起 `say` 回 null，或沿用上一個 job 的 `done` 數。
+
+**觀察：`--json` 縮寫不再收**
+`kb.py … --js` 現在 exit 2。skills 與 plan 給的指令都寫全名，沒有影響；使用者在終端機手打縮寫會失敗。

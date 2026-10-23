@@ -3,6 +3,7 @@
 本體在 _lib/build；這裡只拆參數、印人讀或 JSON。不收 --vault：建置在 cwd（桌面版開對話時選的資料夾）。
 拒絕句一字不差、exit 3（--json 時也印那一句）。env、facts、adopt --check、report --facts 只讀；
 start、set、done、redo、report --from 寫 build.json（或報告）並記一段工作日誌程式段（D-085），對話裡叫的併進回合。
+facts、report、adopt 只在建置中的知識庫跑，建好的照 status 那句擋（第一輪修 S9）；adopt --check 在還不是知識庫的夾也能跑。
 終端機不印舊 wiki 的內容（adopt --extract 只印段數）。
 """
 import argparse
@@ -91,11 +92,12 @@ def _set(cwd, args, as_json):
 
 
 def _vault(cwd):
+    return Path(os.path.realpath(str(lib.building(cwd))))
+
+
+def _in_vault(cwd):
     from kb import guard
-    found = guard.find_vault(str(cwd))
-    if found is None:
-        raise lib.Refused(lib.NOT_STARTED)
-    return Path(os.path.realpath(str(found)))
+    return (Path(cwd) / ".system").is_dir() or guard.find_vault(str(cwd)) is not None
 
 
 def _facts(cwd, as_json):
@@ -128,16 +130,23 @@ def _redo(cwd, args, as_json):
 
 def _adopt(cwd, args, as_json):
     if args.check:
+        if _in_vault(cwd):
+            _vault(cwd)  # 建好的知識庫照 status 那句擋
         got = lib.adopt_check(args.path)
         linked = "、".join(x["path"] + ("" if x["exists"] else "（找不到）") for x in got["linked"])
         lines = [f"舊 wiki：{got['path']}", f"raw：{got['raw'] or '沒有'}" + (f"；外掛的夾：{linked}" if linked else ""),
                  f"wiki 頁 {got['wiki_pages']} 頁；hot.md {got['hot_chars']} 字；log.md {got['log_chars']} 字；"
                  f"規則 {got['rules']} 條；日程 {got['agenda']} 條"]
+        if got["skipped"]:
+            lines.append("檔名像密碼、不讀：" + "、".join(got["skipped"]))
         _out(as_json, lines, got)
         return 0
     vault = _vault(cwd)
     got = lib.adopt_extract(vault, args.path)
-    _out(as_json, [f"切好了：{len(got['chunks'])} 段（{len(got['files'])} 份檔）"], got)
+    lines = [f"切好了：{len(got['chunks'])} 段（{len(got['files'])} 份檔）"]
+    if got["skipped"]:
+        lines.append("檔名像密碼、沒讀：" + "、".join(got["skipped"]))
+    _out(as_json, lines, got)
     return 0
 
 

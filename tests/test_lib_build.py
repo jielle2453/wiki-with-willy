@@ -47,8 +47,10 @@ class Base(unittest.TestCase):
         batches._collect = lambda vault: self.out
 
     def started(self, sid="sid-a"):
+        """開始建置，之後的呼叫當成 sid 那個對話（守門替 kb build 插 --session，這裡照設）。"""
         build.start(self.D)
         turn.start(self.D, sid, "/wiki-with-willy:build")
+        turn.SESSION = sid
 
 
 class Where(Base):
@@ -97,7 +99,29 @@ class Start(Base):
             self.assertTrue((self.D / rel).exists(), rel)
         got = self.data()
         self.assertEqual((got["step"], list(got["done"]), got["env"]["items"]), ("setup", ["env"], FAKE_ENV))
-        self.assertEqual(self.refused(build.start, self.D), build.ALREADY)
+        self.assertTrue(self.refused(build.start, self.D).startswith("另一個對話正在建置（訪談，最後動作 "),
+                        "建置中再 start：照 BUSY（第一輪修 S10）")
+
+    def test_concurrent_start_slow_one_busy_without_path(self):
+        """第一輪修 S10：兩個視窗同時 start，慢的那個等鎖、看到 build.json 回 BUSY，不印絕對路徑。"""
+        import threading
+        got = []
+
+        def run():
+            try:
+                build.start(self.D)
+                got.append("ok")
+            except build.Refused as e:
+                got.append(str(e))
+        ts = [threading.Thread(target=run) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(got.count("ok"), 1, got)
+        (other,) = [g for g in got if g != "ok"]
+        self.assertTrue(other.startswith("另一個對話正在建置（訪談，最後動作 "), other)
+        self.assertNotIn(str(self.tmp), other)
 
 
 class Steps(Base):
@@ -164,6 +188,7 @@ class Steps(Base):
 
     def test_cards_waits_for_running_batches(self):
         self.at("cards")
+        turn.SESSION = "sid-a"
         self.fake_todo()
         now = datetime.now().strftime(build.TIME)
         (self.D / batches.BATCHES_POSIX).write_text(json.dumps({"schema_version": 1, "agents": [], "jobs": [
@@ -198,7 +223,7 @@ class Lock(Base):
         self.started("sid-a")
         self.assertEqual(build.status(self.D)["step"], "setup")
         self.assertEqual(self.data()["session_id"], "sid-a")
-        turn.start(self.D, "sid-b", "/wiki-with-willy:build")
+        turn.SESSION = "sid-b"
         last = datetime.strptime(self.data()["last_action"], build.TIME).strftime("%H:%M")
         self.assertEqual(self.refused(build.status, self.D),
                          f"另一個對話正在建置（訪談，最後動作 {last}）；那個對話還開著就回那邊繼續，已經關掉了就說『接手建置』")
@@ -215,10 +240,12 @@ class Lock(Base):
         build.status(self.D)
         self.assertGreaterEqual(self.data()["lock_until"], first)
 
-    def test_injected_session_wins(self):
+    def test_terminal_is_not_current_json(self):
+        """第一輪修 S10：沒有 --session（終端機）不拿 current.json 當自己：current.json 是 sid-a 也照樣被當成另一個。"""
         self.started("sid-a")
         build.status(self.D)
-        turn.SESSION = "sid-other"
+        turn.SESSION = None
+        self.assertEqual(build.session_of(self.D), "終端機")
         self.assertTrue(self.refused(build.status, self.D).startswith("另一個對話正在建置（訪談，最後動作 "))
 
     def test_takeover_then_old_session_refused(self):

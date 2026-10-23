@@ -6,7 +6,11 @@
 build.json 讀改寫都在它的鎖裡、寫前備進回合（by program）；壞檔丟 Unreadable 帶檔名。同時兩個建置（D-194）：記著的 session
 不是這一個、lock_until 還沒到 → BUSY（說最後動作的時間；那個對話關掉了就說「接手建置」）；這個 session 每打一次 kb build
 就把 last_action 記成現在、lock_until 往後推 LOCK_MINUTES。status --takeover：鎖換成這個 session、takeovers 記一行，其他不動。
-session 取守門插的 --session（build 每個子子命令都插），沒有才讀 current.json（不開新回合）。
+session 取守門插的 --session（build 每個子子命令都插）；沒有就是終端機（TERMINAL），不拿 current.json 當自己（第一輪修 S10）。
+接手時把前一個對話的 job 與 open 批次放掉（batches.release_session，S1）；done 判「還在跑」跟 cards status 同一支
+（batches.running，只數這個對話的）。done sample 收掉抽樣的 ids job、抽樣批次還在跑擋（S3）。start 在 init 前先拿鎖（S10）。
+finish 之後的知識庫，facts、report、adopt 也照 status 那句擋（S9）。adopt：檔名像密碼的頁跳過、記進 skipped（跟 convert 同一套樣式，S2）；
+讀 hot.md、log.md、agenda.md、CLAUDE.md 前先看是不是連結。report --facts 多 given_up（製卡助手沒做成的，S7）。
 env（D-189）只讀、不碰 build.json、哪裡都能跑（建好的知識庫也行，換電腦 D-208 會叫它）；PDF 元件在子行程實跑一頁，
 智慧型應用程式控制讀登錄檔，信任讀 ~/.claude.json，舊 llm-wiki 讀外掛清單與 enabledPlugins。外部的東西都經 _ 開頭的函式，測試換掉。
 facts 只讀：每個來源的份數、格式、第一二層夾、讀不到的原因與估時（D-199 的算法，同 plan）。
@@ -72,6 +76,8 @@ REPORT_EXTRA = "建置報告多了一段：{}"
 REPORT_PLACE = "建置報告要先寫在工作區（.system/temp/office/ 底下）再交給我"
 REPORT_UNREADABLE = "讀不到寫好的建置報告：{}"
 ADOPT_PLACE = "切段的暫存位置不對（.system/temp 是連結），沒有寫"
+SAMPLE_RUNNING = "抽樣還在背景做，做完再往下"
+TERMINAL = "終端機"  # 沒有守門插的 --session：終端機跑的
 ENV_KEYS = ("python", "kb", "trust", "sac", "pdf", "office", "disk", "old_wiki")
 
 
@@ -126,11 +132,8 @@ def save(vault, data, turn_id):
 
 
 def session_of(vault):
-    """這一句的 session：守門插的 --session；沒有就讀 current.json（不開新回合）。"""
-    if turn.SESSION:
-        return turn.SESSION
-    data = turn._read_turn(turn._current_file(vault))
-    return data.get("session_id") if data else None
+    """這一句的 session：守門插的 --session；沒有就是終端機（不拿 current.json 當自己，第一輪修 S10）。"""
+    return turn.SESSION or TERMINAL
 
 
 def _turn_id(vault):
@@ -172,7 +175,7 @@ def _last_action(data):
     t = _parse(data.get("last_action"))
     if t is None:
         until = _parse(data.get("lock_until"))
-        t = until - timedelta(minutes=LOCK_MINUTES) if until is not None else None
+        t = until - timedelta(minutes=LOCK_MINUTES) if until is not None else _parse(data.get("started"))
     return t.strftime("%H:%M") if t is not None else "不明"
 
 
@@ -184,11 +187,14 @@ def _claim(data, session, takeover=False):
     busy = owner and session and owner != session and until is not None and until > now
     if busy and not takeover:
         raise Refused(BUSY.format(step=STEP_TEXT[data["step"]], time=_last_action(data)))
+    taken = None
     if takeover and owner and owner != session:
         data.setdefault("takeovers", []).append({"time": _stamp(now), "from": owner, "to": session})
+        taken = owner
     data["session_id"] = session or owner
     data["last_action"] = _stamp(now)
     data["lock_until"] = _stamp(now + timedelta(minutes=LOCK_MINUTES))
+    return taken
 
 
 def _locked(cwd, change, takeover=False):
@@ -198,11 +204,18 @@ def _locked(cwd, change, takeover=False):
         data = load(vault)
         if data is None or data["step"] == "done":
             raise Refused(ALREADY)
-        _claim(data, session_of(vault), takeover)
+        taken = _claim(data, session_of(vault), takeover)
         tid = _turn_id(vault)
         got = change(vault, data, tid)
         save(vault, data, tid)
+    if taken:  # 接手：前一個對話的 job 與 open 批次放掉，項目回到可派（S1）
+        batches.release_session(vault, taken, tid)
     return vault, data, got
+
+
+def building(cwd):
+    """建置中的知識庫（facts、report、adopt 用，S9）：不是知識庫丟 NOT_STARTED，做完或沒有建置紀錄丟 ALREADY。"""
+    return _vault_or_refuse(cwd)[0]
 
 
 # ---------- 步驟 ----------
@@ -273,19 +286,33 @@ def start(cwd):
     import io as _io
     from kb import init
     p = Path(cwd).resolve()
-    if _above(p) is not None or (p / ".system").is_dir():
+    if _above(p) is not None:
         raise Refused(ALREADY)
-    buf = _io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        code = init.run(argparse.Namespace(path=str(p), check=False, json=False))
-    if code != 0:
-        raise Refused(buf.getvalue().strip().splitlines()[-1] if buf.getvalue().strip() else "知識庫建不起來")
-    now = _stamp()
-    data = {"schema_version": SCHEMA_VERSION, "step": "setup", "started": now, "done": {"env": now}, "people": None,
-            "adopt": None, "no_sources": False, "env": {"checked": now, "items": env_items(p)},
-            "session_id": None, "lock_until": None}
-    with lock(p):
-        write_json_atomic(_path(p), data)
+    held = Path(str(_path(p)) + ".lock")
+    if (p / ".system").is_dir() and not held.exists() and not _path(p).is_file():
+        raise Refused(ALREADY)  # 有 .system/、沒有人在建：本來就是知識庫
+    (p / ".system").mkdir(parents=True, exist_ok=True)
+    try:
+        with lock(p):  # 兩個視窗同時 start：慢的那個等到這裡，看到 build.json 就回 BUSY（第一輪修 S10）
+            data = load(p)
+            if data is not None:
+                raise Refused(ALREADY if data["step"] == "done" else
+                              BUSY.format(step=STEP_TEXT[data["step"]], time=_last_action(data)))
+            if (p / sources_lib.SOURCES_REL).is_file():
+                raise Refused(ALREADY)
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = init.run(argparse.Namespace(path=str(p), check=False, json=False))
+            if code != 0:
+                raise Refused(buf.getvalue().strip().splitlines()[-1] if buf.getvalue().strip() else "知識庫建不起來")
+            init._hide(p / ".system")  # .system/ 是這裡先建的，init 不會替它設隱藏
+            now = _stamp()
+            data = {"schema_version": SCHEMA_VERSION, "step": "setup", "started": now, "done": {"env": now},
+                    "people": None, "adopt": None, "no_sources": False, "env": {"checked": now, "items": env_items(p)},
+                    "session_id": None, "lock_until": None}
+            write_json_atomic(_path(p), data)
+    except TimeoutError:
+        raise Refused(BUSY.format(step=STEP_TEXT["env"], time=_now().strftime("%H:%M"))) from None
     return p, data
 
 
@@ -295,6 +322,8 @@ def done(cwd, step):
         if step != data["step"]:
             raise Refused(NOT_NOW.format(now=STEP_TEXT[data["step"]], want=STEP_TEXT.get(step, step)))
         _check(vault, data, step)
+        if step == "sample":  # 抽樣的 ids job 收掉：進全量整理時第一次 dispatch 就全量切（S3）
+            batches.close_ids_job(vault, session_of(vault), tid)
         if step == "env":
             data["env"] = {"checked": _stamp(), "items": env_items(vault)}
         if step == "setup":
@@ -340,15 +369,13 @@ def set_value(cwd, key, value):
 
 
 def _running(vault, kinds):
-    """所有 session 認領中的批次（kinds 裡的種類）。"""
+    """這個對話認領中的批次（kinds 裡的種類）：跟 cards status／dispatch 同一支 batches.running（第一輪修 S1）。"""
     try:
         data = batches.load(vault)
     except ValueError:
         return []
-    now = _now()
-    agents = batches._agents(data)
-    minutes = config.get(vault, "card_batch_expire_minutes")
-    return [b for b in data["batches"] if b.get("kind") in kinds and batches.live(b, now, minutes, agents)]
+    run = batches.running(data, session_of(vault), _now(), config.get(vault, "card_batch_expire_minutes"))
+    return [b for b in run if b.get("kind") in kinds]
 
 
 def _given_up(vault):
@@ -362,7 +389,10 @@ def _given_up(vault):
 
 def _check(vault, data, step):
     """done 的前提（build 釐清）：不過丟 Refused 一句原因。"""
-    if step == "setup":
+    if step == "sample":
+        if batches.ids_running(vault, session_of(vault)):
+            raise Refused(SAMPLE_RUNNING)
+    elif step == "setup":
         st = profile.status(vault)
         if st["state"] == "missing":
             raise Refused(PROFILE_MISSING)
@@ -731,7 +761,13 @@ def _read(p):
     return None
 
 
-def _wiki_pages(root):
+def _credential_name(root, p):
+    """路徑（相對舊 vault）有一段像密碼或金鑰的檔名（跟 convert 同一套樣式）就回那一段。"""
+    return credentials.match_segment(p.relative_to(root).parts)
+
+
+def _wiki_pages(root, skipped=None):
+    """wiki/ 底下要讀的頁（hot、log、agenda、index 與 meta/ 另算）；連結不跟；檔名像密碼的放進 skipped。"""
     wiki = root / "wiki"
     if not wiki.is_dir():
         return []
@@ -740,15 +776,35 @@ def _wiki_pages(root):
         rel = p.relative_to(wiki).as_posix()
         if rel in WIKI_SKIP or rel.split("/")[0] == "meta" or p.is_symlink():
             continue
+        if _credential_name(root, p):
+            if skipped is not None:
+                skipped.append(p.relative_to(root).as_posix())
+            continue
         got.append(p)
     return got
 
 
+def _plain(p):
+    """一般檔才回（連結、捷徑點過去的不讀，第一輪修 S9）。"""
+    return p if p.is_file() and not p.is_symlink() and os.path.realpath(p) == os.path.abspath(p) else None
+
+
 def _special(root, name):
     for p in (root / "wiki" / name, root / name):
-        if p.is_file():
-            return p
+        if p.is_file() or p.is_symlink():
+            return _plain(p)
     return None
+
+
+def adopt_skipped(root):
+    """舊 vault 裡檔名像密碼、不讀的頁（相對路徑）。"""
+    skipped = []
+    _wiki_pages(Path(root), skipped)
+    for name in ("hot.md", "log.md", "agenda.md"):
+        p = _special(Path(root), name)
+        if p is not None and _credential_name(Path(root), p):
+            skipped.append(p.relative_to(root).as_posix())
+    return skipped
 
 
 def _linked(root):
@@ -777,7 +833,8 @@ def _linked(root):
 
 def _rules(root):
     """CLAUDE.md 裡規則那幾節（標題有 鐵律、裁示、雷、習慣、規則）的條目：- 開頭、有內容的行。"""
-    text = _read(root / "CLAUDE.md") or ""
+    p = _plain(root / "CLAUDE.md")
+    text = (_read(p) if p else "") or ""
     n, inside = 0, False
     for line in text.splitlines():
         if line.startswith("#"):
@@ -801,7 +858,7 @@ def adopt_check(path):
     return {"path": root.as_posix(), "raw": (root / "raw").as_posix() if (root / "raw").is_dir() else None,
             "linked": _linked(root), "wiki_pages": len(_wiki_pages(root)),
             "hot_chars": len(_read(hot) or "") if hot else 0, "log_chars": len(_read(log) or "") if log else 0,
-            "rules": _rules(root), "agenda": _agenda(root)}
+            "rules": _rules(root), "agenda": _agenda(root), "skipped": adopt_skipped(root)}
 
 
 def _pieces(text, limit):
@@ -828,12 +885,17 @@ HEAD_MAX = 200  # 段頭那行（來源路徑）最多佔的字數
 
 def adopt_extract(vault, path):
     """kb build adopt <路徑> --extract：要讀的文字遮值後切段，寫進 .system/temp/adopt/001.txt…（先清掉上次的段）。
-    回 {"chunks":[絕對路徑], "files":[{"path","chunks"}]}。舊 vault 只讀。"""
+    回 {"chunks":[絕對路徑], "files":[{"path","chunks"}], "skipped":[檔名像密碼、沒讀的頁]}。舊 vault 只讀。"""
     root = _old_root(path)
     limit = config.get(vault, "adopt_chunk_chars")
     known = credentials.known_names(vault)
-    order = [_special(root, "hot.md"), root / "CLAUDE.md", _special(root, "agenda.md")] + _wiki_pages(root) + \
-        [_special(root, "log.md")]
+    skipped = []
+    order = [_special(root, "hot.md"), _plain(root / "CLAUDE.md"), _special(root, "agenda.md")] + \
+        _wiki_pages(root, skipped) + [_special(root, "log.md")]
+    for p in list(order):
+        if p is not None and _credential_name(root, p):
+            skipped.append(p.relative_to(root).as_posix())
+            order.remove(p)
     temp = Path(vault) / ".system" / "temp"
     d = temp / "adopt"
     for x in (temp, d):
@@ -859,7 +921,7 @@ def adopt_extract(vault, path):
             write_text_atomic(target, head + piece)
             chunks.append(target.resolve().as_posix())
         files.append({"path": rel, "chunks": len(parts)})
-    return {"chunks": chunks, "files": files}
+    return {"chunks": chunks, "files": files, "skipped": skipped}
 
 
 # ---------- 交付報告（D-066、D-047） ----------
@@ -889,8 +951,17 @@ def report_facts(vault):
         _count(counts, u["reason"].split("：", 1)[0])
     ents = entities.load(vault)["entities"]
     names = {e.get("id"): e.get("name") for e in ents}
+    names_by_id = names
     started = _parse(data.get("started"))
     now = _now()
+    given = []
+    for g in batches.given_up(vault):
+        e = by_id.get(g["id"])
+        name = (e["locations"][0]["uri"].rsplit("/", 1)[-1] if e and e.get("locations") else
+                names_by_id.get(g["id"]) or str(g["id"]).rsplit("/", 1)[-1])
+        given.append(dict(g, name=name))
+    old = data.get("adopt")
+    skipped = adopt_skipped(old) if old and Path(old).is_dir() else []
     return {"sources": [s["alias"] for s in srcs.entries], "files": len(files),
             "cards": len(cards._scan_groups(vault)[0]),
             "synthesis": sum(len(v) for v in entities.synthesis_files(vault).values()),
@@ -899,6 +970,7 @@ def report_facts(vault):
             "merged": [{"from": e["name"], "into": names.get(e.get("merged_into"), e.get("merged_into"))}
                        for e in ents if e.get("status") == "merged"],
             "blocked": [i for i in (data.get("env") or {}).get("items") or [] if i.get("level") != "ok"],
+            "given_up": given, "adopt_skipped": skipped,
             "people": data.get("people"), "no_sources": bool(data.get("no_sources")), "adopt": data.get("adopt"),
             "started": data.get("started"), "finished": _stamp(now),
             "minutes": int((now - started).total_seconds() // 60) if started else None}
@@ -920,6 +992,10 @@ def numbers_lines(f):
     if f["unreadable"]:
         why = "、".join(f"{k} {n}" for k, n in f["unreadable_counts"].items())
         lines.append(f"- 讀不到 {len(f['unreadable'])} 份（{why}）")
+    if f["given_up"]:
+        lines.append(f"- 製卡助手沒做成 {len(f['given_up'])} 份：" + "、".join(g["name"] for g in f["given_up"]))
+    if f["adopt_skipped"]:
+        lines.append("- 舊 wiki 裡檔名像密碼、沒讀的：" + "、".join(f["adopt_skipped"]))
     if f["ai_judged"]:
         lines.append(f"- 名字由 AI 判斷登記的 {len(f['ai_judged'])} 個：{'、'.join(f['ai_judged'])}")
     if f["merged"]:
@@ -956,10 +1032,7 @@ def report_from(cwd, src):
     """kb build report --from <路徑>：只收工作區（.system/temp/office/）底下的檔；六個標題要齊（缺或多 → Refused 說哪一段）；
     AI 的文字遮值、拿掉註解，沒內容的段不寫，數字段由程式接上；寫 系統/建置報告.md（備進回合），build.json 記 report。"""
     p = Path(cwd).resolve()
-    vault = guard.find_vault(str(p))
-    if vault is None:
-        raise Refused(NOT_STARTED)
-    vault = Path(os.path.realpath(str(vault)))
+    vault = Path(os.path.realpath(str(building(p))))
     target = Path(src)
     if not target.is_absolute():
         target = p / target

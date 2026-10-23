@@ -24,6 +24,8 @@ plan 的 asks 出名字題（unconfirmed_names），客戶確認之後下一次 
 build（第 6 點）：dispatch --ids 只派那幾份（建置抽樣；job 記著 ids，之後再派照它）；第四種工作 adopt（dispatch_adopt）：
 build adopt --extract 切好的段（.system/temp/adopt/*.txt）分批交給 card-maker 讀、回報候選；adopt 的 job 帶 kind adopt，
 跟整理的 job 分開（open_job 不認它），段讀完（批次 done）就不再派，回報裡「- <段>：<原因>」的記成沒讀成。
+build 第一輪修：release_session（接手建置時把前一個對話的 job 與 open 批次放掉，同 stop、不記 stopped_turn，S1）；
+close_ids_job（done sample 收掉抽樣的 ids job，S3）；dispatch 帶 --ids 時 job 開著也驗編號（S3）。
 """
 import re
 import secrets
@@ -515,6 +517,7 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
     算 todo 也在鎖裡：子代理剛做完的不會被重切（第一輪修）。
     ids（build 抽樣）：只派這幾份做卡，不在 todo 可派的做卡項目裡的丟 Refused；job 記著，之後不帶 --ids 的再派照它。"""
     check_source(vault, source)
+    explicit_ids = bool(ids)
     st = _settings(vault)
     now = _now()
     with lock(vault):
@@ -542,8 +545,9 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
         parts_all = split(vault, out)
         parts = split(vault, out, source) if source is not None else parts_all
         if ids:
-            if fresh:
-                known = {x[1] for x in parts["cards"]}
+            if explicit_ids:  # 這一句給的 --ids：job 開著也驗（做過的那幾份算認得，build 第一輪修 S3）
+                known = {x[1] for x in parts["cards"]} | {k for b in data["batches"] if b.get("job") == job["job"]
+                                                          for k in b.get("items") or []}
                 missing = [i for i in ids if i not in known]
                 if missing:
                     raise Refused(NO_IDS.format("、".join(missing)))
@@ -828,6 +832,67 @@ def stop(vault, session_id, turn_id=None):
             "done": _done_count(data, job, out), "left": sum(len(parts[k]) for k in KINDS)}
 
 
+def release_session(vault, session_id, turn_id):
+    """接手建置（build 第一輪修 S1）：前一個對話（session_id）open 的 job 關掉、open 批次放掉（released），項目回到可派；
+    不記 stopped_turn（不是那一句說了停）。回放掉的批數；沒有 batches.json 回 0。"""
+    if not session_id or not _path(vault).is_file():
+        return 0
+    now = _now()
+    with lock(vault):
+        data = load(vault)
+        n = 0
+        for b in data["batches"]:
+            if b.get("status") == "open" and _job_session(data, b) == session_id:
+                b["status"] = "released"
+                n += 1
+        jobs = [j for j in data["jobs"] if j.get("session_id") == session_id and j.get("status") == "open"]
+        for j in jobs:
+            j["status"], j["closed"], j["released_by_takeover"] = "closed", now.strftime(_TIME), True
+        if n or jobs:
+            save(vault, data, turn_id)
+    return n
+
+
+def close_ids_job(vault, session_id, turn_id):
+    """done sample（build 第一輪修 S3）：這個 session 用 --ids 開、還開著的 job 收掉，下一次 dispatch 開新的 job 全量切。回有沒有收。"""
+    if not _path(vault).is_file():
+        return False
+    with lock(vault):
+        data = load(vault)
+        job = open_job(data, session_id)
+        if job is None or not job.get("ids"):
+            return False
+        job["status"], job["closed"] = "closed", _now().strftime(_TIME)
+        save(vault, data, turn_id)
+    return True
+
+
+def ids_running(vault, session_id):
+    """這個 session 用 --ids 開的 job 還在跑的批數（done sample 的前提）。"""
+    try:
+        data = load(vault)
+    except ValueError:
+        return 0
+    job = open_job(data, session_id)
+    if job is None or not job.get("ids"):
+        return 0
+    run = running(data, session_id, _now(), _minutes(vault))
+    return sum(1 for b in run if b.get("job") == job["job"])
+
+
+def given_up(vault):
+    """製卡助手回報沒做成的（每個 job 的 failed）：[{"id","kind","reason"}]，同一個只列一次（建置報告，S7）。"""
+    try:
+        data = load(vault)
+    except ValueError:
+        return []
+    got = {}
+    for j in data["jobs"]:
+        for k, v in (j.get("failed") or {}).items():
+            got[k] = {"id": k, "kind": v.get("kind"), "reason": v.get("reason")}
+    return list(got.values())
+
+
 # ---------- 子代理 ----------
 
 def agent_start(vault, session_id, agent_id):
@@ -856,6 +921,16 @@ def report_failures(message):
         if m:
             got[m.group(1)] = m.group(2)[:200]
     return got
+
+
+def adopt_agent(vault, agent_id):
+    """這個子代理目前認領的是讀舊 wiki 的批次嗎（守門擋它寫檔，build 第一輪修 S8）；讀不到回 False。"""
+    try:
+        data = load(vault)
+    except ValueError:
+        return False
+    return any(b.get("agent_id") == agent_id and b.get("status") == "open" and b.get("kind") == ADOPT
+               for b in data["batches"])
 
 
 def agent_stop(vault, session_id, agent_id, message=None):

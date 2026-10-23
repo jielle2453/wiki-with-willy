@@ -18,7 +18,7 @@ background: true
 
 ## 開始
 
-1. 照 prompt 跑第一個指令 `cards batch <批次> --json`。它的 `prefix` 是之後每個 kb 指令的前綴（規則裡寫 `kb …` 的都換成它）；`kind` 是這批的種類；`items` 是要做的項目（跟 `cards todo --json` 同一組欄位，多一個 `bucket` 說來自哪一桶）；`profile`、`entities` 是卡型、段落、實體清單。
+1. 照 prompt 跑第一個指令 `cards batch <批次> --json`。它的 `prefix` 是之後每個 kb 指令的前綴（規則裡寫 `kb …` 的都換成它）；`kind` 是這批的種類；`items` 是要做的項目（跟 `cards todo --json` 同一組欄位，多一個 `bucket` 說來自哪一桶）；`profile`、`entities` 是卡型、段落、實體清單。讀舊 wiki 的批次（`kind` 是 adopt）不一樣：`items` 每項只有 `name`（段名）與 `chunk`（段的絕對路徑），另有 `report`（回報格式），沒有 `profile`、`entities`。
 2. 先讀 `read` 列的規則（carding.md 照它寫的那幾節），再動手。印「這批已經停了或做完了」就什麼都不做，直接回報。
 
 ## 四種工作
@@ -50,4 +50,4 @@ background: true
 被擋或打回：<原話一句，沒有寫「無」>
 ```
 
-沒做成的每份一行。不寫檔案內容、摘要、人名、金額、日期（D-022）。
+沒做成的每份一行。不寫檔案內容、摘要、人名、金額、日期（D-022）。讀舊 wiki 的批次不照這個格式，照 `report`（候選本來就要帶實體與日期，給主對話列給客戶確認）；那種批次不能寫任何檔，守門會擋。

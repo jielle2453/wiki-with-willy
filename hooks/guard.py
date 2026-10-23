@@ -10,6 +10,7 @@ card-maker 第一輪修：記過的子代理只准白名單裡的 kb 子命令�
 也不准讀 .system/unlock.json 與 .system/temp 的密碼檔暫存，其餘 deny「製卡助手不能做這件事」（S3）；指令自己帶了
 --turn／--agent／--session 的（子代理在哪都算，主對話看子命令前的）deny，不改寫（S4）；主對話的 cards dispatch／status／stop
 與 build 的每個子子命令插 --session <sid>（兩個視窗開同一個知識庫不串；build 認哪個對話在建置，build 驗後修）。
+build 第一輪修 S8：記過的子代理目前認領的是讀舊 wiki（adopt）的批次時，Write／Edit 這類寫檔工具一律 deny。
 第二輪修：--t、--a、--s 開頭而且是這三個旗標前綴的（--tu=、--ses、--ag=…）一樣算；記過的子代理跑 Bash／PowerShell，
 不是「單一 kb 呼叫而且在白名單裡」的一律 deny（&&、管線、環境變數前綴、cd 再接、python -c 都算），客戶按過一律允許 python 也繞不過。
 永不以非 0 結束，永不丟例外到 Claude Code。
@@ -164,6 +165,8 @@ def scope(payload, tool, d, agent_turn):
     ti = payload.get("tool_input") or {}
     if agent_turn and tool in FILE_TOOLS and _secret_target(payload, tool, d.vault):
         return AGENT_DENY, None
+    if agent_turn and tool in WRITE_TOOLS and _adopt_agent(d.vault, payload.get("agent_id")):
+        return AGENT_DENY, None  # 讀舊 wiki 的批次不寫任何檔
     if tool not in SHELL_TOOLS:
         return None, None
     if d.reason != guard.KB_CALL_REASON:
@@ -189,6 +192,11 @@ def scope(payload, tool, d, agent_turn):
     if not payload.get("agent_id") and sid and ((cmd, sub) in SESSION_SUBS or cmd in SESSION_CMDS):
         return None, with_flags(ti, ("--session", sid))
     return None, None
+
+
+def _adopt_agent(vault, agent_id):
+    from kb._lib import batches
+    return bool(agent_id) and batches.adopt_agent(vault, agent_id)
 
 
 def _secret_target(payload, tool, vault):

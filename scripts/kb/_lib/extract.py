@@ -513,11 +513,14 @@ def _run_child(argv, data, env, timeout):
 
 
 def _scrub(text, password):
-    """子行程的錯誤訊息：先換掉密碼原字，再照 mask_secrets 遮值（ledger 寫入前同一套）。"""
+    """子行程的錯誤訊息：先換掉密碼原字、repr 與 JSON 跳脫後的寫法（build 第一輪修 S6），再照 mask_secrets 遮值。"""
     from kb._lib import credentials
     text = str(text or "")
     if password:
-        text = text.replace(str(password), CHILD_MASK)
+        pw = str(password)
+        forms = {pw, repr(pw)[1:-1], json.dumps(pw)[1:-1], json.dumps(pw, ensure_ascii=False)[1:-1]}
+        for form in sorted((f for f in forms if f), key=len, reverse=True):
+            text = text.replace(form, CHILD_MASK)
     return credentials.mask_secrets(text)
 
 

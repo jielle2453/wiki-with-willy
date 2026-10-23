@@ -310,7 +310,8 @@ class Adopt(Base):
         log = (self.O / "wiki" / "log.md").read_text(encoding="utf-8")
         self.assertEqual(got, {"path": self.O.as_posix(), "raw": (self.O / "raw").as_posix(),
                                "linked": [{"alias": "案子", "path": (self.tmp / "外部案子").as_posix(), "exists": True}],
-                               "wiki_pages": 2, "hot_chars": len(hot), "log_chars": len(log), "rules": 2, "agenda": 1})
+                               "wiki_pages": 2, "hot_chars": len(hot), "log_chars": len(log), "rules": 2, "agenda": 1,
+                               "skipped": []})
         self.assertEqual(tree_hashes(self.O), before)
 
     def test_not_old_vault(self):

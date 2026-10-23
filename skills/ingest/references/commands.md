@@ -53,14 +53,14 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 `--json` 另有 `plan`、`asks`、`tell`、`announce` 四樣程式算好的，照著做（`new`、`stale` 等是做事的材料，這四樣才是順序與問法；第一條是日程的指引）：
 - 日程（`kb agenda`、`kb entity progress`、`kb asks`）的指令與逾期題的答法看 note skill 的 `references/agenda.md`；日程有出入、結案兩種題照 `asks` 的結果做；`plan` 的 `agenda_recheck`、`agenda_unscanned` 兩步照 carding.md 第九節做（`kb agenda scanned` 的說明在 note 的 `references/agenda.md`）。
-- `plan`：照順序要做的事，每步 `{"step","items","do","read"}`；`read` 是先讀的那份（null 不用讀；`references/…` 相對本 skill 資料夾，`rules/synthesis.md` 是實際路徑）。全空是 `[]`；份數超過 `ingest_auto_max` 時只剩 sync，其餘在 `asks` 第一題「現在做」的 `then` 裡。做卡、抽日程、寫綜合卡是一步 `{"step":"dispatch","items":45,"do":"kb cards dispatch --json","read":null}`；線上文件、檔名像密碼的、有密碼的那幾份留一步 `cards`（多 `files`：編號清單，材料在 `new`、`stale`），主對話自己照 `read` 做。`unlock_same_kind` 一步（排在寫卡之前）多 `files`（每份 `{"id","name","folder","size","date"}`，有密碼讀不到的 PDF）與 `kinds`（每種 `{"label","credential","examples":[{"name","folder"}]}`），照 carding.md 第十節判斷與開。
+- `plan`：照順序要做的事，每步 `{"step","items","do","read"}`；`read` 是先讀的那份（null 不用讀；`references/…` 相對本 skill 資料夾，`rules/synthesis.md` 是實際路徑）。全空是 `[]`；份數超過 `ingest_auto_max` 時只剩 sync，其餘在 `asks` 第一題「現在做」的 `then` 裡。做卡、抽日程、寫綜合卡是一步 `{"step":"dispatch","items":45,"do":"kb cards dispatch --json","read":null}`；線上文件、檔名像密碼的、有密碼的那幾份留一步 `cards`（多 `files`：編號清單，材料在 `new`、`stale`），主對話自己照 `read` 做。`unlock_same_kind` 一步（排在寫卡之前）多 `files`（每份 `{"id","name","folder","size","date"}`，有密碼讀不到的 PDF）與 `kinds`（每種 `{"label","credential","examples":[{"name","folder"}]}`），照 carding.md 第十節判斷與開。到門檻還沒確認的新名字時最前面一步 `names`（多 `names`：每個 `{"entity_id","name","type","cards"}`，`cards` 是掛的卡標題），照 carding.md 第十一節判斷，有把握的 `entity accept`。
 - `asks`：要問客戶的題，已排好序（份數多先問、實體夾或綜合卡不見、其他實體夾有變、原檔不見、同一種的密碼檔（`credential_same_kind`，多 `file`、`labels`、`note`，先判斷再問，note 的 `references/ruling.md` 第三節）、裁示蓋的檔改版了（`ruling_recheck`）、逾期、日程有出入、結案、名字確認），每題 `{"id","kind","question","results":[{"n","label","do","strict","fill"}]}`。`n` 從 1 一路編下去，是程式用來對結果的內部編號，不必給客戶看；`do` 是選了這個結果要依序執行的指令（`kb ` 開頭，空是不跑指令），`fill` 列 `do` 裡 `{新名字}` 這類空格，每個空格都是 `{"name","rule"}`，照 `rule` 寫（自由文字寫成一句白話，名字有空白就加雙引號）；`strict` 是會刪東西的；結果可帶 `note`（給你的一句話）或 `then`（接著要做的 `plan` 步驟）。例：`{"n":2,"label":"沒刪，先留著","do":["kb pending resolve p-1a2b3c4d --how \"{客戶的話}\""],"strict":false,"fill":[{"name":"客戶的話","rule":"一句白話，不含 \" $ ` \\ 這四種字元"}]}`。
 - `tell`：回答末尾要講的句子（讀不到，每份帶原因與怎麼辦、不製卡的份數、依設定不整理、型別表沒有、PDF 元件裝好、加進日程、照新版改了日期），順序排好、0 的不列，照講。例：`["合約_加密.pdf 讀不到：有密碼；給我密碼就能打開，要我記住也可以；記在 系統/待處理.md","請款類 4 份依你的設定不整理"]`；用存好的密碼開了同一種的有一句「「X」我判斷跟之前的保險單是同一種，用那組密碼打開了」。
 - `announce`：要整理的份數（新、重做、待掛實體、待抽日期）大於 0、不超過 `ingest_auto_max`（預設 20）時，開始整理前照貼的一句，例：`"有 12 份要整理，大約 2 分鐘；要停的話跟我說一聲"`；0 份或超過門檻是 null（超過時 `asks` 第一題是「現在做嗎」，0 份就照 `plan` 剩下的做）。
 
-## cards dispatch [--source <別名>] [--json]（背景整理，只在對話裡）
+## cards dispatch [--source <別名>] [--ids f-…,f-…] [--adopt] [--json]（背景整理，只在對話裡）
 
-`{"job","turn","batches":[{"batch","kind","items","agent","description","prompt"}],"running","left":{"cards","agenda","synthesis"},"approval":{"question","do"}|null,"done","note_cmd","stopped","failed":[{"id","kind","reason"}],"say"}`；每個欄位怎麼處理照 SKILL 骨架的「讀派工結果」。同時在跑的批數上限是 `card_parallel`（預設 3），做卡 → 日程 → 綜合卡依序；`--source` 只整理那個來源，job 記著，之後再派不用再加。製卡助手回報沒做成的記在 `failed`，同一次整理不再派；同一份兩次整理都沒做成，程式照讀不到記進待處理，檔案改了才再派。製卡助手自己跑 `cards batch` 拿材料，主對話不跑。人讀 `派了 3 批（做卡 20、20、20）；還在跑 0 批；還剩 做卡 176、綜合卡 6`（有沒做成的後面接「；沒做成 N 份」）、`沒有新派的；…`、`整理完了`、`這一句說了停，不再派；客戶說整理再派`。拒絕（exit 3）：`整理要在對話裡派`（終端機跑的）、`沒有登記這個來源：X`（`--source` 打錯，照 `folders list` 的別名重跑）。
+`{"job","turn","batches":[{"batch","kind","items","agent","description","prompt"}],"running","left":{"cards","agenda","synthesis"},"approval":{"question","do"}|null,"done","note_cmd","stopped","failed":[{"id","kind","reason"}],"say"}`；每個欄位怎麼處理照 SKILL 骨架的「讀派工結果」。同時在跑的批數上限是 `card_parallel`（預設 3），做卡 → 日程 → 綜合卡依序；`--source` 只整理那個來源，job 記著，之後再派不用再加。製卡助手回報沒做成的記在 `failed`，同一次整理不再派；同一份兩次整理都沒做成，程式照讀不到記進待處理，檔案改了才再派。製卡助手自己跑 `cards batch` 拿材料，主對話不跑。人讀 `派了 3 批（做卡 20、20、20）；還在跑 0 批；還剩 做卡 176、綜合卡 6`（有沒做成的後面接「；沒做成 N 份」）、`沒有新派的；…`、`整理完了`、`這一句說了停，不再派；客戶說整理再派`。拒絕（exit 3）：`整理要在對話裡派`（終端機跑的）、`沒有登記這個來源：X`（`--source` 打錯，照 `folders list` 的別名重跑）。建置用的兩個照 build skill 做：`--ids` 只做那幾份（抽樣，job 記著），不在可派清單裡的拒絕 `這幾份不在要整理的清單裡：…`；`--adopt` 派讀舊 wiki 的段（`left` 是 `{"adopt"}`），還沒切段拒絕 `還沒切段，先跑 kb build adopt …`。
 
 ## cards status [--json]、cards stop [--json]
 
@@ -100,7 +100,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 - 拒絕（exit 3）：`沒有這條待處理：p-…`、`這條已經處理過了：p-…` → 重跑 `pending list` 看現在的。
 
 ## profile check|apply [--json]
-另有 `show`、`add`、`remove`、`type rename|merge|remove`：客戶在對話裡說要改設定檔時用，怎麼問、怎麼說看 note skill 的 `references/preference.md`。
+另有 `show`、`add`、`remove`、`type rename|merge|remove`：客戶在對話裡說要改設定檔時用，怎麼問、怎麼說看 note skill 的 `references/preference.md`。建置時事先填好的設定檔用 `apply --from "<路徑>"`（build skill 帶）：先驗、讀不懂一樣回節與列、什麼都沒寫。
 開場有「設定檔有改（…）」那行、或客戶說設定檔改好了要套用時用；同時有「有變動」就先處理設定檔再整理，卡型才會是新的。先跑 `profile check`：
 
 - `客戶設定檔有改：…` 底下每行一項差異 → 逐條複述（「多了 工班（對象）」），問「要套用嗎？」，客戶說好才跑 `profile apply`。
@@ -113,8 +113,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 - `客戶設定檔讀不懂：第 N 節第 M 列…`（`check` 也是 exit 3）→ 照句子告訴客戶哪一列要改，改好再說一次。
 - `型別「X」底下還有 N 項，先搬走再拿掉這列` → 照講；實體換型別用 kb entity，夾裡的散檔問她要不要幫她搬（走 manage）。
-- `「X」已經有同名的檔，不能建成型別夾；先改名或搬走` → 照講。
-- `等不到鎖，沒有寫入` → 等一下再跑一次。
+- `「X」已經有同名的檔，不能建成型別夾；先改名或搬走` → 照講。`等不到鎖，沒有寫入` → 等一下再跑一次。
 - `設定檔已改好，但後面沒做完（…）；跑 kb profile apply 會補上` → 設定檔已經改了，再跑一次 `profile apply` 補完。
 - `建不了資料夾「X」：…；設定檔沒有套用`（下一行列已建的夾）→ 「資料夾建不起來，設定檔先沒套用；說「檢查」我看原因。」
 - `apply` 印 `客戶設定檔沒有改，沒有套用` 是 exit 0，不是拒絕 → 告訴客戶設定檔跟上次一樣，可能還沒存檔。
@@ -126,20 +125,21 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 |---|---|---|
 | `entity add --type 案子 --name 王宅` | `已登記：王宅（案子，待確認）`；已有就 `已登記過：王宅（案子）` | 寫卡前，實體不在 `entities` 裡（這個是你自己叫） |
 | `entity confirm 王宅` | `已確認：王宅（案子）` | 名字對 |
+| `entity accept 王宅` | `已登記：王宅（AI 判斷）`；客戶確認過的印 `已經確認過了：王宅`（exit 0） | `plan` 的 `names`：看掛的卡有把握（carding.md 第十一節） |
 | `entity rename 信義王 --to 王宅 [--type 業主]` | `已改名：信義王 → 王宅（舊名記成別名）`；搬到夾裡的檔多一行 `資料夾裡的 N 個檔跟著搬了…`；改回原名印 `已照「信義王」把資料夾與綜合卡改回來` | 改名、改回原名、改型別；`asks` 帶 |
 | `entity merge 王宅 --into 信義王` | `已合併：王宅 併進 信義王（王宅記成別名）` | 兩個是同一個；`asks` 帶 |
 | `entity remove 大安陳` | `已移除：大安陳（知識不刪，檔案卡上的掛載留著）` | 不要這個實體；`asks` 帶 |
 | `entity suggest-close 信義王 --evidence f-…` | `已記下，會問客戶「信義王」要不要記成結案`；依據問過印 `這份依據問過了，不再問`（exit 0）；實體不是進行中印 `「X」目前是擱置，不用問結案`（exit 0） | 讀到結束證據（carding.md 第九節）；問客戶的是 `asks`，你不問 |
 | `entity rebuild 大安陳` | `好，「大安陳」會照檔案卡重寫一張` | 綜合卡被刪、回收筒也沒有；`asks` 帶 |
 | `entity clean 案子/王宅/王宅.md`（相對總資料夾） | `已清掉放錯的綜合卡：…` | 綜合卡寫到正確路徑之後，清掉寫錯的那張 |
-| `entity list`／`entity render` | 每行 `- 信義王（案子，確認）掛 12 張，有綜合卡`／`重寫了 N 張綜合卡的檔頭` | 查看；平常不用 render |
+| `entity list`／`entity render` | 每行 `- 信義王（案子，確認）掛 12 張，有綜合卡`（確認、待確認、AI 判斷三種）／`重寫了 N 張綜合卡的檔頭` | 查看；平常不用 render |
 
 拒絕（exit 3），照講或照做：
 - `型別「X」不在型別表；在設定檔第一節加一列再套用` → 不登記，這份寫進 `待補型別`。
 - `已有「信義王」（案子）；是同一件就掛它，不是就加區分詞（例：…）` → 是同一件就掛既有的名稱；不是就換個帶區分詞的名稱再 add。
 - `「林小姐」是你自己（關於你），掛「林小姐室內設計」` → 照掛那個名稱。`名稱「X」不能用（…）` → 換名稱。
 - `型別不同：先 kb entity rename …` → 照那句先跑再合併；`「X」的夾裡還有 N 個檔，先把檔搬到「Y」再合併` → 告訴客戶，夾裡的東西要搬，問她要不要幫她搬（走 manage）。
-- `實體清單沒有「X」`、`「X」的綜合卡還在，不用重寫`、`這張綜合卡位置是對的，不用清`、`這不是綜合卡，不能用 clean` → 是你判錯，重跑 `cards todo --json`。
+- `實體清單沒有「X」`、`實體清單沒有：X`（accept）、`「X」的綜合卡還在，不用重寫`、`這張綜合卡位置是對的，不用清`、`這不是綜合卡，不能用 clean` → 是你判錯，重跑 `cards todo --json`。
 - `等不到鎖，沒有寫入` → 等一下再跑一次。
 
 ## cards、pending、profile、entity 共通的拒絕（exit 3）

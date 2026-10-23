@@ -1,4 +1,4 @@
-"""kb entity add／confirm／rename／merge／remove／rebuild／clean／list／render／progress／suggest-close／alias
+"""kb entity add／confirm／accept／rename／merge／remove／rebuild／clean／list／render／progress／suggest-close／alias
 （實體與綜合卡第 3 點，D-115～D-117、D-057；日程第 4 點，D-126、D-127；note 改知識第 4 點，D-148）。
 
 實體清單只准這裡寫（I-080）：寫入的子子命令在 entities.json 的鎖裡讀改寫（等 30 秒，等不到「等不到鎖，沒有寫入」exit 3），
@@ -6,6 +6,7 @@
 progress 改事類實體的進行中／結案／擱置（結案連帶結束它的期間條目），suggest-close 記一條待處理等客戶答。
 alias 加或拿掉別名：別名撞到另一個已登記的實體就不寫、exit 3，--json 帶問題與結果清單（同 asks 的形狀）改問合併；
 拿掉時列出內文提到那個別名的檔案卡（suspect_cards）。
+accept：AI 看掛的卡有把握的新名字直接登記成「AI 判斷」（source ai_judged，D-202；build 第 5 點），算確認、不出名字題。
 rename 搬了夾、夾裡有客戶原檔時，鎖外接著 inventory.scan（只掃知識庫）加 apply，讓原檔的新位置入冊（同 folders add）。
 終端機跑的記一段工作日誌程式段（D-085），command 是 entity <子子命令>；對話裡叫的併進回合。
 """
@@ -30,6 +31,8 @@ def add_arguments(sub):
     ad.add_argument("--name", required=True, help="名稱")
     cf = subs.add_parser("confirm", help="客戶確認了名稱", description="記成客戶確認過的名稱。")
     cf.add_argument("ref", help="名稱或編號（e-…）")
+    ac = subs.add_parser("accept", help="AI 判斷名字有把握，直接登記", description="AI 看掛的卡有把握：記成 AI 判斷，算確認、不問名字。")
+    ac.add_argument("ref", help="名稱或編號（e-…）")
     rn = subs.add_parser("rename", help="改名或換型別", description="改名（舊名記成別名）、換型別；檔案卡與綜合卡一起改。")
     rn.add_argument("ref", help="名稱或編號（e-…）")
     rn.add_argument("--to", required=True, help="新名稱")
@@ -58,13 +61,16 @@ def add_arguments(sub):
     which = al.add_mutually_exclusive_group(required=True)
     which.add_argument("--add", help="要加的別名")
     which.add_argument("--remove", help="要拿掉的別名")
-    for p in (ad, cf, rn, mg, rm, rb, cl, ls, rd, pg, sc, al):
+    for p in (ad, cf, ac, rn, mg, rm, rb, cl, ls, rd, pg, sc, al):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
 
+STATE_TEXT = {"inferred": "待確認", entities.AI_JUDGED: "AI 判斷"}
+
+
 def _state(entry):
-    return "待確認" if entry.get("source") == "inferred" else "確認"
+    return STATE_TEXT.get(entry.get("source"), "確認")
 
 
 PROGRESS_BY_TEXT = {v: k for k, v in entities.PROGRESS_TEXT.items()}
@@ -108,6 +114,19 @@ def _confirm(vault, args, as_json, conversation, turn_id):
     journal_cli.record_program_or_warn(vault, line, [{"path": entities.ENTITIES_POSIX, "action": "modify"}],
                                        "entity confirm", conversation)
     _out(as_json, [line], {"entity": entry})
+    return 0
+
+
+def _accept(vault, args, as_json, conversation, turn_id):
+    entry, how = entities.accept(vault, args.ref, turn_id)
+    if how == "confirmed":
+        _out(as_json, [f"已經確認過了：{entry['name']}"], {"entity": entry, "accepted": False})
+        return 0
+    line = f"已登記：{entry['name']}（AI 判斷）"
+    if how == "accepted":
+        journal_cli.record_program_or_warn(vault, line, [{"path": entities.ENTITIES_POSIX, "action": "modify"}],
+                                           "entity accept", conversation)
+    _out(as_json, [line], {"entity": entry, "accepted": how == "accepted"})
     return 0
 
 
@@ -300,7 +319,7 @@ def _render(vault, as_json, conversation, turn_id):
     return 0
 
 
-WRITERS = {"add": _add, "confirm": _confirm, "rename": _rename, "merge": _merge, "remove": _remove,
+WRITERS = {"add": _add, "confirm": _confirm, "accept": _accept, "rename": _rename, "merge": _merge, "remove": _remove,
            "rebuild": _rebuild, "clean": _clean, "progress": _progress, "suggest-close": _suggest_close, "alias": _alias}
 
 

@@ -12,6 +12,9 @@ tell：回答末尾要講的現成句子；kb asks（tell_all 是 False）多一
 排在原檔不見之後）；tell 的「有密碼」PDF 與 Word／Excel 分開講、不製卡的密碼檔接「要讓我讀哪一份跟我說」、這一回合用存好的密碼開了的講一句。
 announce：要整理的份數在 ingest_auto_max 以內時，開始整理前先說的一句（份數、大約多久、要停說一聲，D-199、D-200），否則 None；
       kb asks（tell_all 是 False）不帶這鍵。
+名字（D-202，build 第 7 點）：有到門檻還沒確認的新名字（synthesis_new 沒確認的、unconfirmed_names）時，plan 最前面多一步 names：
+AI 讀掛的卡判斷，有把握的 kb entity accept（記成 AI 判斷，算確認），有疑慮的不動、留給 asks 的名字題；
+AI 判斷登記的（ai_judged）不算沒確認，不出名字題。tell 多一句這一回合 AI 判斷登記了哪幾個。
 只讀：不寫任何檔，不開原檔。
 """
 import math
@@ -32,6 +35,10 @@ AGENDA_UNSCANNED = "agenda_unscanned"
 PURGE_STEPS = ("purge_synthesis", "purge")
 PURGE_NO_CMD = "夾名同時有 $ 或反引號和單引號，清殘留的指令給不出來；請她先在檔案總管改夾名，再說一次不想讓 AI 看到"
 DISPATCH = "kb cards dispatch --json"
+NAMES = "names"
+NAMES_DO = "到門檻的新名字：有把握的 kb entity accept，有疑慮的留給 asks"  # D-202
+JUDGED_TELL = "名字有把握的我直接登記了 {n} 個（{names}）；要看名單或有不對的跟我說"
+JUDGED_SHOWN = 5
 ANNOUNCE = "有 {n} 份要整理，大約{how_long}；要停的話跟我說一聲"  # 門檻內開始前先說（D-199、D-200）：背景整理時打字就停得下來
 BATCH_QUESTION = "有 {n} 份要整理，大約{how_long}；份數多，會用掉比平常多的額度。現在做嗎？"  # D-199：只講時間，用量一句話
 UNREADABLE_LISTED = 5
@@ -51,6 +58,7 @@ UNREADABLE_ADVICE = (
     ("不支援的格式", "這種格式還讀不了，跟我說先跳過，或換一份檔"),
     ("只在雲端", "請在檔案上按右鍵選保留在這台電腦上，我再整理"),
     ("還沒裝 PDF 元件", "請服務人員跑 pip install pypdfium2，裝好後我會自動整理"),
+    ("PDF 元件出錯", "這台電腦擋了讀 PDF 的元件；請服務人員跑 kb build env 看 PDF 那一項"),  # build：工具夾的元件在子行程起不來
     ("檔案壞了", "換一份，或跟我說先跳過"),
     ("檔案太大", "這版讀不了，跟我說先跳過"),
     ("編碼", "換一份檔，或跟我說先跳過"),
@@ -148,8 +156,24 @@ MAIN_CARDS = ("照 files 自己做（這幾份不交給製卡助手）：編號�
               "路徑是找不到屬於哪個實體的壞綜合卡，照 synthesis_broken 的 reason 與 carding.md 第八節處理，處理不了就跟客戶說")
 
 
+def _names(out, vault):
+    """還沒確認的新名字（synthesis_new 沒確認的、壞或要更新的綜合卡的實體沒確認的）：[{"entity_id","name","type","question"
+    （有的話）,"cards"}]；cards 是掛的檔案卡標題，給 AI 判斷有沒有把握（D-202）。"""
+    got = [{"entity_id": i["entity_id"], "name": i["name"], "type": i.get("type"),
+            "cards": [c.get("title") for c in i.get("cards") or []]}
+           for i in out.get("synthesis_new") or [] if not i.get("confirmed")]
+    got += [{"entity_id": i["entity_id"], "name": i["name"], "type": i.get("type"), "cards": []}
+            for i in batches.unconfirmed_names(vault, out)]
+    return got
+
+
 def _plan(out, vault):
     steps = _purge_steps(out)
+    names = _names(out, vault)
+    if names:  # 名字先判斷：有把握的登記了，這一句的 dispatch 就把它們的綜合卡一起派（D-202）
+        step = _step(NAMES, len(names), NAMES_DO, f"{CARDING} 第十一節")
+        step["names"] = names
+        steps.append(step)
     sync = len(out.get("moved") or []) + len(out.get("duplicates") or [])
     if sync:
         steps.append(_step("sync", sync, SYNC, None))
@@ -553,7 +577,20 @@ def _tell(out, vault):
         lines.append(UNBACKED_TELL.format(n=out["unbacked"]))
     lines.extend(agenda.tell_lines(vault))
     lines.extend(_opened_tell(vault))
+    lines.extend(_judged_tell(vault))
     return lines
+
+
+def _judged_tell(vault):
+    """這一回合 AI 判斷登記的名字（D-202）：一句講幾個、列前幾個、錯了怎麼說。"""
+    try:
+        names = entities.judged_in(vault, turn.current(vault)["turn"])
+    except (ValueError, OSError):
+        return []
+    if not names:
+        return []
+    shown = "、".join(names[:JUDGED_SHOWN]) + ("…" if len(names) > JUDGED_SHOWN else "")
+    return [JUDGED_TELL.format(n=len(names), names=shown)]
 
 
 def _link_titles(vault, unreadable):

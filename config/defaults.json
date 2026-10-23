@@ -62,5 +62,9 @@
   "relocate_sample_max": 40,
   "_why_relocate_sample_max": "kb folders relocate 從清冊抽幾份到新位置比對（D-177）：大小相同才算指紋，40 份夠看出整理過還是貼錯夾，大的夾也幾秒內比完",
   "agenda_past_days": 30,
-  "_why_agenda_past_days": "系統/日程.md 過去區與甘特圖往回看幾天（D-105）：再久的已過去、完成、取消都在 agenda.json 裡，不佔清單"
+  "_why_agenda_past_days": "系統/日程.md 過去區與甘特圖往回看幾天（D-105）：再久的已過去、完成、取消都在 agenda.json 裡，不佔清單",
+  "adopt_chunk_chars": 12000,
+  "_why_adopt_chunk_chars": "kb build adopt --extract 把舊 wiki 切成段，每段最多幾個字（D-193）；製卡助手一批讀四段約五萬字不會被摺疊，一段夠放一整頁舊專案頁",
+  "build_disk_warn_mb": 1024,
+  "_why_build_disk_warn_mb": "kb build env 磁碟剩不到幾 MB 就提醒（D-189）：知識庫的卡、暫存與回合備份建置當天約幾百 MB，少於 1 GB 可能做到一半寫不下"
 }

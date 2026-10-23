@@ -456,3 +456,104 @@ class Purge(Base):
         self.assertEqual(got["left"]["cards"], 0)
         steps = [s["step"] for s in plan.build(dict(self.out, moved=[], duplicates=[]), self.V, config)["plan"]]
         self.assertEqual(steps, ["purge_synthesis", "purge", "dispatch"])
+
+
+
+class Ids(Base):
+    """build 第 6 點（驗收 7）：dispatch --ids 只派那幾份做卡；job 記著，之後再派照它；不在可派清單裡的拒絕。"""
+
+    def test_only_those(self):
+        self.out = {"new": files(30), "agenda_unscanned": [{"id": "f-00000000"}],
+                    "synthesis_new": [{"entity_id": "e-1", "confirmed": True}]}
+        got = batches.dispatch(self.V, SID, self.t, ids=["f-00000003", "f-00000007"])
+        self.assertEqual([(b["kind"], b["items"]) for b in got["batches"]], [("cards", 2)])
+        self.assertEqual(self.data()["batches"][0]["items"], ["f-00000003", "f-00000007"])
+        self.assertEqual(got["left"], {"cards": 0, "agenda": 0, "synthesis": 0})
+        self.assertEqual(self.data()["jobs"][0]["ids"], ["f-00000003", "f-00000007"])
+        self.edit(lambda d: d["batches"][0].update(status="done"))
+        self.out = {"new": [f for f in files(30) if f["id"] not in ("f-00000003", "f-00000007")],
+                    "agenda_unscanned": [{"id": "f-00000000"}]}
+        again = self.dispatch()  # 不帶 --ids：照 job 記的
+        self.assertEqual((again["batches"], again["done"]), ([], True))
+
+    def test_unknown_refused(self):
+        self.out = {"new": files(3)}
+        with self.assertRaises(batches.Refused) as cm:
+            batches.dispatch(self.V, SID, self.t, ids=["f-00000001", "f-deadbeef"])
+        self.assertEqual(str(cm.exception), "這幾份不在要整理的清單裡：f-deadbeef")
+        self.assertEqual(self.data()["jobs"], [])
+
+
+class Adopt(Base):
+    """build 第 6 點（驗收 11）：第四種工作 adopt。段分批（一批 ADOPT_BATCH_CHUNKS 段）、同時 card_parallel 個；
+    job 跟整理的分開；做完的段不再派、回報的「- 段：原因」記成沒讀成；stop 一起停。"""
+
+    def chunks(self, n):
+        d = self.V / batches.ADOPT_POSIX
+        d.mkdir(parents=True, exist_ok=True)
+        for i in range(1, n + 1):
+            (d / f"{i:03d}.txt").write_text(f"<!-- 來源：wiki/{i}.md，第 1／1 段 -->\n內容 {i}", encoding="utf-8")
+
+    def adopt(self, sid=SID):
+        return batches.dispatch_adopt(self.V, sid, turn.current(self.V, sid)["turn"])
+
+    def test_no_chunks_refused(self):
+        with self.assertRaises(batches.Refused) as cm:
+            self.adopt()
+        self.assertEqual(str(cm.exception), "還沒切段，先跑 kb build adopt <舊 wiki 的路徑> --extract")
+
+    def test_batches_and_done(self):
+        self.chunks(14)
+        got = self.adopt()
+        self.assertEqual([(b["kind"], b["items"]) for b in got["batches"]], [("adopt", 4), ("adopt", 4), ("adopt", 4)])
+        self.assertEqual((got["left"], got["say"], got["done"]), ({"adopt": 2}, batches.SAY_ADOPT_FIRST, False))
+        self.assertEqual(got["batches"][0]["description"], "整理第 1 批（讀舊 wiki 4 段）")
+        job = self.data()["jobs"][0]
+        self.assertEqual(job["kind"], "adopt")
+        self.assertIsNone(batches.open_job(self.data(), SID), "整理的 job 不認 adopt 的")
+        view = batches.batch_view(self.V, got["batches"][0]["batch"])
+        self.assertEqual([i["name"] for i in view["items"]], ["001.txt", "002.txt", "003.txt", "004.txt"])
+        self.assertTrue(view["items"][0]["chunk"].endswith("/.system/temp/adopt/001.txt"))
+        self.assertIn(f"批次 {got['batches'][0]['batch']}：讀了 N 段", view["report"])
+        self.edit(lambda d: [b.update(status="done") for b in d["batches"][:2]] and
+                  d["batches"][0].update(failed={"002.txt": "段落是空的"}))
+        nxt = self.adopt()
+        self.assertEqual([b["items"] for b in nxt["batches"]], [2])
+        self.assertEqual(nxt["say"], "讀好 7 段了，1 段沒讀成；還在讀 2 批")
+        self.edit(lambda d: [b.update(status="done") for b in d["batches"]])
+        last = self.adopt()
+        self.assertEqual((last["done"], last["say"], last["failed"]),
+                         (True, "舊的 wiki 讀完了，1 段沒讀成", [{"id": "002.txt", "kind": "adopt", "reason": "段落是空的"}]))
+        self.assertEqual(self.data()["jobs"][0]["status"], "closed")
+
+    def test_agent_start_uses_adopt_job_and_stop_closes_it(self):
+        self.chunks(2)
+        self.adopt()
+        self.assertEqual(batches.agent_start(self.V, SID, "a-1"), self.t)
+        self.edit(lambda d: d["batches"][0].update(agent_id="a-1"))
+        got = batches.stop(self.V, SID, self.t)
+        self.assertEqual(got["agents"], ["a-1"])
+        self.assertEqual(self.data()["jobs"][0]["status"], "closed")
+        self.assertTrue(self.adopt()["stopped"], "這一句說了停")
+
+    def test_cards_job_unaffected(self):
+        self.chunks(2)
+        self.adopt()
+        self.out = {"new": files(3)}
+        got = self.dispatch()
+        self.assertEqual([(b["kind"], b["items"]) for b in got["batches"]], [("cards", 3)])
+        self.assertEqual(len(self.data()["jobs"]), 2)
+
+
+class NameQuestion(unittest.TestCase):
+    """build 交界：名字題的「掛了 N 份檔」掛 0 份時改說「還沒做卡」。"""
+
+    def test_wording(self):
+        self.assertEqual(batches.NAME_QUESTION.format(name="王宅", type="案子", mounted=batches.NO_CARDS_YET),
+                         "我要幫「王宅」（案子，還沒做卡）整理一頁現況：名字這樣叫對嗎？它跟其他案子是同一件嗎？")
+        self.assertEqual(batches.NAME_QUESTION.format(name="王宅", type="案子", mounted=batches.MOUNTED.format(n=3)),
+                         "我要幫「王宅」（案子，掛了 3 份檔）整理一頁現況：名字這樣叫對嗎？它跟其他案子是同一件嗎？")
+
+
+if __name__ == "__main__":
+    unittest.main()

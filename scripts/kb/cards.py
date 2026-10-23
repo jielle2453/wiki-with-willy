@@ -13,6 +13,7 @@ todo 在對話裡跑時在目前回合記 ingest（turn.mark，回合狀態不�
 batch <批次> 給 card-maker 自己那批的材料（只讀，帶 --agent 記上 agent_id）；status 看進度（只讀）；
 stop 放掉這個 session 的批次、關 job、目前回合記 ingest_stopped（背景整理要停：說一聲，D-200）。
 unreadable <編號> --reason：線上文件（link 條目）讀不到記進待處理（B-415；檔案讀不到由 convert 記）。
+build（第 6 點）：dispatch --ids f-…,f-… 只派那幾份做卡（建置抽樣）；dispatch --adopt 派第四種工作（讀舊 wiki 切好的段）。
 todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變、日程待重對、日程待抽；drop 拿掉卡也把從那張卡抽的推測日程改成取消（D-130）；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
 """
@@ -72,6 +73,8 @@ def add_arguments(sub):
     ls.add_argument("--source", help="原檔的來源別名")
     dp = subs.add_parser("dispatch", help="派背景製卡（對話裡用）", description="切批交給 card-maker，回每批的 prompt。")
     dp.add_argument("--source", help="只整理這個來源（別名）")
+    dp.add_argument("--ids", action="append", help="只做這幾份（清冊編號，逗號隔開或重複寫；建置抽樣用）")
+    dp.add_argument("--adopt", action="store_true", help="讀舊 wiki 切好的段（建置收舊 wiki 用）")
     bt = subs.add_parser("batch", help="card-maker 拿自己那批的材料（只讀）", description="列這一批要做的項目與要讀的規則。")
     bt.add_argument("batch", help="批次編號（b-…）")
     st = subs.add_parser("status", help="背景整理到哪了（只讀）", description="還在跑幾批、這次做好幾份、還剩幾份。")
@@ -392,14 +395,36 @@ def _left_text(left):
     return "還剩 " + "、".join(parts) if parts else "還剩 0"
 
 
+def _ids(raw):
+    """--ids 收逗號、頓號隔開或重複寫；去重、照順序。"""
+    if not raw:
+        return None
+    got = []
+    for chunk in raw:
+        for x in chunk.replace("、", ",").split(","):
+            x = x.strip()
+            if x and x not in got:
+                got.append(x)
+    return got or None
+
+
+ADOPT_WITH = "--adopt 不跟 --source、--ids 一起用"
+
+
 def _dispatch(vault, args, as_json):
     source = args.source.strip() if args.source else None
+    ids = _ids(args.ids)
     sid = _session(vault, args, strict=True)
     if not sid:
         print(NOT_IN_CONVERSATION)
         return 3
+    if args.adopt and (source or ids):
+        print(ADOPT_WITH)
+        return 3
+    tid = turn.current(vault, sid)["turn"]
     try:
-        got = batches.dispatch(vault, sid, turn.current(vault, sid)["turn"], source)
+        got = (batches.dispatch_adopt(vault, sid, tid) if args.adopt
+               else batches.dispatch(vault, sid, tid, source, ids))
     except batches.Refused as e:
         print(str(e))
         return 3
@@ -410,7 +435,8 @@ def _dispatch(vault, args, as_json):
         print(STOPPED_HERE)
         return 0
     if got["done"]:
-        print("整理完了" + (f"；沒做成 {len(got['failed'])} 份" if got["failed"] else ""))
+        print(got["say"] if args.adopt else
+              "整理完了" + (f"；沒做成 {len(got['failed'])} 份" if got["failed"] else ""))
         return 0
     made = got["batches"]
     head = (f"派了 {len(made)} 批（{batches.KIND_TEXT[made[0]['kind']]} " + "、".join(str(b["items"]) for b in made) + "）"

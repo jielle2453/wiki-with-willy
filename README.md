@@ -40,6 +40,16 @@ claude --plugin-dir "<repo 路徑>"
 
 加進來的資料夾會入清冊（`.system/inventory.json`），記每份檔在哪、多大、內容指紋。每次開對話，開場會先快速比一次，有變動就多一行「變動：新增 N、修改 N、不見 N」；搬動、改名、多一份一樣的不算變動。某個資料夾這台電腦找不到（外接硬碟沒插、搬走了），開場報一次，其他照常。Word、Excel、PowerPoint 另存但內容沒變，不算修改。
 
+### 建置
+
+服務人員到客戶那邊建置的那一天（客戶也可以自己來）：
+
+1. 在客戶電腦的 Claude 桌面版，開一個空資料夾的對話（之後知識庫就建在這個資料夾，別選已經有東西的夾）。
+2. 打 `/wiki-with-willy:build`。AI 照程式記的步驟一步一步走，每一步先講要做什麼、你說好才做：檢查這台電腦（Python、信任、智慧型應用程式控制、PDF 元件、Office、磁碟、舊的 llm-wiki；缺 PDF 元件會問要不要當場裝）→ 訪談（資料夾在哪、哪些不讀、公司叫什麼、哪些資料只記種類、幾個人用、以前有沒有用過別的 wiki；有事先填好的客戶設定檔就先讀）→ 盤點（幾份、讀不到幾份、大約多久）→ 抽樣做十份左右，列出「我猜的」給她改 → 全部整理（背景跑，照常可以問）→ 名字（有把握的 AI 直接登記，有疑慮的一次列出來問）→ 綜合卡 → 收舊的 llm-wiki（有的話：只讀，撈出她說過的事、規則、日期，說好的才記）→ 交付報告（`系統/建置報告.md`）。
+3. 今天做不完就說「先到這裡」；隔天再打一次 `/wiki-with-willy:build`，從停下的那步接著做。要重做某一步就在指令後面帶一句（「重新抽樣」）。
+
+已經建好的知識庫再打 build 會擋下來（加資料夾、整理檔案直接跟 AI 說）。智慧型應用程式控制不用關，被它擋到的元件會寫進報告。沒有資料夾的客戶，訪談完直接寫報告。
+
 ### 整理成卡
 
 每份檔會整理成一張檔案卡，放在 `檔案索引/`（夾的結構照原檔），卡上寫這是什麼、重點、日期與數字、提到的人與單位，每點標原檔的頁數或列數，還有一條連結點了開原檔。總資料夾最上層的 `總目錄.md` 列出全部的卡，可以摺疊（Obsidian 也看得懂）。
@@ -145,7 +155,7 @@ answer 只讀；要把剛才算好的答案留下來，說「把剛才的答案�
 - `kb changes`：跟清冊上次掃描比，列新增、修改、搬動、不見的檔名；只看不改。`--all` 列全部，`--quick` 走開場那條快的路。
 - `kb inventory scan`：全掃一次，把變動套進清冊；寫前先備份，說「退回上一版」救得回。`--source <別名>` 只掃一個來源。原檔不見的會記進待處理，找回來自動關掉。
 - `kb cards todo`：列還沒有卡、該重做、該搬的卡與讀不到、原檔不見的份數；只看不改。`--json` 全列。
-- `kb cards dispatch`：把要整理的切批交給背景的製卡助手（對話裡用；`--source <別名>` 只整理一個來源）；`kb cards status`：整理到哪了；`kb cards stop`：停背景整理；`kb cards batch <批次>`：製卡助手拿自己那批的材料（只看不改）；`kb cards unreadable <編號> --reason "線上文件打不開"`：線上文件讀不到，記進待處理。
+- `kb cards dispatch`：把要整理的切批交給背景的製卡助手（對話裡用；`--source <別名>` 只整理一個來源；建置時 `--ids <編號,…>` 只做那幾份、`--adopt` 讀舊 wiki 切好的段）；`kb cards status`：整理到哪了；`kb cards stop`：停背景整理；`kb cards batch <批次>`：製卡助手拿自己那批的材料（只看不改）；`kb cards unreadable <編號> --reason "線上文件打不開"`：線上文件讀不到，記進待處理。
 - `kb cards sync`：原檔搬了，卡跟著搬；`kb cards drop <編號>`：原檔已刪，拿掉它的卡；`kb cards index`：重寫 `總目錄.md`。
 - `kb cards skip <編號> --kind <種類>`：記成依客戶設定檔不整理（種類要在設定檔第三節是「不整理」），有卡的拿掉。
 - `kb cards list`：列卡，`--type <卡型>`（可重複）、`--year <YYYY>`、`--entity <名稱>`（可重複）、`--source <別名>` 可疊加；另列庫裡實際有的卡型與份數（設定檔沒有的標出來）、沒寫日期的份數；只看不改。
@@ -157,6 +167,7 @@ answer 只讀；要把剛才算好的答案留下來，說「把剛才的答案�
 - `kb convert <編號或路徑>`：把一份檔抽成純文字暫存檔（`.system/temp/`，24 小時後清掉），終端機不印內容；PDF 的掃描頁另轉成 PNG，圖片只印路徑。
 - `kb pending list|add|resolve|dismiss`：看、處理 `系統/待處理.md` 的事；`kb pending add --kind conflict --card <編號> --card <編號> --text "<一句>"`：記一件兩份原檔寫法不同的（同一對只記一次）。
 - `kb entity add|confirm|rename|merge|remove|rebuild|clean|list|render`：登記、確認、改名、合併、移除實體，重寫被刪的綜合卡、清掉放錯的綜合卡、列出實體、重寫綜合卡的快取欄；寫前先備份，說「退回上一版」救得回（程式改了的夾名也會改回來）。改名與合併會連日程、口述、裁示裡掛的名稱一起換。`kb entity alias <名稱> --add|--remove <別名>`：加或拿掉別名（撞到已登記的實體會拒絕、改問合併；拿掉時列出內文提到那個別名的卡）。
+- `kb entity accept <名稱>`：AI 看掛的卡有把握的新名字直接登記（`kb entity list` 標「AI 判斷」），不用問；錯了說一聲照改名、合併改。
 - `kb entity progress <名稱> <進行中|結案|擱置>`：案子這類「事」的狀態，結案連帶結束它的期間；`kb entity suggest-close <名稱> --evidence <f-…>`：記一條「看起來結案了」等客戶答。
 - `kb agenda add|edit|done|cancel|reopen|recheck|list|render`：加、改、完成、取消、重開日程，記下原檔新版的寫法，列出，重寫 `系統/日程.md`；寫前先備份，說「退回上一版」救得回。`kb agenda list --from <日期> --to <日期> --entity <名稱>`：只列那段期間、那個實體的。`kb asks`：只看，列出 AI 該問你的事。
 - `kb statement add|withdraw|list`：記一條客戶口述（`--replaces` 改舊的）、收回、列出；`kb ruling add|remove|recheck|decline|list`：記一條裁示（口述為準、不採用、可以讀；`kb ruling add --kind 可以讀 --file <編號或路徑> [--label <這一種>]` 讓檔名像密碼的那一份可以讀）、收回、原檔新版看過了照舊、檔名像密碼的這份不要讀之後不再問、列出（最後一行是條數），重寫 `系統/裁示.md`。都先備份，說「退回上一版」救得回。
@@ -167,6 +178,7 @@ answer 只讀；要把剛才算好的答案留下來，說「把剛才的答案�
 - `kb profile add 範本 文件=<文件> 底=<卡標題或編號>`：記哪種文件以哪份為底（設定檔第七節）；`kb profile remove 範本 文件=<文件>` 拿掉。
 - `kb folders relocate <別名> <新路徑>`：登記的資料夾搬家或改名了，抽樣比對新位置、換登記的位置（別名、不讀的設定、清冊不動）；`--check` 只比不換；寫前先備份，說「退回上一版」回到舊位置。`kb folders purge "<別名/相對路徑>"`：「不想讓 AI 看到」的夾排除後清殘留（卡的舊版、備份裡的舊版、暫存、推算、工作日誌與留痕裡的路徑）；還有綜合卡寫著那夾的內容就拒絕；清掉的退回救不回。
 - `kb source-edit move|rename|trash|where|open`：搬一份檔或一個夾（`--to <夾>`，同一顆硬碟才代搬；`--replace` 先把目標的同名檔丟回收筒）、改名（副檔名不改）、丟進資源回收筒（只收檔）、列一個實體的檔放在哪些夾、在檔案總管打開一或兩個夾；`move`、`rename`、`trash` 收 `--check` 只算影響；搬、改名寫前先備份並記下搬動，說「退回上一版」搬得回來（丟進回收筒的要從回收筒拿）。
+- `kb build status|start|env|set|facts|done|redo|adopt|report`：建置（平常打 `/wiki-with-willy:build` 就好）：做到哪、開始（在目前的資料夾建知識庫）、檢查這台電腦（只看，建好的知識庫也能跑）、記幾個人用與舊 wiki 在哪、盤點、這一步做完、回到做過的一步、收舊 llm-wiki（`--check` 只看、`--extract` 切段，舊資料夾不動）、交付報告（`--facts` 數字、`--from` 放進 `系統/建置報告.md`）。`kb profile apply --from <填好的設定檔>`：事先填好的設定檔先驗再套用，讀不懂什麼都不寫。
 - `kb journal recent`：最近幾段工作日誌，每段帶你說的、結果、做了、改了；`--changed` 只列有改動的、`--find <詞>` 找說過的、`--since <YYYY-MM-DD>` 某天以後，可疊加。
 
 重建知識庫、換電腦、整個知識庫搬位置這版還做不到，AI 會說怎麼自己做。
@@ -179,6 +191,6 @@ answer 只讀；要把剛才算好的答案留下來，說「把剛才的答案�
 
 只支援 Windows。要有 Python 3.10 以上，而且 PATH 上打 `python` 要能跑到它（Windows 商店的空殼不算）：守門與備份是 hook，`python` 找不到、出錯或跑太久時守門一律擋下（`onFailure: block`），而且外掛裝在整台電腦：Python 壞了時，連別的專案的 Claude 也動不了；先修 Python，或在外掛畫面暫時停用 wiki-with-willy。
 
-要讀 PDF 請 `pip install pypdfium2`（選配，沒裝 PDF 會列在待處理）。
+要讀 PDF 請 `pip install pypdfium2`，或跑 `kb office setup` 裝在工具夾（建置時檢查這台電腦會問要不要裝；選配，兩處都沒有 PDF 會列在待處理）。
 
 python 壞掉時對話開頭不會有「【wiki-with-willy】」開場段，AI 會說程式沒跑起來並停手；照它說的裝好 python，再關掉 Claude Code 重開。

@@ -23,7 +23,7 @@ SHOULD = ("報價那個資料夾我搬到 E 槽了", "這份估價單幫我搬�
           "把信義王整個資料夾搬到 2025 封存", "剛做好的定稿要放哪？你決定就好")
 SHOULD_NOT = ("我自己把報價搬到信義王那夾了", "信義王改叫王宅", "把這份合約付款條件改 30 天", "信義王現在怎樣")
 CREDENTIAL_LINE = "檔名像密碼或金鑰的預設不讀；要讓我讀哪一份跟我說「X 可以讀」"  # 密碼與守門（I-116 再查，a2 定）
-COMMANDS_ROW = "| `commands/` | 尚未。build（一個指令走五步，D-190）與 upgrade、backup、restore、relocate、migrate、account（D-028），沒有 manage 指令 |"
+COMMANDS_ROW = "| `commands/` | 尚未。upgrade、backup、restore、relocate、migrate、account（D-028）；build 做成 `skills/build/`（D-190），沒有 manage 指令 |"
 
 
 def split(text):

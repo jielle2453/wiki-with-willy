@@ -9,11 +9,18 @@ _shared_strings、_cell_value、_number（搬過來，content_fp import 這裡�
 - pptx：每張投影片一段 ## 投影片 N（presentation 順序），備忘稿只取 body 佔位框，以（備忘稿）開頭接在後面。
 - pdf（測試後修正裁定 36，D-099 修訂）：選配套件 pypdfium2 逐頁抽文字層，每頁前面 <!-- 第 N 頁 -->；去空白後少於 min_chars 的頁
   算掃描頁，render_pages 轉成 PNG（PNG 用標準函式庫 zlib 自己寫，不裝 Pillow）。沒裝丟 Unreadable("還沒裝 PDF 元件（…）")。
+  本行程 import 不到、kb office setup 的工具夾（pylib）有 pypdfium2 時，三支 PDF 函式改在子行程跑（PYTHONPATH 帶 scripts 與工具夾，
+  跟 office.render 同一招；本行程不動模組搜尋路徑，build 第 3 點、D-189 補）。密碼只經 stdin 給子行程（不放命令列、不放環境變數）；
+  子行程出錯時 stderr 先換掉密碼、再 mask_secrets，才寫 hook-errors.log；只有擁有者密碼的判法跟本行程同一支（子行程裡跑的就是它）。
+  工具夾已經在 PYTHONPATH 上（自己就是子行程、或 office.render 的子行程）還 import 不到，就不再開子行程。
 """
+import json
 import os
 import posixpath
 import re
 import struct
+import subprocess
+import sys
 import zipfile
 import zlib
 import xml.etree.ElementTree as ET
@@ -33,6 +40,17 @@ PDF_MISSING = "還沒裝 PDF 元件（pip install pypdfium2）"
 PDF_ENCRYPTED = "有密碼"
 PDF_WRONG_PASSWORD = "密碼不對"  # 密碼與守門：帶了密碼還開不了
 PDF_BROKEN = "檔案壞了：PDF 打不開"
+PDF_CHILD_FAILED = "PDF 元件出錯"  # 工具夾的 pypdfium2 在子行程裡起不來（多半是被智慧型應用程式控制擋了）
+CHILD_SECONDS = 600
+CHILD_MASK = "＊＊＊"
+_CHILD_CODE = ("import json,sys\n"
+               "from kb._lib import extract\n"
+               "req=json.loads(sys.stdin.buffer.read().decode('utf-8'))\n"
+               "try:\n"
+               "    out={'ok':getattr(extract,req['op'])(*req['args'],**req['kw'])}\n"
+               "except extract.Unreadable as e:\n"
+               "    out={'unreadable':str(e)}\n"
+               "sys.stdout.buffer.write(json.dumps(out,ensure_ascii=False).encode('utf-8'))\n")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 CHECK_EVERY = 1000
 CFB_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
@@ -443,12 +461,100 @@ def probe(path):
 
 
 def _pdfium():
-    """選配套件；沒裝（或 sys.modules 裡是 None）丟 Unreadable(PDF_MISSING)。"""
+    """選配套件；沒裝（或 sys.modules 裡是 None、載入時被擋）丟 Unreadable(PDF_MISSING)。"""
     try:
         import pypdfium2
-    except ImportError:
+    except (ImportError, OSError):
         raise Unreadable(PDF_MISSING) from None
     return pypdfium2
+
+
+def _tool_lib():
+    """kb office setup 裝的工具夾（pylib）；測試換掉。"""
+    from kb._lib import office
+    return office.pylib()
+
+
+def _norm(path):
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _via_child():
+    """本行程 import 不到、工具夾有 pypdfium2、工具夾還沒在 PYTHONPATH 上：回工具夾（改在子行程跑），否則 None。"""
+    try:
+        _pdfium()
+        return None
+    except Unreadable:
+        pass
+    lib = _tool_lib()
+    if not (Path(lib) / "pypdfium2").is_dir():
+        return None
+    if _norm(lib) in {_norm(x) for x in os.environ.get("PYTHONPATH", "").split(os.pathsep) if x}:
+        return None
+    return lib
+
+
+def pdf_available():
+    """這台讀得了 PDF 嗎（本行程或工具夾）：cards 判「PDF 元件裝好了」用。"""
+    try:
+        _pdfium()
+        return True
+    except Unreadable:
+        return _via_child() is not None
+
+
+def _run_child(argv, data, env, timeout):
+    """跑子行程，回 (結束碼, stdout bytes, stderr 文字)；測試換掉記下參數。stdin 只送 data（含密碼的 JSON）。"""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    import tempfile
+    p = subprocess.run(argv, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=timeout,
+                       cwd=tempfile.gettempdir(), creationflags=flags)
+    return p.returncode, p.stdout, p.stderr.decode("utf-8", errors="replace")
+
+
+def _scrub(text, password):
+    """子行程的錯誤訊息：先換掉密碼原字，再照 mask_secrets 遮值（ledger 寫入前同一套）。"""
+    from kb._lib import credentials
+    text = str(text or "")
+    if password:
+        text = text.replace(str(password), CHILD_MASK)
+    return credentials.mask_secrets(text)
+
+
+def _log_child(text):
+    from kb import guard
+    from kb._lib import ledger
+    ledger.log_error(guard.find_vault(os.getcwd()), text, source="extract")
+
+
+def _child(lib, op, args, kw):
+    """在子行程跑 extract.<op>：PYTHONPATH 是 scripts 與工具夾，請求（含密碼）走 stdin。回 op 的結果；
+    子行程回 Unreadable 照丟；起不來、逾時、回的東西讀不懂丟 Unreadable(PDF_CHILD_FAILED)，錯誤遮過才記 hook-errors.log。"""
+    from kb._lib.paths import plugin_root
+    password = kw.get("password")
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP")}
+    env["PYTHONPATH"] = os.pathsep.join([str(plugin_root() / "scripts"), str(lib)])
+    env["PYTHONIOENCODING"] = "utf-8"
+    data = json.dumps({"op": op, "args": args, "kw": kw}, ensure_ascii=False).encode("utf-8")
+    try:
+        code, out, err = _run_child([sys.executable, "-c", _CHILD_CODE], data, env, CHILD_SECONDS)
+    except (OSError, subprocess.SubprocessError) as e:
+        _log_child(_scrub(f"PDF 子行程起不來：{type(e).__name__}: {e}", password))
+        raise Unreadable(PDF_CHILD_FAILED) from None
+    try:
+        got = json.loads(out.decode("utf-8")) if code == 0 else None
+    except (ValueError, UnicodeDecodeError):
+        got = None
+    if not isinstance(got, dict) or not ({"ok", "unreadable"} & set(got)):
+        tail = " ".join(str(err or "").strip().splitlines()[-3:])
+        _log_child(_scrub(f"PDF 子行程出錯（結束碼 {code}）：{tail}", password))
+        raise Unreadable(PDF_CHILD_FAILED)
+    if got.get("unreadable") == PDF_MISSING:  # 工具夾在子行程的路徑上還 import 不到：載入被擋了
+        _log_child(_scrub(f"PDF 子行程載不了 pypdfium2：{' '.join(str(err or '').strip().splitlines()[-3:])}", password))
+        raise Unreadable(PDF_CHILD_FAILED)
+    if "unreadable" in got:
+        raise Unreadable(str(got["unreadable"]))
+    return got["ok"]
 
 
 def _open_pdf(pdfium, path, password=None):
@@ -463,6 +569,9 @@ def _open_pdf(pdfium, path, password=None):
 
 def pdf_opens_without_password(path):
     """只有擁有者密碼的 PDF（不用密碼就能看）：/Encrypt 在，但不帶密碼開得了。沒裝元件丟 Unreadable(PDF_MISSING)。"""
+    lib = _via_child()
+    if lib is not None:
+        return bool(_child(lib, "pdf_opens_without_password", [str(path)], {}))
     pdfium = _pdfium()
     try:
         doc = _open_pdf(pdfium, path)
@@ -474,7 +583,11 @@ def pdf_opens_without_password(path):
 
 def pdf_pages_text(path, min_chars, should_stop=None, password=None):
     """回 (text, 頁數, 掃描頁清單)。每頁前面一行 <!-- 第 N 頁 -->；去空白後少於 min_chars 字的頁算掃描頁，只留頁碼註解。
-    should_stop 每頁問一次，回真就停在那頁之前。password：加密的 PDF 帶密碼開。"""
+    should_stop 每頁問一次，回真就停在那頁之前（子行程跑時不問）。password：加密的 PDF 帶密碼開。"""
+    lib = _via_child()
+    if lib is not None:
+        text, total, scanned = _child(lib, "pdf_pages_text", [str(path), min_chars], {"password": password})
+        return text, total, list(scanned)
     pdfium = _pdfium()
     doc = _open_pdf(pdfium, path, password)
     try:
@@ -537,6 +650,10 @@ def render_pages(path, pages, out_dir, stem, scale, limit, password=None):
     pages = list(pages)[:max(limit, 0)]
     if not pages:
         return []
+    lib = _via_child()
+    if lib is not None:
+        got = _child(lib, "render_pages", [str(path), pages, str(out_dir), stem, scale, limit], {"password": password})
+        return [(n, p) for n, p in got]
     pdfium = _pdfium()
     doc = _open_pdf(pdfium, path, password)
     out = []

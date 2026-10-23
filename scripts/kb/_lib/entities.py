@@ -1,7 +1,8 @@
 """實體清單 .system/entities.json（schema 2，D-114～D-124、D-126、D-127；實體與綜合卡第 1 點、日程第 3 點）。
 
 一筆一個客戶管的對象、事、物、主題：id（e- 加 8 碼 hex）、type（型別表的名稱；客戶自己是 null）、name、aliases、
-self（false｜company｜person，D-120）、status（active｜removed｜merged，merged 帶 merged_into）、source（D-041 四選一）、
+self（false｜company｜person，D-120）、status（active｜removed｜merged，merged 帶 merged_into）、source（D-041 四選一，另有 ai_judged：AI 看掛的卡有把握、
+直接登記的，算確認、不問名字，D-202；accept 寫，帶 judged_turn）、
 date、card（寫過綜合卡沒有）、created_turn。名稱在整個知識庫唯一（不分型別，NFKC 後不分大小寫，別名也算），
 所以檔案卡檔頭 實體 欄寫名稱就是鍵；改名與合併由這裡把所有檔案卡的那一欄與日程條目的實體名稱一起改。
 schema 2（日程第 3 點）：大類是「事」的實體多 progress（ongoing｜closed｜paused）、progress_source、progress_history；
@@ -29,6 +30,8 @@ SHELL_CHARS = profile.SHELL_CHARS  # 名字會被貼進雙引號的指令（日�
 SELF_KINDS = {"公司": "company", "本人": "person"}
 HEAD_BYTES = 4096
 NOT_FOUND = "實體清單沒有「{}」"
+AI_JUDGED = "ai_judged"  # D-202：AI 判斷有把握直接登記；synthesis、batches 只把 inferred 當沒確認，所以它算確認
+ACCEPT_NOT_FOUND = "實體清單沒有：{}"
 
 
 class EntityRefused(ValueError):
@@ -276,6 +279,37 @@ def confirm(vault, ref, turn_id):
         entry["date"] = _today()
         _save(vault, data, turn_id)
     return entry
+
+
+def accept(vault, ref, turn_id):
+    """AI 判斷有把握（D-202）：source 從 inferred 改 ai_judged、記 judged_turn。回 (條目, 怎樣)：
+    "accepted" 改了；"judged" 本來就是 AI 判斷（不寫）；"confirmed" 客戶確認過或訪談來的（不寫）。
+    沒登記丟 EntityRefused（ACCEPT_NOT_FOUND）；已移除的照 _need_plain 拒絕。"""
+    with lock(vault):
+        data = load(vault)
+        entry, _hit = find(data, ref)
+        if entry is None:
+            raise EntityRefused(ACCEPT_NOT_FOUND.format(ref))
+        if entry.get("source") == AI_JUDGED:
+            return entry, "judged"
+        if entry.get("source") != "inferred":
+            return entry, "confirmed"
+        _need_plain(entry, "登記")
+        entry["source"] = AI_JUDGED
+        entry["date"] = _today()
+        entry["judged_turn"] = turn_id
+        _save(vault, data, turn_id)
+    return entry, "accepted"
+
+
+def judged_in(vault, turn_id):
+    """這個回合 AI 判斷登記的實體名稱（tell 那句，D-202）；實體清單讀不到回空。"""
+    try:
+        data = load(vault)
+    except ValueError:
+        return []
+    return [e["name"] for e in data["entities"] if e.get("status") == "active" and e.get("source") == AI_JUDGED
+            and e.get("judged_turn") == turn_id]
 
 
 def set_card(vault, entity_id, value, turn_id):

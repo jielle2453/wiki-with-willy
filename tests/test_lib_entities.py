@@ -288,5 +288,40 @@ class KnowledgeFollows(Base):
         self.assertEqual(self.names(), before)
 
 
+
+class Accept(Base):
+    """D-202（build 第 5 點，驗收 8）：AI 判斷有把握的名字記成 ai_judged、帶 judged_turn；確認過的不動；沒登記的拒絕；
+    綜合卡與派工照算確認（synthesis、batches 只把 inferred 當沒確認）。"""
+    with_entities = True
+
+    def test_inferred_becomes_ai_judged(self):
+        entry, how = entities.accept(self.V, "王宅", self.t)
+        self.assertEqual((how, entry["source"], entry["judged_turn"]), ("accepted", "ai_judged", self.t))
+        self.assertEqual(self.by_name("王宅")["source"], "ai_judged")
+        self.assertIn(entities.ENTITIES_POSIX, {r["path"] for r in turn.entries(self.V, self.t)})
+        self.assertEqual(entities.judged_in(self.V, self.t), ["王宅"])
+        p = self.V / ".system" / "entities.json"
+        before = p.read_bytes()
+        self.assertEqual(entities.accept(self.V, "王宅", self.t)[1], "judged")
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_confirmed_untouched(self):
+        p = self.V / ".system" / "entities.json"
+        before = p.read_bytes()
+        for name in ("信義王", "信義王宅", "林小姐"):  # 確認過的、別名、客戶自己
+            self.assertEqual(entities.accept(self.V, name, self.t)[1], "confirmed", name)
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_not_found(self):
+        with self.assertRaises(entities.EntityRefused) as cm:
+            entities.accept(self.V, "沒有這個", self.t)
+        self.assertEqual(str(cm.exception), "實體清單沒有：沒有這個")
+
+    def test_confirm_after_accept_is_confirmed(self):
+        entities.accept(self.V, "王宅", self.t)
+        self.assertEqual(entities.confirm(self.V, "王宅", self.t)["source"], "confirmed")
+        self.assertEqual(entities.judged_in(self.V, self.t), [])
+
+
 if __name__ == "__main__":
     unittest.main()

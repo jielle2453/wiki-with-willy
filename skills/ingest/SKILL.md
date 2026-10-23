@@ -46,6 +46,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" <子命令> …
 - **看變動**：跑 `changes`；最後一行寫「要套用請跑 kb inventory scan」才跑 `inventory scan`。從 manage 交棒（加資料夾時已入冊），或客戶明說「整理」但沒變動時，直接往下。
 - **拿計畫**：`cards todo --json`，看 `plan` 與 `announce`；`announce` 有句子就先照貼。`asks`、`tell` 留到「回答」才用（背景做完會變）。
 - **照計畫做**：照 `plan` 一步一步做，有 `read` 的先讀（相對路徑相對於本 skill 資料夾），再照 `do` 做。
+  - `names`：照 carding.md 第十一節判斷每個新名字，有把握的跑 `entity accept`，有疑慮的不動（會在 `asks` 的名字題問），再往下（D-202）。
   - `dispatch`：跑 `cards dispatch --json`，照「讀派工結果」做；用現有資料回答客戶這句、末尾說還在整理。
   - `cards`（線上文件、密碼檔）：照 carding.md 自己寫卡；某份打回後還是不行，或讀不到又沒記進待處理，只停那一份、告訴客戶。
 - **讀派工結果**（`cards dispatch --json`）：`batches` 每一批用 Agent 工具派（`subagent_type` 照 `agent`、`description` 與 `prompt` 原樣、背景跑）；`say` 有句子就照講一次，收到通知之後對客戶只說 `say`、不另外加話（沒有就不說話，`announce` 講過的也不再講），最後的回答照「回答」用 `tell`；`batches` 空、沒有 `approval` 是還在跑，等通知；`approval` 照它的問句問客戶，說好跑它的 `do` 再 dispatch，說不要就照「客戶說停」做（綜合卡留到下次）；`stopped` 是這一句說了停，不派；`done` 是都做完了，到「回答」。`failed` 是製卡助手回報沒做成的，程式不會再派它們，你也不要再派，原因留到「回答」講。之後每收到一個製卡助手做完或停了的通知，就再跑一次 `cards dispatch --json` 照這段讀（範圍程式記著，不用再加 `--source`）。這期間客戶問別的照常回答、末尾一句還在整理；問進度跑 `cards status` 照講。

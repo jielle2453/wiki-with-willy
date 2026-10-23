@@ -422,13 +422,14 @@ PDF_BACK = "PDF 元件裝好了"
 
 
 def _restore_pdf(vault):
-    """裁定 36：pypdfium2 裝好了，就把 reason 是「還沒裝 PDF 元件」的 open／dismissed 待處理 done（備進回合），回關掉幾份。
-    todo 只有這一處會寫檔；沒有這種條目就什麼都不碰。"""
+    """裁定 36：pypdfium2 裝好了（本行程或 kb office setup 的工具夾，build 第 3 點），就把 reason 是「還沒裝 PDF 元件」的
+    open／dismissed 待處理 done（備進回合），回關掉幾份。todo 只有這一處會寫檔；沒有這種條目就什麼都不碰。"""
     from kb._lib import extract, pending, turn
+    if not extract.pdf_available():
+        return 0
     try:
-        extract._pdfium()
         items = pending.load(vault)["items"]
-    except (extract.Unreadable, ValueError):
+    except ValueError:
         return 0
     fids = {(i.get("file_ids") or [None])[0] for i in items
             if i.get("kind") == "unreadable" and i.get("status") in ("open", "dismissed")

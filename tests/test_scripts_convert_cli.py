@@ -113,7 +113,8 @@ class Convert(Base):
         fake = self.tmp / "nopdf" / "pypdfium2"
         fake.mkdir(parents=True, exist_ok=True)
         (fake / "__init__.py").write_text('raise ImportError("模擬沒裝")\n', encoding="utf-8")
-        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT), PYTHONPATH=str(self.tmp / "nopdf"))
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(ROOT), PYTHONPATH=str(self.tmp / "nopdf"),
+                   LOCALAPPDATA=str(self.tmp / "nolocal"))  # build：kb office setup 的工具夾也沒有
         return subprocess.run([sys.executable, str(KB), *args], capture_output=True, text=True, encoding="utf-8",
                               cwd=str(self.V), env=env)
 

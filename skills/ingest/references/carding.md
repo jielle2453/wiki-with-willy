@@ -6,7 +6,7 @@
 
 ## 批次（card-maker）
 
-- 第一步跑 `kb cards batch <批次> --json`：`prefix` 是 kb 指令前綴（下面寫 `kb …`、`convert …` 的都接在它後面）；`kind` 是 cards｜agenda｜synthesis；`read` 是先讀的規則；`items` 是這批要做的，每項跟下一節的欄位同一組、多 `bucket`（來自哪一桶，不是 `type`：`synthesis_new` 的 `type` 是實體型別；new、stale、broken、unlinked、agenda_recheck、agenda_unscanned、synthesis_new、synthesis_stale、synthesis_broken）；`profile`、`entities` 同下一節。已經做好的項目不再列。
+- 第一步跑 `kb cards batch <批次> --json`：`prefix` 是 kb 指令前綴（下面寫 `kb …`、`convert …` 的都接在它後面）；`kind` 是 cards｜agenda｜synthesis｜adopt（第十二節）；`read` 是先讀的規則；`items` 是這批要做的，每項跟下一節的欄位同一組、多 `bucket`（來自哪一桶，不是 `type`：`synthesis_new` 的 `type` 是實體型別；new、stale、broken、unlinked、agenda_recheck、agenda_unscanned、synthesis_new、synthesis_stale、synthesis_broken）；`profile`、`entities` 同下一節。已經做好的項目不再列。
 - `cards`：一～六節寫卡、第七節補掛實體；每寫完一張新卡或重做的卡，同一份內容接著照第九節抽日期、跑 `kb agenda scanned <卡編號>`。`agenda`：第九節。`synthesis`：`rules/synthesis.md`，`synthesis_broken` 照第八節。
 - 清單只用 `items`，不跑 `cards todo`、不自己找檔；不跑 `turn note`、`cards dispatch`。
 - 做完照 card-maker 本文的回報格式回一則給主對話：只有份數與沒做成的原因，不寫檔案內容、摘要、人名、金額、日期（D-022）；「被擋或打回：」那行的寫法也在那裡。
@@ -14,10 +14,8 @@
 ## 材料的欄位（`cards batch` 的 `items` 與 `cards todo --json`）
 
 - `new`、`stale`：每項 `id`、`uri`、`path`（原檔絕對路徑）、`origin`、`kind`、`dir`（卡放的夾）、`filename_pattern`（`<標題>-八碼.md`）、`existing_card`（stale 才有，舊卡路徑）、`created`（條目產出那天，AI 產出的卡寫起草日用）、`header`（照抄的檔頭）。stale 可帶 `reason`：「客戶說卡讀錯了」是客戶糾正過（`kb cards redo`），整張照原檔重讀重寫，不沿用舊卡的寫法。
-- `moved`：`{"id","from","to"}`，用 `cards sync` 處理；只有開原檔連結對不上（來源搬家）也在這裡，`to` 跟原夾相同。
-- `duplicates`：`{"id","keep","drop":[…]}`，同編號多張卡；`cards sync` 留 `keep`、刪 `drop`（備進回合，退得回來）。
-- `missing`：`{"id","uri","missing_since","pending_id","question"}`；客戶答過（先留著、不用管）的不再列。怎麼問、怎麼答由 `asks` 給。
-- `unreadable`：`{"id","uri","reason","pending_id"}`，已在待處理，講法在 `tell`；客戶說先跳過（`pending dismiss <pending_id>`）的不再列進 `new`，檔案換了才重讀。
+- `moved`：`{"id","from","to"}`，用 `cards sync` 處理；只有開原檔連結對不上（來源搬家）也在這裡，`to` 跟原夾相同。`duplicates`：`{"id","keep","drop":[…]}`，同編號多張卡；`cards sync` 留 `keep`、刪 `drop`（備進回合，退得回來）。
+- `missing`：`{"id","uri","missing_since","pending_id","question"}`；客戶答過（先留著、不用管）的不再列，怎麼問怎麼答由 `asks` 給。`unreadable`：`{"id","uri","reason","pending_id"}`，已在待處理，講法在 `tell`；客戶說先跳過（`pending dismiss <pending_id>`）的不再列進 `new`，檔案換了才重讀。
 - `orphans`：卡的編號不在清冊或原檔已不在；這版不處理，不用動它。
 - `broken`：`{"path","reason"}`，檔頭有問題的卡；編號對得到清冊的多帶 `id`、`header`（carding.md 第六節）。
 - `skipped`：`{"credential","placeholder","too_large","error","skipped"}` 份數；`skipped` 是跑過 `cards skip` 的（依設定不整理）。說過「可以讀」的密碼檔不算在 `credential`，列進 `new`（carding.md 第十節）。
@@ -142,3 +140,11 @@
 - **「可以讀」的密碼檔**（客戶說「那份網站密碼檔可以讀」，D-183）：照一般寫卡，但正文只寫這份是什麼、列了哪些項目的名字（「建材商訂貨網、公司網銀、雲端相簿三組帳密〔工作表「帳密」〕」），**任何帳號、密碼、代碼的值都不抄**；`敏感資料種類` 記「密碼」。回答與 `kb turn note` 都不寫任何值（只說整理了這份、列了哪幾組的名字）。她之後問其中一組時，answer 會回原檔讀，卡上不需要值。
 - **同一種的加密 PDF**（plan 的 `unlock_same_kind`，D-181 第 2 點）：對 `files` 每份，看檔名、夾、大小、日期，跟 `kinds` 每種的例子比，判斷是不是同一種（保險單就是保險單：同一家保險公司、同樣的檔名樣子）。是就跑 `convert <id> --saved <那一種的 credential>`，開了照一般寫卡；回答末尾照 `tell` 講「我判斷跟之前的…是同一種，用那組密碼打開了」。判斷不是任何一種、或拿不準的不動，照 `tell` 的「讀不到：有密碼」講；不要拿存好的密碼去試別的檔（D-181，不自動試）。
 - 開的時候印「密碼不對」：那份不是同一種，照讀不到講，不再試別組。
+
+## 十一、名字有沒有把握（主對話，plan 的 names）
+
+`names` 每項是到門檻、還沒確認的新名字（名稱、型別、掛的卡標題）。照掛的卡判斷（D-202）：有把握的跑 `kb entity accept <名稱>`（記成 AI 判斷，算確認、不問、綜合卡照寫）；有疑慮的不動，留給 `asks` 的名字題。有疑慮的三種：可能跟已登記的是同一個（名字像、同一個業主換了叫法，先 `kb entity list` 比一下）、分不清是人還是公司或案子（型別可能放錯）、只出現一次、像打錯或縮寫。其他從卡上看得清楚的就是有把握。平常整理照 `asks` 一次最多問三題；建置時有疑慮的一次列完。AI 判斷錯了，客戶一句話照 note 改名或合併。
+
+## 十二、讀舊 wiki（adopt 批次，建置收舊 llm-wiki）
+
+`items` 每項 `{name, chunk}`：用 Read 讀 `chunk`（第一行是來源檔與第幾段），撈四種候選：她說過、原檔可能沒有的事（口述：掛哪個實體、哪天、一句）、規則（以後怎麼做、哪份別信）、還沒到的日期加一個動作（日程）、還在等她確認的。舊 AI 自己的操作紀錄（哪天整理了什麼）不撈，密碼、帳號這類值不抄。不寫任何檔、不跑 `cards batch` 以外的指令；回報照 `cards batch` 給的 `report` 格式，一行一條，讀不成的段寫 `- <段名>：<原因>`。

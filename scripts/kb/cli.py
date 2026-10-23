@@ -30,7 +30,7 @@ COMMANDS = {
                           "skip 記成不整理，redo 卡讀錯了標成要重做，mount 卡掛錯實體改掛，list 列卡（只讀）"),
     "pending": ("kb.pending_cli", "待處理：list 列等你決定的事，add 記一件兩份寫法不同的，resolve 記下怎麼處理，dismiss 記成不用管"),
     "profile": ("kb.profile_cli", "客戶設定檔：check 看改了什麼，apply 套用並建型別夾"),
-    "entity": ("kb.entity", "實體：add 登記，confirm 確認名稱，rename 改名，merge 合併，remove 移除，rebuild 重寫綜合卡，"
+    "entity": ("kb.entity", "實體：add 登記，confirm 確認名稱，accept AI 判斷有把握直接登記，rename 改名，merge 合併，remove 移除，rebuild 重寫綜合卡，"
                             "clean 清放錯的綜合卡，list 列出，render 重寫綜合卡快取，progress 事類的進行中、結案、擱置，"
                             "suggest-close 記一條結案待問，alias 加或拿掉別名"),
     "statement": ("kb.statement_cli", "客戶口述：add 記一條（--replaces 改舊的），withdraw 收回，list 列出"),
@@ -45,6 +45,8 @@ COMMANDS = {
     "tally": ("kb.tally_cli", "加總：只讀，收每一筆（卡、數字、位置），回逐筆表、筆數、合計、平均"),
     "office": ("kb.office_cli", "做文件的工具：check 看這台有什麼，setup 裝工具，run 跑工作區的腳本，copy 拿原檔副本，"
                                 "unpack／pack 解開與打包，pdf 轉 PDF，recalc 重算 Excel，render 轉每頁的圖"),
+    "build": ("kb.build", "建置：status 做到哪，start 開始，env 檢查這台電腦，set 記幾個人用與舊 wiki，facts 盤點，"
+                          "done 這一步做完，redo 回到做過的一步，adopt 收舊 llm-wiki，report 交付報告"),
     "output": ("kb.output_cli", "成品：save 把做好的檔放進 AI 產出（登記、退回拿得掉），link 登記線上文件，drop-draft 收掉草稿"),
 }
 

@@ -280,6 +280,18 @@ class R5UnconfirmedNameAskedFirst(unittest.TestCase):
         run_kb("entity", "confirm", "信義王", cwd=self.V)
         self.assertEqual([k for _b, k, _i in batches.split(self.V, out)["synthesis"]], [eid])
 
+    def test_ai_judged_counts_as_confirmed(self):
+        """build（D-202）：AI 判斷登記的名字算確認：壞的、要更新的綜合卡照派，名字題不問它。"""
+        from kb._lib import entities
+        eid = entities.find(entities.load(self.V), "信義王")[0]["id"]
+        out = {"synthesis_stale": [{"entity_id": eid, "name": "信義王", "path": "案子/信義王/信義王.md"}],
+               "synthesis_broken": [{"path": "案子/信義王/信義王.md", "reason": "x"}]}
+        self.assertEqual(run_kb("entity", "accept", "信義王", cwd=self.V).stdout.strip(), "已登記：信義王（AI 判斷）")
+        self.assertEqual(batches.unconfirmed_names(self.V, out), [])
+        self.assertEqual(sorted(b for b, _k, _i in batches.split(self.V, out)["synthesis"]),
+                         ["synthesis_broken", "synthesis_stale"])
+        self.assertEqual([a for a in self.todo()["asks"] if a["kind"] == "name"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

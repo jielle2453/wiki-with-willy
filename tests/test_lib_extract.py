@@ -1,7 +1,9 @@
 """_lib/extract（D-099，specs/2026-10-17-ingest製卡.md 第 1 點）：OOXML 與純文字抽成人讀的文字、probe、pdf_pages。
 測試檔一律由 tests/_ooxml.py 組進 tmp；content_fp 共用抽字後指紋要跟改前一樣（下面寫死的雜湊是改前算的）。
 """
+import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -276,7 +278,8 @@ class Pdf(Base):
     def test_missing_package(self):
         import sys
         from unittest import mock
-        with mock.patch.dict(sys.modules, {"pypdfium2": None}):
+        with mock.patch.dict(sys.modules, {"pypdfium2": None}), \
+                mock.patch.object(extract, "_tool_lib", lambda: self.tmp):  # 工具夾也沒有（build：兩處都沒有才印這句）
             with self.assertRaises(extract.Unreadable) as cm:
                 extract.pdf_pages_text(TEXT_PDF, 10)
         self.assertEqual(str(cm.exception), "還沒裝 PDF 元件（pip install pypdfium2）")
@@ -328,6 +331,153 @@ class Pdf(Base):
             self.assertLess(len(data), 20 * 1024)
             self.assertNotIn(b"Users", data)
             self.assertNotIn(b"\r\n", data)  # .gitattributes 是 text=auto eol=lf：被當文字時 CRLF 會被改掉、xref 位移就錯
+
+
+
+@unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+class PdfChild(unittest.TestCase):
+    """build 第 3 點（驗收 4）：本行程 import 不到、工具夾有 pypdfium2（替身：只有一個 pypdfium2 夾，子行程實際載入的是
+    這台裝的那份）→ 三支 PDF 函式改在子行程跑；密碼只走 stdin；子行程出錯時記的訊息沒有密碼；只有擁有者密碼的照常讀。"""
+    PW = "child-zq7x-9911"
+
+    def setUp(self):
+        from tests import _pdfcrypt
+        self.tmp = Path(tempfile.mkdtemp(prefix="kbchild-")).resolve()
+        self.lib = self.tmp / "pylib"
+        (self.lib / "pypdfium2").mkdir(parents=True)
+        self.plain = _pdfcrypt.make_pdf(self.tmp / "plain.pdf", "Hello child process")
+        self.locked = _pdfcrypt.make_pdf(self.tmp / "locked.pdf", "Locked content here", user=self.PW)
+        self.owner = _pdfcrypt.make_pdf(self.tmp / "owner.pdf", "Owner only content", user="")
+        self.saved = (extract._tool_lib, extract._run_child, sys.modules.get("pypdfium2"))
+        extract._tool_lib = lambda: self.lib
+        sys.modules["pypdfium2"] = None
+        self.calls = []
+        real = self.saved[1]
+
+        def spy(argv, data, env, timeout):
+            self.calls.append((list(argv), data, dict(env)))
+            return real(argv, data, env, timeout)
+        extract._run_child = spy
+
+    def tearDown(self):
+        extract._tool_lib, extract._run_child, mod = self.saved
+        sys.modules["pypdfium2"] = mod
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_text_via_child(self):
+        self.assertTrue(extract.pdf_available())
+        text, total, scanned = extract.pdf_pages_text(self.plain, 5)
+        self.assertIn("Hello child process", text)
+        self.assertEqual((total, scanned), (1, []))
+        self.assertEqual(len(self.calls), 1)
+        argv, _data, env = self.calls[0]
+        self.assertEqual(argv[:2], [sys.executable, "-c"])
+        self.assertIn(str(self.lib), env["PYTHONPATH"].split(os.pathsep))
+
+    def test_password_only_on_stdin(self):
+        text, _t, _s = extract.pdf_pages_text(self.locked, 5, password=self.PW)
+        self.assertIn("Locked content here", text)
+        argv, data, env = self.calls[-1]
+        self.assertNotIn(self.PW, " ".join(argv))
+        self.assertFalse([k for k, v in env.items() if self.PW in str(v) or self.PW in k])
+        self.assertIn(self.PW.encode("utf-8"), data)
+        with self.assertRaises(extract.Unreadable) as cm:
+            extract.pdf_pages_text(self.locked, 5, password="wrong-zq7x")
+        self.assertEqual(str(cm.exception), extract.PDF_WRONG_PASSWORD)
+        with self.assertRaises(extract.Unreadable) as cm:
+            extract.pdf_pages_text(self.locked, 5)
+        self.assertEqual(str(cm.exception), extract.PDF_ENCRYPTED)
+
+    def test_owner_only_same_as_in_process(self):
+        self.assertTrue(extract.pdf_opens_without_password(self.owner))
+        self.assertFalse(extract.pdf_opens_without_password(self.locked))
+        self.assertIn("Owner only content", extract.pdf_pages_text(self.owner, 5)[0])
+
+    def test_render_pages_via_child(self):
+        got = extract.render_pages(IMAGE_PDF, [1], self.tmp, "img", 0.5, 5)
+        self.assertEqual([n for n, _p in got], [1])
+        self.assertTrue(Path(got[0][1]).is_file())
+
+    def test_child_error_does_not_leak_password(self):
+        V = self.tmp / "vault"
+        (V / ".system").mkdir(parents=True)
+        (V / ".system" / "sources.json").write_text('{"schema_version": 1, "sources": []}', encoding="utf-8")
+        saved_code, cwd = extract._CHILD_CODE, os.getcwd()
+        extract._CHILD_CODE = ("import json,sys\nr=json.loads(sys.stdin.buffer.read().decode('utf-8'))\n"
+                               "sys.stderr.write('Traceback boom password='+r['kw']['password']+' 密碼：'+r['kw']['password'])\n"
+                               "sys.exit(1)\n")
+        os.chdir(V)
+        try:
+            with self.assertRaises(extract.Unreadable) as cm:
+                extract.pdf_pages_text(self.locked, 5, password=self.PW)
+        finally:
+            os.chdir(cwd)
+            extract._CHILD_CODE = saved_code
+        self.assertEqual(str(cm.exception), extract.PDF_CHILD_FAILED)
+        log = (V / ".system" / "hook-errors.log").read_text(encoding="utf-8")
+        self.assertIn("PDF 子行程出錯", log)
+        self.assertIn("Traceback boom", log)
+        self.assertNotIn(self.PW, log)
+
+    def test_both_missing_keeps_old_sentence(self):
+        shutil.rmtree(self.lib / "pypdfium2")
+        self.assertFalse(extract.pdf_available())
+        with self.assertRaises(extract.Unreadable) as cm:
+            extract.pdf_pages_text(self.plain, 5)
+        self.assertEqual(str(cm.exception), extract.PDF_MISSING)
+        self.assertEqual(self.calls, [])
+
+    def test_no_child_when_lib_already_on_path(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"PYTHONPATH": str(self.lib)}):  # 自己就是子行程：不再開
+            with self.assertRaises(extract.Unreadable) as cm:
+                extract.pdf_pages_text(self.plain, 5)
+        self.assertEqual((str(cm.exception), self.calls), (extract.PDF_MISSING, []))
+
+
+@unittest.skipUnless(has_pdfium(), "沒裝 pypdfium2")
+class ConvertViaChild(unittest.TestCase):
+    """kb convert 在本行程 import 不到時照樣抽得出（替身：先把 pypdfium2 擋掉、工具夾換成假的再跑 kb.cli），
+    帶密碼也照樣開、知識庫與錯誤記錄裡找不到密碼；工具夾也沒有時印原本那句。"""
+
+    WRAP = ("import sys\nfrom pathlib import Path\nsys.path.insert(0, {scripts!r})\nsys.modules['pypdfium2'] = None\n"
+            "from kb._lib import extract\nextract._tool_lib = lambda: Path({lib!r})\n"
+            "from kb import cli\nsys.exit(cli.main(sys.argv[1:]))\n")
+
+    def setUp(self):
+        from tests import _pw
+        self._pw = _pw
+        self.tmp, self.V, self.raw = _pw.make_pw_vault()
+        self.lib = self.tmp / "pylib"
+        (self.lib / "pypdfium2").mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def convert(self, rel, *args):
+        import json
+        import subprocess
+        from tests import _cards
+        from tests._guard_fixture import SCRIPTS
+        code = self.WRAP.format(scripts=str(SCRIPTS), lib=str(self.lib))
+        fid = _cards.entry_of(self.V, rel)["id"]
+        r = subprocess.run([sys.executable, "-c", code, "convert", fid, *args, "--json"], capture_output=True,
+                           text=True, encoding="utf-8", cwd=str(self.V), env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        return r.returncode, json.loads(r.stdout)
+
+    def test_convert_reads_and_opens_with_password(self):
+        code, out = self.convert(self._pw.OWNER_ONLY)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Quotation owner only", Path(out["temp"]).read_text(encoding="utf-8"))
+        code, out = self.convert(self._pw.WANG, "--password", self._pw.PDF_PW)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Insurance policy Wang", Path(out["temp"]).read_text(encoding="utf-8"))
+        self.assertEqual(self._pw.leaks(self.V), [])
+
+    def test_both_missing(self):
+        shutil.rmtree(self.lib / "pypdfium2")
+        code, out = self.convert(self._pw.OWNER_ONLY)
+        self.assertEqual((code, out["unreadable"]), (3, extract.PDF_MISSING))
 
 
 if __name__ == "__main__":

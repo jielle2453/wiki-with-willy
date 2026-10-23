@@ -5,6 +5,8 @@ apply：check 的判斷之後，刪了有東西的型別夾那列擋（D-058）�
 建不成就整份不套用，測試後修正裁定 11）→ merge → 兩檔備進回合後寫（D-074）→ 表少了的型別、夾是空的就一起拿掉（確認後修正裁定 21）
 → 第三節拿掉的「不整理」種類把清冊的 skip_kind 拿掉（清冊先備份）→ 第五節關於你對實體清單（entities.sync_self，先備份）。
 建的夾與拿掉的空夾記進回合的資料夾帳（D-142），退回時改得回來。
+apply --from <路徑>（build 第 4 點，D-052）：事先填好的設定檔 md 先照 apply 同一支解析驗過（讀不懂回節與列、什麼都不寫），
+再把 系統/客戶設定檔.md 備進回合、換成那份，照 apply 那條路做；apply 拒絕（exit 3）就把原本的 md 寫回去。
 show：六節的表（--json 給每節的欄、能填什麼、主鍵、列與指令範本，加 pending_edit）。只讀。
 add／remove：note 在對話裡改一節的一列（profile.edited）→ render_text → parse_md（跟 apply 同一支驗證）→ 跟 apply 同一條路寫；
 md 有手改未套用時一律拒絕、不動檔、給結果清單（D-110 補）；偏好的條數與字數上限在 edited 擋（D-137）。
@@ -39,6 +41,7 @@ def add_arguments(sub):
     subs = sub.add_subparsers(dest="profile_command", metavar="<子子命令>", required=True)
     ck = subs.add_parser("check", help="看客戶設定檔改了什麼", description="設定檔 md 跟 JSON 比，印差異與型別夾對帳；不寫檔。")
     ap = subs.add_parser("apply", help="套用客戶設定檔", description="把改過的設定檔套進 JSON、建缺的型別夾；寫前先備份。")
+    ap.add_argument("--from", dest="from_md", help="事先填好的設定檔 md（建置那天用）：先換成它再套用")
     sh = subs.add_parser("show", help="看客戶設定檔六節", description="印六節的表；--json 給欄位、能填什麼與指令範本。不寫檔。")
     ad = subs.add_parser("add", help="加或改一列", description="加一列；主鍵已有就改那一列。寫前先備份。")
     rm = subs.add_parser("remove", help="拿掉一列", description="照主鍵拿掉一列。寫前先備份。")
@@ -262,9 +265,49 @@ def _stale_skip_kinds(vault, data):
     return {e["skip_kind"] for e in inventory.load(vault)["entries"] if e.get("skip_kind")} - keep
 
 
-def _apply(vault, as_json, conversation):
+def _apply(vault, as_json, conversation, from_md=None):
     with profile.lock(vault):
-        return _apply_locked(vault, as_json, conversation)
+        if from_md is None:
+            return _apply_locked(vault, as_json, conversation)
+        return _apply_from(vault, from_md, as_json, conversation)
+
+
+FROM_UNREADABLE = "讀不到填好的設定檔：{}"
+
+
+def _apply_from(vault, from_md, as_json, conversation):
+    """--from：先用 apply 同一支解析驗那份（讀不懂回節與列、不寫），過了才備份、換掉 系統/客戶設定檔.md、照 apply 做；
+    apply 拒絕就把原本的 md 寫回去。"""
+    st = profile.status(vault)
+    if st["state"] == "missing":
+        _refuse(as_json, st, MISSING)
+        return 3
+    try:
+        text = open(from_md, encoding="utf-8").read()
+    except UnicodeDecodeError:
+        _refuse(as_json, st, "客戶設定檔讀不懂：檔案不是 UTF-8")
+        return 3
+    except OSError as e:
+        _refuse(as_json, st, FROM_UNREADABLE.format(e.strerror or e))
+        return 3
+    data = st["data"]
+    try:
+        stored = profile.stored_schema(vault)
+        profile.parse_md(text, config.get(vault, "card_title_max_chars"),
+                         legacy=stored if stored in profile.SECTIONS_OF else False,
+                         known_types=[t["name"] for t in data["types"]], **profile.preference_limits(vault),
+                         resolve=profile.template_resolver(vault, data))
+    except profile.ProfileError as e:
+        _refuse(as_json, st, f"客戶設定檔讀不懂：{e.message}")
+        return 3
+    md = vault / profile.MD_POSIX
+    old = md.read_text(encoding="utf-8") if md.is_file() else None
+    turn.backup(vault, profile.MD_POSIX, turn.current(vault)["turn"])
+    kio.write_text_atomic(md, text)
+    code = _apply_locked(vault, as_json, conversation)
+    if code != 0 and old is not None:
+        kio.write_text_atomic(md, old)
+    return code
 
 
 # ---------- note 改設定檔：show／add／remove（D-144） ----------
@@ -809,7 +852,7 @@ def run(args):
                 check = args.check and not e.payload
                 return _refuse_payload(as_json, e, check=check,
                                        extra={"op": args.type_command, "type": args.name} if check else None)
-        return _apply(vault, as_json, conversation)
+        return _apply(vault, as_json, conversation, getattr(args, "from_md", None))
     except entities.EntityRefused as e:  # 型別合併時逐個實體換型別的拒絕（含還原失敗的 PartialWrite）
         print(str(e))
         return 3

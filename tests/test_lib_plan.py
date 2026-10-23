@@ -100,8 +100,8 @@ class Plan(Base):
 
     def test_synthesis_new_counts_confirmed_only(self):
         new = [{"entity_id": "e-1", "name": "甲", "confirmed": True}, {"entity_id": "e-2", "name": "乙", "confirmed": False, "question": "Q"}]
-        self.assertEqual(self.steps(synthesis_new=new), [("dispatch", 1)])
-        self.assertEqual(self.steps(synthesis_new=new[1:]), [])
+        self.assertEqual(self.steps(synthesis_new=new), [("names", 1), ("dispatch", 1)])  # 沒確認的先判斷名字（D-202）
+        self.assertEqual(self.steps(synthesis_new=new[1:]), [("names", 1)])
 
     def test_full_order(self):
         got = self.steps(moved=[{"id": "f-1"}], new=work(1), unlinked=[{"id": "f-2"}], synthesis_broken=[{"path": "p"}],
@@ -902,6 +902,36 @@ class ProduceAsks(Base):
     def test_unbacked_tell(self):
         self.assertIn("AI 產出有 2 份沒經程式放進來，這幾份退回拿不掉", self.build(unbacked=2)["tell"])
         self.assertFalse(any("沒經程式" in x for x in self.build(unbacked=0)["tell"]))
+
+
+
+class Names(Base):
+    """D-202（build 第 7 點，驗收 9）：到門檻還沒確認的新名字，plan 最前面一步 names，名字題在 asks；
+    AI 判斷登記的（ai_judged）算確認；tell 一句這一回合 AI 判斷登記了哪幾個。"""
+
+    def test_names_step_before_name_asks(self):
+        new = [{"entity_id": "e-1", "name": "王宅", "type": "案子", "confirmed": False, "question": "Q",
+                "cards": [{"id": "f-1", "path": "p", "title": "王宅報價"}]},
+               {"entity_id": "e-2", "name": "陳宅", "type": "案子", "confirmed": True, "cards": []}]
+        got = self.build(synthesis_new=new, new=work(1))
+        self.assertEqual(got["plan"][0], {
+            "step": "names", "items": 1, "do": "到門檻的新名字：有把握的 kb entity accept，有疑慮的留給 asks",
+            "read": "references/carding.md 第十一節",
+            "names": [{"entity_id": "e-1", "name": "王宅", "type": "案子", "cards": ["王宅報價"]}]})
+        self.assertEqual([s["step"] for s in got["plan"]], ["names", "dispatch"])
+        self.assertEqual([a["kind"] for a in got["asks"]], ["name"])
+
+    def test_no_step_when_all_confirmed(self):
+        got = self.build(synthesis_new=[{"entity_id": "e-2", "name": "陳宅", "confirmed": True}])
+        self.assertNotIn("names", [s["step"] for s in got["plan"]])
+
+    def test_judged_tell(self):
+        tid = turn.current(self.V)["turn"]
+        E.put_entities(self.V, [E.entity("e-1", "王宅", source="ai_judged", judged_turn=tid),
+                                E.entity("e-2", "陳宅", source="ai_judged", judged_turn="20200101-000000-old"),
+                                E.entity("e-3", "林宅", source="inferred")])
+        self.assertEqual(self.build()["tell"], ["名字有把握的我直接登記了 1 個（王宅）；要看名單或有不對的跟我說"])
+        self.assertNotIn("名字有把握", " ".join(plan.build(base(), self.V, config, tell_all=False)["tell"]))
 
 
 if __name__ == "__main__":

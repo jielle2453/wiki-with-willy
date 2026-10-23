@@ -301,3 +301,20 @@ class CardMakerBudget(unittest.TestCase):
         self.assertLessEqual(count_lines(status), OPENING_MAX_LINES)
         self.assertLessEqual(len(status), OPENING_MAX_CHARS)
         self.assertLessEqual(len(ctx), RESIDENT_TOTAL_MAX_CHARS)
+
+
+BUILD_SKILL = ROOT / "skills" / "build" / "SKILL.md"
+BUILD_BODY_MAX_CHARS = 3000
+
+
+class BuildSkillBudget(unittest.TestCase):
+    """build 第 1 點（驗收 13）：只由人打（disable-model-invocation）、本文 3000 字內；references 的行數由上面那組量。"""
+
+    def test_build_skill(self):
+        text = read(BUILD_SKILL)
+        front = text.split("---")[1]
+        self.assertIn("disable-model-invocation: true", front.splitlines())
+        self.assertIn("name: build", front.splitlines())
+        _desc, body = split_skill(text)
+        self.assertLessEqual(len(body), BUILD_BODY_MAX_CHARS)
+        self.assertLessEqual(count_lines(body), SKILL_BODY_MAX_LINES)

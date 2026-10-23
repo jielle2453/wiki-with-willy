@@ -20,7 +20,10 @@ manage 第二版還沒清的排除夾（purge pending）裡的不切也不算。
 該放的路徑（target）、掛的檔案卡、有效口述、裁示、推算、段落（第二輪修 R1，之前只給 path 與 reason，十次全做不成）。
 dispatch 每次都給 say：第一次派出去、之後每次收通知再派的進度、做完的收尾，主對話對客戶只說它（第二輪修 R2）。
 壞的與要更新的綜合卡（synthesis_broken、synthesis_stale），實體還沒跟客戶確認名字（source inferred）的不切：
-plan 的 asks 出名字題（unconfirmed_names），客戶確認之後下一次 dispatch 才派（第三輪修 R5）。
+plan 的 asks 出名字題（unconfirmed_names），客戶確認之後下一次 dispatch 才派（第三輪修 R5）；AI 判斷登記的（ai_judged，D-202）算確認。
+build（第 6 點）：dispatch --ids 只派那幾份（建置抽樣；job 記著 ids，之後再派照它）；第四種工作 adopt（dispatch_adopt）：
+build adopt --extract 切好的段（.system/temp/adopt/*.txt）分批交給 card-maker 讀、回報候選；adopt 的 job 帶 kind adopt，
+跟整理的 job 分開（open_job 不認它），段讀完（批次 done）就不再派，回報裡「- <段>：<原因>」的記成沒讀成。
 """
 import re
 import secrets
@@ -35,7 +38,22 @@ BATCHES_POSIX = ".system/batches.json"
 SCHEMA_VERSION = 1
 AGENT = "wiki-with-willy:card-maker"
 KINDS = ("cards", "agenda", "synthesis")
-KIND_TEXT = {"cards": "做卡", "agenda": "日程", "synthesis": "綜合卡"}
+KIND_TEXT = {"cards": "做卡", "agenda": "日程", "synthesis": "綜合卡", "adopt": "舊 wiki"}
+ADOPT = "adopt"
+ADOPT_POSIX = ".system/temp/adopt"
+ADOPT_BATCH_CHUNKS = 4  # 一批讀幾段（每段最多 adopt_chunk_chars 字）：一個子代理讀四段約五萬字，不會被摺疊
+NO_IDS = "這幾份不在要整理的清單裡：{}"
+NO_CHUNKS = "還沒切段，先跑 kb build adopt <舊 wiki 的路徑> --extract"
+SAY_ADOPT_FIRST = "交給製卡助手在背景讀舊的 wiki，好了跟你說；這期間照常問我"
+SAY_ADOPT_PROGRESS = "讀好 {done} 段了{failed}；還在讀 {running} 批"
+SAY_ADOPT_DONE = "舊的 wiki 讀完了{failed}"
+SAY_ADOPT_FAILED = "，{n} 段沒讀成"
+ADOPT_REPORT = ("批次 <批次>：讀了 N 段、沒讀成 M\n"
+                "口述｜<實體名稱或「無」>｜<YYYY-MM-DD 或「未載」>｜<一句>\n"
+                "規則｜<一句>\n"
+                "日程｜<YYYY-MM-DD>｜<實體名稱或「無」>｜<一句>\n"
+                "待確認｜<一句>\n"
+                "- <段名>：<沒讀成的原因一句>")
 CARD_BUCKETS = ("new", "stale", "broken", "unlinked")
 AGENDA_BUCKETS = ("agenda_recheck", "agenda_unscanned")  # 先重對再抽（D-140）
 SYNTHESIS_BUCKETS = ("synthesis_broken", "synthesis_stale", "synthesis_new")
@@ -56,7 +74,8 @@ DEFAULT_FAIL = "製卡助手沒做成"
 TWICE_FAIL = "製卡助手兩次沒做成：{}"
 CARDING = "skills/ingest/references/carding.md"
 READ = {"cards": [f"{CARDING} 批次、材料的欄位、一～七、九節"], "agenda": [f"{CARDING} 批次、材料的欄位、第九節"],
-        "synthesis": ["rules/synthesis.md", f"{CARDING} 批次、材料的欄位、第八節"]}
+        "synthesis": ["rules/synthesis.md", f"{CARDING} 批次、材料的欄位、第八節"],
+        "adopt": [f"{CARDING} 批次、第十二節"]}
 HOLD_FACTOR = 3  # 過期但子代理沒停：認領到幾倍時間
 _REPORT_LINE = re.compile(r"^\s*-\s*(\S+?)\s*[：:]\s*(.+?)\s*$")
 _TIME = "%Y-%m-%dT%H:%M:%S"
@@ -160,7 +179,14 @@ def _job_session(data, batch):
 
 
 def open_job(data, session_id):
-    return next((j for j in data["jobs"] if j.get("session_id") == session_id and j.get("status") == "open"), None)
+    """這個 session open 的整理 job（adopt 的不算）。"""
+    return next((j for j in data["jobs"] if j.get("session_id") == session_id and j.get("status") == "open"
+                 and j.get("kind") != ADOPT), None)
+
+
+def _open_adopt(data, session_id):
+    return next((j for j in data["jobs"] if j.get("session_id") == session_id and j.get("status") == "open"
+                 and j.get("kind") == ADOPT), None)
 
 
 def session_of_agent(vault, agent_id):
@@ -371,7 +397,9 @@ def _unconfirmed(vault, ctx, bucket, item):
     return e if e is not None and e.get("source") == "inferred" else None
 
 
-NAME_QUESTION = "我要幫「{name}」（{type}，掛了 {n} 份檔）整理一頁現況：名字這樣叫對嗎？它跟其他{type}是同一件嗎？"
+NAME_QUESTION = "我要幫「{name}」（{type}，{mounted}）整理一頁現況：名字這樣叫對嗎？它跟其他{type}是同一件嗎？"
+MOUNTED = "掛了 {n} 份檔"
+NO_CARDS_YET = "還沒做卡"  # 掛 0 份（卡還沒做或都拿掉了）不說「掛了 0 份檔」（build 交界）
 
 
 def unconfirmed_names(vault, out):
@@ -387,7 +415,8 @@ def unconfirmed_names(vault, out):
             asked.add(e["id"])
             n = len(_context(vault, ctx).mounts.get(e["name"], []))
             got.append({"entity_id": e["id"], "name": e["name"], "type": e.get("type"),
-                        "question": NAME_QUESTION.format(name=e["name"], type=e.get("type"), n=n)})
+                        "question": NAME_QUESTION.format(name=e["name"], type=e.get("type"),
+                                                         mounted=MOUNTED.format(n=n) if n else NO_CARDS_YET)})
     return got
 
 
@@ -416,6 +445,8 @@ def prefix():
 
 
 def _what(kind, n):
+    if kind == ADOPT:
+        return f"讀{KIND_TEXT[kind]} {n} 段"
     return f"{KIND_TEXT[kind]} {n} 張" if kind == "synthesis" else f"{KIND_TEXT[kind]} {n} 份"
 
 
@@ -467,13 +498,22 @@ def _cross_job(vault, data, job, key, reason, entry):
 
 # ---------- dispatch ----------
 
-def dispatch(vault, session_id, turn_id, source=None):
+def _only_ids(parts, ids):
+    """--ids：只留 cards 裡那幾份，其他種類不派（建置抽樣，build 第 6 點）。"""
+    want = set(ids)
+    got = {k: [] for k in parts}
+    got["cards"] = [x for x in parts["cards"] if x[1] in want]
+    return got
+
+
+def dispatch(vault, session_id, turn_id, source=None, ids=None):
     """派工（kb cards dispatch，D-196、D-197）：沿用或新開這個 session 的 job，從沒被認領、這個 job 沒失敗過的項目切批，
     最多到 card_parallel 個 open；順序 cards → agenda → synthesis，前一種有剩或還在跑就不建後一種；synthesis 前算大改動門檻
     （D-075，綜合卡 stale 與 broken 都算），超過又沒同意回 approval。什麼都不剩也沒在跑：job 關掉、回 note_cmd。
     回 {"job","turn","batches","running","left","approval","done","note_cmd","stopped","failed","say"}。
     job 記著 source：之後不帶 --source 的再派照它。這一句剛跑過 cards stop：不派、stopped 是 true（D-200）。
-    算 todo 也在鎖裡：子代理剛做完的不會被重切（第一輪修）。"""
+    算 todo 也在鎖裡：子代理剛做完的不會被重切（第一輪修）。
+    ids（build 抽樣）：只派這幾份做卡，不在 todo 可派的做卡項目裡的丟 Refused；job 記著，之後不帶 --ids 的再派照它。"""
     check_source(vault, source)
     st = _settings(vault)
     now = _now()
@@ -491,11 +531,23 @@ def dispatch(vault, session_id, turn_id, source=None):
             inherited = _same_turn_failed(data, session_id, turn_id)
             if inherited:
                 job["failed"] = inherited
-        elif source is None:
-            source = job.get("source")
+            if ids:
+                job["ids"] = list(ids)
+        else:
+            if source is None:
+                source = job.get("source")
+            if ids is None:
+                ids = job.get("ids")
         out = _collect(vault)
         parts_all = split(vault, out)
         parts = split(vault, out, source) if source is not None else parts_all
+        if ids:
+            if fresh:
+                known = {x[1] for x in parts["cards"]}
+                missing = [i for i in ids if i not in known]
+                if missing:
+                    raise Refused(NO_IDS.format("、".join(missing)))
+            parts = _only_ids(parts, ids)
         changed = False if fresh else _record_failures(vault, data, job, parts_all, now)
         failed = job.get("failed") or {}
         jt = job["turn"]
@@ -592,6 +644,91 @@ def _approval(vault, jt, items, st):
     return {"question": APPROVAL_QUESTION.format(n=n), "do": [f"kb turn approve --turn {jt}"]}
 
 
+# ---------- adopt（build 第 6 點，D-193） ----------
+
+def adopt_chunks(vault):
+    """build adopt --extract 切好的段：檔名（001.txt…）照順序。"""
+    d = Path(vault) / ADOPT_POSIX
+    if not d.is_dir():
+        return []
+    return sorted(p.name for p in d.iterdir() if p.is_file() and p.suffix == ".txt")
+
+
+def dispatch_adopt(vault, session_id, turn_id):
+    """第四種工作（kb cards dispatch --adopt）：段分批交給 card-maker 讀，回報口述、規則、日程、待確認的候選。
+    跟 dispatch 同一套認領、同時幾個；做完（批次 done）的段不再派，回報「- <段>：<原因>」的記進 failed。
+    回 dispatch 同樣的鍵（left 是 {"adopt": n}）。這一句剛跑過 cards stop：不派。"""
+    names = adopt_chunks(vault)
+    if not names:
+        raise Refused(NO_CHUNKS)
+    st = _settings(vault)
+    now = _now()
+    with lock(vault):
+        data = load(vault)
+        mine = [j for j in data["jobs"] if j.get("session_id") == session_id and j.get("kind") == ADOPT]
+        if mine and mine[-1].get("status") == "closed" and mine[-1].get("stopped_turn") == turn_id:
+            return {"job": None, "turn": turn_id, "batches": [], "running": 0, "left": {ADOPT: 0}, "approval": None,
+                    "done": False, "note_cmd": None, "stopped": True, "failed": [], "say": None}
+        job = _open_adopt(data, session_id)
+        fresh = job is None
+        if fresh:
+            job = {"job": _new_id("j", {j.get("job") for j in data["jobs"]}), "session_id": session_id, "turn": turn_id,
+                   "created": now.strftime(_TIME), "status": "open", "kind": ADOPT}
+        run = running(data, session_id, now, st["card_batch_expire_minutes"])
+        mine_b = [b for b in data["batches"] if b.get("job") == job["job"]]
+        read = {k for b in mine_b if b.get("status") == "done" for k in b.get("items") or []}
+        failed = {k: v for b in mine_b if b.get("status") == "done" for k, v in (b.get("failed") or {}).items()}
+        claimed = {k for b in run if b.get("kind") == ADOPT for k in b.get("items") or []}
+        left = [n for n in names if n not in read and n not in claimed]
+        slots = max(0, st["card_parallel"] - len(run))
+        made = []
+        while slots and left:
+            chunk, left = left[:ADOPT_BATCH_CHUNKS], left[ADOPT_BATCH_CHUNKS:]
+            bid = _new_id("b", {b.get("batch") for b in data["batches"]})
+            made.append({"batch": bid, "job": job["job"], "kind": ADOPT, "items": chunk, "source": None,
+                         "created": now.strftime(_TIME), "agent_id": None, "status": "open"})
+            data["batches"].append(made[-1])
+            slots -= 1
+        busy = [b for b in run if b.get("kind") == ADOPT and b.get("job") == job["job"]]
+        done = not made and not busy and not left
+        changed = bool(made)
+        if fresh and made:
+            data["jobs"].append(job)
+        if done and not fresh:
+            job["status"], job["closed"] = "closed", now.strftime(_TIME)
+            job["failed"] = {k: {"kind": ADOPT, "reason": v} for k, v in failed.items()}
+            changed = True
+        if changed:
+            save(vault, data, job["turn"])
+    tail = SAY_ADOPT_FAILED.format(n=len(failed)) if failed else ""
+    if fresh and made:
+        say = SAY_ADOPT_FIRST
+    elif done and not fresh:
+        say = SAY_ADOPT_DONE.format(failed=tail)
+    elif fresh:
+        say = None
+    else:
+        say = SAY_ADOPT_PROGRESS.format(done=len(read - set(failed)), failed=tail, running=len(busy) + len(made))
+    pre = prefix()
+    n0 = len(mine_b)
+    shown = [{"batch": b["batch"], "kind": ADOPT, "items": len(b["items"]), "agent": AGENT,
+              "description": DESCRIPTION.format(n=n0 + i + 1, what=_what(ADOPT, len(b["items"]))),
+              "prompt": PROMPT.format(batch=b["batch"], what=_what(ADOPT, len(b["items"])), prefix=pre)}
+             for i, b in enumerate(made)]
+    return {"job": job["job"] if not (fresh and not made) else None, "turn": job["turn"], "batches": shown,
+            "running": len(busy), "left": {ADOPT: len(left)}, "approval": None, "done": done and not fresh,
+            "note_cmd": f'kb turn note --turn {job["turn"]} "{{做了什麼}}"' if done and not fresh else None,
+            "stopped": False, "failed": [{"id": k, "kind": ADOPT, "reason": v} for k, v in failed.items()], "say": say}
+
+
+def _adopt_view(vault, b):
+    d = (Path(vault) / ADOPT_POSIX).resolve()
+    items = [{"name": n, "chunk": (d / n).as_posix()} for n in b.get("items") or [] if (d / n).is_file()]
+    root = plugin_root().as_posix()
+    return {"batch": b["batch"], "kind": ADOPT, "prefix": prefix(), "read": [f"{root}/{r}" for r in READ[ADOPT]],
+            "items": items, "report": ADOPT_REPORT.replace("<批次>", b["batch"])}
+
+
 # ---------- batch ----------
 
 def batch_view(vault, batch_id, agent_id=None):
@@ -611,6 +748,8 @@ def batch_view(vault, batch_id, agent_id=None):
                 b2["agent_id"] = agent_id
                 job = _job_of(data, b2) or {}
                 save(vault, data, job.get("turn") or turn.current(vault)["turn"])
+    if b["kind"] == ADOPT:
+        return _adopt_view(vault, b)
     out = _collect(vault)
     want = list(b.get("items") or [])
     buckets = {"cards": CARD_BUCKETS, "agenda": AGENDA_BUCKETS, "synthesis": SYNTHESIS_BUCKETS}[b["kind"]]
@@ -666,6 +805,10 @@ def stop(vault, session_id, turn_id=None):
         out = _collect(vault)
         data = load(vault)
         job = open_job(data, session_id)
+        adopt = _open_adopt(data, session_id)
+        if adopt is not None:  # 讀舊 wiki 的也一起停
+            adopt["status"], adopt["closed"], adopt["stopped_turn"] = "closed", now.strftime(_TIME), turn_id
+        job = job or adopt
         if job is None:
             return None
         agents = []
@@ -691,7 +834,7 @@ def agent_start(vault, session_id, agent_id):
     """SubagentStart：記 agent_id → 回合（這個 session open 的 job 的回合，沒有 job 取 session 的目前回合）。回那個回合。"""
     with lock(vault):
         data = load(vault)
-        job = open_job(data, session_id)
+        job = open_job(data, session_id) or _open_adopt(data, session_id)
         if job is not None:
             tid = job["turn"]
         else:

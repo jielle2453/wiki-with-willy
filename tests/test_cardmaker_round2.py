@@ -2,6 +2,7 @@
 R1 壞綜合卡的材料、R2 每次 dispatch 都給 say。每項一組重現。"""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -198,7 +199,24 @@ class R2SayEveryDispatch(unittest.TestCase):
         self.assertIn("收到通知之後對客戶只說 `say`", body)
 
 
-import re  # noqa: E402
+
+class AbbrevSecretActionsRejectedByKb(unittest.TestCase):
+    """第二輪修連帶：密碼與守門原本把 --exp、--kin 這類縮寫當全名判成要按允許；現在 kb 自己不收縮寫，指令直接 exit 2，
+    什麼都不做（守門照「拆不過的照常放行」那條）。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_kb_refuses_abbreviated_secret_flags(self):
+        for args in (("convert", "f-00000000", "--saved", "保險單", "--exp"),
+                     ("ruling", "add", "--kin", "可以讀", "--file", "f-00000000", "--text", "x")):
+            r = run_kb(*args, cwd=self.V)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("error:", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

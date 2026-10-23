@@ -309,7 +309,6 @@ class SecretActionAsk(Base):
             ("unlock authorize --name 保險單 --label 保險單 --example f-1a2b3c4d", "要讓「保險單」這一種的檔都用「保險單」這組密碼自動開"),
             ("convert 保險單_陳.pdf --saved 保險單 --explicit", "要用存好的「保險單」密碼開「保險單_陳.pdf」這一份"),
             ("convert --explicit 保險單_陳.pdf --saved=保險單", "要用存好的「保險單」密碼開「保險單_陳.pdf」這一份"),
-            ("convert 保險單_陳.pdf --saved 保險單 --exp", "要用存好的「保險單」密碼開「保險單_陳.pdf」這一份"),
             ("--json unlock get --name 工地大門", "要把存好的「工地大門」密碼顯示出來"),
         )
         for tool in ("Bash", "PowerShell"):
@@ -325,8 +324,10 @@ class SecretActionAsk(Base):
                            ("PowerShell", "unlock $x --name a"), ("Bash", "$c get --name a"),
                            ("Bash", "ruling add --kind 可以* --file a --text x")):
             self.assertDecision(tool, self.kb(rest), "ask")
-        # argparse 拆不過的（打錯子命令、多了不認得的旗標）：守門用的就是 kb.py 那一份 argparse，kb 什麼都不做，照常放行
-        for rest in ("convert a.pdf --saved n --explicit --bogus", "unlok get --name a"):
+        # argparse 拆不過的（打錯子命令、多了不認得的旗標、縮寫的旗標）：守門用的就是 kb.py 那一份 argparse，kb 什麼都不做，照常放行
+        # （card-maker 第二輪修：kb.py 每一層都不收縮寫，--exp、--kin 拆不過，kb 自己 exit 2）
+        for rest in ("convert a.pdf --saved n --explicit --bogus", "unlok get --name a",
+                     "convert 保險單_陳.pdf --saved 保險單 --exp", "ruling add --kin 可以讀 --file a --text x"):
             self.assertDecision("Bash", self.kb(rest), "allow")
         # 不是這三個子命令的，其他參數有變數照常放行
         for tool, rest in (("Bash", "version {a,b}"), ("PowerShell", "version @args"), ("Bash", "cards list --entity \"$e\"")):
@@ -394,7 +395,7 @@ class SecretReadLabel(unittest.TestCase):
         self.assertTrue(want.endswith("/信義王/網銀密碼.txt」"), want)
         path = (self.raw / self.pw.BANK).as_posix()
         for rest in (f'ruling add --kind 可以讀 --file "{path}" --text x', f"ruling add --kind=可以讀 --file {entry['id']} --text x",
-                     f'ruling add --kin 可以讀 --file "{entry["locations"][0]["uri"]}" --text x'):
+                     f'ruling add --kind 可以讀 --file "{entry["locations"][0]["uri"]}" --text x'):  # 縮寫 --kin 現在拆不過（第二輪修）
             for tool in ("Bash", "PowerShell"):
                 d = self.decide(rest, tool)
                 with self.subTest(rest=rest, tool=tool):

@@ -11,6 +11,7 @@ card-maker 第一輪修：記過的子代理只准白名單裡的 kb 子命令�
 --turn／--agent／--session 的（子代理在哪都算，主對話看子命令前的）deny，不改寫（S4）；主對話的 cards dispatch／status／stop
 與 build 的每個子子命令插 --session <sid>（兩個視窗開同一個知識庫不串；build 認哪個對話在建置，build 驗後修）。
 build 第一輪修 S8：記過的子代理目前認領的是讀舊 wiki（adopt）的批次時，Write／Edit 這類寫檔工具一律 deny。
+build 桌面版確認修：記過的子代理用 Write／Edit／MultiEdit／NotebookEdit 寫到知識庫外面一律 deny（之前把卡寫到知識庫的上一層）。
 第二輪修：--t、--a、--s 開頭而且是這三個旗標前綴的（--tu=、--ses、--ag=…）一樣算；記過的子代理跑 Bash／PowerShell，
 不是「單一 kb 呼叫而且在白名單裡」的一律 deny（&&、管線、環境變數前綴、cd 再接、python -c 都算），客戶按過一律允許 python 也繞不過。
 永不以非 0 結束，永不丟例外到 Claude Code。
@@ -76,6 +77,11 @@ def main():
         if d.vault is not None and payload.get("agent_id"):
             from kb._lib import turn as turn_lib
             agent_turn = turn_lib.agent_turn(d.vault, payload.get("session_id"), payload.get("agent_id"))
+        if d.vault is not None and agent_turn and tool in WRITE_TOOLS and decision != "deny" and _outside(payload, tool, d.vault):
+            decision, reason = "deny", AGENT_DENY  # 子代理寫知識庫外面：一律不准（build 桌面版確認修）
+            ti = payload.get("tool_input") or {}
+            rows.append({"tool": tool, "decision": "deny", "zone": d.zone, "reason_code": "agent_scope",
+                         "head": str(ti.get("file_path") or ti.get("notebook_path") or "")})
         if d.vault is not None and agent_turn and tool in SHELL_TOOLS and decision != "deny" and decision != "allow":
             decision, reason = "deny", AGENT_DENY  # 守門沒意見或要詢問的 shell 指令：子代理一律不准（第二輪修 R3）
             rows.append({"tool": tool, "decision": "deny", "zone": d.zone, "reason_code": "agent_scope",
@@ -192,6 +198,21 @@ def scope(payload, tool, d, agent_turn):
     if not payload.get("agent_id") and sid and ((cmd, sub) in SESSION_SUBS or cmd in SESSION_CMDS):
         return None, with_flags(ti, ("--session", sid))
     return None, None
+
+
+def _outside(payload, tool, vault):
+    """寫檔工具的目標不在知識庫裡（normalize 之後比，.. 跳出去也算）；認不出路徑當外面。"""
+    from kb._lib.paths import inside, normalize
+
+    ti = payload.get("tool_input") or {}
+    target = ti.get("notebook_path") if tool == "NotebookEdit" else ti.get("file_path")
+    if not target:
+        return True
+    try:
+        cwd = payload.get("cwd") or os.getcwd()
+        return not inside(normalize(str(target), cwd), normalize(str(vault), None))
+    except (OSError, ValueError):
+        return True
 
 
 def _adopt_agent(vault, agent_id):

@@ -26,6 +26,8 @@ build adopt --extract 切好的段（.system/temp/adopt/*.txt）分批交給 car
 跟整理的 job 分開（open_job 不認它），段讀完（批次 done）就不再派，回報裡「- <段>：<原因>」的記成沒讀成。
 build 第一輪修：release_session（接手建置時把前一個對話的 job 與 open 批次放掉，同 stop、不記 stopped_turn，S1）；
 close_ids_job（done sample 收掉抽樣的 ids job，S3）；dispatch 帶 --ids 時 job 開著也驗編號（S3）。
+桌面版確認修：batch_view 多 vault（總資料夾的絕對路徑），項目裡相對總資料夾的路徑（dir、existing_card、path、target、card_path）
+各多一個 <鍵>_abs 絕對路徑；製卡助手不用自己猜總資料夾在哪（之前它從原檔路徑猜，把卡寫到知識庫外面）。
 """
 import re
 import secrets
@@ -768,8 +770,28 @@ def batch_view(vault, batch_id, agent_id=None):
                     item = ctx.material(item) or item
                 found[k] = dict(item, bucket=bucket)
     root = plugin_root().as_posix()
-    return {"batch": batch_id, "kind": b["kind"], "prefix": prefix(), "read": [f"{root}/{r}" for r in READ[b["kind"]]],
-            "items": [found[k] for k in want if k in found], "profile": out.get("profile"), "entities": out.get("entities")}
+    base = Path(vault).resolve()
+    return {"batch": batch_id, "kind": b["kind"], "prefix": prefix(), "vault": base.as_posix(),
+            "read": [f"{root}/{r}" for r in READ[b["kind"]]],
+            "items": [_with_abs(base, found[k]) for k in want if k in found], "profile": out.get("profile"),
+            "entities": out.get("entities")}
+
+
+REL_KEYS = ("dir", "existing_card", "path", "target", "card_path")
+
+
+def _is_abs(text):
+    return bool(re.match(r"^[A-Za-z]:[\\/]", text)) or text.startswith(("/", "\\"))
+
+
+def _with_abs(base, item):
+    """項目裡相對總資料夾的路徑各多一個 <鍵>_abs（絕對、正斜線）；本來就是絕對路徑的（原檔的 path）不動。"""
+    got = dict(item)
+    for key in REL_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value and not _is_abs(value):
+            got[key + "_abs"] = (base / value).as_posix()
+    return got
 
 
 # ---------- status、stop ----------

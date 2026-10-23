@@ -6,7 +6,7 @@
 
 ## 批次（card-maker）
 
-- 第一步跑 `kb cards batch <批次> --json`：`prefix` 是 kb 指令前綴（下面寫 `kb …`、`convert …` 的都接在它後面）；`kind` 是 cards｜agenda｜synthesis｜adopt（第十二節）；`read` 是先讀的規則；`items` 是這批要做的，每項跟下一節的欄位同一組、多 `bucket`（來自哪一桶，不是 `type`：`synthesis_new` 的 `type` 是實體型別；new、stale、broken、unlinked、agenda_recheck、agenda_unscanned、synthesis_new、synthesis_stale、synthesis_broken）；`profile`、`entities` 同下一節。已經做好的項目不再列。
+- 第一步跑 `kb cards batch <批次> --json`：`prefix` 是 kb 指令前綴（下面寫 `kb …`、`convert …` 的都接在它後面）；`vault` 是總資料夾的絕對路徑，項目裡相對總資料夾的路徑（`dir`、`existing_card`、`path`、`target`、`card_path`）都另給 `<鍵>_abs` 絕對路徑，讀寫一律用它；`kind` 是 cards｜agenda｜synthesis｜adopt（第十二節）；`read` 是先讀的規則；`items` 是這批要做的，每項跟下一節的欄位同一組、多 `bucket`（來自哪一桶，不是 `type`：`synthesis_new` 的 `type` 是實體型別；new、stale、broken、unlinked、agenda_recheck、agenda_unscanned、synthesis_new、synthesis_stale、synthesis_broken）；`profile`、`entities` 同下一節。已經做好的項目不再列。
 - `cards`：一～六節寫卡、第七節補掛實體；每寫完一張新卡或重做的卡，同一份內容接著照第九節抽日期、跑 `kb agenda scanned <卡編號>`。`agenda`：第九節。`synthesis`：`rules/synthesis.md`，`synthesis_broken` 照第八節。
 - 清單只用 `items`，不跑 `cards todo`、不自己找檔；不跑 `turn note`、`cards dispatch`。
 - 做完照 card-maker 本文的回報格式回一則給主對話：讀舊 wiki 以外的批次只有份數與沒做成的原因，不寫檔案內容、摘要、人名、金額、日期（D-022），「被擋或打回：」那行的寫法也在那裡；讀舊 wiki 的批次照第十二節的格式。
@@ -58,7 +58,7 @@
 | `敏感資料種類` | 你填 | 清單，只記種類不記值，種類名照 `profile.exclusions` 的 `kind` 原字（表外的見第五節）：`[種類一, 種類二]`；沒有就 `[]` |
 | `開原檔` | 照抄 | `file:///` 開頭的連結，客戶點它開原檔 |
 
-檔名：`filename_pattern` 的 `<標題>` 換成你填的標題原字，放在 `dir`（路徑是總資料夾接 `dir`）。所以標題本身就不要用 `\ / : * ? " < > |`、不以點或空白結尾、`card_title_max_chars`（預設 40）字內，寫之前先對一次。被打回「檔頭有錯：…」就照原因整張重寫一次：原因是「檔名該是…」「卡該放在…」就寫到原因指的新路徑，不寫回原路徑（錯名的舊檔留著，下一次 `plan` 的 sync 會收）；其他原因寫回同一個路徑。
+檔名：`filename_pattern` 的 `<標題>` 換成你填的標題原字，放在 `dir_abs`（`cards batch` 給的絕對路徑；`vault` 是總資料夾，不要自己從原檔的路徑猜）。所以標題本身就不要用 `\ / : * ? " < > |`、不以點或空白結尾、`card_title_max_chars`（預設 40）字內，寫之前先對一次。被打回「檔頭有錯：…」就照原因整張重寫一次：原因是「檔名該是…」「卡該放在…」就寫到原因指的新路徑，不寫回原路徑（錯名的舊檔留著，下一次 `plan` 的 sync 會收）；其他原因寫回同一個路徑。
 
 ## 三、正文
 

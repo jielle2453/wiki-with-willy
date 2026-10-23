@@ -320,3 +320,72 @@ class R2JunctionNotFollowed(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DesktopBatchAbsolutePaths(unittest.TestCase):
+    """桌面版確認：cards batch 給 vault 與 <鍵>_abs 絕對路徑，製卡助手不用從原檔路徑猜總資料夾（之前猜成上一層）。"""
+
+    def setUp(self):
+        from tests import _cards
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+        turn.start(self.V, "sid-d", "好")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_batch_has_vault_and_abs(self):
+        got = json.loads(run_kb("--session", "sid-d", "cards", "dispatch", "--json", cwd=self.V).stdout)
+        view = json.loads(run_kb("cards", "batch", got["batches"][0]["batch"], "--json", cwd=self.V).stdout)
+        vault = Path(self.V).resolve().as_posix()
+        self.assertEqual(view["vault"], vault)
+        for item in view["items"]:
+            self.assertEqual(item["dir_abs"], f"{vault}/{item['dir']}")
+            self.assertNotIn("path_abs", item, "原檔的 path 本來就是絕對路徑")
+            self.assertTrue(Path(item["dir_abs"]).resolve().is_relative_to(Path(vault)))
+
+    def test_with_abs_unit(self):
+        got = batches._with_abs(Path("C:/kb"), {"path": "案子/王宅/王宅.md", "target": "案子/王宅/王宅.md",
+                                                "dir": "檔案索引/a", "card_path": "檔案索引/a/x.md",
+                                                "existing_card": None})
+        self.assertEqual((got["path_abs"], got["target_abs"], got["dir_abs"], got["card_path_abs"]),
+                         ("C:/kb/案子/王宅/王宅.md", "C:/kb/案子/王宅/王宅.md", "C:/kb/檔案索引/a", "C:/kb/檔案索引/a/x.md"))
+        self.assertNotIn("existing_card_abs", got)
+        self.assertNotIn("path_abs", batches._with_abs(Path("C:/kb"), {"path": "D:/raw/a.pdf"}))
+
+
+class DesktopAgentWritesOutsideVault(unittest.TestCase):
+    """桌面版確認：記過的子代理用 Write／Edit／MultiEdit／NotebookEdit 寫到知識庫外面一律 deny；裡面的照舊。"""
+
+    def setUp(self):
+        self.tmp, self.V, _raw = make_vault()
+        turn.start(self.V, "sid-g", "好")
+        batches.agent_start(self.V, "sid-g", "agent-1")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write(self, path, tool="Write", agent="agent-1"):
+        data = payload(tool, path, self.V)
+        data.update(session_id="sid-g")
+        if agent:
+            data.update(agent_id=agent, agent_type=batches.AGENT)
+        return guard_out(data)
+
+    def test_outside_denied(self):
+        outside = Path(self.V).parent / "檔案索引" / "來源" / "x.md"
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            out = self.write(outside, tool)
+            self.assertEqual((out.get("permissionDecision"), out.get("permissionDecisionReason")),
+                             ("deny", "製卡助手不能做這件事"), tool)
+        out = self.write(Path(self.V) / ".." / "檔案索引" / "y.md")
+        self.assertEqual(out.get("permissionDecision"), "deny", "用 .. 跳出去也算外面")
+
+    def test_inside_still_allowed(self):
+        self.assertEqual(self.write(Path(self.V) / "檔案索引" / "a" / "x.md").get("permissionDecision"), "allow")
+        ws = Path(self.V) / ".system" / "temp" / "office" / "t1" / "x.md"
+        self.assertEqual(self.write(ws).get("permissionDecision"), "allow", "工作區在知識庫裡")
+
+    def test_main_conversation_unchanged(self):
+        """主對話寫知識庫外面不在這條管（照守門原本的判斷）。"""
+        outside = Path(self.V).parent / "外面" / "x.md"
+        self.assertNotEqual(self.write(outside, agent=None).get("permissionDecisionReason"), "製卡助手不能做這件事")

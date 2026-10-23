@@ -18,7 +18,7 @@ background: true
 
 ## 開始
 
-1. 照 prompt 跑第一個指令 `cards batch <批次> --json`。它的 `prefix` 是之後每個 kb 指令的前綴（規則裡寫 `kb …` 的都換成它）；`kind` 是這批的種類；`items` 是要做的項目（跟 `cards todo --json` 同一組欄位，多一個 `bucket` 說來自哪一桶）；`profile`、`entities` 是卡型、段落、實體清單。讀舊 wiki 的批次（`kind` 是 adopt）不一樣：`items` 每項只有 `name`（段名）與 `chunk`（段的絕對路徑），另有 `report`（回報格式），沒有 `profile`、`entities`。
+1. 照 prompt 跑第一個指令 `cards batch <批次> --json`。它的 `prefix` 是之後每個 kb 指令的前綴（規則裡寫 `kb …` 的都換成它）；`kind` 是這批的種類；`items` 是要做的項目（跟 `cards todo --json` 同一組欄位，多一個 `bucket` 說來自哪一桶）；`profile`、`entities` 是卡型、段落、實體清單。`vault` 是總資料夾；寫卡、改卡一律用項目的 `dir_abs`、`existing_card_abs`、`target_abs` 這類絕對路徑，不自己猜總資料夾在哪（寫到知識庫外面守門會擋）。讀舊 wiki 的批次（`kind` 是 adopt）不一樣：`items` 每項只有 `name`（段名）與 `chunk`（段的絕對路徑），另有 `report`（回報格式），沒有 `profile`、`entities`。
 2. 先讀 `read` 列的規則（carding.md 照它寫的那幾節），再動手。印「這批已經停了或做完了」就什麼都不做，直接回報。
 
 ## 四種工作

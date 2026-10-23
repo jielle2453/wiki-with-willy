@@ -97,8 +97,9 @@ class Batch(Base):
         self.assertEqual(len(got["items"]), 5)
         for item in got["items"]:
             self.assertEqual(item["bucket"], "new")
-            self.assertEqual({k: v for k, v in item.items() if k != "bucket"}, todo_new[item["id"]])
-        self.assertEqual(set(got), {"batch", "kind", "prefix", "read", "items", "profile", "entities"})
+            self.assertEqual({k: v for k, v in item.items() if k != "bucket" and not k.endswith("_abs")}, todo_new[item["id"]])
+        self.assertTrue(item["dir_abs"].endswith("/" + item["dir"]))  # 桌面版確認修：相對路徑另給絕對路徑
+        self.assertEqual(set(got), {"batch", "kind", "prefix", "vault", "read", "items", "profile", "entities"})
         mine = next(x for x in batches.load(self.V)["batches"] if x["batch"] == b)
         self.assertEqual(mine["agent_id"], "a0204e72")
 

@@ -436,54 +436,72 @@ def _substituted_args(text, runs, powershell):
 TEXT_FILTERS = {"Bash": {"head", "tail", "sort", "wc", "grep", "egrep", "fgrep", "uniq", "cut"},
                 "PowerShell": {"select-object", "select", "sort-object", "sort", "measure-object", "measure", "where-object",
                                "where", "?"}}
-# grep 這些旗標會讀檔（-r 讀整個目前目錄、-f 讀樣式檔）；wc、sort 的 --files0-from 讀檔名清單
-_FILTER_READ_LONG = ("--recursive", "--dereference-recursive", "--file", "--directories", "--files0-from", "--include",
-                     "--exclude-from")
-_PS_CMDLET = re.compile(r"^[a-z]+-[a-z]+$")
-_PS_READERS = {"gc", "cat", "type", "sls", "ipcsv", "gi", "gp", "iex", "icm", "saps", "start", "fhx", "%", "&", ".", "foreach",
-               "ii", "invoke-item"}
+# 白名單（28 第七輪）：filter 段任何地方出現 shell 會展開、跳脫或導向輸入的字就不算（網銀密碼.tx?、$'…'、~、\、< 檔）
+_FILTER_SHELL_CHARS = set("?[]*{}~$\\`<")
+_FLAG_NUMBER = re.compile(r"^[+-]?\d+(?:[,-]\d*)*$")
+# 每個 filter 准的旗標（28 第七輪 H1 補）：(不帶值的字母, {帶值的字母: 值的種類})；長旗標一律不收。
+# 值的種類：num 數字或數字清單（1-3,5）、char 一個字、pattern grep 的樣式
+_FILTER_FLAGS = {
+    "head": ("", {"n": "num", "c": "num"}), "tail": ("", {"n": "num", "c": "num"}),
+    "sort": ("rnuf", {"k": "num", "t": "char"}), "wc": ("lcwm", {}), "cut": ("", {"d": "char", "f": "num", "c": "num"}),
+    "uniq": ("cdui", {}), "grep": ("ivcnEFwohlqx", {"e": "pattern"}),
+}
+_FILTER_FLAGS["egrep"] = _FILTER_FLAGS["fgrep"] = _FILTER_FLAGS["grep"]
+
+
+def _flag_value_ok(kind, value):
+    return (kind == "pattern" and value != "") or (kind == "char" and len(value) == 1) or (
+        kind == "num" and bool(_FLAG_NUMBER.match(value)))
 
 
 def _text_filter(plan, cwd, tool):
-    """管線後段只處理前一段的文字（head、sort、grep 樣式；Select-Object、Where-Object 比名稱），不讀任何檔：
-    Bash 不帶路徑、不帶萬用字元、grep 不帶 -r／-f；PowerShell 不出現讀內容或跑指令的 cmdlet、別名、.NET 呼叫與括號。"""
+    """管線後段只處理前一段的文字，不讀任何檔（桌面版確認 #10、#11；28 第七輪改白名單）：
+    Bash：只收 _FILTER_FLAGS 列的旗標與它們的值，加 grep 的一個樣式（-e 給了就沒有）；head、tail 另收 -N。
+    任何地方有 ? [ ] * { } ~ $ 反斜線 反引號 <（輸入導向）就不算；長旗標、其他旗標、其他非旗標參數（含 cd 後的相對路徑）都不算。
+    PowerShell：出現 {（腳本區塊）、反引號、括號、[、::、< 就不算；不帶區塊的屬性名稱照放。"""
     verb, text = plan["verb"], cmdparse.strip_marks(plan["text"])
-    if plan["kind"] != "read" or verb not in TEXT_FILTERS.get(tool, ()):
+    if plan["kind"] != "read" or verb not in TEXT_FILTERS.get(tool, ()) or plan["marks"]:
         return False
-    tokens = _tokens_q(text, globs_in_quotes=(tool == "PowerShell"))
+    if tool == "PowerShell":
+        bare = cmdparse.outside_quotes(text, True)
+        return bare is not None and not any(ch in text for ch in "{`<") and not any(x in bare for x in ("(", "[", "::"))
+    if any(ch in _FILTER_SHELL_CHARS for ch in text):
+        return False
+    tokens = _tokens_q(text)
     idx = next((k for k, (t, _q, _g, _a) in enumerate(tokens) if cmdparse._base(t) == verb), None)
     if idx is None:
         return False
-    rest = tokens[idx + 1:]
-    if tool == "PowerShell":
-        bare = cmdparse.outside_quotes(text, True)
-        if bare is None or "(" in bare or "[" in bare or "::" in bare:
-            return False
-        for tok, quoted, _g, _a in rest:
-            low = tok.lower()
-            if quoted or low.startswith("-") or low in ("{", "}"):
-                continue
-            if _PS_CMDLET.match(low) or low in _PS_READERS or low in cmdparse.SHELL_WRAPPERS or low in cmdparse.INTERPRETERS:
+    plain, valued = _FILTER_FLAGS[verb]
+    grep = verb in ("grep", "egrep", "fgrep")
+    pattern_given, positional, expect = False, 0, None
+    for tok, _quoted, _g, _a in tokens[idx + 1:]:
+        if expect is not None:
+            if not _flag_value_ok(expect, tok):
                 return False
-        return True
-    for tok, _quoted, glob_out, _a in rest:
-        low = tok.lower()
-        if low.startswith("--"):
-            if low.split("=", 1)[0] in _FILTER_READ_LONG:
-                return False
+            expect = None
             continue
-        if low.startswith("-") and len(low) > 1:
-            if verb in ("grep", "egrep", "fgrep") and any(c in tok[1:] for c in "rRfd"):
-                return False
+        if tok.startswith("--"):
+            return False
+        if tok.startswith("-") and len(tok) > 1:
+            letters = tok[1:]
+            if verb in ("head", "tail") and letters.isdigit():
+                continue  # head -5
+            for k, c in enumerate(letters):
+                if c in plain:
+                    continue
+                if c not in valued:
+                    return False
+                pattern_given = pattern_given or valued[c] == "pattern"
+                rest = letters[k + 1:]
+                if rest:
+                    if not _flag_value_ok(valued[c], rest):
+                        return False  # 值黏在旗標後（-c1-3、-d,）
+                else:
+                    expect = valued[c]
+                break
             continue
-        if glob_out or "/" in tok or "\\" in tok or tok in (".", ".."):
-            return False
-        try:
-            if os.path.exists(normalize(tok, cwd)):
-                return False  # 是存在的檔或夾：會被讀
-        except (OSError, ValueError):
-            return False
-    return True
+        positional += 1
+    return expect is None and positional <= (1 if grep and not pattern_given else 0)
 
 
 def body_paths(body):

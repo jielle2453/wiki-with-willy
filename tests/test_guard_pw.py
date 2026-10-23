@@ -424,13 +424,43 @@ class ConfirmListPipe(Base):
         r = (self.raw / "客戶案件").as_posix()
         for tool, cmd in (("Bash", f'ls "{r}" | head -5'), ("Bash", f'ls "{r}" | sort | wc -l'),
                           ("PowerShell", f'Get-ChildItem "{r}" | Select-Object -ExpandProperty Name'),
-                          ("PowerShell", f"Get-ChildItem \"{r}\" | Where-Object {{ $_.Name -like '*報價*' }} | Sort-Object Name")):
+                          ("PowerShell", f"Get-ChildItem \"{r}\" | Where-Object Name -like '*報價*' | Sort-Object Name")):
             self.assertDecision(tool, cmd, "pass")
         for tool, cmd in (("Bash", f'ls "{r}" | xargs cat'), ("Bash", f'ls "{r}" | grep -r 密碼'),
                           ("PowerShell", f'Get-ChildItem "{r}" | Get-Content'),
                           ("PowerShell", f'Get-ChildItem "{r}" | ForEach-Object {{ Get-Content $_ }}'),
                           ("PowerShell", f"Get-ChildItem \"{r}\" | Where-Object {{ (Get-Content $_) -match 'x' }}")):
             self.assertDecision(tool, cmd, "deny")
+
+
+
+class Round28g(Base):
+    """28 第七輪中途回報：filter 段改白名單。Bash 只收旗標、旗標的數字值與 grep 的一個樣式，任何參數含 ? [ ] * { } ~ $ 或反斜線就不算；
+    PowerShell 的 filter 段出現 { 就不算（不再用讀檔指令的黑名單）。語料同一批。"""
+
+    def test_filter_whitelist(self):
+        d = self.raw / "客戶案件" / "信義王"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "網銀密碼.txt").write_text("x", encoding="utf-8")
+        cd = f'cd "{d.as_posix()}" && ls | '
+        for cmd in ("grep -h 密碼 網銀密碼.tx?", "head -5 $'網銀密碼.txt'", "head -5 網銀密?.txt", "wc $\"網銀密碼.txt\"",
+                    "sort 網銀密碼.txt", "grep '密碼.*'"):
+            self.assertDecision("Bash", cd + cmd, "deny")
+        for cmd in ("head -n 5", "grep 報價", "sort | wc -l", "sort -rn", "cut -d , -f 1", "grep -iv 報價", "grep -e 報價 -c",
+                    "tail -n +3"):
+            self.assertDecision("Bash", cd + cmd, "pass")
+        # H1 補：旗標白名單、輸入導向、cd 後的相對路徑
+        for cmd in ("sort -m", "wc --files0-from=網銀密碼.txt", "grep -f 網銀密碼.txt", "head -q", "head < 網銀密碼.txt",
+                    "grep x 0< 網銀密碼.txt"):
+            self.assertDecision("Bash", cd + cmd, "deny")
+        self.assertDecision("Bash", f'cd "{d.parent.as_posix()}" && cd 信義王 && ls | head 網銀密碼.txt', "deny")
+        gci = f'Get-ChildItem "{d.as_posix()}" | '
+        for cmd in ("Where-Object { clc $_.FullName }", "Where-Object { findstr keep $_.FullName }",
+                    "Sort-Object { certutil -dump $_.FullName }", "Measure-Object -Property { strings $_.FullName }",
+                    "Where-Object { g`c $_ }"):
+            self.assertDecision("PowerShell", gci + cmd, "deny")
+        for cmd in ("Where-Object Length -gt 5", "Select-Object Name", "Sort-Object Length", "Measure-Object"):
+            self.assertDecision("PowerShell", gci + cmd, "pass")
 
 
 if __name__ == "__main__":

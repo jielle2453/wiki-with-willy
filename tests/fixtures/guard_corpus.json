@@ -9254,9 +9254,9 @@
     "command": "Get-ChildItem \"<RAW>/客戶案件\" | Where-Object { $_.Name -like '*報價*' } | Sort-Object Name"
    },
    "cwd": "<V>",
-   "expect": "pass",
+   "expect": "deny",
    "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
-   "note": "確認 #11",
+   "note": "確認 #11；28 第七輪洞 2：PowerShell filter 段帶 { 一律不算文字 filter（區塊裡純比較的白名單這版不做）",
    "needs": [
     "<RAW>/客戶案件/網站密碼.xlsx"
    ]
@@ -9375,6 +9375,650 @@
    "來源": "密碼與守門-確認.md（第 6 步 #10、#11）",
    "note": "確認 #11 對照：別名 gc",
    "needs": [
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep -h 密碼 網銀密碼.tx?"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1：grep 第二個參數是萬用字元（28 真的印出整份）",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | head -5 $'網銀密碼.txt'"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1：$'…'",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | head -5 網銀密?.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep x 網銀密碼.[t]xt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1：[…]",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | wc $\"網銀密碼.txt\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1：$\"…\"",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | sort 網銀密碼.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1：非旗標參數",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | tail -n 3 網銀密*.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | cut -c1-3 網銀密碼.tx?"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | uniq 網銀密碼.tx?"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep -h 密碼 ~/x.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1：~",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep 密碼 網銀密碼\\.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1：反斜線",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep '密碼.*' "
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1 白名單：樣式含 * 也不算（寧可擋）",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | head -n 5"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1 對照：只有旗標與數字值",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep 報價"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1 對照：grep 一個樣式",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | sort | wc -l"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 1 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Where-Object { clc $_.FullName }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2：clc 清空原檔（28 真的清空了）",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Where-Object { findstr keep $_.FullName }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2：外部程式讀檔",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Where-Object { more $_.FullName }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Sort-Object { certutil -dump $_.FullName }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2：Sort-Object 區塊",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Measure-Object -Property { strings $_.FullName }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2：Measure-Object 區塊",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Where-Object { .\\tool.exe $_ }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Where-Object { g`c $_ }"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2：反引號拆字",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Where-Object Length -gt 5"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2 對照：不帶區塊",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Select-Object Name"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Sort-Object Length"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件/信義王\" | Measure-Object"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "洞 2 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\" | Where-Object Name -like '*報價*' | Sort-Object Name"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪中途回報，a2 轉）",
+   "note": "確認 #11 不帶區塊的寫法",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | sort -m"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1：sort -m 不在白名單",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | wc --files0-from=網銀密碼.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1：長旗標一律不收",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep -f 網銀密碼.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1：grep -f 讀樣式檔",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep --file=網銀密碼.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | sort -T 網銀密碼.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1：-T 不在白名單",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | head -q"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1：head 只收 -n N、-c N、-N",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | head < 網銀密碼.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 2：輸入導向",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep x 0< 網銀密碼.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 2：0<",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep x <<< 網銀密碼"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 2：<<<",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件\" && cd 信義王 && ls | head 網銀密碼.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 3：cd 後的相對路徑",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | sort -rn"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | sort -k 2 -t ,"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | cut -d , -f 1"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | cut -c1-3"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照：值黏在旗標後",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep -iv 報價"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | grep -e 報價 -c"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照：-e 樣式",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | tail -n +3"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | uniq -c"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
+    "<RAW>/客戶案件/網站密碼.xlsx"
+   ]
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cd \"<RAW>/客戶案件/信義王\" && ls | wc -lw"
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "來源": "密碼與守門-測試（28 第七輪 H1 補，a2 轉）",
+   "note": "H1 補 1 對照",
+   "needs": [
+    "<RAW>/客戶案件/信義王/網銀密碼.txt",
     "<RAW>/客戶案件/網站密碼.xlsx"
    ]
   }

@@ -1604,6 +1604,7 @@ U-1 已收進 D-081（2026-10-15）。
 - 為什麼：公開下載的東西寧可漏了被檢查擋下來，也不要多帶出去；以後 repo 多了開發用的檔，不在清單上就不會發出去。程式執行時不讀 README、CHANGELOG、CLAUDE.md；plugin 夾裡的 CLAUDE.md 也不會被客戶的 Claude 載入，留著只是多帶一份開發文件。
 - 放棄了：照 D-072 列「不放」的清單、只排除 `design/` 與 `tests/`（新增資料夾不用管，但 CLAUDE.md、開發用權限設定會公開，根目錄的草稿也會跟著發出去）。
 - 重談條件：發行後某版裝起來缺檔（清單漏了、檢查沒抓到）。
+- **2026-10-23 補**（22）：card-maker、build 會比發行程式先發行，清單一開始就列 `agents/`（card-maker 的 `agents/card-maker.md`）；build 的 `skills/build/`、`templates/build-report.md` 已在清單的 `skills/`、`templates/` 底下。
 
 ## D-214 公開 repo 的 README：上面是產品介紹，下面是給服務人員的簡短一段
 - 日期：2026-10-23

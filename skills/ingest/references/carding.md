@@ -7,7 +7,7 @@
 ## 批次（card-maker）
 
 - 第一步跑 `kb cards batch <批次> --json`：`prefix` 是 kb 指令前綴（下面寫 `kb …`、`convert …` 的都接在它後面）；`vault` 是總資料夾的絕對路徑，項目裡相對總資料夾的路徑（`dir`、`existing_card`、`path`、`target`、`card_path`）都另給 `<鍵>_abs` 絕對路徑，讀寫一律用它；`kind` 是 cards｜agenda｜synthesis｜adopt（第十二節）；`read` 是先讀的規則；`items` 是這批要做的，每項跟下一節的欄位同一組、多 `bucket`（來自哪一桶，不是 `type`：`synthesis_new` 的 `type` 是實體型別；new、stale、broken、unlinked、agenda_recheck、agenda_unscanned、synthesis_new、synthesis_stale、synthesis_broken）；`profile`、`entities` 同下一節。已經做好的項目不再列。
-- `cards`：一～六節寫卡、第七節補掛實體；每寫完一張新卡或重做的卡，同一份內容接著照第九節抽日期、跑 `kb agenda scanned <卡編號>`。`agenda`：第九節。`synthesis`：`rules/synthesis.md`，`synthesis_broken` 照第八節。
+- `cards`：一～六節寫卡、第七節補掛實體；每寫完一張新卡或重做的卡，同一份內容接著照第九節抽日期、跑 `kb agenda scanned <卡編號>`。`agenda`：第九節。`synthesis`：`rules/synthesis.md`，`synthesis_broken` 照第八節；項目帶 `existing_card`（目標已經有卡）一定先 Read，現況改寫、紀事只增，紀事少了會被打回。
 - 清單只用 `items`，不跑 `cards todo`、不自己找檔；不跑 `turn note`、`cards dispatch`。
 - 做完照 card-maker 本文的回報格式回一則給主對話：讀舊 wiki 以外的批次只有份數與沒做成的原因，不寫檔案內容、摘要、人名、金額、日期（D-022），「被擋或打回：」那行的寫法也在那裡；讀舊 wiki 的批次照第十二節的格式。
 

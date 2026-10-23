@@ -28,6 +28,11 @@ build 第一輪修：release_session（接手建置時把前一個對話的 job 
 close_ids_job（done sample 收掉抽樣的 ids job，S3）；dispatch 帶 --ids 時 job 開著也驗編號（S3）。
 桌面版確認修：batch_view 多 vault（總資料夾的絕對路徑），項目裡相對總資料夾的路徑（dir、existing_card、path、target、card_path）
 各多一個 <鍵>_abs 絕對路徑；製卡助手不用自己猜總資料夾在哪（之前它從原檔路徑猜，把卡寫到知識庫外面）。
+桌面版確認 A 段修：接手之後前一個對話（視窗關了、背景還在跑）收到子代理的通知照樣 dispatch，又開新 job 跟接手的對話搶同一批
+日程與綜合卡（份數一直變、日程派 4 份 batch 只剩 2、綜合卡被兩個子代理先後整張寫）。release_session 把它記進 revoked，
+那個對話之後的 dispatch／dispatch_adopt 一律不派、say 說交給另一個對話了（TAKEN_OVER），原對話接手回來才解開。
+開場的份數（opening_counts）改用 waiting：跟 plan 的門檻與 announce、cards status 同一支（new、stale、unlinked、日程待抽，
+扣掉同一套排除），不再自己數 new＋stale。合成卡項目的目標檔已經在（被別的批次寫過）時，batch 給 existing_card（先 Read、紀事只增）。
 """
 import re
 import secrets
@@ -52,6 +57,7 @@ SAY_ADOPT_FIRST = "交給製卡助手在背景讀舊的 wiki，好了跟你說�
 SAY_ADOPT_PROGRESS = "讀好 {done} 段了{failed}；還在讀 {running} 批"
 SAY_ADOPT_DONE = "舊的 wiki 讀完了{failed}"
 SAY_ADOPT_FAILED = "，{n} 段沒讀成"
+TAKEN_OVER = "整理已經交給另一個對話接手，這個對話不再派"
 ADOPT_REPORT = ("批次 <批次>：讀了 N 段、沒讀成 M\n"
                 "口述｜<實體名稱或「無」>｜<YYYY-MM-DD 或「未載」>｜<一句>\n"
                 "規則｜<一句>\n"
@@ -230,6 +236,9 @@ def _cleanup(vault, data):
     jobs = {j.get("job") for j in data["jobs"]}
     data["batches"] = [b for b in data["batches"] if b.get("job") in jobs]
     data["agents"] = [a for a in data["agents"] if not (a.get("stopped") and old(a.get("stopped")))]
+    revoked = data.get("revoked") or {}
+    for sid in [s for s, v in revoked.items() if (lambda t: t is not None and now - t > timedelta(days=1))(_parse(v.get("time")))]:
+        revoked.pop(sid)  # 被接手的對話一天後解開（那時建置早就做完，視窗還開著也照常整理）
 
 
 # ---------- 項目 ----------
@@ -524,6 +533,8 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
     now = _now()
     with lock(vault):
         data = load(vault)
+        if taken_over(data, session_id):
+            return _taken_over_reply(turn_id, KINDS)
         mine = [j for j in data["jobs"] if j.get("session_id") == session_id]
         if mine and mine[-1].get("status") == "closed" and mine[-1].get("stopped_turn") == turn_id:
             return {"job": None, "turn": turn_id, "batches": [], "running": 0, "left": {k: 0 for k in KINDS},
@@ -671,6 +682,8 @@ def dispatch_adopt(vault, session_id, turn_id):
     now = _now()
     with lock(vault):
         data = load(vault)
+        if taken_over(data, session_id):
+            return _taken_over_reply(turn_id, (ADOPT,))
         mine = [j for j in data["jobs"] if j.get("session_id") == session_id and j.get("kind") == ADOPT]
         if mine and mine[-1].get("status") == "closed" and mine[-1].get("stopped_turn") == turn_id:
             return {"job": None, "turn": turn_id, "batches": [], "running": 0, "left": {ADOPT: 0}, "approval": None,
@@ -757,6 +770,7 @@ def batch_view(vault, batch_id, agent_id=None):
     if b["kind"] == ADOPT:
         return _adopt_view(vault, b)
     out = _collect(vault)
+    base = Path(vault).resolve()
     want = list(b.get("items") or [])
     buckets = {"cards": CARD_BUCKETS, "agenda": AGENDA_BUCKETS, "synthesis": SYNTHESIS_BUCKETS}[b["kind"]]
     found = {}
@@ -769,8 +783,9 @@ def batch_view(vault, batch_id, agent_id=None):
                     ctx = ctx or _SynthesisContext(vault)
                     item = ctx.material(item) or item
                 found[k] = dict(item, bucket=bucket)
+                if bucket == "synthesis_new" and (base / item.get("path", "")).is_file() and item.get("path"):
+                    found[k]["existing_card"] = item["path"]  # 目標已經有檔（別的批次剛寫過）：先 Read、紀事只增（A 段修）
     root = plugin_root().as_posix()
-    base = Path(vault).resolve()
     return {"batch": batch_id, "kind": b["kind"], "prefix": prefix(), "vault": base.as_posix(),
             "read": [f"{root}/{r}" for r in READ[b["kind"]]],
             "items": [_with_abs(base, found[k]) for k in want if k in found], "profile": out.get("profile"),
@@ -854,14 +869,18 @@ def stop(vault, session_id, turn_id=None):
             "done": _done_count(data, job, out), "left": sum(len(parts[k]) for k in KINDS)}
 
 
-def release_session(vault, session_id, turn_id):
+def release_session(vault, session_id, turn_id, by=None):
     """接手建置（build 第一輪修 S1）：前一個對話（session_id）open 的 job 關掉、open 批次放掉（released），項目回到可派；
-    不記 stopped_turn（不是那一句說了停）。回放掉的批數；沒有 batches.json 回 0。"""
-    if not session_id or not _path(vault).is_file():
+    不記 stopped_turn（不是那一句說了停）。那個對話記進 revoked（之後不准再派，A 段修）；接手的對話（by）若被記過就拿掉。
+    回放掉的批數。"""
+    if not session_id:
         return 0
     now = _now()
     with lock(vault):
         data = load(vault)
+        revoked = data.setdefault("revoked", {})
+        revoked[session_id] = {"time": now.strftime(_TIME), "by": by}
+        revoked.pop(by, None)
         n = 0
         for b in data["batches"]:
             if b.get("status") == "open" and _job_session(data, b) == session_id:
@@ -870,9 +889,18 @@ def release_session(vault, session_id, turn_id):
         jobs = [j for j in data["jobs"] if j.get("session_id") == session_id and j.get("status") == "open"]
         for j in jobs:
             j["status"], j["closed"], j["released_by_takeover"] = "closed", now.strftime(_TIME), True
-        if n or jobs:
-            save(vault, data, turn_id)
+        save(vault, data, turn_id)
     return n
+
+
+def taken_over(data, session_id):
+    """這個對話的整理已經被別的對話接手了嗎（revoked）。"""
+    return bool(session_id) and session_id in (data.get("revoked") or {})
+
+
+def _taken_over_reply(turn_id, kinds):
+    return {"job": None, "turn": turn_id, "batches": [], "running": 0, "left": {k: 0 for k in kinds}, "approval": None,
+            "done": False, "note_cmd": None, "stopped": True, "taken_over": True, "failed": [], "say": TAKEN_OVER}
 
 
 def close_ids_job(vault, session_id, turn_id):
@@ -1033,23 +1061,16 @@ def active_job(vault, session_id, within_minutes=None):
 # ---------- 開場數字 ----------
 
 def opening_counts(vault, sources, deadline=None):
-    """開場那行（D-161、B-415）：(還沒整理的份數, 要跟著搬的卡)。份數是 todo 的 new＋stale 扣掉還沒清的排除夾裡的；
-    主對話自己做的照算（記成有密碼還沒打開、記過讀不到的連結 todo 本來就不列，22 第一輪驗後）；搬的是 moved。只讀，不寫檔。"""
-    from kb._lib import cards, entities
+    """開場那行（D-161、B-415）：(還沒整理的份數, 要跟著搬的卡)。份數就是 waiting（plan 的門檻、announce、cards status 同一支，
+    桌面版確認 A 段修）：new、stale、unlinked、日程待抽，扣掉還沒清的排除夾裡的；搬的是 moved。只讀，不寫檔。"""
+    from kb._lib import agenda, cards, entities
     from kb._lib import sources as sources_lib
     entries = inventory.load(vault)["entries"]
-    out, _groups, _data = cards._sort_files(vault, sources, entities.load(vault), entries, light=True, deadline=deadline)
-    by_id = {e.get("id"): e for e in entries}
-    prefixes = []
-    pend = sources_lib.pending_purges(sources)
-    if pend:
-        from kb._lib import purge
-        prefixes = [purge.folder_uri(p["alias"], p["spec"]) for p in pend]
-    n = 0
-    for item in out["new"] + out["stale"]:
-        e = by_id.get(item["id"])
-        uri = e["locations"][0]["uri"] if e and e.get("locations") else ""
-        if prefixes and _in_any(uri, prefixes):
-            continue
-        n += 1
-    return n, len(out["moved"])
+    out, groups, _data = cards._sort_files(vault, sources, entities.load(vault), entries, light=True, deadline=deadline)
+    out["purge_pending"] = sources_lib.pending_purges(sources)
+    try:
+        out.update(agenda.unscanned(vault, agenda.load(vault), groups, entries,
+                                    skip={b["id"] for b in out["broken"] if b.get("id")}))
+    except ValueError:  # 日程讀不到：日程待抽先不算（todo 也是給空的）
+        out["agenda_unscanned"] = []
+    return waiting(vault, out), len(out["moved"])

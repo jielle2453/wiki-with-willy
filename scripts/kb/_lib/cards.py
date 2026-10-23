@@ -1047,6 +1047,50 @@ def rewrite_locations(text, uris, link):
     return "".join(out)
 
 
+def pending_type_cards(vault, type_name):
+    """檔頭 待補型別 有 type_name（照實體名稱的比法）的檔案卡相對路徑，照路徑排（build 桌面版確認 A 段：型別只在待補型別裡）。"""
+    from kb._lib import entities
+    want = entities.key(type_name)
+    got = []
+    for _cid, group in _scan_groups(vault)[0].items():
+        for card in group:
+            pend = card["front"].get("待補型別")
+            if isinstance(pend, list) and any(isinstance(t, str) and entities.key(t) == want for t in pend):
+                got.append(card["path"])
+    return sorted(got)
+
+
+def rewrite_pending_types(text, old, new):
+    """只換檔頭 待補型別 欄裡的 old 成 new（重複的去掉），其他行原樣；寫成一行的清單。"""
+    from kb._lib import entities
+    front = parse_front(text)
+    pend = [t for t in front.get("待補型別") or [] if isinstance(t, str)]
+    out, seen = [], set()
+    for t in pend:
+        t = new if entities.key(t) == entities.key(old) else t
+        if entities.key(t) not in seen:
+            seen.add(entities.key(t))
+            out.append(t)
+    lines = text.splitlines(keepends=True)
+    got, i, in_front = [], 0, False
+    while i < len(lines):
+        line = lines[i]
+        bare = line.rstrip("\r\n")
+        if i == 0 and bare.lstrip("\ufeff") == "---":
+            in_front = True
+        elif in_front and bare == "---":
+            in_front = False
+        elif in_front and bare.startswith("待補型別:"):
+            got.append(f"待補型別: [{', '.join(out)}]" + (line[len(bare):] or "\n"))
+            i += 1
+            while i < len(lines) and lines[i].startswith(("  - ", "- ")):
+                i += 1
+            continue
+        got.append(line)
+        i += 1
+    return "".join(got)
+
+
 def rewrite_entities(text, names):
     """只換檔頭的 實體 欄（kb entity rename／merge 改掛載），其他行原樣。一行清單或「實體:」下接「  - 項」的區塊都換，
     換完一律寫成一行的清單（測試後修正裁定 13，收法同 rewrite_locations）。"""

@@ -89,10 +89,22 @@ def _ingest_stopped(vault, previous):
     from kb._lib import batches
     if batches.active_job(vault, previous.get("session_id")):
         return  # 背景整理中客戶打字不是按停止（D-200：要停走 kb cards stop）
+    if _building(vault):
+        return  # 建置中各步都跑 cards todo（抽樣、名字），上一句沒等到 Stop 多半是客戶在回答途中又打了一句（桌面版會排進同一句），不是按停止
     turn.mark(vault, "ingest_stopped")
     out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": STOPPED}}
     sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")
     sys.stdout.flush()
+
+
+def _building(vault):
+    """建置還沒做完嗎（.system/build.json 在、step 不是 done）；讀不到當沒有（build 桌面版確認 A 段）。"""
+    try:
+        with open(os.path.join(str(vault), ".system", "build.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("step") not in (None, "done")
 
 
 def _secret_carried(vault, previous):

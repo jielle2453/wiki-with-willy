@@ -106,7 +106,8 @@ def _facts(cwd, as_json):
     for s in got["sources"]:
         bad = s["unreadable"]
         why = "、".join(f"{k} {n}" for k, n in bad["reasons"].items())
-        lines.append(f"{s['alias']}：{s['files']} 份" + (f"，讀不到 {bad['count']} 份（{why}）" if bad["count"] else ""))
+        dup = f"（其中 {s['duplicates']} 份跟別的檔內容一樣，只做一張卡）" if s["duplicates"] else ""
+        lines.append(f"{s['alias']}：{s['files']} 份{dup}" + (f"，讀不到 {bad['count']} 份（{why}）" if bad["count"] else ""))
         lines += [f"- {f['name']}：{f['files']} 份" for f in s["folders"]]
     est = got["estimate"]
     lines.append(f"共 {got['total']} 份；要整理 {est['files']} 份，{est['text']}" + (f"；{est['usage']}" if est["usage"] else ""))

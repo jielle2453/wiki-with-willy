@@ -35,14 +35,14 @@
 
 ## 盤點
 
-- 跑 `kb build facts --json`，講：每個來源幾份、主要是什麼格式、分成哪些夾；讀不到幾份與原因（有密碼的之後給密碼或說哪一份可以讀、舊格式另存新格式、只在雲端的按右鍵保留在這台電腦）；`estimate` 的時間照講，`usage` 有句子就加這一句。不講 token、金額、換算幾次問答（D-199）。
+- 跑 `kb build facts --json`，講：每個來源幾份（`files`，跟登記時講的同一個數；`duplicates` 有數字就加一句幾份內容重複、只做一張卡）、主要是什麼格式、分成哪些夾；讀不到幾份與原因（有密碼的之後給密碼或說哪一份可以讀、舊格式另存新格式、只在雲端的按右鍵保留在這台電腦）；`estimate` 的時間照講，`usage` 有句子就加這一句。不講 token、金額、換算幾次問答（D-199）。
 - 她說要做才 `kb build done inventory`。
 
 ## 抽樣
 
 - 從 facts 挑 10 份左右：跨不同的夾與格式，避開讀不到的；從 `kb cards todo --json` 的 `new` 拿編號，跑 `kb cards dispatch --ids <f-…,f-…> --json`，等它做完（還在跑時 `done sample` 會擋）。
 - 做完用 `kb cards list --json` 找到那幾張卡讀過，配上 facts，列一份「我猜的」給她看（D-192），每項一句：型別表（第一層夾像什麼：案子、業主、廠商…）、事類用的狀態詞、常見的卡型、哪幾個名字看起來是同一個。
-- 她改的經 kb 寫：型別與卡型照 `kb profile show --json` 的範本加或改，型別改名、合併先 `kb profile type rename|merge … --check` 看影響再做；實體 `kb entity rename|merge`。
+- 她改的經 kb 寫：型別與卡型照 `kb profile show --json` 的範本加或改，型別改名、合併先 `kb profile type rename|merge … --check` 看影響再做（舊名只在卡的待補型別裡、型別表沒有時，rename 照樣做：新名不在型別表會回問題問大類，照結果帶 `--category`）；實體 `kb entity rename|merge`。
 - 再問每類最想知道什麼，記進設定檔第四節。
 
 ## 全量整理

@@ -13,6 +13,8 @@ finish 之後的知識庫，facts、report、adopt 也照 status 那句擋（S9�
 讀 hot.md、log.md、agenda.md、CLAUDE.md 前先看是不是連結。report --facts 多 given_up（製卡助手沒做成的，S7）。
 第二輪修：走訪舊 wiki 不跟目錄連結（symlink、junction、reparse point、realpath 對不上），跳過的列進 skipped（R2）；
 終端機（沒有 --session）一律不認領鎖：鎖空著或過期照做、不記成終端機，有對話拿著時 status 照讀、done／redo／set 回 BUSY（R3）。
+桌面版確認 A 段修：接手時把前一個對話記成被接手（batches.release_session 的 by，那個對話之後不准再派）；done adopt 要等剛記的口述、
+裁示讓綜合卡更新完（綜合卡還有要寫的就擋，ADOPT_SYNTHESIS），做完清掉 .system/temp/adopt/ 的段。
 env（D-189）只讀、不碰 build.json、哪裡都能跑（建好的知識庫也行，換電腦 D-208 會叫它）；PDF 元件在子行程實跑一頁，
 智慧型應用程式控制讀登錄檔，信任讀 ~/.claude.json，舊 llm-wiki 讀外掛清單與 enabledPlugins。外部的東西都經 _ 開頭的函式，測試換掉。
 facts 只讀：每個來源的份數、格式、第一二層夾、讀不到的原因與估時（D-199 的算法，同 plan）。
@@ -71,6 +73,7 @@ RUNNING = "還有 {n} 批在背景整理，做完再往下"
 LEFT_NAMES = "還有 {n} 個名字沒確認，確認完再往下"
 LEFT_SYNTHESIS = "還有 {n} 張綜合卡沒寫好，寫完再往下"
 RUNNING_ADOPT = "還在背景讀舊的 wiki，讀完再往下"
+ADOPT_SYNTHESIS = "剛記的口述、裁示要寫進 {n} 張綜合卡，先跑 kb cards dispatch 更新完再往下"
 NO_REPORT = "建置報告還沒寫，先跑 kb build report --from <寫好的那份>"
 REPORT_OK = "建置報告寫好了：" + REPORT_POSIX
 REPORT_MISSING = "建置報告少了一段：{}"
@@ -218,7 +221,7 @@ def _locked(cwd, change, takeover=False, readonly=False):
         if json.dumps(data, sort_keys=True, ensure_ascii=False) != before:
             save(vault, data, tid)
     if taken:  # 接手：前一個對話的 job 與 open 批次放掉，項目回到可派（S1）
-        batches.release_session(vault, taken, tid)
+        batches.release_session(vault, taken, tid, by=session_of(vault))
     return vault, data, got
 
 
@@ -330,6 +333,8 @@ def done(cwd, step):
         _check(vault, data, step)
         if step == "sample":  # 抽樣的 ids job 收掉：進全量整理時第一次 dispatch 就全量切（S3）
             batches.close_ids_job(vault, session_of(vault), tid)
+        if step == "adopt":  # 段讀完了：暫存清掉（報告的數字不從這裡算）
+            _clear_adopt(vault)
         if step == "env":
             data["env"] = {"checked": _stamp(), "items": env_items(vault)}
         if step == "setup":
@@ -433,6 +438,14 @@ def _check(vault, data, step):
     elif step == "adopt":
         if _running(vault, (batches.ADOPT,)):
             raise Refused(RUNNING_ADOPT)
+        run = _running(vault, ("synthesis",))
+        if run:
+            raise Refused(RUNNING.format(n=len(run)))
+        parts = batches.split(vault, batches._collect(vault))
+        skip = _given_up(vault)
+        n = sum(1 for _b, k, _i in parts["synthesis"] if k not in skip)
+        if n:
+            raise Refused(ADOPT_SYNTHESIS.format(n=n))
     elif step == "finish":
         if not data.get("report"):
             raise Refused(NO_REPORT)
@@ -688,7 +701,8 @@ def _count(d, key):
 
 
 def facts(vault):
-    """kb build facts：每個來源 {"alias","files","formats","folders","subfolders","unreadable":{"count","reasons"}}；
+    """kb build facts：每個來源 {"alias","files"（檔數，同 folders add）,"contents"（內容不同的份數）,"duplicates"（跟別的檔內容一樣的）,
+    "formats","folders","subfolders","unreadable":{"count","reasons"}}；
     total、unreadable 合計、estimate（要整理的份數、大約幾分鐘、份數多時的用量那句）。只讀。"""
     from kb._lib import plan
     srcs = sources_lib.load(vault)
@@ -699,26 +713,33 @@ def facts(vault):
         items = []
     open_reasons = {(i.get("file_ids") or [None])[0]: str(i.get("reason") or "") for i in items
                     if i.get("kind") == "unreadable" and i.get("status") == "open"}
-    per = {s["alias"]: {"alias": s["alias"], "files": 0, "formats": {}, "folders": {}, "subfolders": {},
-                        "unreadable": {"count": 0, "reasons": {}}} for s in srcs.entries}
+    per = {s["alias"]: {"alias": s["alias"], "files": 0, "contents": 0, "duplicates": 0, "formats": {}, "folders": {},
+                        "subfolders": {}, "unreadable": {"count": 0, "reasons": {}}} for s in srcs.entries}
     for e in inventory.load(vault)["entries"]:
         if e.get("status") != "active" or inventory.is_link(e) or not e.get("locations"):
             continue
-        alias, rel = inventory.split_uri(e["locations"][0]["uri"])
-        alias = aliases.get(alias.casefold())
-        if alias is None:
-            continue
-        row = per[alias]
-        row["files"] += 1
-        _count(row["formats"], Path(rel).suffix.lower() or "（沒有副檔名）")
-        parts = rel.split("/")
-        _count(row["folders"], parts[0] if len(parts) > 1 else "（直接放在這裡）")
-        if len(parts) > 2:
-            _count(row["subfolders"], "/".join(parts[:2]))
-        why = _why_unreadable(vault, srcs, e, open_reasons)
-        if why:
-            row["unreadable"]["count"] += 1
-            _count(row["unreadable"]["reasons"], why)
+        seen = set()
+        for loc in e["locations"]:  # 份數照檔數（跟 folders add 同一個數，桌面版確認 A 段）；內容一樣的另外記
+            alias, rel = inventory.split_uri(loc["uri"])
+            alias = aliases.get(alias.casefold())
+            if alias is None:
+                continue
+            row = per[alias]
+            row["files"] += 1
+            _count(row["formats"], Path(rel).suffix.lower() or "（沒有副檔名）")
+            parts = rel.split("/")
+            _count(row["folders"], parts[0] if len(parts) > 1 else "（直接放在這裡）")
+            if len(parts) > 2:
+                _count(row["subfolders"], "/".join(parts[:2]))
+            if alias in seen:
+                row["duplicates"] += 1
+                continue
+            seen.add(alias)
+            row["contents"] += 1
+            why = _why_unreadable(vault, srcs, e, open_reasons)
+            if why:
+                row["unreadable"]["count"] += 1
+                _count(row["unreadable"]["reasons"], why)
     rows = []
     for row in per.values():
         row["folders"] = [{"name": k, "files": n} for k, n in sorted(row["folders"].items(), key=lambda x: (-x[1], x[0]))]
@@ -928,6 +949,23 @@ def _pieces(text, limit):
 
 
 HEAD_MAX = 200  # 段頭那行（來源路徑）最多佔的字數
+
+
+def _clear_adopt(vault):
+    """.system/temp/adopt/ 的段刪掉、夾空了拿掉；是連結不碰。刪不掉的留著（下次 --extract 也會先清）。"""
+    d = Path(vault) / batches.ADOPT_POSIX
+    if not d.is_dir() or d.is_symlink() or os.path.realpath(d) != os.path.abspath(d):
+        return
+    for p in d.iterdir():
+        if p.is_file() and not p.is_symlink():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    try:
+        d.rmdir()
+    except OSError:
+        pass
 
 
 def adopt_extract(vault, path):

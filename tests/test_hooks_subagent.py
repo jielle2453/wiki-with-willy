@@ -87,11 +87,13 @@ class Start(Base):
         self.assertEqual((r.returncode, r.stdout), (0, ""))
         self.assertIn("\tsubagent\t", self.errors())
 
-    def test_broken_batches_file_logs_and_exits_0(self):
+    def test_broken_batches_file_still_gives_rules_and_logs(self):
         self.prompt("好")
         (self.V / batches.BATCHES_POSIX).write_text("{", encoding="utf-8")
         r = run(HOOK, self.payload("SubagentStart"), "start")
-        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertEqual(r.returncode, 0)
+        core = (ROOT / "rules" / "core.md").read_text(encoding="utf-8")
+        self.assertTrue(json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"].endswith(core))
         self.assertIn("batches.json", self.errors())
 
 

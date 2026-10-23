@@ -86,7 +86,7 @@ class Batch(Base):
         b = self.js("cards", "dispatch")["batches"][2]["batch"]
         got = json.loads(self.ok("--turn", self.t, "--agent", "a0204e72", "cards", "batch", b, "--json"))
         self.assertEqual((got["batch"], got["kind"], got["prefix"]), (b, "cards", PREFIX))
-        self.assertEqual(got["read"], [f"{plugin_root().as_posix()}/skills/ingest/references/carding.md 一～七、九節"])
+        self.assertEqual(got["read"], [f"{plugin_root().as_posix()}/skills/ingest/references/carding.md 批次、材料的欄位、一～七、九節"])
         todo_new = {i["id"]: i for i in self.todo()["new"]}
         self.assertEqual(len(got["items"]), 5)
         for item in got["items"]:
@@ -115,6 +115,16 @@ class Stop(Base):
         self.assertTrue(turn._read_turn(turn._session_file(self.V, SID)).get("ingest_stopped"))
         self.assertEqual(self.ok("cards", "stop"), "現在沒有在整理")
         self.assertEqual(self.ok("cards", "status"), "現在沒有在整理；還有 45 份沒整理")
+
+    def test_no_dispatch_after_stop_in_the_same_turn(self):
+        """審閱修：停掉的子代理也送通知；同一句收通知再 dispatch 不重派，客戶下一句說整理才派。"""
+        self.ok("cards", "dispatch")
+        self.ok("cards", "stop")
+        got = self.js("cards", "dispatch")
+        self.assertEqual((got["stopped"], got["batches"]), (True, []))
+        self.assertEqual(self.ok("cards", "dispatch"), "這一句說了停，不再派；客戶說整理再派")
+        turn.start(self.V, SID, "繼續整理")
+        self.assertEqual(len(self.js("cards", "dispatch")["batches"]), 3)
 
     def test_stop_human(self):
         self.ok("cards", "dispatch")

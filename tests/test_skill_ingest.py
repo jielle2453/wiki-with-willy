@@ -147,9 +147,6 @@ class ManageRow(unittest.TestCase):
         self.assertNotIn("整理成卡的功能之後補", row)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CardMakerSkeleton(unittest.TestCase):
     """card-maker（D-196～D-200）：骨架派工 → 收通知再派 → done 才拿 asks、tell → note_cmd；停與進度各有一步；三條原則帶編號。"""
@@ -159,7 +156,7 @@ class CardMakerSkeleton(unittest.TestCase):
         self.steps = self.body[self.body.index("## 骨架"):self.body.index("## 共通")]
 
     def test_dispatch_flow_in_order(self):
-        marks = ["cards todo --json", "cards dispatch --json", "Agent 工具", "subagent_type", "cards status", "approval",
+        marks = ["cards todo --json", "cards dispatch --json", "Agent 工具", "subagent_type", "approval", "cards status",
                  "cards stop --json", "TaskStop", "`asks` 從前面", "note_cmd", "turn note"]
         pos = [self.steps.index(m) for m in marks]
         self.assertEqual(pos, sorted(pos), marks)
@@ -180,3 +177,7 @@ class CardMakerSkeleton(unittest.TestCase):
         for want in ("## 批次（card-maker）", "## 材料的欄位", "被擋或打回：", "kb cards unreadable"):
             with self.subTest(want=want):
                 self.assertIn(want, carding)
+
+
+if __name__ == "__main__":
+    unittest.main()

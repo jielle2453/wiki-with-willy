@@ -30,8 +30,8 @@ STOPPED = "這批已經停了或做完了"
 APPROVAL_QUESTION = "這次要更新 {n} 張綜合卡，比平常多；要繼續嗎？"
 PROMPT = "批次 {batch}：{what}。第一步跑 {prefix} cards batch {batch} --json，照它做，做完照你的說明回報。"
 CARDING = "skills/ingest/references/carding.md"
-READ = {"cards": [f"{CARDING} 一～七、九節"], "agenda": [f"{CARDING} 第九節"],
-        "synthesis": ["rules/synthesis.md", f"{CARDING} 第八節"]}
+READ = {"cards": [f"{CARDING} 批次、材料的欄位、一～七、九節"], "agenda": [f"{CARDING} 批次、材料的欄位、第九節"],
+        "synthesis": ["rules/synthesis.md", f"{CARDING} 批次、材料的欄位、第八節"]}
 _TIME = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -225,7 +225,17 @@ def _what(kind, n):
 def dispatch(vault, session_id, turn_id, source=None):
     """派工（kb cards dispatch，D-196、D-197）：沿用或新開這個 session 的 job，從沒被認領的項目切批，最多到 card_parallel 個 open；
     順序 cards → agenda → synthesis，前一種有剩或還在跑就不建後一種；synthesis 前算大改動門檻（D-075），超過又沒同意回 approval。
-    什麼都不剩也沒在跑：job 關掉、回 note_cmd。回 {"job","turn","batches","running","left","approval","done","note_cmd"}。"""
+    什麼都不剩也沒在跑：job 關掉、回 note_cmd。回 {"job","turn","batches","running","left","approval","done","note_cmd","stopped"}。
+    job 記著 source：之後不帶 --source 的再派照它（收通知再派不會把範圍放寬）。
+    這一句剛跑過 cards stop（停掉的子代理也會送通知）：不派、stopped 是 true（D-200）；客戶下一句說整理才再派。"""
+    pre = load(vault)
+    mine = [j for j in pre["jobs"] if j.get("session_id") == session_id]
+    if mine and mine[-1].get("status") == "closed" and mine[-1].get("stopped_turn") == turn_id:
+        return {"job": None, "turn": turn_id, "batches": [], "running": 0, "left": {k: 0 for k in KINDS},
+                "approval": None, "done": False, "note_cmd": None, "stopped": True}
+    old = open_job(pre, session_id)
+    if source is None and old is not None:
+        source = old.get("source")
     out = _collect(vault)
     parts = split(vault, out, source)
     st = _settings(vault)
@@ -236,7 +246,7 @@ def dispatch(vault, session_id, turn_id, source=None):
         changed = False
         if job is None:
             job = {"job": _new_id("j", {j.get("job") for j in data["jobs"]}), "session_id": session_id, "turn": turn_id,
-                   "created": now.strftime(_TIME), "status": "open"}
+                   "created": now.strftime(_TIME), "status": "open", "source": source}
             fresh = True
         else:
             fresh = False
@@ -284,7 +294,7 @@ def dispatch(vault, session_id, turn_id, source=None):
     has_job = not (fresh and not (made or approval))
     return {"job": job["job"] if has_job else None, "turn": jt, "batches": shown, "running": len(run), "left": counts,
             "approval": approval, "done": done,
-            "note_cmd": f'kb turn note --turn {jt} "{{做了什麼}}"' if done and not fresh else None}
+            "note_cmd": f'kb turn note --turn {jt} "{{做了什麼}}"' if done and not fresh else None, "stopped": False}
 
 
 def _approval(vault, jt, items, st):
@@ -358,8 +368,9 @@ def status(vault, session_id):
             "done": _done_count(data, job, out), "left": left, "waiting": sum(len(parts[k]) for k in KINDS)}
 
 
-def stop(vault, session_id):
-    """停（D-200）：這個 session 的 open 批次改 released、job 關掉；回 {"job","agents","done","left"}，沒有 job 回 None。
+def stop(vault, session_id, turn_id=None):
+    """停（D-200）：這個 session 的 open 批次改 released、job 關掉（記 stopped_turn：這一句之後收到的通知不再派）；
+    回 {"job","agents","done","left"}，沒有 job 回 None。
     agents 是要停的子代理：這些批次記的 agent_id，加上這個 job 回合裡還沒收到 SubagentStop 的。"""
     now = _now()
     out = _collect(vault)
@@ -378,6 +389,7 @@ def stop(vault, session_id):
                    and a.get("turn") == job["turn"] and not a.get("stopped")]
         job["status"] = "closed"
         job["closed"] = now.strftime(_TIME)
+        job["stopped_turn"] = turn_id
         save(vault, data, job["turn"])
     parts = split(vault, out)
     return {"job": job["job"], "turn": job["turn"], "agents": list(dict.fromkeys(agents)),

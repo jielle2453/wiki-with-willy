@@ -124,6 +124,19 @@ class Claims(Base):
         self.assertEqual(self.data()["batches"][0]["source"], "報價")
         self.assertTrue(all(k.startswith("f-0000000") for k in self.data()["batches"][0]["items"]))
 
+    def test_job_remembers_source(self):
+        """審閱修：收通知再派不帶 --source，照 job 記的來源，範圍不放寬。"""
+        self.config(card_batch_size=2, card_parallel=1)
+        self.out = {"new": files(4, "報價") + files(3, "合約", start=100)}
+        self.entries([{"id": i["id"], "status": "active", "read": "ok", "locations": [{"uri": i["uri"]}]}
+                      for i in self.out["new"]])
+        self.dispatch(source="報價")
+        self.edit(lambda d: d["batches"][0].update(status="done"))
+        self.out = {"new": files(2, "報價", start=2) + files(3, "合約", start=100)}
+        got = self.dispatch()
+        self.assertEqual(got["left"]["cards"], 0)
+        self.assertEqual(self.data()["batches"][-1]["items"], [i["id"] for i in files(2, "報價", start=2)])
+
 
 class Order(Base):
     def test_synthesis_waits_for_cards_and_agenda(self):

@@ -362,6 +362,7 @@ def _mount(vault, fid, names, as_json, conversation):
 NOT_IN_CONVERSATION = "整理要在對話裡派"
 NOT_RUNNING = "現在沒有在整理"
 LINK_ONLY = "這個指令只收線上文件；檔案讀不到由 convert 記"
+STOPPED_HERE = "這一句說了停，不再派；客戶說整理再派"
 
 
 def _session(vault):
@@ -383,6 +384,9 @@ def _dispatch(vault, source, as_json):
     got = batches.dispatch(vault, sid, turn.current(vault, sid)["turn"], source)
     if as_json:
         print(json.dumps(got, ensure_ascii=False))
+        return 0
+    if got["stopped"]:
+        print(STOPPED_HERE)
         return 0
     if got["done"]:
         print("整理完了")
@@ -423,7 +427,8 @@ def _status(vault, as_json):
 
 
 def _stop(vault, as_json):
-    got = batches.stop(vault, _session(vault))
+    sid = _session(vault)
+    got = batches.stop(vault, sid, turn.current(vault, sid)["turn"] if sid else None)
     try:  # 這個對話不再自動整理（D-200）：照 D-156 的記號
         turn.mark(vault, "ingest_stopped")
     except OSError:

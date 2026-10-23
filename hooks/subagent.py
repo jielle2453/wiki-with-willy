@@ -2,7 +2,7 @@
 
 start：agent_type 是 wiki-with-willy:card-maker 才動作。batches.json 的 agents 記 agent_id → 回合（這個 session open 的 job 的回合，
 沒有 job 取目前回合），守門照它把子代理的寫入算回派工那一句；回 additionalContext：開場段的「kb 指令」那行加 rules/core.md 全文
-（跟 session.py 同一組函式，不另抄）。hooks.json 的 matcher 也只認 card-maker（不帶 matcher 連內建子代理也注入，spike 第 1 題）。
+（跟 session.py 同一組函式，不另抄）；agents 沒記成（batches.json 壞了）照樣給規則、寫 log。hooks.json 的 matcher 也只認 card-maker（不帶 matcher 連內建子代理也注入，spike 第 1 題）。
 stop：那個子代理記上的 open 批次改 done、agents 那筆記 stopped，再對它的回合補工作日誌的「改了」（journal.refresh_changed）。
 不在知識庫裡不動作。stdin 先照 UTF-8 讀（B-093）；任何例外寫 .system/hook-errors.log（source subagent），永遠 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -41,7 +41,10 @@ def main(event):
 
         sid, aid = payload.get("session_id"), payload.get("agent_id")
         if event == "start":
-            batches.agent_start(vault, sid, aid)
+            try:
+                batches.agent_start(vault, sid, aid)
+            except BaseException as e:  # noqa: BLE001  沒記到只是寫入算回目前回合；規則照樣給（B-032）
+                _log(e, payload)
             emit(context(vault))
         elif event == "stop":
             tid = batches.agent_stop(vault, sid, aid)

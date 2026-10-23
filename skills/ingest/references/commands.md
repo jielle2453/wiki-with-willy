@@ -60,7 +60,7 @@ PDF 元件剛裝好時最前面多一行 `PDF 元件裝好了，N 份 PDF 回到
 
 ## cards dispatch [--source <別名>] [--json]（背景整理，只在對話裡）
 
-切批交給 card-maker：`{"job","turn","batches":[{"batch","kind","items","agent","prompt"}],"running","left":{"cards","agenda","synthesis"},"approval","done","note_cmd"}`。每個 `batches` 用 Agent 工具派：`subagent_type` 照 `agent`、`prompt` 原樣、背景跑（它自己跑 `cards batch` 拿材料，主對話不跑）。一次最多 3 批在跑，做卡 → 日程 → 綜合卡依序，前一種沒做完不派後一種；沒新批次（`batches` 空）是還在跑，等通知。`--source` 只整理那個來源（客戶說「先整理報價那夾」）。`approval`（`{"question","do"}`）：這次要改的綜合卡比平常多，照 `question` 問，客戶說好才跑 `do` 再 dispatch。`done` 是 true：都做完了，`note_cmd` 的 `{做了什麼}` 換成一句白話再跑。人讀 `派了 3 批（做卡 20、20、20）；還在跑 0 批；還剩 做卡 176、綜合卡 6`、`整理完了`。拒絕（exit 3）：`整理要在對話裡派`（終端機跑的）。
+`{"job","turn","batches":[{"batch","kind","items","agent","prompt"}],"running","left":{"cards","agenda","synthesis"},"approval":{"question","do"}|null,"done","note_cmd","stopped"}`；每個欄位怎麼處理照 SKILL 骨架第 4 步。同時在跑的批數上限是 `card_parallel`（預設 3），做卡 → 日程 → 綜合卡依序；`--source` 只整理那個來源，job 記著，之後再派不用再加。製卡助手自己跑 `cards batch` 拿材料，主對話不跑。人讀 `派了 3 批（做卡 20、20、20）；還在跑 0 批；還剩 做卡 176、綜合卡 6`、`沒有新派的；…`、`整理完了`、`這一句說了停，不再派；客戶說整理再派`。拒絕（exit 3）：`整理要在對話裡派`（終端機跑的）。
 
 ## cards status [--json]、cards stop [--json]
 

@@ -80,8 +80,7 @@ class Recheck(Base):
         first = self.kb("cards", "todo")[0]
         self.assertIn("；日程待重對 1", first)
         steps = [s["step"] for s in self.todo()["plan"]]
-        self.assertIn("agenda_recheck", steps)
-        self.assertEqual(steps.index("agenda_recheck"), steps.index("cards") + 1)
+        self.assertEqual(steps, ["dispatch"], "card-maker：日程也收進 dispatch（D-198）")
         self.kb("agenda", "recheck", aid)
         self.assertEqual(self.todo()["agenda_recheck"], [])
         self.assertNotIn("日程待重對", self.kb("cards", "todo")[0])
@@ -215,9 +214,11 @@ class Unscanned(Base):
         self.redo("第二次")
         first = self.kb("cards", "todo")[0]
         self.assertTrue(first.endswith("；日程待重對 1；日程待抽 1"), first)
-        steps = [(s["step"], s["items"], s["read"]) for s in self.todo()["plan"]]
-        self.assertEqual([s[0] for s in steps if s[0].startswith("agenda")], ["agenda_recheck", "agenda_unscanned"])
-        self.assertIn(("agenda_unscanned", 1, "references/carding.md 第九節"), steps)
+        data = self.todo()
+        self.assertEqual([s["step"] for s in data["plan"]], ["dispatch"])  # card-maker：日程收進 dispatch（D-198）
+        from kb._lib import batches
+        parts = batches.split(self.V, data)  # 日程批次裡先重對再抽（D-140）
+        self.assertEqual([b for b, _k, _i in parts["agenda"]], ["agenda_recheck", "agenda_unscanned"])
         self.kb("agenda", "recheck", aid)
         self.kb("agenda", "scanned", cid)
         self.assertNotIn("日程待", self.kb("cards", "todo")[0])

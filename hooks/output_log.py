@@ -70,6 +70,8 @@ def main():
         # card-maker（D-195 釐清 3b）：子代理寫的照它記的回合（跟 guard.py 同一支），總目錄與綜合卡快取的備份才在同一回合
         agent_turn = turn.agent_turn(vault, payload.get("session_id"), payload.get("agent_id"))
         t = (turn.turn_data(vault, agent_turn) if agent_turn else None) or turn.current(vault, payload.get("session_id"))
+        if agent_turn:
+            _touch(vault, payload)
         if zone == OUTPUT_ZONE:
             inventory.register_output(vault, rel, t["turn"])
         elif zone == SYNTHESIS_ZONE:
@@ -77,6 +79,15 @@ def main():
         elif rel.lower().endswith(".md"):
             _check_card(vault, rel, sources, t["turn"], payload)
     except BaseException as e:  # noqa: BLE001  任何例外都要吞掉
+        _log(e, payload)
+
+
+def _touch(vault, payload):
+    """製卡助手寫卡：它認領中的批次記 last_seen（B 段第 6 步）；記不到只寫 log。"""
+    from kb._lib import batches
+    try:
+        batches.touch(vault, payload.get("agent_id"))
+    except BaseException as e:  # noqa: BLE001
         _log(e, payload)
 
 

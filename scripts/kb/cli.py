@@ -82,6 +82,15 @@ def _no_abbrev(parser):
                 _no_abbrev(sub)
 
 
+def _touch(vault, agent_id):
+    """子代理跑 kb：它認領中的批次記 last_seen（B 段第 6 步，別的對話靠這個分辨還有沒有人在做）；寫不了不擋這次呼叫。"""
+    from kb._lib import batches, ledger
+    try:
+        batches.touch(vault, agent_id)
+    except Exception as e:  # noqa: BLE001
+        ledger.log_error(vault, f"批次 last_seen 沒記到：{type(e).__name__}: {e}", source="kb")
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.session is not None:
@@ -98,6 +107,8 @@ def main(argv=None):
             print(NOT_THIS_TURN.format(args.turn))
             return 3
         turn.OVERRIDE = args.turn
+        if args.agent:
+            _touch(vault, args.agent)
     module_name, _doc = COMMANDS[args.command]
     module = importlib.import_module(module_name)
     return module.run(args)

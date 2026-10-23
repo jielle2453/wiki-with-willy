@@ -5,10 +5,12 @@ import unittest
 from tests import _cards
 from tests import test_hooks_stop as _stop
 from tests import test_scripts_cards_cli as _cards_cli
+from tests import test_hooks_output_log as _out
 from tests import test_scripts_cards_dispatch as _dispatch
 from tests.test_scripts_inventory_cli import run_kb
 from tests.test_scripts_output_cli import SID, Base
 from kb._lib import batches, cards, turn  # noqa: E402
+from kb._lib import sources as _sources  # noqa: E402
 
 
 class RevertOfRevertIsSymmetric(Base):
@@ -205,6 +207,84 @@ class RedoJobSynthesis(_cards_cli.RedoMount):
     for _name in [n for n in dir(_cards_cli.RedoMount) if n.startswith("test_")]:
         locals()[_name] = None
     del _name
+
+
+class ClosedWindow(_dispatch.Base):
+    """第 6 步（22 的決定）：SessionEnd 把那個對話的 job 與批次放掉；收不到的靠 last_seen：兩邊都活著不重切，
+    舊對話沒動靜超過 card_batch_idle_minutes 新對話就切得到；開場份數與 waiting 照算。"""
+    SID2 = "sid-other"
+
+    def setUp(self):
+        super().setUp()
+        self.first = self.js("cards", "dispatch")
+
+    def age(self, minutes, seen=True):
+        """把三批的建立時間（與 last_seen）往前推 minutes 分鐘，各記一個子代理。"""
+        old = (batches._now() - batches.timedelta(minutes=minutes)).strftime(batches._TIME)
+        with batches.lock(self.V):
+            data = batches.load(self.V)
+            for i, b in enumerate(data["batches"]):
+                b["created"], b["agent_id"] = old, f"a-{i}"
+                if seen:
+                    b["last_seen"] = old
+                data["agents"].append({"agent_id": f"a-{i}", "session_id": _dispatch.SID, "turn": self.t, "started": old})
+            batches.save(self.V, data, self.t)
+
+    def other(self):
+        turn.start(self.V, self.SID2, "整理")
+        r = run_kb("--session", self.SID2, "cards", "dispatch", "--json", cwd=self.V)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout)
+
+    def test_session_end_releases(self):
+        r = _out.run_hook({"session_id": _dispatch.SID, "cwd": str(self.V), "hook_event_name": "SessionEnd",
+                           "reason": "other"}, hook=_out.ROOT / "hooks" / "session_end.py")
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        data = batches.load(self.V)
+        self.assertEqual({b["status"] for b in data["batches"]}, {"released"})
+        self.assertEqual([(j["status"], j.get("released_by_session_end"), j.get("stopped_turn")) for j in data["jobs"]],
+                         [("closed", True, None)])
+        self.assertNotIn(_dispatch.SID, data.get("revoked") or {}, "不是接手：之後回來照樣能整理")
+        self.assertEqual(len(self.other()["batches"]), 3)
+
+    def test_alive_sessions_keep_their_claims(self):
+        self.age(15)
+        for i, b in enumerate(self.first["batches"]):  # 子代理還在跑 kb：last_seen 一直更新
+            r = run_kb("--turn", self.t, "--agent", f"a-{i}", "cards", "batch", b["batch"], "--json", cwd=self.V)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        got = self.other()
+        self.assertEqual(got["batches"], [])
+        self.assertEqual(got["say"], "另一個對話正在整理其中 45 份，這邊先不派，等那邊做完再說「整理」")
+
+    def test_card_write_counts_as_alive(self):
+        self.age(15)
+        card = self.V / "檔案索引" / "x.md"
+        card.parent.mkdir(parents=True, exist_ok=True)
+        card.write_text("x\n", encoding="utf-8")
+        payload = dict(_out.post_payload(self.V, "Write", card), session_id=_dispatch.SID, agent_id="a-0")
+        _out.run_hook(payload)
+        seen = {b["agent_id"]: b.get("last_seen") for b in batches.load(self.V)["batches"]}
+        self.assertGreater(seen["a-0"], seen["a-1"], "寫卡的那個子代理 last_seen 更新")
+
+    def test_idle_other_session_can_be_recut(self):
+        self.age(11)
+        self.assertEqual(len(self.other()["batches"]), 3, "舊對話沒動靜超過 10 分鐘：新對話切得到")
+
+    def test_own_session_keeps_old_rule_and_hold_needs_fresh_seen(self):
+        self.age(11)
+        again = self.js("cards", "dispatch")
+        self.assertEqual((again["batches"], again["running"]), ([], 3), "自己的批次照舊：30 分鐘內算還在跑")
+        now = batches._now()
+        b = {"status": "open", "created": (now - batches.timedelta(minutes=40)).strftime(batches._TIME), "agent_id": "a-0"}
+        agents = {"a-0": {"agent_id": "a-0"}}
+        self.assertFalse(batches.live(dict(b, last_seen=b["created"]), now, 30, agents, 10), "過期又沒動靜：不延長")
+        self.assertTrue(batches.live(dict(b, last_seen=now.strftime(batches._TIME)), now, 30, agents, 10))
+
+    def test_counts_ignore_claims(self):
+        before = batches.opening_counts(self.V, _sources.load(self.V))[0]
+        self.age(11)
+        self.assertEqual((before, batches.opening_counts(self.V, _sources.load(self.V))[0]), (45, 45))
+        self.assertEqual(self.js("cards", "status")["waiting"], 45)
 
 
 if __name__ == "__main__":

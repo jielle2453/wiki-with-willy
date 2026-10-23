@@ -39,6 +39,8 @@
   "_why_synthesis_batch_size": "綜合卡一批幾張（D-198）：一張要讀它掛的全部卡，比做卡重；5 張一批讓一個子代理的 context 放得下",
   "card_batch_expire_minutes": 30,
   "_why_card_batch_expire_minutes": "批次建立多久沒做完就當放掉、項目可以再派（D-197）：被殺的子代理沒有 SubagentStop（spike 第 8 題）；一批 20 份 spike 約 4～5 分鐘，30 分鐘夠寬",
+  "card_batch_idle_minutes": 10,
+  "_why_card_batch_idle_minutes": "別的對話的批次多久沒動靜（子代理跑 kb、寫卡會更新 last_seen）就當沒人在做、可以重切（B 段第 6 步：視窗當掉或強制關、收不到 SessionEnd）；過期後子代理還在的三倍延長也只在 last_seen 還新時算。一批 20 份 spike 約 4～5 分鐘，製卡助手中間每份都會跑 kb 或寫卡，10 分鐘沒動靜多半是沒了",
   "card_seconds_per_file": 6,
   "_why_card_seconds_per_file": "整理前估時每份幾秒（D-199）：spike 第 7 題 3 個並行時牆鐘每份 5～8 秒",
   "card_batch_overhead_seconds": 30,

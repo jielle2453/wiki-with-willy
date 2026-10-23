@@ -88,7 +88,8 @@ CARDING = "skills/ingest/references/carding.md"
 READ = {"cards": [f"{CARDING} 批次、材料的欄位、一～七、九節"], "agenda": [f"{CARDING} 批次、材料的欄位、第九節"],
         "synthesis": ["rules/synthesis.md", f"{CARDING} 批次、材料的欄位、第八節"],
         "adopt": [f"{CARDING} 批次、第十二節"]}
-HOLD_FACTOR = 3  # 過期但子代理沒停：認領到幾倍時間
+HOLD_FACTOR = 3  # 過期但子代理沒停、last_seen 還新：認領到幾倍時間
+TOUCH_EVERY = 60  # 秒：同一批 last_seen 隔這麼久才再寫一次（子代理每個 kb 呼叫都會碰，不每次都寫檔）
 _REPORT_LINE = re.compile(r"^\s*-\s*(\S+?)\s*[：:]\s*(.+?)\s*$")
 _TIME = "%Y-%m-%dT%H:%M:%S"
 
@@ -162,9 +163,9 @@ def _agents(data):
     return {a.get("agent_id"): a for a in data["agents"]}
 
 
-def live(batch, now, minutes, agents=None):
-    """認領中：open、建立不到 minutes 分鐘；過期了但記上的子代理還在跑（沒 stopped）就認領到 HOLD_FACTOR 倍時間
-    （第一輪修：不讓別的子代理重切同一份）。建立時間讀不懂當過期。"""
+def live(batch, now, minutes, agents=None, idle=None):
+    """認領中：open、建立不到 minutes 分鐘；過期了但記上的子代理還在跑（沒 stopped）而且 last_seen 還新（idle 分鐘內）
+    就認領到 HOLD_FACTOR 倍時間（第一輪修：不讓別的子代理重切同一份；B 段：子代理沒了就不延長）。建立時間讀不懂當過期。"""
     made = _parse(batch.get("created"))
     if batch.get("status") != "open" or made is None:
         return False
@@ -172,13 +173,70 @@ def live(batch, now, minutes, agents=None):
     if age < timedelta(minutes=minutes):
         return True
     agent = (agents or {}).get(batch.get("agent_id"))
-    return bool(agent and not agent.get("stopped")) and age < timedelta(minutes=minutes * HOLD_FACTOR)
+    return (bool(agent and not agent.get("stopped")) and age < timedelta(minutes=minutes * HOLD_FACTOR)
+            and not _idle(batch, now, idle))
 
 
-def _claimed(data, now, minutes):
-    """認領中的項目（不分對話，cards stop 與 job 照舊按對話）：{(kind, key)}。"""
+def _idle_minutes(idle):
+    return idle if idle is not None else config.defaults().get("card_batch_idle_minutes", 10)
+
+
+def _idle(batch, now, idle=None):
+    """這一批多久沒動靜了（last_seen，沒有用建立時間）：超過 idle 分鐘回 True。"""
+    seen = _parse(batch.get("last_seen")) or _parse(batch.get("created"))
+    return seen is None or now - seen > timedelta(minutes=_idle_minutes(idle))
+
+
+def _claimed(data, now, minutes, idle=None, session_id=None):
+    """認領中的項目（不分對話，cards stop 與 job 照舊按對話）：{(kind, key)}。別的對話的批次 last_seen 超過 idle 分鐘當沒人在做
+    （視窗當掉、強制關收不到 SessionEnd，B 段第 6 步）；自己對話的照舊只看過期。"""
     agents = _agents(data)
-    return {(b["kind"], k) for b in data["batches"] if live(b, now, minutes, agents) for k in b.get("items") or []}
+    return {(b["kind"], k) for b in data["batches"] if live(b, now, minutes, agents, idle)
+            and not (session_id and _job_session(data, b) != session_id and _idle(b, now, idle))
+            for k in b.get("items") or []}
+
+
+def touch(vault, agent_id):
+    """子代理有動靜（它跑 kb、寫卡）：它記著的 open 批次 last_seen 改成現在；隔 TOUCH_EVERY 秒才寫一次。回有沒有寫。"""
+    if not agent_id or not _path(vault).is_file():
+        return False
+    now = _now()
+    with lock(vault):
+        data = load(vault)
+        hit = [b for b in data["batches"] if b.get("agent_id") == agent_id and b.get("status") == "open"
+               and not ((seen := _parse(b.get("last_seen"))) and (now - seen).total_seconds() < TOUCH_EVERY)]
+        if not hit:
+            return False
+        for b in hit:
+            b["last_seen"] = now.strftime(_TIME)
+        job = _job_of(data, hit[0]) or {}
+        save(vault, data, job.get("turn") or turn.current(vault)["turn"])
+    return True
+
+
+def release_ended(vault, session_id):
+    """SessionEnd（B 段第 6 步）：那個對話 open 的 job 關掉、open 批次放掉（released）、它的子代理記成停了，項目回到可派；
+    同接手建置的 release_session，但不記 revoked、不記 stopped_turn（那個對話沒說停，只是關了）。回放掉的批數。"""
+    if not session_id or not _path(vault).is_file():
+        return 0
+    now = _now()
+    with lock(vault):
+        data = load(vault)
+        jobs = [j for j in data["jobs"] if j.get("session_id") == session_id and j.get("status") == "open"]
+        n = 0
+        for b in data["batches"]:
+            if b.get("status") == "open" and _job_session(data, b) == session_id:
+                b["status"] = "released"
+                n += 1
+        for a in data["agents"]:
+            if a.get("session_id") == session_id and not a.get("stopped"):
+                a["stopped"] = now.strftime(_TIME)
+        if not jobs and not n:
+            return 0
+        for j in jobs:
+            j["status"], j["closed"], j["released_by_session_end"] = "closed", now.strftime(_TIME), True
+        save(vault, data, (jobs[0] if jobs else {}).get("turn") or turn.current(vault)["turn"])
+    return n
 
 
 def running(data, session_id, now, minutes):
@@ -526,7 +584,8 @@ def _collect(vault):
 
 def _settings(vault):
     return {k: config.get(vault, k) for k in ("card_batch_size", "card_parallel", "synthesis_batch_size",
-                                               "card_batch_expire_minutes", "big_change_synthesis_max")}
+                                               "card_batch_expire_minutes", "big_change_synthesis_max",
+                                               "card_batch_idle_minutes")}
 
 
 def prefix():
@@ -645,7 +704,8 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
         failed = job.get("failed") or {}
         jt = job["turn"]
         run = running(data, session_id, now, st["card_batch_expire_minutes"])
-        claimed = _claimed(data, now, st["card_batch_expire_minutes"])  # 任何對話認領中的都扣掉（兩個視窗同時整理不切到同一份）
+        claimed = _claimed(data, now, st["card_batch_expire_minutes"], st["card_batch_idle_minutes"],
+                           session_id)  # 任何對話認領中的都扣掉（兩個視窗同時整理不切到同一份）；別的對話沒動靜的不算
         left = {k: [x for x in parts[k] if (k, x[1]) not in claimed and x[1] not in failed] for k in KINDS}
         slots = max(0, st["card_parallel"] - len(run))
         made, approval = [], None
@@ -845,6 +905,7 @@ def batch_view(vault, batch_id, agent_id=None):
             b2 = next((x for x in data["batches"] if x.get("batch") == batch_id), None)
             if b2 is not None and not b2.get("agent_id"):
                 b2["agent_id"] = agent_id
+                b2["last_seen"] = now.strftime(_TIME)
                 job = _job_of(data, b2) or {}
                 save(vault, data, job.get("turn") or turn.current(vault)["turn"])
     if b["kind"] == ADOPT:
@@ -912,7 +973,7 @@ def status(vault, session_id):
     parts = split(vault, out)
     job = open_job(data, session_id)
     run = running(data, session_id, now, st["card_batch_expire_minutes"]) if job else []
-    claimed = _claimed(data, now, st["card_batch_expire_minutes"])
+    claimed = _claimed(data, now, st["card_batch_expire_minutes"], st["card_batch_idle_minutes"], session_id)
     failed = (job or {}).get("failed") or {}
     left = {k: sum(1 for x in parts[k] if (k, x[1]) not in claimed and x[1] not in failed) for k in KINDS}
     mine = [j for j in data["jobs"] if j.get("session_id") == session_id and j.get("kind") != ADOPT]

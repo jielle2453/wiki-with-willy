@@ -238,3 +238,37 @@ fixture：`llm-wiki-test/build-e2e2/`：`來源` 46 份（含 1 份有密碼 PDF
 - `hook-errors.log` 不存在；舊 wiki 一個檔都沒變（只比 fixture 多我加的兩頁，雜湊與內容都沒變）；來源夾只多我放的私人帳單；`私人`、`薪資` 沒有任何東西進清冊、卡或暫存。
 - 花了多久：claude 實際跑約 23 分鐘（牆鐘 00:55～01:18，接手之後 21 分鐘走完）。
 - 沒做到：同第一次，不能在桌面版關視窗（用砍行程代替）、舊 llm-wiki 開著只用替身驗。
+
+## 回測第二輪
+
+日期：2026-10-24
+測的版本：`e3bab0d`（`bcdea81..e3bab0d`，只動 `build.py`、`credentials.py`、兩份 references 與測試）；跑前樹乾淨，沒改任何程式。
+範圍：22 派的 6 項（R1、遮值收窄、R2、R3、plugin-dev 文字、validate）；這輪不跑 `claude -p`。
+
+### 結論
+
+- **R1、遮值收窄、R2、R3、plugin-dev 文字、validate 全過，沒有新問題擋收尾。**
+- 全部測試：exit 0，**Ran 2345，OK（skipped=2）**，587 秒；`claude plugin validate` 通過（警告同前）。
+- settings.json 跑前跑後 sha256 相同：`8ae82f7a69eea7b8…`（跑前全文存在 scratchpad `settings_before_build_r2.json`）。
+- 值得記但不擋的（低）：（a）`*帳密*`、`*金鑰*` 會誤擋檔名剛好有這兩個字的正常文件；（b）遮值收窄後，`pwd 123456`（只有空白）和 `Bearer` 後面不到 16 字的不遮；（c）被跳過的目錄連結在人讀那行寫成「檔名像密碼、沒讀：…」，字面不對。
+
+### 逐項
+
+| # | 結果 | 證據 |
+|---|---|---|
+| R1 adopt 跳過 | **過** | 舊 wiki 放 `帳密.md`、`網站金鑰.md`、`網站金鑰.txt`：前兩個在 `adopt --check` 與 `--extract` 的 `skipped`、`report --facts` 的 `adopt_skipped`（人讀數字段有「舊 wiki 裡檔名像密碼、沒讀的：…」）；**值（`Zq8kd91AAA`／`BBB`）不在任何段檔**。`網站金鑰.txt` 沒有列在 skipped：adopt 只讀 `.md`，`.txt` 根本不會被走訪到，值也不在段檔裡（所以結果對、只是不會列出來）。舊 vault 雜湊不變 |
+| R1 convert、守門、清冊 | **過** | 來源夾放 `帳密.txt`、`網站金鑰.docx`、`帳密整理/內容.txt`、`一般文件.txt`：`inventory scan` 的「不算指紋」把前三個列為「檔名像密碼或金鑰」，清冊 `read: credential`；`convert` 前三個 exit 3 `讀不到：檔名像密碼或金鑰，預設不讀`，一般文件照讀；守門 Read／`cat`／`ls <那份>`／Grep 含它的夾／grep 帳密整理夾 都 deny `檔名像密碼或金鑰（帳密.txt）…`；`ls <夾>` 與 Glob 列檔名放行 |
+| R1 誤擋（記下） | 低 | 同一張樣式表也讓 `公司帳密管理辦法.md`、`金鑰管理.md` 這種正常文件被跳過（adopt 的 `skipped` 有列、報告會寫出來，客戶看得到、能說「可以讀」）。「寧可多擋」的既有取捨（D-034），不是新缺口 |
+| 遮值收窄 | **過** | `今天的 pwd 命令列出目前資料夾`、`bearer of bad news`、`load-bearing wall`、`echo $PWD`、`cd /home/pwd/work` 都不再被遮；照遮的：`pwd: …`、`PWD=…`、全形 `pwd：…`、`pwd ： …`、`PWD ＝ …`、`pwd  :…`、`PWD=/c/Users/x`、`Authorization: Bearer eyJ…`（長 token）、`Bearer` 後面接 16 字與 17 字、`bearer token: …`、`解鎖碼 …`、`解鎖碼：…`、PEM 私鑰整段、沒有 END 的 PEM 遮到尾 |
+| 遮值邊界（記下） | 低 | 不遮：`Bearer` 後面剛好 15 字（`Bearer ABCDEFGHIJKLMNO`）、`Bearer:`（冒號接短值）、`Bearer` 換行再接 token、`pwd 123456`（只有空白）、`我的 pwd 是 …`。都是收窄的代價：這幾種寫法在舊 wiki 出現的機率低，且 token 通常 ≥ 16 字 |
+| R2 | **過** | 舊 wiki 的 `wiki/projects/連結夾`、`wiki/根連結`、`wiki/topics/深層/連結`（中間有一層真目錄）三個 junction（外面夾有 `外檔.md` 與 `sub/深.md`）：都跳過，列在 `skipped`；**外面的檔不在任何段檔**；`wiki/` 整個是 junction → `skipped: ['wiki']`、只讀 CLAUDE.md、wiki 內容不進段檔；外面夾與舊 vault 都沒變；乾淨舊 vault 不誤判（`skipped: []`）。檔案符號連結在這台建不了，沒實測（單元測試涵蓋） |
+| R2 字面（記下） | 低 | `--extract` 與 `--check` 的人讀行把連結夾也寫成「檔名像密碼、沒讀：wiki/projects/連結夾」，字面不對（`skipped` 一個清單裝兩種原因）；`--json` 也沒分原因。不影響行為 |
+| R3 鎖空著 | **過** | 終端機（無 `--session`）在鎖空著時跑 `set people`、`redo env`、`done env`、`done setup`、`status`：都執行，`session_id` 一直是 `None`；之後對話 A／B 第一次 `status` 照常認領，`takeovers` 沒有記錄，不用接手 |
+| R3 對話持鎖 | **過** | A 持鎖時終端機 `done`、`redo`、`set` → exit 3 `另一個對話正在建置（訪談，最後動作 01:51）…`，`build.json` 逐位元組不變（sha256 前後相同）；終端機 `status`、`env` 照讀、也不改檔；終端機 `status --takeover` 不會搶（owner 仍是 A）。鎖過期時終端機做事不改 owner，A 回來照常 |
+| plugin-dev 文字 | **過** | `references/` 兩份都沒有 `${CLAUDE_PLUGIN_ROOT}`（只剩 SKILL.md 裡的）；相對路徑 `../ingest/references/carding.md`、`../ingest/SKILL.md`、`../manage/references/sources.md`、`../note/references/{correction,preference,ruling,agenda}.md` 逐一確認存在；`steps.md` 開頭說明這些相對路徑接在 SKILL.md 給的 skill 資料夾後面；`adopt.md` 沒有寫死 `--entity`／`--card`／`--kind`／`profile add`／`--text`（改指 note 的檔與 `kb <子命令> --help`）；`steps.md` 環境節有「Python `fail`（太舊）：裝 3.10 以上…這項沒過不建」與「`kb build start` 被擋：原句照貼，分『另一個對話正在建置』與『已經是建好的知識庫』兩種講法」，sac「評估中」也補了。SKILL.md 本文 2056 字（≤ 3000）、`steps.md` 74 行、`adopt.md` 29 行 |
+| validate | **過** | `Validation passed with warnings` |
+
+### 收尾
+
+- build 這題的測試：驗收 1～14 全過，兩輪回測要修的 S1～S10、R1～R3 都修了。還開著的都是低等級的字面或取捨：S5（B-412 長指示通知後偶爾英文轉場，第一輪回測看到 1 段，這輪沒重跑 `claude -p`，建議桌面版確認時留意）、上面記下的三件（誤擋、遮值邊界、連結夾字面）。
+- 沒做到：桌面版（關視窗、舊 llm-wiki 開著、PDF 元件真被智慧型應用程式控制擋住）都留給確認那輪。

@@ -136,6 +136,34 @@ class Claims(Base):
         self.assertEqual((p["file_ids"], p["status"]), ([item[0]["id"]], "open"))
         self.assertTrue(p["reason"].startswith("製卡助手兩次沒做成"))
 
+    def test_same_turn_redispatch_is_not_a_second_try(self):
+        """22 第二輪驗後：同一回合 done 之後再 dispatch → 不切 failed、failures 計數不變、不記待處理；
+        換一個回合再 dispatch → 重試一次，再沒做成才記待處理。"""
+        from kb._lib import pending
+        item = files(1)
+        self.entries([{"id": item[0]["id"], "status": "active", "read": "ok", "fingerprints": [{"sha256": "fp1"}],
+                       "locations": [{"uri": item[0]["uri"]}]}])
+        self.out = {"new": item}
+        self.dispatch()
+        self.edit(lambda d: d["batches"][-1].update(status="done"))
+        self.assertTrue(self.dispatch()["done"])
+        self.assertEqual(self.data()["failures"][item[0]["id"]]["jobs"].__len__(), 1)
+        n_batches = len(self.data()["batches"])
+        again = self.dispatch()  # 同一回合又叫一次
+        self.assertEqual((again["batches"], again["done"]), ([], True))
+        self.assertEqual([f["id"] for f in again["failed"]], [item[0]["id"]])
+        self.assertEqual(again["say"], "整理完了：做好 0 份，1 份沒做成")
+        self.assertEqual(len(self.data()["batches"]), n_batches)
+        self.assertEqual(len(self.data()["failures"][item[0]["id"]]["jobs"]), 1)
+        self.assertEqual([i for i in pending.load(self.V)["items"] if i["kind"] == "unreadable"], [])
+        turn.start(self.V, SID, "再整理一次")  # 換一個回合：重試一次
+        retry = self.dispatch()
+        self.assertEqual(len(retry["batches"]), 1)
+        self.edit(lambda d: d["batches"][-1].update(status="done"))
+        self.assertTrue(self.dispatch()["done"])
+        (p,) = [i for i in pending.load(self.V)["items"] if i["kind"] == "unreadable"]
+        self.assertTrue(p["reason"].startswith("製卡助手兩次沒做成"))
+
     def test_failures_reset_when_fingerprint_changes(self):
         from kb._lib import pending
         item = files(1)

@@ -446,6 +446,9 @@ def dispatch(vault, session_id, turn_id, source=None):
         if fresh:
             job = {"job": _new_id("j", {j.get("job") for j in data["jobs"]}), "session_id": session_id, "turn": turn_id,
                    "created": now.strftime(_TIME), "status": "open", "source": source}
+            inherited = _same_turn_failed(data, session_id, turn_id)
+            if inherited:
+                job["failed"] = inherited
         elif source is None:
             source = job.get("source")
         out = _collect(vault)
@@ -520,6 +523,16 @@ def _say(first, done, approval, made, run, done_n, failed_n):
     if not (done_n or failed_n):
         return SAY_RUNNING.format(running=len(run) + len(made))
     return SAY_PROGRESS.format(done=done_n, failed=tail, running=len(run) + len(made))
+
+
+def _same_turn_failed(data, session_id, turn_id):
+    """同一個 session、同一個派工回合裡已經關掉的 job 的 failed（22 第二輪驗後）：同一句話做完又叫一次 dispatch 不算第二次整理，
+    沿用它們、不重切、不再記失敗；換了回合才算第二次。"""
+    got = {}
+    for j in data["jobs"]:
+        if j.get("session_id") == session_id and j.get("turn") == turn_id and j.get("status") == "closed":
+            got.update(j.get("failed") or {})
+    return got
 
 
 def _approval(vault, jt, items, st):

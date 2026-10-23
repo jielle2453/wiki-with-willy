@@ -1,3 +1,10 @@
+## D-213 發行的 zip 照「要放」清單打，只放執行要用的（修訂 D-072 的排除寫法）
+- 日期：2026-10-23
+- 選了：從 tag 打 zip 時照一張要放的清單：`.claude-plugin/`、`hooks/`、`scripts/`、`config/`、`rules/`、`skills/`、`templates/`、`skeleton/`，加 `README.md`、`CHANGELOG.md`、`LICENSE`；其他一律不放（`design/`、`tests/`、repo 的 `CLAUDE.md`、`.claude/`、git 設定檔）。打包程式最後檢查兩件：zip 裡沒有不在清單上的東西；`plugin.json`、`hooks.json` 引用到的路徑在 zip 裡都有。新增執行要用的資料夾（例如 card-maker 的 `agents/`）的那一題，要把它補進清單。
+- 為什麼：公開下載的東西寧可漏了被檢查擋下來，也不要多帶出去；以後 repo 多了開發用的檔，不在清單上就不會發出去。程式執行時不讀 README、CHANGELOG、CLAUDE.md；plugin 夾裡的 CLAUDE.md 也不會被客戶的 Claude 載入，留著只是多帶一份開發文件。
+- 放棄了：照 D-072 列「不放」的清單、只排除 `design/` 與 `tests/`（新增資料夾不用管，但 CLAUDE.md、開發用權限設定會公開，根目錄的草稿也會跟著發出去）。
+- 重談條件：發行後某版裝起來缺檔（清單漏了、檢查沒抓到）。
+
 # 決策
 
 日期：2026-10-11
@@ -546,6 +553,7 @@
 - 為什麼：客戶電腦沒 git 也沒 GitHub 帳號（D-023）；服務人員建置時在場（D-022）；程式碼不是護城河，磨合經驗才是，公開 zip 省掉在客戶電腦存鑰匙。
 - 放棄了：私有 GitHub marketplace（要 git 與 token）；下載帶鑰匙（多一步，護的東西不值）；遠端推送升級（客戶電腦沒有常駐程式）。
 - 重談條件：B-008 spike 三件之一不成立：桌面版 hook 不能聯網；換資料夾後必須客戶打 `/plugin update`；桌面版不接受本機路徑 marketplace。
+- **2026-10-23 修訂**：zip 改照「要放」清單打，見 D-213。
 
 ## D-073 讀取放行與 kb.py 放行都走守門 hook
 - 日期：2026-10-12

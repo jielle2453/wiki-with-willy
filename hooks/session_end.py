@@ -1,6 +1,7 @@
-"""SessionEnd（B 段第 6 步）：對話結束（關視窗、/exit、/clear、/resume 換走、登出）時，把那個對話 open 的整理 job 與批次放掉
+"""SessionEnd（B 段第 6 步）：對話結束（關視窗、/exit、登出；reason 是 logout、prompt_input_exit、other）時，把那個對話 open 的整理 job 與批次放掉
 （batches.release_ended：同接手建置，但不記 revoked、不記 stopped_turn），項目回到可派，新開的對話不用等認領過期。
-當掉、強制關收不到這個事件的，靠批次的 last_seen（card_batch_idle_minutes）保底。
+/clear、/resume 不放（同一個視窗、同一個行程，背景的製卡助手還活著，放掉會重做同一份）：hooks.json 的 matcher 只收那三種，
+這裡照 reason 再擋一次（RELEASE_REASONS）。這兩種與當掉、強制關收不到這個事件的，靠批次的 last_seen（card_batch_idle_minutes）保底。
 Claude Code 給 SessionEnd 的時間預設 1.5 秒、plugin 的 timeout 拉不長：只 import batches，不碰別的狀態檔。
 沒有決定權、輸出會被丟掉：任何例外寫 .system/hook-errors.log（source session_end），永遠 exit 0、不輸出。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -16,6 +17,7 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 HERE = os.path.dirname(os.path.abspath(__file__))
+RELEASE_REASONS = ("logout", "prompt_input_exit", "other")
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
 
@@ -26,7 +28,7 @@ def main():
         if not isinstance(payload, dict):
             raise ValueError(f"payload 不是物件：{type(payload).__name__}")
         sid = payload.get("session_id")
-        if not sid:
+        if not sid or payload.get("reason") not in RELEASE_REASONS:
             return
         from kb import guard
 

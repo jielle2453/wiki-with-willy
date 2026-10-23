@@ -236,9 +236,31 @@ class ClosedWindow(_dispatch.Base):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return json.loads(r.stdout)
 
+    def end(self, reason):
+        return _out.run_hook({"session_id": _dispatch.SID, "cwd": str(self.V), "hook_event_name": "SessionEnd",
+                              "reason": reason}, hook=_out.ROOT / "hooks" / "session_end.py")
+
+    def test_clear_and_resume_keep_claims(self):
+        """/clear、/resume 還是同一個行程，製卡助手還活著：不放，交給 last_seen。"""
+        for reason in ("clear", "resume"):
+            with self.subTest(reason=reason):
+                self.assertEqual(self.end(reason).returncode, 0)
+                self.assertEqual({b["status"] for b in batches.load(self.V)["batches"]}, {"open"})
+        cfg = json.loads((_out.ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["hooks"]["SessionEnd"][0]["matcher"], "logout|prompt_input_exit|other")
+
+    def released_by(self, reason):
+        self.assertEqual(self.end(reason).returncode, 0)
+        self.assertEqual({b["status"] for b in batches.load(self.V)["batches"]}, {"released"})
+
+    def test_logout_releases(self):
+        self.released_by("logout")
+
+    def test_prompt_input_exit_releases(self):
+        self.released_by("prompt_input_exit")
+
     def test_session_end_releases(self):
-        r = _out.run_hook({"session_id": _dispatch.SID, "cwd": str(self.V), "hook_event_name": "SessionEnd",
-                           "reason": "other"}, hook=_out.ROOT / "hooks" / "session_end.py")
+        r = self.end("other")
         self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
         data = batches.load(self.V)
         self.assertEqual({b["status"] for b in data["batches"]}, {"released"})

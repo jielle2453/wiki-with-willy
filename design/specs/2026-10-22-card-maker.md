@@ -62,7 +62,7 @@ card-maker 是子代理，客戶不會叫它：她的話進 ingest（建置那�
 - **大改動（D-075）**：子代理不能問客戶，所以 `dispatch` 派 synthesis 批次前先算：這個 job 回合已改的既有綜合卡（`ai_synthesis`）加這次要派的 `synthesis_stale` 張數超過 `big_change_synthesis_max`、回合沒 approve → 不派 synthesis，回 `approval`（問句與 `kb turn approve --turn <回合>`；`turn approve` 收 `--turn`），主對話問客戶、說好才 approve 再 dispatch。
 - **只整理一部分（例句 3）**：`dispatch --source <別名>` 只從那個來源的項目切批；synthesis 不受 `--source` 限制但照樣等 cards 都做完。
 - **估時（D-199）**：`plan.py` 的 `BATCH_SECONDS` 拿掉，改讀 `card_seconds_per_file` 與 `card_batch_overhead_seconds`：秒數 = 份數 × 每份秒數 + 準備秒數；不到 60 秒說「一兩分鐘」。
-- **B-412 的其他資料與 B-415（a2 轉來 manage 第二版確認第 0～0c 節，10-22）**：三次開場兩次照做，沒照做的那次第一句是一大段接手指示（任務書），AI 先處理那段才整理——B-412 重現時也要試「第一句很長」的情況。另外兩件併進這題：(1) 開場的數字要對：`cards.unsorted` 只算 `dispatch` 真的派得出去的（讀不到的、包括 produce 連結型條目打不開的，記進待處理後不再算，B-415），另外把要跟著原檔搬的卡算出來，開場行改成「還有 N 份沒整理完、M 張卡要跟著搬」（0 的那半不印）；(2) 連結型條目讀不到時 `convert` 記 unreadable，原因「線上文件打不開」，`plan.py` 的 `UNREADABLE_ADVICE` 加一句怎麼辦（到 claude.ai 確認那份還在、有分享給這個帳號，或跟我說先跳過）。確認時另記：主對話有沒有英文自言自語（a2 看到「Carding says to run `convert`.」，R-10）。
+- **B-412 的其他資料與 B-415（a2 轉來 manage 第二版確認第 0～0c 節，10-22）**：三次開場兩次照做，沒照做的那次第一句是一大段接手指示（任務書），AI 先處理那段才整理——B-412 重現時也要試「第一句很長」的情況。另外兩件併進這題：(1) 開場的數字要對：`cards.unsorted` 只算 `dispatch` 真的派得出去的（讀不到的、包括 produce 連結型條目打不開的，記進待處理後不再算，B-415），另外把要跟著原檔搬的卡算出來，開場行改成「還有 N 份沒整理完、M 張卡要跟著搬」（0 的那半不印）；(2) 連結型條目（produce 登記的 claude.ai 線上文件）不切進批次、留給主對話（card-maker 沒有讀線上文件的工具，`convert` 也不處理 link 條目）：`plan` 在 `dispatch` 之外留一步 `cards`，只列 link 項、`read` 指 carding.md 一～六節；主對話讀不到時跑新指令 `kb cards unreadable <編號> --reason "線上文件打不開"`（只收 link 條目，其他回 exit 3「這個指令只收線上文件；檔案讀不到由 convert 記」），記進待處理 unreadable、之後不再算進開場數字；`plan.py` 的 `UNREADABLE_ADVICE` 加一句怎麼辦（到 claude.ai 確認那份還在、有分享給這個帳號，或跟我說先跳過）。確認時另記：主對話有沒有英文自言自語（a2 看到「Carding says to run `convert`.」，R-10）。
 - **B-412**：開場有「還有 N 份沒整理完」（門檻內）時 AI 沒照 D-161 直接整理。開場指示照 D-196 改寫（見要做的事 8）；實作先用 `claude -p` 在測試知識庫重現（19 份沒整理、說「你好」跑 5 次），找出原因再改，改完同法再跑 5 次（驗收 14）。
 - **跟密碼與守門、manage 第二版的交界**（a2 10-22 看過 spec 後提，兩題發行後都在 main）：
   1. **加密檔**：背景子代理不能問客戶，`convert` 一律不帶 `--password`、`--saved`；`dispatch` 切批時排除清冊或待處理已記成讀不到（含有密碼）的條目，留給主對話照 `plan`／`asks`（`unlock_same_kind` 等）問客戶。第一次遇到、還不知道有密碼的，子代理 `convert` 失敗照記讀不到、回報沒做成，下次 dispatch 就排除。檔名是憑證樣式的檔（含裁示「可以讀」的密碼檔，D-183、D-184）也不切進批次、留給主對話：它們的暫存是 `.system/temp/*.secret.md`，密碼與守門在每句話開頭與 Stop 時刪掉，子代理跑到一半可能被主對話那句的 Stop 刪掉（a2 10-23）。
@@ -172,6 +172,7 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 11. [ ] 日誌：派工那句 Stop 時「改了」是無；子代理寫 3 張卡後跑 `subagent.py stop` → 那句的「改了」有 3 張卡；job 關掉後主對話下一次 Stop → 那句的結果換成最後回答，再一次 Stop 不換。
 12. [ ] `cards stop --json`：open 批次改 released、job 關、目前回合記 `ingest_stopped`、輸出 agents 與份數；之後同一 session 的 `cards todo` 開場指示不印（D-156 那套）。
 13. [ ] 退回：一個 job 寫了 20 張卡、中途客戶開了新回合（只讀）→ `versions revert` 一次退掉 20 張（卡、總目錄、實體清單回來）。
+13c. [ ] 連結型：todo 有一份 link 條目 → `dispatch` 不切它、`plan` 有一步 `cards` 只列它；`cards unreadable <它> --reason "線上文件打不開"` → 待處理多一筆、`tell` 是新那句、開場數字不再算它；對一般檔跑 → exit 3 那句。
 13b. [ ] 開場數字：清冊有 2 份讀不到（一份有密碼、一份連結型 404）、3 份新、5 張卡要搬 → 開場行「還有 3 份沒整理完、5 張卡要跟著搬」；連結型那份的 `tell` 是新加的那句。
 14. [ ] B-412：測試知識庫 19 份沒整理，`claude -p --plugin-dir <ROOT>` 說「你好」跑 5 次、第一句是一段 300 字的指示再跑 5 次，各至少 4 次開始整理（跑了 `cards dispatch`）；報告寫 5 次各自的開頭。
 15. [ ] card-maker 本文與 SubagentStart 注入過 `test_budget`；`claude plugin validate` 通過、`plugin-dev:plugin-validator` 沒有錯。
@@ -225,3 +226,4 @@ synthesis 批次的 `items` 是 todo 的 `synthesis_new`／`synthesis_stale`／`
 - 2026-10-22（approved 後）：a2 轉來 manage 第二版確認的開場三次（兩次照做、第一句是長指示那次沒照做）；B-415（連結型讀不到每次都算進還有 N 份）與開場沒算要搬的卡，併進 B-412 那條；驗收加 13b、14 多試長指示。範圍跟開場整理同一處，不另開題。
 - 2026-10-23（approved 後）：a2 提憑證樣式檔（可以讀的密碼檔）的暫存會被 Stop 刪，補進交界第 1 點與驗收 2b：不切進批次、留給主對話；`hooks/turn.py` 以密碼與守門發行版為底（它加了刪 `.secret.md` 那幾行）。
 - 2026-10-23：開工條件改（a2 轉、使用者向 22 確認「可以」）：實作先開工、底用 c3fdf63；測試與確認等密碼與守門發行。
+- 2026-10-23（實作中疑義，22 定）：連結型條目不進批次、主對話照舊做；讀不到用新指令 `kb cards unreadable` 記（在 `cards.py`，不動 `convert.py`）；驗收加 13c。

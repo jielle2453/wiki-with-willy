@@ -241,12 +241,34 @@ class Lock(Base):
         self.assertGreaterEqual(self.data()["lock_until"], first)
 
     def test_terminal_is_not_current_json(self):
-        """第一輪修 S10：沒有 --session（終端機）不拿 current.json 當自己：current.json 是 sid-a 也照樣被當成另一個。"""
+        """第一輪修 S10、第二輪修 R3：沒有 --session（終端機）不拿 current.json 當自己；對話拿著鎖時 status 照讀、
+        done／redo／set 回 BUSY，鎖不動。"""
         self.started("sid-a")
         build.status(self.D)
+        before = self.data()
         turn.SESSION = None
         self.assertEqual(build.session_of(self.D), "終端機")
-        self.assertTrue(self.refused(build.status, self.D).startswith("另一個對話正在建置（訪談，最後動作 "))
+        self.assertEqual(build.status(self.D)["step"], "setup")
+        for fn, a in ((build.done, ("setup",)), (build.redo, ("setup",)), (build.set_value, ("people", "x"))):
+            self.assertTrue(self.refused(fn, self.D, *a).startswith("另一個對話正在建置（訪談，最後動作 "), fn)
+        self.assertEqual(self.data(), before)
+
+    def test_terminal_never_claims(self):
+        """第二輪修 R3：鎖空著或過期時終端機照做，但不把鎖記成終端機；之後對話照常認領。"""
+        build.start(self.D)
+        turn.SESSION = None
+        build.status(self.D)
+        _v, _d, line = build.set_value(self.D, "people", "兩個人")
+        self.assertEqual(line, "記下了：幾個人用：兩個人")
+        self.assertNotEqual(self.data().get("session_id"), "終端機")
+        self.assertIsNone(self.data().get("session_id"))
+        turn.SESSION = "sid-a"
+        build.status(self.D)
+        self.assertEqual(self.data()["session_id"], "sid-a")
+        self.put(lock_until=(datetime.now() - timedelta(minutes=1)).strftime(build.TIME))  # 過期
+        turn.SESSION = None
+        self.assertEqual(build.done(self.D, "setup")[2], "建置：訪談 做完了，下一步 交付報告")
+        self.assertEqual(self.data()["session_id"], "sid-a", "過期了終端機照做，但不換成終端機")
 
     def test_takeover_then_old_session_refused(self):
         """build 驗後修：關掉視窗再開一個對話，說「接手建置」就換成這個對話；原本那個再打會被擋。"""

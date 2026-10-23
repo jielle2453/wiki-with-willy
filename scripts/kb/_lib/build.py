@@ -11,6 +11,8 @@ session 取守門插的 --session（build 每個子子命令都插）；沒有�
 （batches.running，只數這個對話的）。done sample 收掉抽樣的 ids job、抽樣批次還在跑擋（S3）。start 在 init 前先拿鎖（S10）。
 finish 之後的知識庫，facts、report、adopt 也照 status 那句擋（S9）。adopt：檔名像密碼的頁跳過、記進 skipped（跟 convert 同一套樣式，S2）；
 讀 hot.md、log.md、agenda.md、CLAUDE.md 前先看是不是連結。report --facts 多 given_up（製卡助手沒做成的，S7）。
+第二輪修：走訪舊 wiki 不跟目錄連結（symlink、junction、reparse point、realpath 對不上），跳過的列進 skipped（R2）；
+終端機（沒有 --session）一律不認領鎖：鎖空著或過期照做、不記成終端機，有對話拿著時 status 照讀、done／redo／set 回 BUSY（R3）。
 env（D-189）只讀、不碰 build.json、哪裡都能跑（建好的知識庫也行，換電腦 D-208 會叫它）；PDF 元件在子行程實跑一頁，
 智慧型應用程式控制讀登錄檔，信任讀 ~/.claude.json，舊 llm-wiki 讀外掛清單與 enabledPlugins。外部的東西都經 _ 開頭的函式，測試換掉。
 facts 只讀：每個來源的份數、格式、第一二層夾、讀不到的原因與估時（D-199 的算法，同 plan）。
@@ -179,12 +181,16 @@ def _last_action(data):
     return t.strftime("%H:%M") if t is not None else "不明"
 
 
-def _claim(data, session, takeover=False):
+def _claim(data, session, takeover=False, readonly=False):
     """同時兩個建置（D-194）：記著的 session 不是這一個、lock_until 還沒到就擋（takeover 例外：換成這一個、記一行接手）；
-    否則記成這一個、最後動作記現在、lock_until 往後推。"""
+    否則記成這一個、最後動作記現在、lock_until 往後推。終端機（R3）不認領：有對話拿著時只准 readonly（status），其他回 BUSY。"""
     now = _now()
     owner, until = data.get("session_id"), _parse(data.get("lock_until"))
     busy = owner and session and owner != session and until is not None and until > now
+    if session == TERMINAL:
+        if busy and not readonly:
+            raise Refused(BUSY.format(step=STEP_TEXT[data["step"]], time=_last_action(data)))
+        return None
     if busy and not takeover:
         raise Refused(BUSY.format(step=STEP_TEXT[data["step"]], time=_last_action(data)))
     taken = None
@@ -197,17 +203,20 @@ def _claim(data, session, takeover=False):
     return taken
 
 
-def _locked(cwd, change, takeover=False):
-    """拿 build.json 的鎖、認領、做 change(vault, data, turn_id)、寫回。回 (vault, data, change 的回傳值)。"""
+def _locked(cwd, change, takeover=False, readonly=False):
+    """拿 build.json 的鎖、認領、做 change(vault, data, turn_id)、寫回。回 (vault, data, change 的回傳值)。
+    readonly（status）：終端機在別的對話拿著鎖時也照讀；沒改到東西就不寫回。"""
     vault, _data = _vault_or_refuse(cwd)
     with lock(vault):
         data = load(vault)
         if data is None or data["step"] == "done":
             raise Refused(ALREADY)
-        taken = _claim(data, session_of(vault), takeover)
+        before = json.dumps(data, sort_keys=True, ensure_ascii=False)
+        taken = _claim(data, session_of(vault), takeover, readonly)
         tid = _turn_id(vault)
         got = change(vault, data, tid)
-        save(vault, data, tid)
+        if json.dumps(data, sort_keys=True, ensure_ascii=False) != before:
+            save(vault, data, tid)
     if taken:  # 接手：前一個對話的 job 與 open 批次放掉，項目回到可派（S1）
         batches.release_session(vault, taken, tid)
     return vault, data, got
@@ -275,7 +284,7 @@ def status(cwd, takeover=False):
         return {"step": "env", "not_empty": not_empty(p), "do": ["kb build env --json"],
                 "read": f"references/steps.md {STEP_TEXT['env']}", "after": "kb build start", "done": {},
                 "people": None, "adopt": None, "no_sources": False}
-    vault, data, _got = _locked(p, lambda v, d, t: None, takeover)
+    vault, data, _got = _locked(p, lambda v, d, t: None, takeover, readonly=True)
     return view(vault, data)
 
 
@@ -763,15 +772,56 @@ def _credential_name(root, p):
     return credentials.match_segment(p.relative_to(root).parts)
 
 
+REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT：junction、symlink、OneDrive 的雲端檔都有
+
+
+def _is_link(p):
+    """連結就回真：symlink、junction、reparse point，或 realpath 跟「上層的 realpath 接自己的名字」對不上（R2）。"""
+    try:
+        if p.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(p)):
+            return True
+        if getattr(os.lstat(p), "st_file_attributes", 0) & REPARSE_POINT:
+            return True
+        here = os.path.normcase(os.path.realpath(p))
+        return here != os.path.normcase(os.path.join(os.path.realpath(p.parent), p.name))
+    except OSError:
+        return True
+
+
+def _walk_md(wiki, root, skipped):
+    """wiki/ 底下的 .md：一層一層走、不跟連結（rglob 會跟 junction 進去，R2）；跳過的連結列進 skipped。"""
+    got, stack = [], [wiki]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            if _is_link(p):
+                if skipped is not None:
+                    skipped.append(p.relative_to(root).as_posix())
+                continue
+            if p.is_dir():
+                stack.append(p)
+            elif p.suffix.lower() == ".md":
+                got.append(p)
+    return sorted(got)
+
+
 def _wiki_pages(root, skipped=None):
-    """wiki/ 底下要讀的頁（hot、log、agenda、index 與 meta/ 另算）；連結不跟；檔名像密碼的放進 skipped。"""
+    """wiki/ 底下要讀的頁（hot、log、agenda、index 與 meta/ 另算）；連結不跟（列進 skipped）；檔名像密碼的放進 skipped。"""
     wiki = root / "wiki"
     if not wiki.is_dir():
         return []
+    if _is_link(wiki):
+        if skipped is not None:
+            skipped.append("wiki")
+        return []
     got = []
-    for p in sorted(wiki.rglob("*.md")):
+    for p in _walk_md(wiki, root, skipped):
         rel = p.relative_to(wiki).as_posix()
-        if rel in WIKI_SKIP or rel.split("/")[0] == "meta" or p.is_symlink():
+        if rel in WIKI_SKIP or rel.split("/")[0] == "meta":
             continue
         if _credential_name(root, p):
             if skipped is not None:

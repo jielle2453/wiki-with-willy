@@ -20,10 +20,10 @@
 - 合併各批：同一件事幾段都提到算一條；舊 AI 自己的操作紀錄（哪天整理了什麼）不算，工作日誌從建置那天起算。
 - 先對已經有的：`kb statement list --json`、`kb agenda list --json`、`kb entity list --json`；已經記過的、原檔做成的卡裡已經有的不列。實體名稱照 `entity list` 的寫，清單沒有的那條先問她掛誰。
 - 照四類分組列給她，一條一行、帶日期，問哪幾條要記；她說不要的不寫。條數多就一類一類問。
-- 說好的經 kb 寫（指令與成功句看 `${CLAUDE_PLUGIN_ROOT}/skills/note/references/`）：
-  - 口述：`kb statement add --entity <名> --text "<一句>"`（日期寫進那一句裡）。`--entity` 一定要給：候選的實體是「無」的，問她掛哪個案子或對象；講整間公司的事掛她自己（設定檔第五節的名稱）；她說都不掛就不記。
-  - 規則：管怎麼回答的記成偏好 `kb profile add 偏好 偏好=<一句>`；管某個案子某份檔的記成裁示：口述為準 `kb ruling add --kind 口述為準 --entity <名> --text "<她的話>"`、不採用 `kb ruling add --kind 不採用 --card <那份檔的卡編號> --text "<她的話>"`（卡編號用 `kb lookup <名> --json` 找；怎麼分照 note 的 ruling.md）。
-  - 有日期的事：還沒到的才進日程 `kb agenda add --kind <到期｜會議｜承諾｜提醒> --date <YYYY-MM-DD> --text "<一句>" --entity <名>`；過去的不加。
+- 說好的照 note skill 的寫法記（相對本 skill 資料夾 `../note/references/`；指令、旗標與成功句以那裡和 `kb <子命令> --help` 為準，這裡不另寫）：
+  - 口述：照 `correction.md` 第一節記一條口述，日期寫進那一句裡。口述一定要掛實體：候選的實體是「無」的，問她掛哪個案子或對象；講整間公司的事掛她自己（設定檔第五節的名稱）；她說都不掛就不記。
+  - 規則：管怎麼回答的照 `preference.md` 記成偏好；管某個案子、某份檔的照 `ruling.md` 記成裁示（口述為準要掛實體、不採用要掛那份檔的卡，卡用 `kb lookup <名> --json` 找）。
+  - 有日期的事：還沒到的才照 `agenda.md` 加進日程，過去的不加；候選的實體是「無」的就不掛實體（日程的實體可以不給）。
   - 還在等確認的：當場問她，她答了照 note 記。
 - 讀不成的段照實講一句（第幾段、原因），不重派。
 - 做完講一句記了幾條、哪幾類，再 `kb build done adopt`。

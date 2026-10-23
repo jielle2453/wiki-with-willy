@@ -7,7 +7,8 @@ scan_dir：守門對「讀取範圍是資料夾」走訪找憑證檔名，容錯
 skip 裡的夾與檔（排除項目、總資料夾整棵）不進去、不比、不算。
 scan_all：kb folders add 用，收全部命中、數檔案份數，碰到含 stop_marker 的夾就停（另一個知識庫）。
 mask_secrets：回合 prompt_head 的遮值（第 5b 節、B-027），關鍵詞後的值換成 ███；build 第一輪修 S2：關鍵詞多 pwd、bearer、解鎖碼，
------BEGIN … PRIVATE KEY----- 到 -----END … -----（沒有結尾就到最後）整段換掉。
+-----BEGIN … PRIVATE KEY----- 到 -----END … -----（沒有結尾就到最後）整段換掉；第二輪修：pwd 只在後面緊接 : = ： 時算，
+bearer 只在後面接一段像 token 的字（不含空白、至少 16 字）時算（「pwd 命令」「bearer of bad news」不遮）。
 不含「憑證」：會計憑證、報關憑證是客戶的正常文件。寧可多擋、多遮（D-034，誤擋率併 B-110）。
 """
 import bisect
@@ -18,6 +19,7 @@ import re
 CREDENTIAL_PATTERNS = (
     ".env", ".env.*", "*.pem", "*.ppk", "*.kdbx", "id_rsa*", "id_ed25519*",
     "*password*", "*passwd*", "*secret*", "*credential*", "*密碼*",
+    "*帳密*", "*金鑰*",  # build 第二輪修 R1：舊 wiki 常見的帳密.md；守門、convert、清冊、adopt 共用這一張
 )
 
 
@@ -66,6 +68,8 @@ _BLANK_SPACE = re.compile(rf"[{_SPACE}]*")
 # kb 指令的值旗標：被守門擋下時 ledger 記指令開頭（密碼與守門開工前補第 2 條）
 _FLAG_VALUE = re.compile(r"(?P<kw>--(?:value|password))(?P<sep>=|\s+)(?P<v>\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE)
 _MERGE_GAP = re.compile(rf"^[{_SPACE}和與及跟、/／]*$")
+# 容易撞到一般用字的關鍵字：後面要接得像值才算（build 第二輪修）
+_NEEDS_AFTER = {"pwd": re.compile(rf"[{_SPACE}]*[:=：＝]"), "bearer": re.compile(rf"[{_SPACE}]+[^\s]{{16,}}")}
 # 私鑰整段（build 第一輪修 S2）：BEGIN 到對應的 END；沒有 END 就到最後
 _PEM = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*-----|\Z)", re.S)
 
@@ -194,6 +198,9 @@ def mask_secrets(text, known_names=None):
     done = 0
     for a, b, values in _keywords(text, norm, where):
         if a < done or _inside(protected, a, b):
+            continue
+        need = _NEEDS_AFTER.get(_norm_key(text[a:b]))
+        if need is not None and not need.match(text, b):
             continue
         before = _VALUE_FIRST_REV.match(rev, n - a)
         if before:

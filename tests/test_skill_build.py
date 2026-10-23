@@ -27,6 +27,14 @@ class Shape(unittest.TestCase):
             if step != "adopt":
                 self.assertIn(build.STEP_TEXT[step], heads, step)
 
+    def test_references_use_relative_paths(self):
+        """第二輪修：references 裡不寫 ${CLAUDE_PLUGIN_ROOT}（Read 進來不會代換），別的 skill 的檔寫成相對本 skill 資料夾、要找得到。"""
+        for name in ("steps.md", "adopt.md"):
+            text = (SKILL / "references" / name).read_text(encoding="utf-8")
+            self.assertNotIn("CLAUDE_PLUGIN_ROOT", text, name)
+            for rel in re.findall(r"`(\.\./[^`…]+)`", text):  # 帶 … 的是舉例
+                self.assertTrue((SKILL / rel).exists(), f"{name}: {rel}")
+
     def test_report_template_has_six_heads(self):
         heads = re.findall(r"^## (.+)$", (ROOT / "templates" / "build-report.md").read_text(encoding="utf-8"), re.M)
         self.assertEqual(tuple(heads), build.REPORT_HEADS)

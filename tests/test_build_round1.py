@@ -124,25 +124,26 @@ class S3SampleJobClosed(Base):
 class S2AdoptCredentials(Base):
     """舊 wiki：檔名像密碼的頁不切、記進 skipped 與報告；pwd、Bearer、私鑰整段、解鎖碼遮掉；連結的 hot.md 不讀。"""
 
-    SECRETS = ("Zq8kd91mm", "Zq8!kd91xx", "eyJhbGciOiJ", "MIIEowIBAAKCAQEA", "Zq8kd91pp")
+    SECRETS = ("Zq8kd91mm", "Zq8kd91nn", "Zq8!kd91xx", "eyJhbGciOiJIUzI1NiJ9", "MIIEowIBAAKCAQEA", "Zq8kd91pp")
 
     def setUp(self):
         super().setUp()
         self.O = self.tmp / "old_vault"
         shutil.copytree(FIXTURES / "old_vault", self.O)
         (self.O / "wiki" / "projects" / "密碼清單.md").write_text("網銀: Zq8kd91mm\n", encoding="utf-8")
+        (self.O / "wiki" / "projects" / "帳密.md").write_text("雲端相簿 abc / Zq8kd91nn\n", encoding="utf-8")  # 第二輪 R1
         (self.O / "wiki" / "topics" / "雜項.md").write_text(
-            "# 雜項\n\npwd: Zq8!kd91xx\nAuthorization: Bearer eyJhbGciOiJ.x.y\n"
+            "# 雜項\n\npwd: Zq8!kd91xx\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.x.y\n"
             "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----\n"
             "解鎖碼 Zq8kd91pp\n廚具用 L 型。\n", encoding="utf-8")
 
     def test_check_and_extract_skip_and_mask(self):
         check = build.adopt_check(self.O)
-        self.assertEqual(check["skipped"], ["wiki/projects/密碼清單.md"])
+        self.assertEqual(sorted(check["skipped"]), ["wiki/projects/密碼清單.md", "wiki/projects/帳密.md"])
         self.assertEqual(check["wiki_pages"], 3)
         got = build.adopt_extract(self.D, self.O)
-        self.assertEqual(got["skipped"], ["wiki/projects/密碼清單.md"])
-        self.assertNotIn("wiki/projects/密碼清單.md", [f["path"] for f in got["files"]])
+        self.assertEqual(sorted(got["skipped"]), ["wiki/projects/密碼清單.md", "wiki/projects/帳密.md"])
+        self.assertFalse({"wiki/projects/密碼清單.md", "wiki/projects/帳密.md"} & {f["path"] for f in got["files"]})
         whole = "".join(Path(c).read_text(encoding="utf-8") for c in got["chunks"])
         self.assertIn("廚具用 L 型", whole)
         for s in self.SECRETS:
@@ -151,8 +152,8 @@ class S2AdoptCredentials(Base):
     def test_report_lists_skipped(self):
         build.set_value(self.D, "adopt", str(self.O))
         facts = build.report_facts(self.D)
-        self.assertEqual(facts["adopt_skipped"], ["wiki/projects/密碼清單.md"])
-        self.assertIn("- 舊 wiki 裡檔名像密碼、沒讀的：wiki/projects/密碼清單.md", build.numbers_lines(facts))
+        self.assertEqual(sorted(facts["adopt_skipped"]), ["wiki/projects/密碼清單.md", "wiki/projects/帳密.md"])
+        self.assertTrue([x for x in build.numbers_lines(facts) if x.startswith("- 舊 wiki 裡檔名像密碼、沒讀的：")])
 
     def test_linked_special_file_not_read(self):
         hot = self.O / "wiki" / "hot.md"
@@ -171,13 +172,28 @@ class S2AdoptCredentials(Base):
 
 class S2MaskWords(unittest.TestCase):
     def test_new_words_and_pem(self):
-        text = ("pwd: Zq8!kd91xx\nAuthorization: Bearer eyJhbGciOiJ.x\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1r\n"
-                "-----END OPENSSH PRIVATE KEY-----\n解鎖碼 Zq8kd91pp\n")
+        text = ("pwd: Zq8!kd91xx\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.x\n-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                "b3BlbnNzaC1r\n-----END OPENSSH PRIVATE KEY-----\n解鎖碼 Zq8kd91pp\n")
         got = credentials.mask_secrets(text)
-        for s in ("Zq8!kd91xx", "eyJhbGciOiJ", "b3BlbnNzaC1r", "Zq8kd91pp", "BEGIN OPENSSH"):
+        for s in ("Zq8!kd91xx", "eyJhbGciOiJIUzI1NiJ9", "b3BlbnNzaC1r", "Zq8kd91pp", "BEGIN OPENSSH"):
             self.assertNotIn(s, got, s)
         self.assertEqual(credentials.mask_secrets("-----BEGIN PRIVATE KEY-----\nabc"), credentials.MASK, "沒有結尾就到最後")
         self.assertEqual(credentials.mask_secrets("typing pwdx 照常"), "typing pwdx 照常")
+
+    def test_should_mask(self):
+        """第二輪修：pwd 後面緊接 : = ：、bearer 後面接 16 字以上的 token，才遮。"""
+        for text, secret in (("pwd: Zq8!kd91xx", "Zq8!kd91xx"), ("PWD=Zq8kd91zz", "Zq8kd91zz"), ("pwd ：Zq8kd91yy", "Zq8kd91yy"),
+                             ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc", "eyJhbGciOiJIUzI1NiJ9"),
+                             ("bearer abcdefghijklmnopqrstu", "abcdefghijklmnopqrstu"), ("解鎖碼：Zq8kd91pp", "Zq8kd91pp")):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, credentials.mask_secrets(text))
+
+    def test_no_false_hits(self):
+        """第二輪修：一般句子裡的 pwd、bearer 不遮。"""
+        for text in ("今天的 pwd 命令列出目前資料夾。", "He was the bearer of bad news.", "Bearer short",
+                     "load-bearing wall", "cd /home/pwd here"):
+            with self.subTest(text=text):
+                self.assertEqual(credentials.mask_secrets(text), text)
 
 
 class S6ScrubForms(unittest.TestCase):
@@ -255,6 +271,51 @@ class S8AdoptAgentCannotWrite(unittest.TestCase):
         for tool in ("Write", "Edit"):
             out = self.write(tool)
             self.assertEqual((out["permissionDecision"], out["permissionDecisionReason"]), ("deny", "製卡助手不能做這件事"))
+
+
+
+class R1CredentialPatterns(unittest.TestCase):
+    """第二輪修 R1：*帳密*、*金鑰* 進共用的憑證檔名樣式（守門、convert、清冊、adopt 都照這張表）。"""
+
+    def test_patterns(self):
+        for name in ("帳密.md", "網站帳密.xlsx", "金鑰.txt", "API金鑰備份.docx"):
+            self.assertEqual(credentials.match_segment([name]), name, name)
+        self.assertIsNone(credentials.match_segment(["帳號清單.md"]))
+
+
+class R2JunctionNotFollowed(Base):
+    """第二輪修 R2：舊 wiki 裡的目錄連結（junction）不跟進去，列進 skipped；這台建不了 junction 就用替身。"""
+
+    def setUp(self):
+        super().setUp()
+        self.O = self.tmp / "old_vault"
+        shutil.copytree(FIXTURES / "old_vault", self.O)
+        self.outside = self.tmp / "外面的夾"
+        self.outside.mkdir()
+        (self.outside / "外檔.md").write_text("外面的內容 Zq8kd91jj\n", encoding="utf-8")
+        self.link = self.O / "wiki" / "junc"
+        import subprocess
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(self.link), str(self.outside)], capture_output=True)
+        if r.returncode != 0 or not self.link.exists():
+            self.link.mkdir()
+            (self.link / "外檔.md").write_text("外面的內容 Zq8kd91jj\n", encoding="utf-8")
+            self._is_link = build._is_link
+            build._is_link = lambda p: p.name == "junc" or self._is_link(p)
+
+    def tearDown(self):
+        if hasattr(self, "_is_link"):
+            build._is_link = self._is_link
+        elif self.link.exists():
+            os.rmdir(self.link)  # 只拿掉連結本身
+        super().tearDown()
+
+    def test_skipped(self):
+        self.assertIn("wiki/junc", build.adopt_check(self.O)["skipped"])
+        got = build.adopt_extract(self.D, self.O)
+        self.assertIn("wiki/junc", got["skipped"])
+        self.assertNotIn("wiki/junc/外檔.md", [f["path"] for f in got["files"]])
+        self.assertNotIn("Zq8kd91jj", "".join(Path(c).read_text(encoding="utf-8") for c in got["chunks"]))
+        self.assertTrue((self.outside / "外檔.md").is_file(), "外面的檔沒被動")
 
 
 if __name__ == "__main__":

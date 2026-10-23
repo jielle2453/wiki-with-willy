@@ -135,3 +135,64 @@ spec：`design/specs/2026-10-22-card-maker.md`（驗收準則 1～16）
 - 在 scratchpad 的空資料夾（只有 `.claude/commands/`）跑，`run_eval` 沒有寫到 `~\.claude\commands`（跑後該夾沒有檔）；暫時指令檔都已清掉。
 - 限制同 produce 報告：`run_eval` 只放被測 skill 的暫存指令檔，沒有載 wiki-with-willy 本身，所以不是五個 skill 同時裝著的路由；plugin 那層由 B-412 的真實對話補（十次都走到 `Skill wiki-with-willy:ingest`）。
 - 舊 `llm-wiki` 是停用狀態（settings.json `enabledPlugins` false），不是「同時裝著且啟用」；這是使用者範圍的既有設定，我沒有改。
+
+## 回測第一輪
+
+日期：2026-10-23
+測的版本：`87fc8d6`（`b1ca460..87fc8d6` = f6d75a8 主體、f3ad435、87fc8d6）；跑前樹乾淨，沒改任何程式。
+範圍：22 派的 9 項（只驗修過的地方，不重跑 19 條）。
+
+### 結論
+
+- 9 項裡 **8 項過、第 4 項（S4）有一個洞沒補完**：子代理的指令寫 `--tu=…`、`--ses=…`、`--ag=…`（argparse 的縮寫），守門放行，我實測寫進了另一個 session 的回合。建議 `cli.py` 的 parser（含子 parser）加 `allow_abbrev=False`。
+- B-412 第二輪十次：**十次都先整理**；英文 **1／10**（第一輪 3／10）；重複派同一份 **0 次**；步驟編號 **0 次**。
+- 新發現 R1：`synthesis_broken` 檔頭壞掉的綜合卡，製卡助手 **10／10 都做不成**（批次材料沒給檔頭）；沒有再重切（S2 有效），但每個新對話都會再試一次。
+- 全部測試 `python -m unittest discover tests`：exit 0，Ran 2224，OK（skipped=1），490 秒（87fc8d6，樹乾淨）。`claude plugin validate`：通過（警告同上輪：根目錄 CLAUDE.md 不載入、沒有 icon、README 安裝行）。
+- settings.json sha256：跑前（全文存在 scratchpad `settings_before_round2.json`）`8ae82f7a69eea7b8321459b4a81b9d734c934bcbe188794b63816af6e2cf4039`，跑後同一個值，`diff` 逐行相同。上輪那個變動（`ac9c560c…`→`8ae82f7a…`）這輪沒再變。舊 `llm-wiki@llm-wiki` 的 `enabledPlugins` 仍是 false。
+
+### 逐項
+
+| # | 結果 | 證據 |
+|---|---|---|
+| 1 S1 | 過 | 用原本的重現：派工、job 關掉、下一句回合記 `secret_shown`、回答 `好的，Hunter2xyz 這組我看到了`（沒有「密碼」二字）、連 Stop 兩次。兩句的 jsonl 與 `系統/工作日誌/*.md` **都沒有** `Hunter2xyz`（這一句是 `（這句回答有密碼，沒記）`，派工那句留 `交給製卡助手整理了`）。對照：沒有 `secret_shown` 的一般回答仍會把派工那句換成最後回答 `整理好了，做了 12 份。`。另一種擺法（旗標記在派工那句、後一句值單獨出現）：派工那句沒被換，後一句自己的日誌會寫值，因為那一句沒有旗標；這是旗標的設計，不是新漏洞 |
+| 2a S2 | 過 | 12 份、一份被製卡助手略過並在回報寫 `- f-4c61213d：讀不到（測試用的原因）`：`SubagentStop` 後 `dispatch --json` 的 `failed` = `[{"id":"f-4c61213d","kind":"cards","reason":"讀不到（測試用的原因）"}]`、`batches: []`、`done: true`，同一個 job 沒再切它；人讀句 `整理完了；沒做成 1 份` |
+| 2b S2 | 過 | 第二個 job 同一份又沒做成 → 待處理多一筆 `unreadable`「製卡助手兩次沒做成：讀不到（測試用的原因）」、`todo.new` 不再列它、`unreadable` 與 `tell`（`空檔.bin 讀不到：製卡助手兩次沒做成：…；記在 系統/待處理.md`）都有；改了那份原檔再 `inventory scan` → 待處理那筆變 `done`、`todo.new` 又列它、下一個 job 的 dispatch 又切它 |
+| 2c S2 | 過 | 知識庫自帶 `知識庫/案子/說明.txt`（清冊 active）不在 `todo.new`；同夾的 `知識庫/案子/信義王/合約.docx` 仍在（不是一律不列，是型別夾根直接放的才不列） |
+| 3 S3 | 過 | 帶 agents 裡的 `agent_id`，Bash 單一 kb 呼叫：deny（理由 `製卡助手不能做這件事`）的有 `turn approve`、`versions revert`、`cards stop`、`cards dispatch`、`cards status`、`folders exclude`、`source-edit trash`、`entity remove`／`merge`／`rename`、`profile apply`、`pending dismiss`、`ruling add`、`statement add`、`inventory scan`、`output save`、`office run`、`unlock get`、`cards unreadable`／`sync`／`drop`／`index`／`redo`、`guard decide`，共 24 條全 deny；allow 的 `cards batch`／`list`／`todo`／`skip`、`convert`（含 `--json`）、`version`、`agenda scanned`／`add`／`edit`／`recheck`／`cancel`／`list`、`entity add`／`suggest-close`／`clean`／`list`，共 17 條全 allow（改寫成插了 `--turn --agent`）；`convert` 帶 `--password`、`--saved`、`--explicit`、`--password=abc` 都 deny。Read `.system/unlock.json`、`.system/temp/x.secret.md`、`.system/temp/f-1.secret`、Glob `.system/temp/*.secret*`、Grep `.system`、Glob `**/unlock*` 全 deny；Read `.system/temp/f-1.md`（convert 輸出）與 Write 檔案索引的卡 allow；Write `.system/inventory.json`、原檔、`總目錄.md` deny；PowerShell 的 cards batch allow、turn approve deny。對照 `agents/card-maker.md` 與 carding.md 一～九節用到的 kb 指令（cards batch、convert、agenda scanned／add／edit／recheck／cancel／list、entity add／suggest-close／clean），**沒有它要用卻被擋的**；`cards redo`、`cards unreadable` 在 carding.md 是主對話的事。Read carding.md、synthesis.md（在 plugin 目錄、知識庫外）守門沒有意見，照一般流程 |
+| 4 S4 | **洞** | 通過的：子代理自己帶完整的 `--turn`、`--agent`、`--session`、`--turn=`（在子命令前或後）全 deny（`kb 指令不能自己帶 --turn、--agent 或 --session`）；主對話自己帶 `--session evil`、`--turn T9` 也 deny；cli 帶別的 session 的回合 → exit 3，`這個回合不是這個對話的：<回合>`；`--turn` 不存在 → exit 3，`回合不存在：…`。**沒通過的**：argparse 預設吃縮寫，`--tu=<回合>`、`--ses=<session>`、`--ag=x` 不是 `--turn`／`--agent`／`--session` 的完整字串，守門的 `_has_flag` 不認，放行並照樣改寫成 `kb.py --turn <job> --agent agt-1 --tu=<別的回合> …`。實測：session A 的子代理、`current.json` 是 session B，指令 `--tu=<B 的回合> --ses=sid-B --ag=x entity add …` → exit 0，**B 回合的 manifest 多了 `entities.json` 的備份**（只用 `--tu=` 一個也成功，因為 `owned()` 沒有 `--session` 時取 `current.json`，剛好是 B）。主對話同樣能帶 `--tu=T9`，守門照放行並照插 `--session`。需要模型刻意寫縮寫才會發生，但這正是 S4 要擋的 |
+| 5 S5 | 過 | `cards unreadable <link> --reason …`：`密碼是 Hunter2xyz`、`password=abc123`、`帳號 a 密碼 b` → exit 3，`原因裡不要放密碼；要記的話跟我說『記下來』，我存進這台電腦的憑證管理員`；含 `$`（`打不開 $(x)`）、反引號、雙引號 → exit 3，`原因裡不能有 " $ ` \ 這四種字元`；201 字、兩行、全空白 → exit 3，`原因要一句話，最多 200 字`；200 字、`線上文件打不開` → exit 0。`pending.json` 與 `系統/待處理.md` 都沒有 `Hunter2xyz`。拒絕句與 `statement add` 同一套（只把「口述」換成「原因」） |
+| 6 讀碼疑點 | 過（驗了四項） | `--source` 打錯：exit 3，`沒有登記這個來源：不存在的別名`（`--json` 也是純文字 exit 3），登記過的 `報價與合約` 正常派 15 份。兩個視窗：A 派工後 B 說話，A 的再 dispatch 沿用 A 的 job（`running 2`、不新開）、`status` 各看各的（B：`現在沒有在整理；還有 25 份沒整理`）、B 的 `stop` 不動 A 的批次與 job；終端機跑 `dispatch` → exit 3，`整理要在對話裡派`。第一次 Stop 之後主對話跑的 `entity add`、`turn note --turn`，日誌沒有「你在終端機跑的」那一段（`turn note` 的「做了」進了派工那句）。背景整理中客戶打字：`hooks/turn.py` 沒輸出、沒記 `ingest_stopped`；對照沒有 job 時仍印「上一句的整理被你停了…」。順帶：`dispatch` 在 `done: true` 之後再叫一次會開新 job、把 `failed` 的再切一次（人讀 `派了 1 批（做卡 1）`），這會讓「兩個 job 都沒做成」比預期更快成立；B-412 的十次主對話都只叫 3 次（初派、兩次通知），沒發生。`stop` 在沒有 job 的 session 的 `--json` 是 `{"agents":[],"done":0,"left":null}`（人讀是 `現在沒有在整理`），`left` 是 null |
+| 7 開場份數 | 過 | 只剩一份連結型：開場 `還有 1 份沒整理完`、`plan` 只有 `cards` 一步（`items 1`）、`dispatch` 不派（`batches: []`）；`cards unreadable <它> --reason "線上文件打不開"` 之後 `plan` 空、`announce` null、開場那行不見 |
+| 8 B-412 | 過（10／10 先整理） | 見下 |
+| 9 validate | 過 | `claude plugin validate`：Validation passed with warnings（根目錄 CLAUDE.md 不載入、沒有 icon、README 安裝行，都是既有） |
+
+### B-412 第二輪（10 次）
+
+方法同上輪：每次全新 tmp 知識庫（`cards todo` 的 `new` 恰為 19；這輪 `說明.txt` 不再列，所以來源檔補到 19，來源 `客戶案件`），`claude -p "<prompt>" --plugin-dir <worktree> --permission-mode acceptEdits --allowedTools "Bash(python *)" Read Glob Grep Skill Agent --output-format stream-json --verbose`，逾時 480 秒，一次一個；只用 `--plugin-dir`。「你好」5、237 字長指示 5。
+
+| 次 | prompt | 秒 | 第一個 kb 指令 | `cards dispatch` 次數 | 派 card-maker | 卡 | 對客戶說的英文 |
+|---|---|---|---|---|---|---|---|
+| 1～5 | 你好 | 338、281、303、274、273 | `changes`（Skill ingest 之後） | 各 3 | 各 2 | 各 18 | 無 |
+| 6～8 | 長指示 | 289、249、241 | 同上 | 各 3 | 各 2 | 各 18 | 無 |
+| 9 | 長指示 | 254 | 同上 | 3 | 2 | 18 | **1 句**（見下） |
+| 10 | 長指示 | 294 | 同上 | 3 | 2 | 18 | 無 |
+
+- (a) **十次都先整理**：先 `changes`、`cards todo`，說 announce（`有 19 份要整理，大約 3 分鐘；要停的話跟我說一聲`），再 `cards dispatch`、Agent 派。第一個動作兩種：先 Skill ingest 再 announce（多數），或先打招呼一句再 Skill。
+- (b) 英文或步驟編號：**英文 1／10**（第 9 次：收到第一批通知後說了整句英文 `Thanks for waiting. The first batch is done: 18 files are now cards. One file, 信義王's 合約.docx, couldn't be read because the file seems damaged, and I've added it to the to-do list. One summary card is still being built in the background. I'll give you the full overview once it's finished.`）；步驟編號（`Step 1:` 這類）**0／10**。上輪 3／10 是 `Step 1: check changes.` ×2 與 `Another batch … is ready` ×1；S6 之後步驟編號沒了，但通知後的過場句偶爾仍會英文。
+- (c) **19 份做出 18 張**：另一份是知識庫自帶的 `信義王/合約.docx`（fixture 本身是壞檔），`convert` 讀不到、記進待處理，原因 `檔案壞了：不是完整的 Office 檔`；十次最後一則回答都講了「18 份做好、合約.docx 讀不到」與原因，也都有講綜合卡沒更新（見 R1）。`todo` 剩下 `new` 0。
+- (d) **重複派同一份：0**：每個 job 的 cards 批次只有 1 個（19 份）；同一份沒有出現在兩個批次；synthesis 批次 1 個（1 項）。每次都是 3 次 `cards dispatch`（初派、cards 做完、綜合卡做完）。
+- 權限拒絕沒有；`hook-errors.log` 十個知識庫都沒有。
+
+### 新發現
+
+**R1（中）`synthesis_broken` 的檔頭壞掉，製卡助手做不了，10／10 失敗**
+知識庫自帶的 `案子/信義王/信義王.md` 是一張檔頭壞掉的綜合卡。`dispatch` 把它切成 synthesis 批次（1 項），`cards batch` 給的項目只有 `path` 與 `reason`（「檔頭解析不了」），沒有 `header`、檔案卡、口述。carding.md 第八節寫「其他 reason（檔頭有錯）照原因改、寫回同一個路徑」，但製卡助手沒有可照抄的檔頭，規則又叫它不要自己編，十次回報都是 `- <路徑>：這張綜合卡缺檔頭，但批次項目只給了路徑和原因，沒給檔頭，也沒給可當依據的檔案卡或…`（原因文字十次不同，意思相同）。
+S2 讓它不會再重切、`failed` 有列、主對話有講；但這份留在 `todo` 的 `synthesis_broken`，每個新對話、新 job 都再試一次，永遠修不好。
+建議：`batch_view` 對 `synthesis_broken` 項補上該實體的 `header`（`synthesis.header_for`）與掛的檔案卡、口述；或這種項目不切給製卡助手，留給主對話／待處理說明。
+（這張卡是 fixture 的人造狀態；真實知識庫也會因手動改壞而出現同樣的卡。）
+
+**R2（低）通知後的過場句偶爾英文**
+見 B-412 第 9 次。程式沒辦法擋，骨架已寫「過場不說英文」；要不要再加強由設計 session 決定。
+
+**R3（低，觀察）守門的 scoping 只管「單一 kb 呼叫」**
+`kb.py … && …`、`| head`、前面加環境變數的 kb 呼叫，守門回「無意見」（我測 `chain &&`、`pipe`、`env prefix`、`cd + call` 都是），交給 Claude Code 一般權限流程。製卡助手在背景、沒人按允許，一般會被自動拒絕；但使用者的設定若允許 `Bash(python *)`（本輪測試用 `--allowedTools "Bash(python *)"` 就是），這類指令不會被 AGENT_ALLOW 管。沒有實測子代理真的這樣跑，只是守門的行為；是否要處理由設計 session 決定。另外 `python "${CLAUDE_PLUGIN_ROOT}/scripts/kb.py" cards dispatch` 字面寫法守門同樣無意見（不會插 `--session`，會得到 `整理要在對話裡派`）；B-412 十次都用開場給的絕對路徑，沒遇到。

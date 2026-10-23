@@ -78,6 +78,20 @@ class D212Docs(unittest.TestCase):
             self.assertIn("這幾個動作會跳出允許詢問，請客戶按允許", (ROOT / rel).read_text(encoding="utf-8"), rel)
 
 
+
+class Round28fDocs(unittest.TestCase):
+    """第五輪 S1、S3：password.md 寫看到允許詢問被拒或沒按就停、不換寫法重試；R-09 後半改成客戶說要記才存、沒說就問一句。"""
+
+    def test_s1_and_s3(self):
+        pw = (ROOT / "skills" / "note" / "references" / "password.md").read_text(encoding="utf-8")
+        self.assertIn("「需要客戶按允許才會執行：」", pw)
+        self.assertIn("不換寫法重試", pw)
+        self.assertIn("客戶說要記（「記下來」「記住」）就直接存", pw)
+        core = (ROOT / "rules" / "core.md").read_text(encoding="utf-8")
+        self.assertIn("客戶說要記才存（走 Windows 憑證管理員，kb unlock save），沒說就問一句", core)
+        self.assertNotIn("要存就問客戶", core)
+
+
 class NoOldPhrases(unittest.TestCase):
     """驗收 15：skills 與程式裡「這版還不能開放」「這版記不起來」「等密碼與守門那一版」為 0（只在 design/）。"""
 

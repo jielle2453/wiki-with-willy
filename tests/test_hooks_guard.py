@@ -97,7 +97,7 @@ class Hook(unittest.TestCase):
         """D-212：四種密碼動作印 ask（Claude Code 跳允許詢問），ledger 記 ask；理由句與 ledger 都不帶密碼值。"""
         r = run_hook(payload("Bash", f'python "{ROOT}/scripts/kb.py" unlock get --name 工地大門', self.V))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(decision_of(r)[1:], ("ask", "要把存好的「工地大門」密碼顯示出來"))
+        self.assertEqual(decision_of(r)[1:], ("ask", "需要客戶按允許才會執行：要把存好的「工地大門」密碼顯示出來"))
         r = run_hook(payload("Bash", f'python "{ROOT}/scripts/kb.py" convert a.pdf --saved 門 --explicit --password "zq-7731-secret"', self.V))
         self.assertEqual(decision_of(r)[1], "ask")
         self.assertNotIn("zq-7731-secret", r.stdout)

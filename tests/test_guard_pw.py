@@ -306,9 +306,6 @@ class SecretActionAsk(Base):
     def test_four_actions_ask_with_reason(self):
         cases = (
             ("unlock get --name 工地大門", "要把存好的「工地大門」密碼顯示出來"),
-            ("ruling add --kind 可以讀 --file 網站密碼.xlsx --text \"網站密碼.xlsx 可以讀\"", "要讓 AI 讀「網站密碼.xlsx」"),
-            ("ruling add --text x --kind=可以讀 --file \"客戶案件/網站密碼.xlsx\"", "要讓 AI 讀「網站密碼.xlsx」"),
-            ("ruling add --kin 可以讀 --file 網站密碼.xlsx --text x", "要讓 AI 讀「網站密碼.xlsx」"),
             ("unlock authorize --name 保險單 --label 保險單 --example f-1a2b3c4d", "要讓「保險單」這一種的檔都用「保險單」這組密碼自動開"),
             ("convert 保險單_陳.pdf --saved 保險單 --explicit", "要用存好的「保險單」密碼開「保險單_陳.pdf」這一份"),
             ("convert --explicit 保險單_陳.pdf --saved=保險單", "要用存好的「保險單」密碼開「保險單_陳.pdf」這一份"),
@@ -319,7 +316,7 @@ class SecretActionAsk(Base):
             for rest, reason in cases:
                 d = self.assertDecision(tool, self.kb(rest), "ask")
                 with self.subTest(tool=tool, rest=rest):
-                    self.assertEqual((d.reason_code, d.reason), ("secret_action", reason))
+                    self.assertEqual((d.reason_code, d.reason), ("secret_action", "需要客戶按允許才會執行：" + reason))
         self.assertDecision("Bash", self.kb("'unlock' \"get\" --name '工地大門'"), "ask")
         self.assertDecision("PowerShell", self.kb("'unlock' 'get' --name '工地''大門'"), "ask")
 
@@ -368,6 +365,55 @@ class Round28e(Base):
         for cmd in (f'Set-Content "{v}/系統/x.txt" (Get-Date)', 'Set-Content (Get-Content list.txt) "x"',
                     "Remove-Item -Recurse (Get-Content list.txt)"):
             self.assertDecision("PowerShell", cmd, "deny")
+
+
+
+class SecretReadLabel(unittest.TestCase):
+    """第五輪 S2：「可以讀」的理由句帶「別名/上一層夾/檔名」分得出同名檔；給的檔對不到清冊直接 deny（找不到這份檔），不跳 ask。
+    S1：ask 的理由句一律以「需要客戶按允許才會執行：」開頭。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from tests import _pw
+        cls.pw = _pw
+        cls.tmp, cls.V, cls.raw = _pw.make_pw_vault()
+        os.environ["CLAUDE_PLUGIN_ROOT"] = str(ROOT)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def decide(self, rest, tool="Bash"):
+        return guard.decide(payload(tool, f'python "{ROOT.as_posix()}/scripts/kb.py" {rest}', self.V))
+
+    def test_label_has_alias_and_parent(self):
+        from tests import _cards
+        entry = _cards.entry_of(self.V, self.pw.BANK)
+        alias, rel = entry["locations"][0]["uri"][len("file://"):].split("/", 1)
+        want = "需要客戶按允許才會執行：要讓 AI 讀「" + "/".join([alias] + rel.split("/")[-2:]) + "」"
+        self.assertTrue(want.endswith("/信義王/網銀密碼.txt」"), want)
+        path = (self.raw / self.pw.BANK).as_posix()
+        for rest in (f'ruling add --kind 可以讀 --file "{path}" --text x', f"ruling add --kind=可以讀 --file {entry['id']} --text x",
+                     f'ruling add --kin 可以讀 --file "{entry["locations"][0]["uri"]}" --text x'):
+            for tool in ("Bash", "PowerShell"):
+                d = self.decide(rest, tool)
+                with self.subTest(rest=rest, tool=tool):
+                    self.assertEqual((d.decision, d.reason_code, d.reason), ("ask", "secret_action", want))
+
+    def test_unknown_file_denies(self):
+        for rest in ('ruling add --kind 可以讀 --file 網站密碼.xlsx --text x', "ruling add --kind 可以讀 --file f-00000000 --text x",
+                     f'ruling add --kind 可以讀 --file "{(self.raw / "客戶案件" / "沒有這份.txt").as_posix()}" --text x'):
+            d = self.decide(rest)
+            with self.subTest(rest=rest):
+                self.assertEqual((d.decision, d.reason), ("deny", "找不到這份檔"))
+
+    def test_every_ask_has_prefix(self):
+        for rest in ("unlock get --name 門", "unlock authorize --name a --label b", "convert x.pdf --saved a --explicit",
+                     "unlock $x --name a"):
+            d = self.decide(rest)
+            with self.subTest(rest=rest):
+                self.assertEqual(d.decision, "ask")
+                self.assertTrue(d.reason.startswith("需要客戶按允許才會執行："), d.reason)
 
 
 if __name__ == "__main__":

@@ -666,6 +666,9 @@ ASK_READ_ANY = "要讓 AI 讀一份檔名像密碼的檔"
 ASK_AUTHORIZE = "要讓「{}」這一種的檔都用「{}」這組密碼自動開"
 ASK_EXPLICIT = "要用存好的「{}」密碼開「{}」這一份"
 ASK_UNKNOWN = "認不出這個知識庫指令要做什麼，可能是密碼相關的動作；請確認再按允許"
+ASK_PREFIX = "需要客戶按允許才會執行："
+NO_SUCH_FILE = "no_such_file"
+NO_SUCH_FILE_REASON = "找不到這份檔"
 _FILE_ID = re.compile(r"^f-[0-9a-f]{8}$")
 CURLY_REASON = "PowerShell 會把彎引號（“ ” ‘ ’）當成引號拆開指令；改用「」或直引號，或改用 Bash 再跑"
 ERROR_REASON = "守門出錯，這次不放行。說「檢查」我看原因"
@@ -1068,7 +1071,23 @@ def _file_label(vault, arg):
     return text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or None
 
 
-def secret_action(command, tool, vault):
+class NoSuchFile(Exception):
+    """「可以讀」給的檔對不到清冊（第五輪 S2）：守門直接擋，不跳允許詢問。"""
+
+
+def _read_label(vault, cwd, arg):
+    """「可以讀」理由句的檔：照 kb ruling add 同一套（rulings.file_entry）對到清冊條目，回「別名/上一層夾/檔名」（同名檔分得出來，
+    第五輪 S2）；磁碟路徑先接對話的 cwd。對不到丟 rulings.RulingRefused。"""
+    from kb._lib import inventory, rulings
+    text = str(arg or "").strip()
+    if not text.startswith("file://") and not (_FILE_ID.match(text) or text.startswith("out-")):
+        text = normalize(text, cwd)
+    entry = rulings.file_entry(vault, text)
+    alias, rel = inventory.split_uri(entry["locations"][0]["uri"])
+    return "/".join([alias] + rel.split("/")[-2:])
+
+
+def secret_action(command, tool, vault, cwd=None):
     """D-212：單一 kb 呼叫是不是四種開新口子的密碼動作（kb unlock get、kb ruling add --kind 可以讀、kb unlock authorize、
     kb convert --saved … --explicit）。是回理由句，不是回 None。參數照 kb 自己的 argparse 認（縮寫、--x=值、順序都一樣）；
     子命令那個字、或 unlock／ruling／convert 的參數裡有看不出實際值的字（變數、萬用字元），認不出來，照 ask。
@@ -1108,8 +1127,15 @@ def secret_action(command, tool, vault):
             kind = None
         if kind in ("spoken_wins", "ruled_out"):
             return None
-        names = [x for x in (_file_label(vault, f) for f in args.file or []) if x]
-        return ASK_READ.format("、".join(dict.fromkeys(names))) if names else ASK_READ_ANY
+        if not args.file:
+            return ASK_READ_ANY
+        try:
+            names = [_read_label(vault, cwd, f) for f in args.file]
+        except rulings.RulingRefused:
+            raise NoSuchFile() from None  # 對不到清冊：kb 也會拒絕，不跳詢問（第五輪 S2）
+        except Exception:  # noqa: BLE001  清冊讀不到：認不出是哪份，照問
+            return ASK_READ_ANY
+        return ASK_READ.format("、".join(dict.fromkeys(names)))
     if command_name == "convert" and args.saved is not None and args.explicit:
         return ASK_EXPLICIT.format(args.saved, _file_label(vault, args.target) or "那份檔")
     return None
@@ -1131,9 +1157,14 @@ def decide(payload):
             # PowerShell 把彎引號當引號：任何子命令的文字參數都拆得開、能夾帶別的陳述式，直接擋；Bash 裡是普通字，照常認（第四輪）
             return Decision("deny", "", "curly_quote", CURLY_REASON, [_row(tool, "deny", "", "curly_quote", command)], vault)
         if cmdparse.is_single_plugin_call(command, root, cwd, tool):
-            ask = secret_action(command, tool, vault)
-            if ask is not None:  # D-212：開新口子的密碼動作要客戶按允許
-                return Decision("ask", "", SECRET_ACTION, ask, [_row(tool, "ask", "", SECRET_ACTION, command)], vault)
+            try:
+                ask = secret_action(command, tool, vault, cwd)
+            except NoSuchFile:
+                return Decision("deny", "", NO_SUCH_FILE, NO_SUCH_FILE_REASON,
+                                [_row(tool, "deny", "", NO_SUCH_FILE, command)], vault)
+            if ask is not None:  # D-212：開新口子的密碼動作要客戶按允許；前綴讓 AI 知道要停下來請客戶按（第五輪 S1）
+                reason = ASK_PREFIX + credentials.mask_secrets(ask, credentials.known_names(vault))
+                return Decision("ask", "", SECRET_ACTION, reason, [_row(tool, "ask", "", SECRET_ACTION, command)], vault)
             return Decision("allow", "", "", KB_CALL_REASON, [], vault)
         if vault is None:
             return Decision("pass", "", "", "", [], None)

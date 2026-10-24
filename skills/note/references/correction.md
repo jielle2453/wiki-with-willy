@@ -30,7 +30,7 @@ kb statement add --entity <名稱> --text "<一句>"
 
 - 原檔讀不到、或分不出是哪一種：當成「原檔本來就這樣寫」記口述並列，不猜。
 - 客戶要口述贏過原檔（「以我說的為準」）是裁示，看 `references/ruling.md`。
-- 實體本身錯（兩個其實是同一個、型別放錯）走 `kb entity merge`、`kb entity rename --type`。
+- 實體本身錯（兩個其實是同一個、型別放錯）走 `kb entity merge`、`kb entity rename --type`；AI 判斷登記的名字（`kb entity list` 標「AI 判斷」）錯了也照這條改。
 
 例：「不對，業主是陳先生不是王先生」。先讀那張卡與原檔，看錯在哪：
 

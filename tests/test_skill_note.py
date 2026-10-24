@@ -155,7 +155,7 @@ class RuleChange(unittest.TestCase):
         self.assertLessEqual(len(text.splitlines()), REFERENCE_MAX_LINES)
         rows = [ln for ln in text.splitlines() if re.match(r"^\| \d+ \|", ln)]
         self.assertEqual([int(ln.split("|")[1]) for ln in rows], list(range(1, 21)))
-        for want in ("萬元", "兩種意思", "20 份以內", "按停止"):
+        for want in ("萬元", "兩種意思", "20 份以內", "要停跟我說一聲"):
             with self.subTest(want=want):
                 self.assertIn(want, text)
         self.assertIsNone(ABS_PATH.search(text))

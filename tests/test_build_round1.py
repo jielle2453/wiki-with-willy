@@ -1,0 +1,391 @@
+"""build 第一輪修（22 派工，測試報告 design/reports/build-測試.md 的 S1～S10）：每項一組重現。"""
+import json
+import os
+import shutil
+import tempfile
+import unittest
+from datetime import datetime
+from pathlib import Path
+
+from tests._guard_fixture import FIXTURES, ROOT, make_vault, payload
+from tests.test_cardmaker_round1 import guard_out
+from tests.test_scripts_inventory_cli import run_kb
+from kb._lib import batches, build, credentials, extract, turn  # noqa: E402
+
+FAKE_ENV = [{"key": k, "level": "ok", "text": k} for k in build.ENV_KEYS]
+KB = f'python "{ROOT}/scripts/kb.py"'
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kbbuildr1-")).resolve()
+        self.D = self.tmp / "新知識庫"
+        self.D.mkdir()
+        self._env, self._collect = build.env_items, batches._collect
+        build.env_items = lambda cwd: [dict(i) for i in FAKE_ENV]
+        self.out = {}
+        batches._collect = lambda vault: self.out
+        build.start(self.D)
+        self.t = turn.start(self.D, "sid-a", "/wiki-with-willy:build")["turn"]
+        turn.SESSION = "sid-a"
+
+    def tearDown(self):
+        build.env_items, batches._collect = self._env, self._collect
+        turn.SESSION = None
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def data(self):
+        return json.loads((self.D / build.BUILD_POSIX).read_text(encoding="utf-8"))
+
+    def put(self, **kw):
+        data = self.data()
+        data.update(kw)
+        (self.D / build.BUILD_POSIX).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def refused(self, fn, *a, **kw):
+        with self.assertRaises(build.Refused) as cm:
+            fn(*a, **kw)
+        return str(cm.exception)
+
+    def edit_batches(self, change):
+        data = batches.load(self.D)
+        change(data)
+        (self.D / batches.BATCHES_POSIX).write_text(json.dumps(data), encoding="utf-8")
+
+
+def files(n):
+    return [{"id": f"f-{i:08x}", "uri": f"file://案子/{i}.txt"} for i in range(n)]
+
+
+class S1TakeoverReleasesOldBatches(Base):
+    """接手之後，前一個對話派出去、子代理沒停的批次不再擋 done cards；放掉的項目這個對話切得出來。"""
+
+    def test_takeover_then_dispatch_and_done(self):
+        self.put(step="cards")
+        build.status(self.D)
+        self.out = {"new": files(3)}
+        got = batches.dispatch(self.D, "sid-a", self.t)
+        self.assertEqual([b["items"] for b in got["batches"]], [3])
+        batches.agent_start(self.D, "sid-a", "agent-old")
+        self.edit_batches(lambda d: d["batches"][0].update(agent_id="agent-old"))  # 子代理認領了、沒停（視窗被關掉）
+        turn.SESSION = "sid-b"
+        self.assertTrue(self.refused(build.status, self.D).startswith("另一個對話正在建置"))
+        build.status(self.D, takeover=True)
+        data = batches.load(self.D)
+        self.assertEqual([b["status"] for b in data["batches"]], ["released"])
+        self.assertEqual(data["jobs"][0]["status"], "closed")
+        self.assertNotIn("stopped_turn", data["jobs"][0], "不是那一句說了停")
+        self.assertEqual(build._running(self.D, ("cards", "agenda")), [])
+        self.assertEqual(batches.status(self.D, "sid-b")["running"], [], "build 與 cards status 同一個判斷")
+        t2 = turn.start(self.D, "sid-b", "接手建置")["turn"]
+        again = batches.dispatch(self.D, "sid-b", t2)
+        self.assertEqual([b["items"] for b in again["batches"]], [3], "放掉的項目回到可派")
+        self.assertEqual(self.refused(build.done, self.D, "cards"),
+                         "還有 1 批在背景整理，做完再往下")
+        self.edit_batches(lambda d: d["batches"][-1].update(status="done"))
+        self.out = {}
+        self.assertEqual(build.done(self.D, "cards")[2], "建置：全量整理 做完了，下一步 確認名字")
+
+    def test_running_counts_only_this_session(self):
+        """build._running 跟 batches.running 同一支：別的對話的批次不算（那邊被鎖擋著，接手時放掉）。"""
+        now = datetime.now().strftime(build.TIME)
+        (self.D / batches.BATCHES_POSIX).write_text(json.dumps({"schema_version": 1, "agents": [], "jobs": [
+            {"job": "j-1", "session_id": "sid-x", "status": "open"}], "batches": [
+            {"batch": "b-1", "job": "j-1", "kind": "cards", "items": ["f-1"], "created": now, "status": "open"}]}),
+            encoding="utf-8")
+        self.assertEqual(build._running(self.D, ("cards",)), [])
+        turn.SESSION = "sid-x"
+        self.assertEqual(len(build._running(self.D, ("cards",))), 1)
+
+
+class S3SampleJobClosed(Base):
+    """抽樣的 ids job：done sample 收掉；抽樣批次在跑時擋；job 開著時 --ids 帶不存在的也拒絕。"""
+
+    def test_done_sample_closes_ids_job_then_full_dispatch(self):
+        self.put(step="sample")
+        build.status(self.D)
+        self.out = {"new": files(42)}
+        ids = [f["id"] for f in files(4)]
+        got = batches.dispatch(self.D, "sid-a", self.t, ids=ids)
+        self.assertEqual([b["items"] for b in got["batches"]], [4])
+        self.assertEqual(self.refused(build.done, self.D, "sample"), "抽樣還在背景做，做完再往下")
+        with self.assertRaises(batches.Refused) as cm:
+            batches.dispatch(self.D, "sid-a", self.t, ids=[ids[0], "f-deadbeef"])
+        self.assertEqual(str(cm.exception), "這幾份不在要整理的清單裡：f-deadbeef")
+        self.edit_batches(lambda d: d["batches"][0].update(status="done"))
+        self.out = {"new": files(42)[4:]}
+        self.assertEqual(build.done(self.D, "sample")[2], "建置：抽樣 做完了，下一步 全量整理")
+        self.assertEqual([j["status"] for j in batches.load(self.D)["jobs"]], ["closed"])
+        full = batches.dispatch(self.D, "sid-a", turn.start(self.D, "sid-a", "好，全部整理")["turn"])
+        self.assertEqual([b["items"] for b in full["batches"]], [20, 18])
+        self.assertFalse(full["done"])
+
+
+class S2AdoptCredentials(Base):
+    """舊 wiki：檔名像密碼的頁不切、記進 skipped 與報告；pwd、Bearer、私鑰整段、解鎖碼遮掉；連結的 hot.md 不讀。"""
+
+    SECRETS = ("Zq8kd91mm", "Zq8kd91nn", "Zq8!kd91xx", "eyJhbGciOiJIUzI1NiJ9", "MIIEowIBAAKCAQEA", "Zq8kd91pp")
+
+    def setUp(self):
+        super().setUp()
+        self.O = self.tmp / "old_vault"
+        shutil.copytree(FIXTURES / "old_vault", self.O)
+        (self.O / "wiki" / "projects" / "密碼清單.md").write_text("網銀: Zq8kd91mm\n", encoding="utf-8")
+        (self.O / "wiki" / "projects" / "帳密.md").write_text("雲端相簿 abc / Zq8kd91nn\n", encoding="utf-8")  # 第二輪 R1
+        (self.O / "wiki" / "topics" / "雜項.md").write_text(
+            "# 雜項\n\npwd: Zq8!kd91xx\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.x.y\n"
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----\n"
+            "解鎖碼 Zq8kd91pp\n廚具用 L 型。\n", encoding="utf-8")
+
+    def test_check_and_extract_skip_and_mask(self):
+        check = build.adopt_check(self.O)
+        self.assertEqual(sorted(check["skipped"]), ["wiki/projects/密碼清單.md", "wiki/projects/帳密.md"])
+        self.assertEqual(check["wiki_pages"], 3)
+        got = build.adopt_extract(self.D, self.O)
+        self.assertEqual(sorted(got["skipped"]), ["wiki/projects/密碼清單.md", "wiki/projects/帳密.md"])
+        self.assertFalse({"wiki/projects/密碼清單.md", "wiki/projects/帳密.md"} & {f["path"] for f in got["files"]})
+        whole = "".join(Path(c).read_text(encoding="utf-8") for c in got["chunks"])
+        self.assertIn("廚具用 L 型", whole)
+        for s in self.SECRETS:
+            self.assertNotIn(s, whole, s)
+
+    def test_report_lists_skipped(self):
+        build.set_value(self.D, "adopt", str(self.O))
+        facts = build.report_facts(self.D)
+        self.assertEqual(sorted(facts["adopt_skipped"]), ["wiki/projects/密碼清單.md", "wiki/projects/帳密.md"])
+        self.assertTrue([x for x in build.numbers_lines(facts) if x.startswith("- 舊 wiki 裡檔名像密碼、沒讀的：")])
+
+    def test_linked_special_file_not_read(self):
+        hot = self.O / "wiki" / "hot.md"
+        target = self.tmp / "外面的.md"
+        target.write_text("外面的秘密內容\n", encoding="utf-8")
+        hot.unlink()
+        try:
+            os.symlink(target, hot)
+        except OSError:
+            self.skipTest("這台建不了連結")
+        got = build.adopt_extract(self.D, self.O)
+        self.assertNotIn("wiki/hot.md", [f["path"] for f in got["files"]])
+        self.assertNotIn("外面的秘密內容", "".join(Path(c).read_text(encoding="utf-8") for c in got["chunks"]))
+        self.assertEqual(build.adopt_check(self.O)["hot_chars"], 0)
+
+
+class S2MaskWords(unittest.TestCase):
+    def test_new_words_and_pem(self):
+        text = ("pwd: Zq8!kd91xx\nAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.x\n-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                "b3BlbnNzaC1r\n-----END OPENSSH PRIVATE KEY-----\n解鎖碼 Zq8kd91pp\n")
+        got = credentials.mask_secrets(text)
+        for s in ("Zq8!kd91xx", "eyJhbGciOiJIUzI1NiJ9", "b3BlbnNzaC1r", "Zq8kd91pp", "BEGIN OPENSSH"):
+            self.assertNotIn(s, got, s)
+        self.assertEqual(credentials.mask_secrets("-----BEGIN PRIVATE KEY-----\nabc"), credentials.MASK, "沒有結尾就到最後")
+        self.assertEqual(credentials.mask_secrets("typing pwdx 照常"), "typing pwdx 照常")
+
+    def test_should_mask(self):
+        """第二輪修：pwd 後面緊接 : = ：、bearer 後面接 16 字以上的 token，才遮。"""
+        for text, secret in (("pwd: Zq8!kd91xx", "Zq8!kd91xx"), ("PWD=Zq8kd91zz", "Zq8kd91zz"), ("pwd ：Zq8kd91yy", "Zq8kd91yy"),
+                             ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc", "eyJhbGciOiJIUzI1NiJ9"),
+                             ("bearer abcdefghijklmnopqrstu", "abcdefghijklmnopqrstu"), ("解鎖碼：Zq8kd91pp", "Zq8kd91pp")):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, credentials.mask_secrets(text))
+
+    def test_no_false_hits(self):
+        """第二輪修：一般句子裡的 pwd、bearer 不遮。"""
+        for text in ("今天的 pwd 命令列出目前資料夾。", "He was the bearer of bad news.", "Bearer short",
+                     "load-bearing wall", "cd /home/pwd here"):
+            with self.subTest(text=text):
+                self.assertEqual(credentials.mask_secrets(text), text)
+
+
+class S6ScrubForms(unittest.TestCase):
+    def test_repr_and_json_forms(self):
+        pw = "Pw#9x'q\\z"
+        text = f"bad {pw!r} / {json.dumps(pw)} / {pw}"
+        got = extract._scrub(text, pw)
+        self.assertNotIn("Pw#9x", got)
+
+
+class S7GivenUp(Base):
+    def test_report_facts_has_given_up(self):
+        (self.D / batches.BATCHES_POSIX).write_text(json.dumps({"schema_version": 1, "agents": [], "batches": [], "jobs": [
+            {"job": "j-1", "session_id": "sid-a", "status": "closed",
+             "failed": {"案子/王宅/王宅.md": {"kind": "synthesis", "reason": "檔頭兩次被打回"}}}]}), encoding="utf-8")
+        facts = build.report_facts(self.D)
+        self.assertEqual(facts["given_up"], [{"id": "案子/王宅/王宅.md", "kind": "synthesis", "reason": "檔頭兩次被打回",
+                                              "name": "王宅.md"}])
+        self.assertIn("- 製卡助手沒做成 1 份：王宅.md", build.numbers_lines(facts))
+        self.assertIn("given_up", (ROOT / "templates" / "build-report.md").read_text(encoding="utf-8"))
+
+
+class S9FinishedVault(unittest.TestCase):
+    """建置做完的知識庫：facts、report、adopt 照 status 那句擋。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kbbuildr1-")).resolve()
+        self.D = self.tmp / "新知識庫"
+        self.D.mkdir()
+        self.assertEqual(run_kb("build", "start", cwd=self.D).returncode, 0)
+        p = self.D / build.BUILD_POSIX
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data["step"] = "done"
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_all_refused(self):
+        old = str(FIXTURES / "old_vault")
+        for args in (("facts", "--json"), ("report", "--facts"), ("report", "--from", "x.md"), ("adopt", old, "--check"),
+                     ("adopt", old, "--extract")):
+            with self.subTest(args=args):
+                r = run_kb("build", *args, cwd=self.D)
+                self.assertEqual((r.returncode, r.stdout.strip()), (3, build.ALREADY))
+        self.assertFalse((self.D / ".system" / "temp" / "adopt").exists())
+
+
+class S8AdoptAgentCannotWrite(unittest.TestCase):
+    """記過的子代理認領的是讀舊 wiki 的批次時，Write／Edit 一律 deny；做卡批次照舊放行寫卡。"""
+
+    def setUp(self):
+        self.tmp, self.V, _raw = make_vault()
+        turn.start(self.V, "sid-g", "好")
+        batches.agent_start(self.V, "sid-g", "agent-1")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def batch(self, kind):
+        data = batches.load(self.V)
+        data["batches"] = [{"batch": "b-1", "job": "j-1", "kind": kind, "items": ["001.txt"], "agent_id": "agent-1",
+                            "created": datetime.now().strftime(build.TIME), "status": "open"}]
+        (self.V / batches.BATCHES_POSIX).write_text(json.dumps(data), encoding="utf-8")
+
+    def write(self, tool="Write"):
+        data = payload(tool, self.V / "檔案索引" / "x.md", self.V)
+        data.update(session_id="sid-g", agent_id="agent-1", agent_type=batches.AGENT)
+        return guard_out(data)
+
+    def test_adopt_batch_denied_cards_batch_allowed(self):
+        self.batch("cards")
+        self.assertEqual(self.write().get("permissionDecision"), "allow")
+        self.batch("adopt")
+        for tool in ("Write", "Edit"):
+            out = self.write(tool)
+            self.assertEqual((out["permissionDecision"], out["permissionDecisionReason"]), ("deny", "製卡助手不能做這件事"))
+
+
+
+class R1CredentialPatterns(unittest.TestCase):
+    """第二輪修 R1：*帳密*、*金鑰* 進共用的憑證檔名樣式（守門、convert、清冊、adopt 都照這張表）。"""
+
+    def test_patterns(self):
+        for name in ("帳密.md", "網站帳密.xlsx", "金鑰.txt", "API金鑰備份.docx"):
+            self.assertEqual(credentials.match_segment([name]), name, name)
+        self.assertIsNone(credentials.match_segment(["帳號清單.md"]))
+
+
+class R2JunctionNotFollowed(Base):
+    """第二輪修 R2：舊 wiki 裡的目錄連結（junction）不跟進去，列進 skipped；這台建不了 junction 就用替身。"""
+
+    def setUp(self):
+        super().setUp()
+        self.O = self.tmp / "old_vault"
+        shutil.copytree(FIXTURES / "old_vault", self.O)
+        self.outside = self.tmp / "外面的夾"
+        self.outside.mkdir()
+        (self.outside / "外檔.md").write_text("外面的內容 Zq8kd91jj\n", encoding="utf-8")
+        self.link = self.O / "wiki" / "junc"
+        import subprocess
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(self.link), str(self.outside)], capture_output=True)
+        if r.returncode != 0 or not self.link.exists():
+            self.link.mkdir()
+            (self.link / "外檔.md").write_text("外面的內容 Zq8kd91jj\n", encoding="utf-8")
+            self._is_link = build._is_link
+            build._is_link = lambda p: p.name == "junc" or self._is_link(p)
+
+    def tearDown(self):
+        if hasattr(self, "_is_link"):
+            build._is_link = self._is_link
+        elif self.link.exists():
+            os.rmdir(self.link)  # 只拿掉連結本身
+        super().tearDown()
+
+    def test_skipped(self):
+        self.assertIn("wiki/junc", build.adopt_check(self.O)["skipped"])
+        got = build.adopt_extract(self.D, self.O)
+        self.assertIn("wiki/junc", got["skipped"])
+        self.assertNotIn("wiki/junc/外檔.md", [f["path"] for f in got["files"]])
+        self.assertNotIn("Zq8kd91jj", "".join(Path(c).read_text(encoding="utf-8") for c in got["chunks"]))
+        self.assertTrue((self.outside / "外檔.md").is_file(), "外面的檔沒被動")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class DesktopBatchAbsolutePaths(unittest.TestCase):
+    """桌面版確認：cards batch 給 vault 與 <鍵>_abs 絕對路徑，製卡助手不用從原檔路徑猜總資料夾（之前猜成上一層）。"""
+
+    def setUp(self):
+        from tests import _cards
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+        turn.start(self.V, "sid-d", "好")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_batch_has_vault_and_abs(self):
+        got = json.loads(run_kb("--session", "sid-d", "cards", "dispatch", "--json", cwd=self.V).stdout)
+        view = json.loads(run_kb("cards", "batch", got["batches"][0]["batch"], "--json", cwd=self.V).stdout)
+        vault = Path(self.V).resolve().as_posix()
+        self.assertEqual(view["vault"], vault)
+        for item in view["items"]:
+            self.assertEqual(item["dir_abs"], f"{vault}/{item['dir']}")
+            self.assertNotIn("path_abs", item, "原檔的 path 本來就是絕對路徑")
+            self.assertTrue(Path(item["dir_abs"]).resolve().is_relative_to(Path(vault)))
+
+    def test_with_abs_unit(self):
+        got = batches._with_abs(Path("C:/kb"), {"path": "案子/王宅/王宅.md", "target": "案子/王宅/王宅.md",
+                                                "dir": "檔案索引/a", "card_path": "檔案索引/a/x.md",
+                                                "existing_card": None})
+        self.assertEqual((got["path_abs"], got["target_abs"], got["dir_abs"], got["card_path_abs"]),
+                         ("C:/kb/案子/王宅/王宅.md", "C:/kb/案子/王宅/王宅.md", "C:/kb/檔案索引/a", "C:/kb/檔案索引/a/x.md"))
+        self.assertNotIn("existing_card_abs", got)
+        self.assertNotIn("path_abs", batches._with_abs(Path("C:/kb"), {"path": "D:/raw/a.pdf"}))
+
+
+class DesktopAgentWritesOutsideVault(unittest.TestCase):
+    """桌面版確認：記過的子代理用 Write／Edit／MultiEdit／NotebookEdit 寫到知識庫外面一律 deny；裡面的照舊。"""
+
+    def setUp(self):
+        self.tmp, self.V, _raw = make_vault()
+        turn.start(self.V, "sid-g", "好")
+        batches.agent_start(self.V, "sid-g", "agent-1")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write(self, path, tool="Write", agent="agent-1"):
+        data = payload(tool, path, self.V)
+        data.update(session_id="sid-g")
+        if agent:
+            data.update(agent_id=agent, agent_type=batches.AGENT)
+        return guard_out(data)
+
+    def test_outside_denied(self):
+        outside = Path(self.V).parent / "檔案索引" / "來源" / "x.md"
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            out = self.write(outside, tool)
+            self.assertEqual((out.get("permissionDecision"), out.get("permissionDecisionReason")),
+                             ("deny", "製卡助手不能做這件事"), tool)
+        out = self.write(Path(self.V) / ".." / "檔案索引" / "y.md")
+        self.assertEqual(out.get("permissionDecision"), "deny", "用 .. 跳出去也算外面")
+
+    def test_inside_still_allowed(self):
+        self.assertEqual(self.write(Path(self.V) / "檔案索引" / "a" / "x.md").get("permissionDecision"), "allow")
+        ws = Path(self.V) / ".system" / "temp" / "office" / "t1" / "x.md"
+        self.assertEqual(self.write(ws).get("permissionDecision"), "allow", "工作區在知識庫裡")
+
+    def test_main_conversation_unchanged(self):
+        """主對話寫知識庫外面不在這條管（照守門原本的判斷）。"""
+        outside = Path(self.V).parent / "外面" / "x.md"
+        self.assertNotEqual(self.write(outside, agent=None).get("permissionDecisionReason"), "製卡助手不能做這件事")

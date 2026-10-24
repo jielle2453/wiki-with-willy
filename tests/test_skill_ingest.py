@@ -12,7 +12,7 @@ from kb._lib import cards  # noqa: E402
 
 SKILL_DIR = ROOT / "skills" / "ingest"
 SKILL = SKILL_DIR / "SKILL.md"
-REFS = ("references/carding.md", "references/commands.md")
+REFS = ("references/carding.md", "references/commands.md", "references/redo.md")
 EVALS = ROOT / "tests" / "evals" / "ingest.json"
 TEMPLATE = ROOT / "templates" / "card.md"
 MANAGE = ROOT / "skills" / "manage" / "SKILL.md"
@@ -145,6 +145,38 @@ class ManageRow(unittest.TestCase):
         row = next(ln for ln in MANAGE.read_text(encoding="utf-8").splitlines() if ln.startswith("- **加資料夾**"))
         self.assertTrue(row.rstrip().endswith(MANAGE_CLOSE), row[-80:])
         self.assertNotIn("整理成卡的功能之後補", row)
+
+
+
+class CardMakerSkeleton(unittest.TestCase):
+    """card-maker（D-196～D-200）：骨架派工 → 收通知再派 → done 才拿 asks、tell → note_cmd；停與進度各有一步；三條原則帶編號。"""
+
+    def setUp(self):
+        self.body = split(SKILL.read_text(encoding="utf-8"))[1]
+        self.steps = self.body[self.body.index("## 骨架"):self.body.index("## 共通")]
+
+    def test_dispatch_flow_in_order(self):
+        marks = ["cards todo --json", "cards dispatch --json", "Agent 工具", "subagent_type", "approval", "cards status",
+                 "cards stop --json", "TaskStop", "`asks` 從前面", "note_cmd", "turn note"]
+        pos = [self.steps.index(m) for m in marks]
+        self.assertEqual(pos, sorted(pos), marks)
+
+    def test_three_new_principles(self):
+        for lead, code in (("製卡交給製卡助手", "D-196"), ("派工照程式給的 prompt", "D-197"), ("子代理的回報不轉述檔案內容", "D-022")):
+            with self.subTest(principle=lead):
+                line = next((ln for ln in self.body.splitlines() if lead in ln), "")
+                self.assertIn(code, line)
+
+    def test_references_cover_new_commands(self):
+        commands = (SKILL_DIR / "references" / "commands.md").read_text(encoding="utf-8")
+        for head in ("## cards dispatch", "## cards status", "cards stop", "## cards unreadable"):
+            with self.subTest(head=head):
+                self.assertIn(head, commands)
+        self.assertNotIn("按停止", commands)
+        carding = (SKILL_DIR / "references" / "carding.md").read_text(encoding="utf-8")
+        for want in ("## 批次（card-maker）", "## 材料的欄位", "被擋或打回：", "kb cards unreadable"):
+            with self.subTest(want=want):
+                self.assertIn(want, carding)
 
 
 if __name__ == "__main__":

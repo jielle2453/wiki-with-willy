@@ -6,7 +6,9 @@ scan_dir：守門對「讀取範圍是資料夾」走訪找憑證檔名，容錯
 夾名與檔名都比，命中回第一個命中的相對路徑；走訪項數超過 max_entries 就停、truncated=True（fail closed 由呼叫端擋）；
 skip 裡的夾與檔（排除項目、總資料夾整棵）不進去、不比、不算。
 scan_all：kb folders add 用，收全部命中、數檔案份數，碰到含 stop_marker 的夾就停（另一個知識庫）。
-mask_secrets：回合 prompt_head 的遮值（第 5b 節、B-027），關鍵詞後的值換成 ███。
+mask_secrets：回合 prompt_head 的遮值（第 5b 節、B-027），關鍵詞後的值換成 ███；build 第一輪修 S2：關鍵詞多 pwd、bearer、解鎖碼，
+-----BEGIN … PRIVATE KEY----- 到 -----END … -----（沒有結尾就到最後）整段換掉；第二輪修：pwd 只在後面緊接 : = ： 時算，
+bearer 只在後面接一段像 token 的字（不含空白、至少 16 字）時算（「pwd 命令」「bearer of bad news」不遮）。
 不含「憑證」：會計憑證、報關憑證是客戶的正常文件。寧可多擋、多遮（D-034，誤擋率併 B-110）。
 """
 import bisect
@@ -17,6 +19,7 @@ import re
 CREDENTIAL_PATTERNS = (
     ".env", ".env.*", "*.pem", "*.ppk", "*.kdbx", "id_rsa*", "id_ed25519*",
     "*password*", "*passwd*", "*secret*", "*credential*", "*密碼*",
+    "*帳密*", "*金鑰*",  # build 第二輪修 R1：舊 wiki 常見的帳密.md；守門、convert、清冊、adopt 共用這一張
 )
 
 
@@ -24,10 +27,10 @@ CREDENTIAL_PATTERNS = (
 KEYFILE_PATTERNS = ("id_rsa*", "id_ed25519*")
 # 遮值關鍵詞（第 5b 節、第五輪 V4）。比對前先 NFKC、小寫、去空白（D-187），所以 api key 與 apikey 同一個
 SECRET_WORDS = ("密碼", "帳密", "帳號", "password", "passwd", "pw", "token", "金鑰", "secret", "api key", "apikey",
-                "api_key", "api-key", "密码", "passphrase", "pin", "pin碼", "驗證碼", "otp")
+                "api_key", "api-key", "密码", "passphrase", "pin", "pin碼", "驗證碼", "otp", "pwd", "bearer", "解鎖碼")
 MASK = "███"
 # 短字要整字邊界（typing 裡的 pin、stopwatch 裡的 pw 不算，看原字串的前後字）；長字允許前綴（PGPASSWORD=、accessToken=）
-SHORT_WORDS = ("pw", "pin", "otp")
+SHORT_WORDS = ("pw", "pin", "otp", "pwd")
 # 帳密、帳號密碼後面可以跟兩個值（帳號、密碼各一）
 PAIR_WORDS = ("帳密",)
 # 程式固定句（D-187 (c)）：裡面的關鍵字不遮。只遮值之後這些本來就不會被遮，列著當保險、也給測試守
@@ -65,6 +68,10 @@ _BLANK_SPACE = re.compile(rf"[{_SPACE}]*")
 # kb 指令的值旗標：被守門擋下時 ledger 記指令開頭（密碼與守門開工前補第 2 條）
 _FLAG_VALUE = re.compile(r"(?P<kw>--(?:value|password))(?P<sep>=|\s+)(?P<v>\"[^\"]*\"|'[^']*'|\S+)", re.IGNORECASE)
 _MERGE_GAP = re.compile(rf"^[{_SPACE}和與及跟、/／]*$")
+# 容易撞到一般用字的關鍵字：後面要接得像值才算（build 第二輪修）
+_NEEDS_AFTER = {"pwd": re.compile(rf"[{_SPACE}]*[:=：＝]"), "bearer": re.compile(rf"[{_SPACE}]+[^\s]{{16,}}")}
+# 私鑰整段（build 第一輪修 S2）：BEGIN 到對應的 END；沒有 END 就到最後
+_PEM = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*-----|\Z)", re.S)
 
 
 def _norm_key(word):
@@ -184,11 +191,16 @@ def mask_secrets(text, known_names=None):
 
     for m in _FLAG_VALUE.finditer(text):
         cut(m.start("v"), m.end("v"))
+    for m in _PEM.finditer(text):
+        cut(m.start(), m.end())
     norm, where = _normalized(text)
     rev, n, runs = text[::-1], len(text), None
     done = 0
     for a, b, values in _keywords(text, norm, where):
         if a < done or _inside(protected, a, b):
+            continue
+        need = _NEEDS_AFTER.get(_norm_key(text[a:b]))
+        if need is not None and not need.match(text, b):
             continue
         before = _VALUE_FIRST_REV.match(rev, n - a)
         if before:

@@ -10231,6 +10231,76 @@
     "<RAW>/客戶案件/信義王/網銀密碼.txt",
     "<RAW>/客戶案件/網站密碼.xlsx"
    ]
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "<RAW>/客戶案件/帳密.md"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "needs": [
+    "<RAW>/客戶案件/帳密.md",
+    "<RAW>/客戶案件/網站金鑰.txt"
+   ],
+   "來源": "build-測試.md 回測第一輪 R1（22 第二輪派工）",
+   "note": "憑證檔名樣式多 *帳密*：讀要擋"
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "<RAW>/客戶案件/網站金鑰.txt"
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "needs": [
+    "<RAW>/客戶案件/帳密.md",
+    "<RAW>/客戶案件/網站金鑰.txt"
+   ],
+   "來源": "build-測試.md 回測第一輪 R1（22 第二輪派工）",
+   "note": "憑證檔名樣式多 *金鑰*：讀要擋"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat \"<RAW>/客戶案件/帳密.md\""
+   },
+   "cwd": "<V>",
+   "expect": "deny",
+   "needs": [
+    "<RAW>/客戶案件/帳密.md",
+    "<RAW>/客戶案件/網站金鑰.txt"
+   ],
+   "來源": "build-測試.md 回測第一輪 R1（22 第二輪派工）",
+   "note": "shell 讀帳密.md 一樣擋"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls \"<RAW>/客戶案件\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "needs": [
+    "<RAW>/客戶案件/帳密.md",
+    "<RAW>/客戶案件/網站金鑰.txt"
+   ],
+   "來源": "build-測試.md 回測第一輪 R1（22 第二輪派工）",
+   "note": "只列檔名不讀內容（D-185）：夾裡有帳密.md、網站金鑰.txt 照放"
+  },
+  {
+   "tool": "PowerShell",
+   "input": {
+    "command": "Get-ChildItem \"<RAW>/客戶案件\""
+   },
+   "cwd": "<V>",
+   "expect": "pass",
+   "needs": [
+    "<RAW>/客戶案件/帳密.md",
+    "<RAW>/客戶案件/網站金鑰.txt"
+   ],
+   "來源": "build-測試.md 回測第一輪 R1（22 第二輪派工）",
+   "note": "PowerShell 列檔名照放"
   }
  ]
 }

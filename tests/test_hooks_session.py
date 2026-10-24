@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import unittest
+from pathlib import Path
 
 from tests._guard_fixture import ROOT, make_vault
 
@@ -133,7 +134,7 @@ class SessionHook(unittest.TestCase):
         self.assertEqual(hooks[0]["command"], 'python "${CLAUDE_PLUGIN_ROOT}/hooks/session.py"')
         self.assertEqual(hooks[0]["timeout"], 10)
         self.assertTrue(cfg["description"].startswith("開場帶入核心規則與 kb 指令前綴；"))
-        self.assertEqual(len(cfg["hooks"]), 5)
+        self.assertEqual(len(cfg["hooks"]), 8)  # card-maker 加 SubagentStart、SubagentStop；B 段第 6 步加 SessionEnd
 
 
 KB = ROOT / "scripts" / "kb.py"
@@ -677,3 +678,75 @@ class OpeningPreferences(unittest.TestCase):
         self.assertTrue(ctx.endswith("\n\n" + CORE.read_text(encoding="utf-8")))
         log = (self.V / ".system" / "hook-errors.log").read_text(encoding="utf-8").splitlines()
         self.assertTrue(log and all(ln.split("\t")[1] == "session" for ln in log))
+
+
+class OpeningLeftAndMoved(unittest.TestCase):
+    """card-maker 驗收 13b（B-415）：開場那行「還有 N 份沒整理完、M 張卡要跟著搬」；讀不到記進待處理的（有密碼、線上文件打不開）
+    不算；0 的那半不印。"""
+
+    def setUp(self):
+        from tests import _cards
+        self._cards = _cards
+        self.tmp, self.V, self.raw = _cards.make_card_vault()
+        _cards.mark_dates_scanned(self.V)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def todo(self):
+        r = subprocess.run([sys.executable, str(KB), "cards", "todo", "--json"], capture_output=True, text=True,
+                           encoding="utf-8", cwd=str(self.V))
+        return json.loads(r.stdout)
+
+    def status(self):
+        r = run(payload(self.V))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"].split("\n\n", 1)[0].split("\n")
+
+    def test_left_and_moved(self):
+        from kb._lib import inventory, pending, turn
+        raw = str(self.raw).casefold()
+        items = [i for i in self.todo()["new"] if i["kind"] != "link" and str(i["path"]).casefold().startswith(raw)]
+        for n, item in enumerate(items[:5]):
+            self._cards.write_card(self.V, item, f"卡{n}")
+        for item in items[:5]:  # 原檔搬到同夾底下的另一個夾：卡要跟著搬
+            src = Path(item["path"])
+            dst = src.parent / "搬過" / src.name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+        self._cards.scan_apply(self.V)
+        self._cards.mark_dates_scanned(self.V)
+        t = turn.start(self.V, None, "")["turn"]
+        locked = items[5]["id"]
+        pending.add(self.V, "unreadable", [locked], "x 讀不到", "有密碼", t)
+        link = inventory.register_link(self.V, "https://claude.ai/artifact/abc", t, "報價說明")
+        r = subprocess.run([sys.executable, str(KB), "cards", "unreadable", link["id"], "--reason", "線上文件打不開"],
+                           capture_output=True, text=True, encoding="utf-8", cwd=str(self.V))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        data = self.todo()
+        self.assertEqual(len(data["moved"]), 5)
+        left = len(data["new"]) + len(data["stale"])
+        self.assertNotIn(locked, [i["id"] for i in data["new"]])
+        lines = self.status()
+        i = lines.index(f"還有 {left} 份沒整理完、5 張卡要跟著搬")
+        self.assertEqual(lines[i + 1], UNSORTED_HINT.format(n=20))
+
+    def test_only_moved(self):
+        p = self.V / ".system" / "inventory.json"
+        raw = str(self.raw).casefold()
+        items = [i for i in self.todo()["new"] if str(i["path"] or "").casefold().startswith(raw)][:2]
+        for n, item in enumerate(items):
+            self._cards.write_card(self.V, item, f"卡{n}")
+        data = json.loads(p.read_text(encoding="utf-8"))
+        keep = {i["id"] for i in items}
+        for e in data["entries"]:
+            if e["id"] not in keep:
+                e["skip_kind"] = "請款"
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        for item in items:
+            src = Path(item["path"])
+            (src.parent / "搬過").mkdir(exist_ok=True)
+            src.rename(src.parent / "搬過" / src.name)
+        self._cards.scan_apply(self.V)
+        self._cards.mark_dates_scanned(self.V)
+        self.assertIn("還有 2 張卡要跟著搬", self.status())

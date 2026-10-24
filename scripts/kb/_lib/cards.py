@@ -422,13 +422,14 @@ PDF_BACK = "PDF 元件裝好了"
 
 
 def _restore_pdf(vault):
-    """裁定 36：pypdfium2 裝好了，就把 reason 是「還沒裝 PDF 元件」的 open／dismissed 待處理 done（備進回合），回關掉幾份。
-    todo 只有這一處會寫檔；沒有這種條目就什麼都不碰。"""
+    """裁定 36：pypdfium2 裝好了（本行程或 kb office setup 的工具夾，build 第 3 點），就把 reason 是「還沒裝 PDF 元件」的
+    open／dismissed 待處理 done（備進回合），回關掉幾份。todo 只有這一處會寫檔；沒有這種條目就什麼都不碰。"""
     from kb._lib import extract, pending, turn
+    if not extract.pdf_available():
+        return 0
     try:
-        extract._pdfium()
         items = pending.load(vault)["items"]
-    except (extract.Unreadable, ValueError):
+    except ValueError:
         return 0
     fids = {(i.get("file_ids") or [None])[0] for i in items
             if i.get("kind") == "unreadable" and i.get("status") in ("open", "dismissed")
@@ -445,6 +446,23 @@ def _mtime(vault, rel):
         return (Path(vault) / rel).stat().st_mtime
     except OSError:
         return 0
+
+
+def not_for_card(vault, sources, entry):
+    """這份不是要製卡的檔嗎：跟 kb convert 同一個判斷（guard.classify 落在 convert.NOT_CARD_ZONES，例如型別夾根直接放的檔）。
+    只看總資料夾自己的條目（知識庫、收件匣、AI 產出）；登記來源的檔不會落在這幾區。card-maker 第一輪修 S2(c)：todo 列了、
+    convert 卻拒絕，製卡助手一直重做同一份。"""
+    from kb import convert, guard
+    from kb._lib import inventory
+    from kb._lib.paths import normalize
+    uri = (entry.get("locations") or [{}])[0].get("uri") or ""
+    if inventory.split_uri(uri)[0] not in (inventory.KNOWLEDGE, inventory.INBOX, inventory.OUTPUT):
+        return False
+    path = inventory.path_of(vault, sources, uri)
+    if path is None:
+        return False
+    zone, _alias = guard.classify(normalize(str(path), None), normalize(str(vault), None), sources)
+    return zone in convert.NOT_CARD_ZONES
 
 
 def _profile_or_default(vault):
@@ -589,7 +607,7 @@ def _sort_files(vault, sources, ent_data, entries, restored=0, light=False, dead
             continue
         if is_draft(entry["locations"][0].get("uri", "")):
             continue  # 草稿還在改，定稿才製卡（produce 第 5 點）
-        if ok and eid not in carded and eid not in unreadable_skip:
+        if ok and eid not in carded and eid not in unreadable_skip and not not_for_card(vault, sources, entry):
             out["new"].append(work_item(entry, None))
             if entry.get("unbacked"):
                 out["unbacked"] += 1
@@ -605,8 +623,15 @@ def todo(vault, sources, tell_all=True):
     entities 塊的事類條目多 progress 與 asked_evidence；agenda_unscanned（D-140）列還沒抽過日期的卡。
     最後併進 plan、asks、tell 三鍵（plan.build，整理 ingest；tell_all 是 False 時 tell 只帶這一回合做了什麼，D-141，kb asks 用）。
     不寫檔、不開原檔（kind 只看副檔名，裁定 28）。"""
+    from kb._lib import plan
+    out = collect(vault, sources, _restore_pdf(vault))
+    out.update(plan.build(out, vault, config, tell_all=tell_all))
+    return out
+
+
+def collect(vault, sources, restored=0):
+    """todo 的材料（plan、asks、tell 之外的全部鍵），不寫檔：kb cards dispatch／batch 用同一套項目組法（card-maker，D-197）。"""
     from kb._lib import agenda, entities, inventory, ledger, plan, synthesis
-    restored = _restore_pdf(vault)
     ent_data = entities.load(vault)
     entries = inventory.load(vault)["entries"]
     out, groups, data = _sort_files(vault, sources, ent_data, entries, restored)
@@ -629,7 +654,6 @@ def todo(vault, sources, tell_all=True):
         out["agenda_recheck"], out["agenda_unscanned"] = [], []
         out["agenda_counts"] = {"overdue": 0, "today": 0, "upcoming": 0}
     out[plan.UNLOCK_STEP], out["unlock_kinds"] = plan.locked_same_kind(vault, out)  # 密碼與守門 D-181 第 2 點
-    out.update(plan.build(out, vault, config, tell_all=tell_all))
     return out
 
 
@@ -814,6 +838,48 @@ def mark_redo(vault, fid, turn_id):
             paths.append(loc)
     return {"id": fid, "title": _title(card), "path": card["path"], "redo": sha, "changed": changed,
             "synthesis": names, "synthesis_paths": paths}
+
+
+def mark_redo_many(vault, fids, turn_id, check=False):
+    """kb cards redo --job（B 段整批重做）：這幾張（清冊 active、卡寫好了的；其餘跳過）照 mark_redo 標要重做，讀一次卡、清冊寫一次，
+    每張綜合卡只改一次。check 只回要標的卡、不寫。回 {"cards":[{"id","title","source"}],"changed","synthesis","synthesis_paths"}。"""
+    from kb._lib import entities, inventory, synthesis, turn
+    groups = _scan_groups(vault)[0]
+    by_id = {e.get("id"): e for e in inventory.load(vault)["entries"]}
+    picked = [(fid, groups[fid][0]) for fid in dict.fromkeys(fids)
+              if fid in groups and (by_id.get(fid) or {}).get("status") == "active"]
+    shown = [{"id": fid, "title": _title(card), "source": str((by_id[fid].get("locations") or [{}])[0].get("uri", "")).rpartition("/")[2]}
+             for fid, card in picked]
+    if check or not picked:
+        return {"cards": shown, "changed": False, "synthesis": [], "synthesis_paths": []}
+    changed = bool(inventory.set_redo_many(vault, {fid: inventory.card_sha(vault, card["path"]) for fid, card in picked},
+                                           turn_id))
+    ids = {fid for fid, _c in picked}
+    names, paths = [], []
+    with entities.lock(vault):
+        data = entities.load(vault)
+        for name in entity_names_of([card for _f, card in picked]):
+            e, _hit = entities.find(data, name)
+            if e is None or e.get("status") != "active" or entities.is_self(e) or not e.get("type"):
+                continue
+            loc = entities.locate(vault, e)
+            if not loc or e["name"] in names:
+                continue
+            text = _read(vault, loc)
+            try:
+                lines = parse_front(text).get("整理到")
+            except ValueError:
+                continue
+            if not isinstance(lines, list):
+                continue
+            new = [f"{str(x).split(' ')[0]} {synthesis.REDO}" if str(x).split(" ")[0] in ids else x for x in lines]
+            if new == lines:
+                continue
+            turn.backup(vault, loc, turn_id, by="program")
+            write_text_atomic(Path(vault) / loc, synthesis.replace_front(text, {"整理到": new}))
+            names.append(e["name"])
+            paths.append(loc)
+    return {"cards": shown, "changed": changed, "synthesis": names, "synthesis_paths": paths}
 
 
 def mount(vault, fid, names, turn_id):
@@ -1021,6 +1087,50 @@ def rewrite_locations(text, uris, link):
         out.append(line)
         i += 1
     return "".join(out)
+
+
+def pending_type_cards(vault, type_name):
+    """檔頭 待補型別 有 type_name（照實體名稱的比法）的檔案卡相對路徑，照路徑排（build 桌面版確認 A 段：型別只在待補型別裡）。"""
+    from kb._lib import entities
+    want = entities.key(type_name)
+    got = []
+    for _cid, group in _scan_groups(vault)[0].items():
+        for card in group:
+            pend = card["front"].get("待補型別")
+            if isinstance(pend, list) and any(isinstance(t, str) and entities.key(t) == want for t in pend):
+                got.append(card["path"])
+    return sorted(got)
+
+
+def rewrite_pending_types(text, old, new):
+    """只換檔頭 待補型別 欄裡的 old 成 new（重複的去掉），其他行原樣；寫成一行的清單。"""
+    from kb._lib import entities
+    front = parse_front(text)
+    pend = [t for t in front.get("待補型別") or [] if isinstance(t, str)]
+    out, seen = [], set()
+    for t in pend:
+        t = new if entities.key(t) == entities.key(old) else t
+        if entities.key(t) not in seen:
+            seen.add(entities.key(t))
+            out.append(t)
+    lines = text.splitlines(keepends=True)
+    got, i, in_front = [], 0, False
+    while i < len(lines):
+        line = lines[i]
+        bare = line.rstrip("\r\n")
+        if i == 0 and bare.lstrip("\ufeff") == "---":
+            in_front = True
+        elif in_front and bare == "---":
+            in_front = False
+        elif in_front and bare.startswith("待補型別:"):
+            got.append(f"待補型別: [{', '.join(out)}]" + (line[len(bare):] or "\n"))
+            i += 1
+            while i < len(lines) and lines[i].startswith(("  - ", "- ")):
+                i += 1
+            continue
+        got.append(line)
+        i += 1
+    return "".join(got)
 
 
 def rewrite_entities(text, names):

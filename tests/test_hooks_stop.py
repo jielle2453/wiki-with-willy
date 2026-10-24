@@ -179,3 +179,61 @@ class StopHook(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JobResult(unittest.TestCase):
+    """card-maker（D-195，驗收 11、2b）：job 關了之後主對話的下一次 Stop 把派工那句的結果換成這次的最後回答，只換一次；
+    派工那句記了 secret_shown 就只補改了、不寫結果。"""
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        from kb._lib import batches
+        self.batches = batches
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def prompt(self, text):
+        r = run(TURN_HOOK, {"session_id": SID, "cwd": str(self.V), "prompt": text, "hook_event_name": "UserPromptSubmit"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return turn._read_turn(turn._session_file(self.V, SID))["turn"]
+
+    def job(self, tid, status):
+        data = self.batches.empty()
+        data["jobs"].append({"job": "j-1", "session_id": SID, "turn": tid, "created": "2026-10-22T20:11:50", "status": status})
+        turn.turn_dir(self.V, tid)
+        (self.V / self.batches.BATCHES_POSIX).write_text(json.dumps(data), encoding="utf-8")
+
+    def row(self, tid):
+        return next(r for r in journal.read_lines(self.V, journal.month_of(tid)) if r["turn"] == tid)
+
+    def test_result_replaced_once_after_job_closes(self):
+        job = self.prompt("好，現在做")
+        self.job(job, "open")
+        run(HOOK, stop_payload(self.V, "交給製卡助手在背景整理，好了跟你說"))
+        self.assertEqual(self.row(job)["result"], "交給製卡助手在背景整理，好了跟你說")
+        later = self.prompt("信義王的報價在哪？")
+        turn.backup(self.V, "檔案索引/客戶案件/卡-00000001.md", job)
+        run(HOOK, stop_payload(self.V, "在 報價與合約/信義王 那夾；還在整理"))
+        self.assertEqual(self.row(job)["result"], "交給製卡助手在背景整理，好了跟你說", "job 還開著：不換")
+        self.assertEqual(len(self.row(job)["changed"]), 1, "改了照背景後來寫的補")
+        self.job(job, "closed")
+        run(HOOK, stop_payload(self.V, "整理好了：做好 20 份"))
+        self.assertEqual(self.row(job)["result"], "整理好了：做好 20 份")
+        self.assertTrue(turn.turn_data(self.V, job)["job_result"])
+        self.assertEqual(self.row(later)["result"], "在 報價與合約/信義王 那夾；還在整理")
+        run(HOOK, stop_payload(self.V, "再一次"))
+        self.assertEqual(self.row(job)["result"], "整理好了：做好 20 份", "只換一次")
+
+    def test_secret_shown_job_turn_keeps_result(self):
+        job = self.prompt("好，現在做")
+        self.job(job, "open")
+        turn.mark(self.V, "secret_shown")
+        run(HOOK, stop_payload(self.V, "密碼是 x"))
+        first = self.row(job)["result"]
+        self.prompt("下一句")
+        turn.backup(self.V, "檔案索引/客戶案件/卡-00000001.md", job)
+        self.job(job, "closed")
+        run(HOOK, stop_payload(self.V, "整理好了"))
+        self.assertEqual(self.row(job)["result"], first)
+        self.assertEqual(len(self.row(job)["changed"]), 1)

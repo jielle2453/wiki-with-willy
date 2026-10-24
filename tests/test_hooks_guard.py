@@ -391,3 +391,71 @@ class Round2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SubagentTurn(unittest.TestCase):
+    """card-maker（D-195，驗收 8）：帶 agent_id、batches.json 記過它的呼叫，寫入備份進 job 回合；單一 kb 呼叫回 allow 加 updatedInput。"""
+
+    SID = "test-sid"
+
+    def setUp(self):
+        self.tmp, self.V, self.raw = make_vault()
+        from kb._lib import batches, turn
+        self.turn, self.batches = turn, batches
+        self.job = turn.start(self.V, self.SID, "好，現在做")["turn"]
+        batches.agent_start(self.V, self.SID, "a0204e72")
+        self.later = turn.start(self.V, self.SID, "信義王的報價在哪？")["turn"]  # 客戶中途開了新回合
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def hook(self, tool, value, agent_id="a0204e72"):
+        data = payload(tool, value, self.V)
+        data["session_id"] = self.SID
+        if agent_id:
+            data.update(agent_id=agent_id, agent_type="wiki-with-willy:card-maker")
+        r = run_hook(data)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)["hookSpecificOutput"]
+
+    def test_write_card_backs_up_into_job_turn(self):
+        card = self.V / "檔案索引" / "客戶案件" / "新卡-00000001.md"
+        out = self.hook("Write", card)
+        self.assertEqual(out["permissionDecision"], "allow")
+        self.assertEqual([e["path"] for e in self.turn.entries(self.V, self.job) if e["path"].startswith("檔案索引")],
+                         ["檔案索引/客戶案件/新卡-00000001.md"])
+        self.assertEqual(self.turn.entries(self.V, self.later), [])
+        self.assertNotIn("updatedInput", out)
+
+    def test_kb_call_gets_turn_and_agent_inserted(self):
+        cmd = f'python "{ROOT}/scripts/kb.py" cards batch b-5e6f7a8b --json'
+        out = self.hook("Bash", cmd)
+        self.assertEqual(out["permissionDecision"], "allow")
+        want = f'python "{ROOT}/scripts/kb.py" --turn {self.job} --agent a0204e72 cards batch b-5e6f7a8b --json'
+        self.assertEqual(out["updatedInput"], {"command": want})
+
+    def test_tool_input_copied_and_powershell_too(self):
+        cmd = f'python -X utf8 "{ROOT}/scripts/kb.py" version'
+        data = payload("Bash", cmd, self.V)
+        data["tool_input"]["description"] = "看版號"
+        data.update(session_id=self.SID, agent_id="a0204e72", agent_type="wiki-with-willy:card-maker")
+        out = json.loads(run_hook(data).stdout)["hookSpecificOutput"]
+        self.assertEqual(out["updatedInput"], {"command": f'python -X utf8 "{ROOT}/scripts/kb.py" --turn {self.job} '
+                                                          "--agent a0204e72 version", "description": "看版號"})
+        out = self.hook("PowerShell", f'python "{ROOT}/scripts/kb.py" version')
+        self.assertIn(f"--turn {self.job} --agent a0204e72 version", out["updatedInput"]["command"])
+
+    def test_main_conversation_and_unknown_agent_unchanged(self):
+        cmd = f'python "{ROOT}/scripts/kb.py" version'
+        for agent in (None, "a-unknown"):
+            out = self.hook("Bash", cmd, agent)
+            self.assertEqual(out["permissionDecision"], "allow")
+            self.assertNotIn("updatedInput", out)
+        card = self.V / "檔案索引" / "客戶案件" / "主對話-00000002.md"
+        self.hook("Write", card, None)
+        self.assertIn("檔案索引/客戶案件/主對話-00000002.md", [e["path"] for e in self.turn.entries(self.V, self.later)])
+
+    def test_denied_kb_call_not_rewritten(self):
+        out = self.hook("Bash", f'python "{ROOT}/scripts/kb.py" version > 總目錄.md')
+        self.assertNotIn("updatedInput", out)
+        self.assertEqual(out["permissionDecision"], "deny")

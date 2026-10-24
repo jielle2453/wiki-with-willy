@@ -157,6 +157,33 @@ class ConfirmTurnAndStop(Base):
             rows += [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
         return [r.get("result") for r in rows]
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows 憑證管理員")
+    def test_job_result_not_replaced_with_saved_value(self):
+        """合入 c7a212b：card-maker 的 job 關了之後換結果那步，回答有存著的密碼值也不寫（同 Stop 的規矩）。"""
+        from kb._lib import batches, turn
+        from tests.test_hooks_stop import HOOK as STOP, run as run_hook, stop_payload
+        from tests.test_hooks_turn import prompt_payload, run_hook as run_turn
+        self.assertEqual(run_kb("unlock", "save", "--kind", "記下的密碼", "--name", "測試-工地大門", "--value", _pw.GATE_PW,
+                                cwd=self.V).returncode, 0)
+        sid = "job-sid"
+        run_turn(prompt_payload(self.V, "好，現在做", session_id=sid))
+        job = turn._read_turn(turn._session_file(self.V, sid))["turn"]
+        turn.turn_dir(self.V, job)
+        data = batches.empty()
+        data["jobs"].append({"job": "j-1", "session_id": sid, "turn": job, "created": "2026-10-22T20:11:50",
+                             "status": "open"})
+        (self.V / batches.BATCHES_POSIX).write_text(json.dumps(data), encoding="utf-8")
+        run_hook(STOP, stop_payload(self.V, "交給製卡助手在背景整理", sid=sid))
+        run_turn(prompt_payload(self.V, "工地大門密碼是什麼", session_id=sid))
+        data["jobs"][0]["status"] = "closed"  # 背景做完、job 關了：這一句的 Stop 會去換派工那句的結果
+        (self.V / batches.BATCHES_POSIX).write_text(json.dumps(data), encoding="utf-8")
+        run_hook(STOP, stop_payload(self.V, f"是 {_pw.GATE_PW}", sid=sid))
+        results = self.journal_results()
+        self.assertNotIn(f"是 {_pw.GATE_PW}", results)
+        self.assertIn("交給製卡助手在背景整理", results)
+        self.assertTrue(turn.turn_data(self.V, job)["job_result"])
+        self.assertEqual(_pw.leaks(self.V), [])
+
     def test_flag_follows_interrupted_turn(self):
         from tests.test_hooks_stop import HOOK as STOP, run as run_hook, stop_payload
         from tests.test_hooks_turn import prompt_payload, run_hook as run_turn

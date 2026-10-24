@@ -244,7 +244,9 @@ class RenderIndex(Vault):
 class Todo(Vault):
     def test_buckets_on_clean_vault(self):
         todo = self.todo()
-        active_ok = [e for e in inventory.load(self.V)["entries"] if e["status"] == "active" and e["read"] == "ok"]
+        srcs = sources_lib.load(self.V)
+        active_ok = [e for e in inventory.load(self.V)["entries"] if e["status"] == "active" and e["read"] == "ok"
+                     and not cards.not_for_card(self.V, srcs, e)]  # 型別夾根直接放的檔不製卡（card-maker 第一輪修 S2c）
         self.assertEqual(len(todo["new"]), len(active_ok))
         self.assertEqual(todo["skipped"], {"credential": 1, "placeholder": 0, "too_large": 0, "error": 0, "skipped": 0})
         for k in ("stale", "moved", "orphans", "unreadable", "missing", "broken"):

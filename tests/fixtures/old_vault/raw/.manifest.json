@@ -1,0 +1,9 @@
+{
+  "config": {"big_read_limit_bytes": 100000},
+  "repos": {
+    "_scope_note": "外部來源 repo 註冊表",
+    "_self": {"path": ".", "desc": "本 vault（raw/ 底下的素材）", "git": false},
+    "案子": {"path": "../外部案子", "desc": "D 槽的案子夾"}
+  },
+  "sources": {"raw/報價_王宅.txt": {"hash": "x"}}
+}

@@ -227,16 +227,46 @@ def complete_turn(vault, turn_data, result, note, note_by, changed, interrupted,
 
 def finish_fields(vault, turn_data):
     """Stop 與中斷補記共用（D-084）：(做了, note_by, 改了)。模型叫過 turn note 就用它（ai），沒有才地板句（program）。
-    改了取 journal_turn 與目前回合兩份 manifest 的聯集，同路徑取後者的 action，地板句照聯集算（第二輪 R2-M2）。"""
+    改了取 journal_turn 與目前回合兩份 manifest 的聯集，同路徑取後者的 action，地板句照聯集算（第二輪 R2-M2）。
+    整批製卡的派工帳（.system/batches.json）是程式的記帳，不算改了（card-maker）。"""
     merged = {}
     for tid in dict.fromkeys((turn.journal_key(turn_data), turn_data["turn"])):
         for e in turn.entries(vault, tid):
-            merged[e["path"]] = e.get("action")
+            if e["path"] != NOT_CHANGES:
+                merged[e["path"]] = e.get("action")
     changed = [{"path": p, "action": a} for p, a in merged.items()]
     note = turn_data.get("note") or ""
     if note:
         return note, "ai", changed
     return _floor(vault, changed), "program", changed
+
+
+NOT_CHANGES = ".system/batches.json"  # batches.BATCHES_POSIX（不 import：batches 會 import turn）
+
+
+def refresh_changed(vault, turn_id):
+    """背景子代理寫完之後補「改了」（card-maker，桌面版 D3）：那個回合在日誌裡那行已經答完（done）才改，重算改了；
+    「做了」是程式地板句的也照新的改了重算，AI 給過的不動。結果不碰。那行不在或還沒答完回 False。"""
+    data = turn.turn_data(vault, turn_id)
+    if data is None:
+        return False
+    key = turn.journal_key(data)
+    note, note_by, changed = finish_fields(vault, data)
+    month = month_of(key)
+    if not jsonl_path(vault, month).is_file():
+        return False
+
+    def edit(items):
+        i = _find_turn(items, key)
+        if i is None or not items[i][1].get("done"):
+            return False
+        row = dict(items[i][1])
+        row["changed"] = _clean_changed(changed)
+        if row.get("note_by") != "ai":
+            row["note"], row["note_by"] = note, note_by
+        items[i] = (None, row)
+        return True
+    return _locked_edit(vault, month, edit)
 
 
 def update_turn(vault, turn_id, **fields):

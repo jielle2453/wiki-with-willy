@@ -4,8 +4,9 @@
 輸出 ensure_ascii=True：純 ASCII 不碰 cp950（I-001）。不碰 guard-status、ledger、回合、日誌；
 唯一寫的是 .system/env.json 的「找不到的來源已報過」記號（清冊題，D-094 補），清冊只讀（快速 scan，不 apply）；
 客戶設定檔那行也只讀（profile.status，不寫 profile.json 與 md）；變動行的實體夾有變也只讀（entities.drift）；日程行只讀 agenda.json。
-沒有新變動、但清冊還有沒做成卡的（cards.unsorted，跟 kb cards todo 第一行同一個數，只讀）：變動行改印「還有 N 份沒整理完」，
-後面接整理指示（開頭不寫「有變動：」，answer 第 9b 點、裁定 14，D-161）；算超過開場時限就這行不印、寫 log。
+沒有新變動、但清冊還有沒做成卡的或要跟著原檔搬的卡（batches.opening_counts，只讀；讀不到記進待處理的、還沒清的排除夾裡的不算，
+B-415）：變動行改印「還有 N 份沒整理完、M 張卡要跟著搬」（0 的那半不印），後面接整理指示（開頭不寫「有變動：」，answer 第 9b 點、
+裁定 14，D-161）；算超過開場時限就這行不印、寫 log。
 payload 的 session 在這個對話按過停止（session 檔記著 ingest_stopped，compact／resume 時）就不印整理指示（D-156、裁定 14）；
 這一步只讀 session 檔。
 core.md 之後接設定檔第六節的「客戶偏好（…照核心規則）：」一條一行（D-137，沒有不印；讀不到這段不印、寫 log；框住，測試後修正裁定 15）。
@@ -48,7 +49,8 @@ CHANGES_LINE = "變動：新增 {added}、修改 {modified}、不見 {missing}"
 CHANGES_INCOMPLETE = "變動：來源很大還沒比完，說「有什麼變動」我再比"
 MISSING_SOURCES_LINE = "這台電腦找不到來源{names}，其他照常；搬過的話跟我說。"
 MISSING_SOURCES_SHOWN = 3
-# D-156（note 改規則實作中裁定 1）：先整理、整理完再回答；門檻內開始前照 announce 說一句（D-100 修訂）
+# D-156（note 改規則實作中裁定 1）：先整理、整理完再回答；門檻內開始前照 announce 說一句（D-100 修訂）。
+# 怎麼派 card-maker 只寫在 ingest 的 SKILL.md，開場句不提（開場預算，card-maker 實作疑義 22 定）
 HINT_HEAD = "有變動："
 INGEST_HINT = ("有變動：先照 ingest skill 整理（開始前照 announce 說一句），整理完再完整回答客戶；"
                "超過 {n} 份不整理，先用現有資料答、末尾問要不要整理。")
@@ -91,18 +93,21 @@ def _drift_count(vault):
 
 
 UNSORTED_LINE = "還有 {n} 份沒整理完"
+MOVED_LINE = "{n} 張卡要跟著搬"
+LEFT_HEAD = "還有 "
 UNSORTED_BUDGET = 6  # 秒，從 hook 開始算；SessionStart 逾時 10 秒，留給讀 core.md 與其他行
 _UNSORTED = {}  # vault → 還沒整理的份數或 None（出錯、超時）；line_changes 被叫兩次，log 只記一行
 
 
 def _unsorted_count(vault, sources):
-    """D-161：清冊還有沒做成卡的份數（cards.unsorted，只讀）；超過時限丟 TimeoutError，跟其他錯一樣記一行 log、回 None。"""
+    """D-161、B-415：(還沒整理的份數, 要跟著搬的卡)（batches.opening_counts，只讀）；超過時限丟 TimeoutError，
+    跟其他錯一樣記一行 log、回 None。"""
     key = str(vault)
     if key not in _UNSORTED:
         try:
-            from kb._lib import cards
+            from kb._lib import batches
 
-            _UNSORTED[key] = cards.unsorted(vault, sources, deadline=_START + UNSORTED_BUDGET)
+            _UNSORTED[key] = batches.opening_counts(vault, sources, deadline=_START + UNSORTED_BUDGET)
         except Exception as e:  # noqa: BLE001
             _UNSORTED[key] = None
             _log_vault(vault, e)
@@ -112,7 +117,7 @@ def _unsorted_count(vault, sources):
 def line_changes(vault):
     """清冊題：新增、修改、不見三個數都 0 且比完 → None；走訪時間到 → 還沒比完。搬動、重複、之前就不見的不印。
     實體夾有變 N（D-057，客戶改了實體夾名、卡名、刪夾）接在後面；清冊沒變動但 N > 0 自己成一行。
-    清冊沒變動、實體夾也沒變，但還有沒整理完的 → 「還有 N 份沒整理完」（D-161）。"""
+    清冊沒變動、實體夾也沒變，但還有沒整理完的或要跟著搬的卡 → 「還有 N 份沒整理完、M 張卡要跟著搬」（D-161，0 的那半不印）。"""
     got = _quick_scan(vault)
     drift = _drift_count(vault) or 0
     if got is None:
@@ -125,8 +130,13 @@ def line_changes(vault):
         return CHANGES_LINE.format(**counts) + (DRIFT_PART.format(n=drift) if drift else "")
     if drift:
         return DRIFT_LINE.format(n=drift)
-    left = _unsorted_count(vault, got[0])
-    return UNSORTED_LINE.format(n=left) if left else None
+    counts = _unsorted_count(vault, got[0])
+    if not counts or not any(counts):
+        return None
+    left, moved = counts
+    parts = ([UNSORTED_LINE.format(n=left)] if left else []) + ([MOVED_LINE.format(n=moved)] if moved else [])
+    line = "、".join(parts)
+    return line if line.startswith(LEFT_HEAD) else LEFT_HEAD + line
 
 
 def _stopped(vault, session_id):
@@ -153,7 +163,7 @@ def line_ingest_hint(vault, session_id=None):
     from kb._lib import config
 
     hint = INGEST_HINT.format(n=config.get(vault, "ingest_auto_max"))
-    return hint[len(HINT_HEAD):] if line.startswith(UNSORTED_LINE.split("{", 1)[0]) else hint
+    return hint[len(HINT_HEAD):] if line.startswith(LEFT_HEAD) else hint
 
 
 def line_missing_sources(vault):

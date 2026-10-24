@@ -1,8 +1,16 @@
 """argparse 主程式。子命令註冊表在 COMMANDS；新子命令加一行，--help 自動列出。
 模組有 add_arguments(sub) 就讓它自己加參數（子子命令、--path 之類），沒有就只給 --json。
+每一層 parser 都 allow_abbrev=False（旗標要寫全名）。
+全域 --turn <回合> --agent <agent_id>（放在子命令前、--help 不列）：守門替 card-maker 的 kb 呼叫插的（D-195）；
+有 --turn 時這次呼叫的備份都進那個回合、算對話裡（不寫程式段）；回合不存在、或不是這個對話（--agent 記的回合、
+這個 session 的目前回合或 job 回合）的 exit 3（第一輪修 S4）。--session <sid>：守門替主對話的 cards dispatch／status／stop 插的。
 """
 import argparse
 import importlib
+import os
+
+NO_SUCH_TURN = "回合不存在：{}"
+NOT_THIS_TURN = "這個回合不是這個對話的：{}"
 
 # 名稱: (模組, 一句說明)
 COMMANDS = {
@@ -22,7 +30,7 @@ COMMANDS = {
                           "skip 記成不整理，redo 卡讀錯了標成要重做，mount 卡掛錯實體改掛，list 列卡（只讀）"),
     "pending": ("kb.pending_cli", "待處理：list 列等你決定的事，add 記一件兩份寫法不同的，resolve 記下怎麼處理，dismiss 記成不用管"),
     "profile": ("kb.profile_cli", "客戶設定檔：check 看改了什麼，apply 套用並建型別夾"),
-    "entity": ("kb.entity", "實體：add 登記，confirm 確認名稱，rename 改名，merge 合併，remove 移除，rebuild 重寫綜合卡，"
+    "entity": ("kb.entity", "實體：add 登記，confirm 確認名稱，accept AI 判斷有把握直接登記，rename 改名，merge 合併，remove 移除，rebuild 重寫綜合卡，"
                             "clean 清放錯的綜合卡，list 列出，render 重寫綜合卡快取，progress 事類的進行中、結案、擱置，"
                             "suggest-close 記一條結案待問，alias 加或拿掉別名"),
     "statement": ("kb.statement_cli", "客戶口述：add 記一條（--replaces 改舊的），withdraw 收回，list 列出"),
@@ -37,6 +45,8 @@ COMMANDS = {
     "tally": ("kb.tally_cli", "加總：只讀，收每一筆（卡、數字、位置），回逐筆表、筆數、合計、平均"),
     "office": ("kb.office_cli", "做文件的工具：check 看這台有什麼，setup 裝工具，run 跑工作區的腳本，copy 拿原檔副本，"
                                 "unpack／pack 解開與打包，pdf 轉 PDF，recalc 重算 Excel，render 轉每頁的圖"),
+    "build": ("kb.build", "建置：status 做到哪，start 開始，env 檢查這台電腦，set 記幾個人用與舊 wiki，facts 盤點，"
+                          "done 這一步做完，redo 回到做過的一步，adopt 收舊 llm-wiki，report 交付報告"),
     "output": ("kb.output_cli", "成品：save 把做好的檔放進 AI 產出（登記、退回拿得掉），link 登記線上文件，drop-draft 收掉草稿"),
 }
 
@@ -45,8 +55,12 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="kb.py",
         description="wiki-with-willy 的唯一指令入口。",
+        allow_abbrev=False,
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 輸出")
+    parser.add_argument("--turn", help=argparse.SUPPRESS)
+    parser.add_argument("--agent", help=argparse.SUPPRESS)
+    parser.add_argument("--session", help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="command", metavar="<子命令>", required=True)
     for name, (module_name, doc) in COMMANDS.items():
         sub = subparsers.add_parser(name, help=doc, description=doc)
@@ -55,11 +69,46 @@ def build_parser():
             module.add_arguments(sub)
         else:
             sub.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
+    _no_abbrev(parser)
     return parser
+
+
+def _no_abbrev(parser):
+    """主 parser 與每一層子 parser 都不收縮寫（--tu= 不會被當成 --turn，card-maker 第二輪修）。"""
+    parser.allow_abbrev = False
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for sub in action.choices.values():
+                _no_abbrev(sub)
+
+
+def _touch(vault, agent_id):
+    """子代理跑 kb：它認領中的批次記 last_seen（B 段第 6 步，別的對話靠這個分辨還有沒有人在做）；寫不了不擋這次呼叫。"""
+    from kb._lib import batches, ledger
+    try:
+        batches.touch(vault, agent_id)
+    except Exception as e:  # noqa: BLE001
+        ledger.log_error(vault, f"批次 last_seen 沒記到：{type(e).__name__}: {e}", source="kb")
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.session is not None:
+        from kb._lib import turn
+        turn.SESSION = args.session
+    if args.turn is not None:
+        from kb import guard
+        from kb._lib import turn
+        vault = guard.find_vault(os.getcwd())
+        if vault is None or not turn.exists(vault, args.turn):
+            print(NO_SUCH_TURN.format(args.turn))
+            return 3
+        if not turn.owned(vault, args.turn, args.agent):
+            print(NOT_THIS_TURN.format(args.turn))
+            return 3
+        turn.OVERRIDE = args.turn
+        if args.agent:
+            _touch(vault, args.agent)
     module_name, _doc = COMMANDS[args.command]
     module = importlib.import_module(module_name)
     return module.run(args)

@@ -209,11 +209,11 @@ llm-wiki-j/
 │  ├─ note/SKILL.md + references/{preference,agenda,correction,ruling}.md
 │  ├─ produce/SKILL.md + references/{draft,office,placement,export}.md
 │  ├─ lint/SKILL.md + references/{content,system,questions}.md
-│  └─ manage/SKILL.md + references/{sources,files,ops}.md
+│  ├─ manage/SKILL.md + references/{sources,files,ops}.md
+│  └─ build/SKILL.md + references/{steps,adopt}.md   disable-model-invocation，建置一個指令（D-190）
 ├─ commands/                          全部 disable-model-invocation
-│  ├─ build.md                        建置五步一個指令（D-190）
 │  └─ upgrade.md  migrate.md          升級那份 spec 定；備份、還原、搬家、換帳號不做指令（D-203、D-205、D-206、D-210）
-├─ hooks/{hooks.json,session.py,turn.py,guard.py,output_log.py}
+├─ hooks/{hooks.json,session.py,turn.py,guard.py,output_log.py,stop.py,subagent.py,session_end.py}
 ├─ agents/card-maker.md
 ├─ scripts/
 │  ├─ kb.py                           唯一入口

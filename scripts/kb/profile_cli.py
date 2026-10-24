@@ -5,10 +5,14 @@ apply：check 的判斷之後，刪了有東西的型別夾那列擋（D-058）�
 建不成就整份不套用，測試後修正裁定 11）→ merge → 兩檔備進回合後寫（D-074）→ 表少了的型別、夾是空的就一起拿掉（確認後修正裁定 21）
 → 第三節拿掉的「不整理」種類把清冊的 skip_kind 拿掉（清冊先備份）→ 第五節關於你對實體清單（entities.sync_self，先備份）。
 建的夾與拿掉的空夾記進回合的資料夾帳（D-142），退回時改得回來。
+apply --from <路徑>（build 第 4 點，D-052）：事先填好的設定檔 md 先照 apply 同一支解析驗過（讀不懂回節與列、什麼都不寫），
+再把 系統/客戶設定檔.md 備進回合、換成那份，照 apply 那條路做；apply 拒絕（exit 3）就把原本的 md 寫回去。
 show：六節的表（--json 給每節的欄、能填什麼、主鍵、列與指令範本，加 pending_edit）。只讀。
 add／remove：note 在對話裡改一節的一列（profile.edited）→ render_text → parse_md（跟 apply 同一支驗證）→ 跟 apply 同一條路寫；
 md 有手改未套用時一律拒絕、不動檔、給結果清單（D-110 補）；偏好的條數與字數上限在 edited 擋（D-137）。
 type rename／merge／remove：會搬夾的型別操作（D-139、D-143）；--check 只算影響、回問題與結果清單，不寫任何檔；
+type rename 的舊名不在型別表、只在檔案卡的 待補型別 裡（build 桌面版確認 A 段：抽樣時說「案子改叫工程」）：新名不在型別表就
+帶 --category 加成新型別（沒帶回問題問大類），那些卡的待補型別換成新名、備進回合；之後整理照 types_added 把卡掛上實體。
 不帶 --check 才做，中途出錯照 entities._Undo 還原，夾的動作做完才記進資料夾帳。
 範本（produce 第 6 點，D-167）：add 範本 文件=<名> 底=<卡編號或卡標題> 先把底換成清冊 active 的卡編號，找不到拒絕。
 鎖 profile.json 30 秒。終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
@@ -39,6 +43,7 @@ def add_arguments(sub):
     subs = sub.add_subparsers(dest="profile_command", metavar="<子子命令>", required=True)
     ck = subs.add_parser("check", help="看客戶設定檔改了什麼", description="設定檔 md 跟 JSON 比，印差異與型別夾對帳；不寫檔。")
     ap = subs.add_parser("apply", help="套用客戶設定檔", description="把改過的設定檔套進 JSON、建缺的型別夾；寫前先備份。")
+    ap.add_argument("--from", dest="from_md", help="事先填好的設定檔 md（建置那天用）：先換成它再套用")
     sh = subs.add_parser("show", help="看客戶設定檔六節", description="印六節的表；--json 給欄位、能填什麼與指令範本。不寫檔。")
     ad = subs.add_parser("add", help="加或改一列", description="加一列；主鍵已有就改那一列。寫前先備份。")
     rm = subs.add_parser("remove", help="拿掉一列", description="照主鍵拿掉一列。寫前先備份。")
@@ -49,6 +54,7 @@ def add_arguments(sub):
     tys = ty.add_subparsers(dest="type_command", metavar="<動作>", required=True)
     tr = tys.add_parser("rename", help="型別改名", description="型別改名：資料夾、實體、綜合卡、檔案卡一起改。")
     tr.add_argument("--to", required=True, help="新名")
+    tr.add_argument("--category", help="舊名只在檔案卡的待補型別裡、新名要加成新型別時的大類：對象、事、物、主題")
     tm = tys.add_parser("merge", help="型別併進另一個", description="型別併進另一個：實體與資料夾搬過去，這一類拿掉。")
     tm.add_argument("--into", required=True, help="併進哪個型別")
     td = tys.add_parser("remove", help="拿掉型別", description="拿掉沒有實體、資料夾是空的型別。")
@@ -262,9 +268,49 @@ def _stale_skip_kinds(vault, data):
     return {e["skip_kind"] for e in inventory.load(vault)["entries"] if e.get("skip_kind")} - keep
 
 
-def _apply(vault, as_json, conversation):
+def _apply(vault, as_json, conversation, from_md=None):
     with profile.lock(vault):
-        return _apply_locked(vault, as_json, conversation)
+        if from_md is None:
+            return _apply_locked(vault, as_json, conversation)
+        return _apply_from(vault, from_md, as_json, conversation)
+
+
+FROM_UNREADABLE = "讀不到填好的設定檔：{}"
+
+
+def _apply_from(vault, from_md, as_json, conversation):
+    """--from：先用 apply 同一支解析驗那份（讀不懂回節與列、不寫），過了才備份、換掉 系統/客戶設定檔.md、照 apply 做；
+    apply 拒絕就把原本的 md 寫回去。"""
+    st = profile.status(vault)
+    if st["state"] == "missing":
+        _refuse(as_json, st, MISSING)
+        return 3
+    try:
+        text = open(from_md, encoding="utf-8").read()
+    except UnicodeDecodeError:
+        _refuse(as_json, st, "客戶設定檔讀不懂：檔案不是 UTF-8")
+        return 3
+    except OSError as e:
+        _refuse(as_json, st, FROM_UNREADABLE.format(e.strerror or e))
+        return 3
+    data = st["data"]
+    try:
+        stored = profile.stored_schema(vault)
+        profile.parse_md(text, config.get(vault, "card_title_max_chars"),
+                         legacy=stored if stored in profile.SECTIONS_OF else False,
+                         known_types=[t["name"] for t in data["types"]], **profile.preference_limits(vault),
+                         resolve=profile.template_resolver(vault, data))
+    except profile.ProfileError as e:
+        _refuse(as_json, st, f"客戶設定檔讀不懂：{e.message}")
+        return 3
+    md = vault / profile.MD_POSIX
+    old = md.read_text(encoding="utf-8") if md.is_file() else None
+    turn.backup(vault, profile.MD_POSIX, turn.current(vault)["turn"])
+    kio.write_text_atomic(md, text)
+    code = _apply_locked(vault, as_json, conversation)
+    if code != 0 and old is not None:
+        kio.write_text_atomic(md, old)
+    return code
 
 
 # ---------- note 改設定檔：show／add／remove（D-144） ----------
@@ -745,6 +791,9 @@ def _type_locked(vault, args, as_json, conversation):
     st = profile.status(vault)
     _guard_pending(st, again)
     data = st["data"]
+    if op == "rename" and _type_row(data, name) is None and cards.pending_type_cards(vault, name):
+        return _pending_rename(vault, data, name, target, (args.category or "").strip() or None, args.check, as_json,
+                               conversation)
     if op == "rename":
         row, members, imp, question, results = _plan_rename(vault, data, name, target)
     elif op == "merge":
@@ -762,6 +811,64 @@ def _type_locked(vault, args, as_json, conversation):
         message, changed = _remove_type(vault, data, row, turn_id)
     journal_cli.record_program_or_warn(vault, message, changed, f"profile type {op}", conversation)
     _out(as_json, [message], {"applied": True, "op": op, "type": row["name"], "target": target, "message": message,
+                              "impact": imp})
+    return 0
+
+
+PENDING_CATEGORY = "「{old}」只在 {n} 張檔案卡的待補型別裡、型別表沒有；「{new}」要加成新型別，先說它是哪一大類"
+PENDING_QUESTION = "「{new}」是哪一大類？（「{old}」只在 {n} 張檔案卡的待補型別裡，改名後這幾張會換成「{new}」、之後整理掛上實體）"
+PENDING_DONE = "已把 {n} 張檔案卡的待補型別「{old}」換成「{new}」{added}；下次整理會把這些卡掛上「{new}」的實體，不對可以說退回"
+
+
+def _pending_rename(vault, data, old, new, category, checking, as_json, conversation):
+    """型別名只在檔案卡的待補型別裡（build 桌面版確認 A 段）：新名不在型別表就照 --category 加一列，卡的待補型別換成新名。
+    整段照 entities._guarded 做（中途出錯倒回），卡與設定檔都備進回合，說退回改得回來。"""
+    pend = cards.pending_type_cards(vault, old)
+    row_new = _type_row(data, new)
+    if row_new is None and not category:
+        results = [_result(i, f"{new}是{c}", [cmd("profile", "type", "rename", old, "--to", new, "--category", c)])
+                   for i, c in enumerate(profile.CATEGORIES, 1)]
+        results.append(_result(len(results) + 1, "先不要"))
+        raise Refused(PENDING_CATEGORY.format(old=old, n=len(pend), new=new),
+                      {"question": PENDING_QUESTION.format(old=old, n=len(pend), new=new), "results": results})
+    if row_new is None and category not in profile.CATEGORIES:
+        raise Refused(f"大類要是 {'、'.join(profile.CATEGORIES)} 之一")
+    imp = {"entities": 0, "file_cards": len(pend), "synthesis": 0, "folders": [], "category_change": None}
+    added = "" if row_new is not None else f"，「{new}」加進型別表（{category}）"
+    if checking:
+        do = ["profile", "type", "rename", old, "--to", new] + (["--category", category] if row_new is None else [])
+        question = f"要把 {len(pend)} 張檔案卡待補型別的「{old}」換成「{new}」嗎？" + (added.lstrip("，") + "。" if added else "")
+        return _check_out(as_json, "rename", old, new, imp, question, [_result(1, f"改名叫{new}", [cmd(*do)]),
+                                                                        _result(2, "先不要")])
+    turn_id = turn.current(vault)["turn"]
+
+    def act(undo):
+        changed = []
+        if row_new is None:
+            lim = _limits(vault)
+            sections, _res = profile.edited(data, "型別", "add", {"名稱": new, "大類": category}, **lim)
+            merged = dict(data, **sections)
+            try:
+                parsed = profile.parse_md(profile.render_text(merged, profile.card_titles(vault, merged)),
+                                          config.get(vault, "card_title_max_chars"),
+                                          known_types=[t["name"] for t in data["types"]], **lim,
+                                          resolve=profile.template_resolver(vault, merged))
+            except profile.ProfileError as e:
+                raise Refused(e.message) from e
+            changed += _write_profile(vault, dict(data, **parsed), turn_id, undo)
+        for rel in pend:
+            undo.file(rel)
+            turn.backup(vault, rel, turn_id)
+            path = vault / rel
+            kio.write_text_atomic(path, cards.rewrite_pending_types(path.read_text(encoding="utf-8"), old, new))
+            changed.append({"path": rel, "action": "modify"})
+        return changed
+    changed = entities._guarded(vault, act)
+    if row_new is None and not (vault / new).exists():
+        _make_dirs(vault, [new], turn_id)  # 型別夾（同 profile add 型別），建了記資料夾帳，退回時空的拿掉
+    message = PENDING_DONE.format(n=len(pend), old=old, new=new, added=added)
+    journal_cli.record_program_or_warn(vault, message, changed, "profile type rename", conversation)
+    _out(as_json, [message], {"applied": True, "op": "rename", "type": old, "target": new, "message": message,
                               "impact": imp})
     return 0
 
@@ -809,7 +916,7 @@ def run(args):
                 check = args.check and not e.payload
                 return _refuse_payload(as_json, e, check=check,
                                        extra={"op": args.type_command, "type": args.name} if check else None)
-        return _apply(vault, as_json, conversation)
+        return _apply(vault, as_json, conversation, getattr(args, "from_md", None))
     except entities.EntityRefused as e:  # 型別合併時逐個實體換型別的拒絕（含還原失敗的 PartialWrite）
         print(str(e))
         return 3

@@ -1,11 +1,13 @@
 """UserPromptSubmit 回合入口：客戶每說一句話開一個新回合（D-074），之後這句話造成的改動都備份到同一個回合夾。
 
-不開回合的情況：不在知識庫裡；prompt 開頭是 <task-notification（I-035）、<cross-session-message、<system-reminder（L-3）；
+不開回合的情況：不在知識庫裡；prompt 開頭是 <task-notification（I-035）、<cross-session-message、<system-reminder（L-3）、
+<agent-message（桌面版背景子代理交回報告，card-maker 桌面版 D2）、[SYSTEM NOTIFICATION（VS Code 擴充套件在通知前多的那行）；
 payload 有 source 且不是 user／sdk。
 工作日誌（D-083）：開新回合時替這個 session 上一句沒等到 Stop 的回合補記「中斷」，並寫這一句的第一次；
 同月一把鎖（hook 整支要在 5 秒內），失敗只寫 log，回合照開。
-按停止後不再自動整理（answer 第 9 點，D-156）：上一句是中斷補記的、且那句的回合檔記了 ingest（kb cards todo 跑過）→
-這一句的回合檔記 ingest_stopped，印一次 additionalContext；之後每句把 ingest_stopped 帶下去，同一個 session 不再印。
+停了就不再自動整理（D-156、D-200）：背景整理（card-maker）客戶說停，AI 跑 kb cards stop，那支在目前回合記 ingest_stopped；
+主對話自己整理時按了停止鈕：上一句是中斷補記的、且那句的回合檔記了 ingest（kb cards todo 跑過）→ 這一句的回合檔記
+ingest_stopped，印一次 additionalContext。之後每句把 ingest_stopped 帶下去，同一個 session 不再印。
 其餘不輸出。任何例外寫 .system/hook-errors.log，永遠 exit 0，不能擋住客戶提問。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
 """
@@ -24,7 +26,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
 USER_SOURCES = ("user", "sdk")
 # 不是客戶說的話：背景代理通知（I-035）、跨 session 訊息與系統提醒（確認後裁定 L-3），都不開回合
-NOT_A_PROMPT = ("<task-notification", "<cross-session-message", "<system-reminder")
+NOT_A_PROMPT = ("<task-notification", "<cross-session-message", "<system-reminder", "<agent-message", "[SYSTEM NOTIFICATION")
 STOPPED = "上一句的整理被你停了：這個對話不再自動整理，你說整理才做；回答用現有的資料，末尾一句還有幾份沒整理。"
 
 
@@ -84,10 +86,25 @@ def _ingest_stopped(vault, previous):
         return
     if previous.get("done", True) or not previous.get("ingest"):
         return
+    from kb._lib import batches
+    if batches.active_job(vault, previous.get("session_id")):
+        return  # 背景整理中客戶打字不是按停止（D-200：要停走 kb cards stop）
+    if _building(vault):
+        return  # 建置中各步都跑 cards todo（抽樣、名字），上一句沒等到 Stop 多半是客戶在回答途中又打了一句（桌面版會排進同一句），不是按停止
     turn.mark(vault, "ingest_stopped")
     out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": STOPPED}}
     sys.stdout.write(json.dumps(out, ensure_ascii=True) + "\n")
     sys.stdout.flush()
+
+
+def _building(vault):
+    """建置還沒做完嗎（.system/build.json 在、step 不是 done）；讀不到當沒有（build 桌面版確認 A 段）。"""
+    try:
+        with open(os.path.join(str(vault), ".system", "build.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("step") not in (None, "done")
 
 
 def _secret_carried(vault, previous):

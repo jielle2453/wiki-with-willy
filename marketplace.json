@@ -1,0 +1,17 @@
+{
+  "name": "wiki-with-willy",
+  "owner": {
+    "name": "wiki-with-willy"
+  },
+  "plugins": [
+    {
+      "name": "wiki-with-willy",
+      "version": "0.26.1",
+      "source": {
+        "source": "archive",
+        "url": "https://github.com/jielle2453/wiki-with-willy/releases/download/v0.26.1/wiki-with-willy-0.26.1.zip",
+        "sha256": "f1e6124c79967fef99cc79fd6e9d55cfeb47f5846200fa64337484dbcb29a4b8"
+      }
+    }
+  ]
+}

@@ -6,6 +6,8 @@
  * 找 kb、叫 kb（一律帶 --via obsidian）、把 kb 給的 JSON 畫出來、把四個動作變成 kb 指令（和反悔的相反指令；D-266）。
  * 要測的純函式都從 module.exports 的 `lib` 匯出（tests/obsidian/*.test.js 用假的 obsidian 模組載入）。
  * 不把任何路徑寫進設定（D-019）：每次載入照 installed_plugins.json 找 kb.py。
+ * 記帳 3（issue #27，D-340）：她打開綜合卡（檔頭編號是 e-）時叫 kb entity panel，把「日程與帳」接在卡的最後（閱讀與即時預覽各一份），
+ * 不寫進卡檔；首頁待辦多帳的到期件（打勾 = kb money settle）、庫存不足、公司還欠你，上方多一個「帳」連結。
  */
 
 const obsidian = require('obsidian');
@@ -22,7 +24,7 @@ const { Plugin, ItemView, Modal, Notice, MarkdownView } = obsidian;
 
 const PLUGIN_ID = 'wiki-with-willy';
 const VIEW_TYPE = 'wiki-with-willy-home';
-const WATCH_FILES = ['agenda.json', 'pending.json', 'entities.json', 'inventory.json', 'profile.json'];
+const WATCH_FILES = ['agenda.json', 'pending.json', 'entities.json', 'inventory.json', 'profile.json', 'money.json'];
 const DEBOUNCE_MS = 300;
 // 多人共用 3（D-293）：git pull 會改 .git 底下這幾個檔；變了等 2 秒（去抖）叫 kb refresh。不靠 Obsidian 自己的通知。
 const GIT_WATCH_FILES = ['HEAD', 'ORIG_HEAD', 'FETCH_HEAD'];
@@ -47,7 +49,13 @@ const KNOWN_KINDS = Object.keys(KIND_LABEL);
 const KIND_BY_LABEL = { 到期: 'deadline', 會議: 'meeting', 承諾: 'promise', 提醒: 'reminder', 期間: 'period' };
 const KNOWN_SHAPES = ['bar', 'point'];
 const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六'];
-const MANAGED_PAGES = ['系統/日程.md', '系統/待處理.md', '系統/裁示.md'];
+const MONEY_PAGE = '系統/帳.md';
+const MANAGED_PAGES = ['系統/日程.md', '系統/待處理.md', '系統/裁示.md', MONEY_PAGE];
+const MONEY_YEAR_RE = /^系統\/帳\/\d{4}\.md$/; // 帳的每年一頁：照「系統/帳/ 底下」認（記帳 3）
+const PANEL_CLS = 'wwh-panel';
+const PANEL_TITLE = '日程與帳';
+const PANEL_CARD_ATTR = 'data-wwh-card'; // 那段是哪張卡的：分頁換了檔，不是它的就拿掉
+const PANEL_REDRAW_MS = 50; // 切閱讀模式／即時預覽後，等 Obsidian 畫好那一邊再接
 const GENERATED_BANNER = '這頁由程式產生；要改請在首頁改，或直接跟 Claude 說';
 const NO_KB_TEXT = '找不到 wiki-with-willy：先在 Claude 裡打開這個知識庫一次';
 const VERSION_MISMATCH_TEXT = '首頁跟 wiki-with-willy 版本不同，先在 Claude 裡打開這個知識庫一次';
@@ -628,7 +636,14 @@ function normalizeHome(raw) {
       claude: Number(counts.claude) || 0,
     },
     timeline: isObject(r.timeline) ? r.timeline : { rows: [] },
-    todo: { overdue: asArray(todo.overdue), today: asArray(todo.today), week: asArray(todo.week) },
+    todo: {
+      overdue: asArray(todo.overdue),
+      today: asArray(todo.today),
+      week: asArray(todo.week),
+      stock: asArray(todo.stock).filter(isObject), // 記帳 3：庫存不足（D-282）
+      owed: asArray(todo.owed).filter(isObject), // 記帳 3：公司還欠你（D-338）
+    },
+    links: { money: isObject(r.links) && typeof r.links.money === 'string' ? r.links.money : null },
     confirm: asArray(r.confirm).filter(isObject),
     claude: asArray(r.claude).filter(isObject), // 要跟 Claude 一起看的題（裁定 39）：{key, kind, text}
     others: asArray(r.others).filter(isObject),
@@ -638,11 +653,54 @@ function normalizeHome(raw) {
 
 function todoGroups(home) {
   const t = home && home.todo ? home.todo : {};
-  return [
+  const out = [
     { key: 'overdue', label: '已經過了', items: asArray(t.overdue), defaultCollapsed: false },
     { key: 'today', label: '今天', items: asArray(t.today), defaultCollapsed: false },
     { key: 'week', label: '這週', items: asArray(t.week), defaultCollapsed: true },
   ];
+  // 記帳 3：有才畫，沒有勾選框
+  if (asArray(t.stock).length) out.push({ key: 'stock', label: '庫存不足', items: asArray(t.stock), defaultCollapsed: false });
+  if (asArray(t.owed).length) out.push({ key: 'owed', label: '公司還欠你', items: asArray(t.owed), defaultCollapsed: false });
+  return out;
+}
+
+function isMoneyItem(it) {
+  return !!it && it.source === 'money';
+}
+
+/** 金額寫千分位（kb 給的是數字）。 */
+function money(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toLocaleString('en-US') : String(n == null ? '' : n);
+}
+
+/** 頁上的那一行（kb 給的 match）：整行一樣的先、再找包含的、再找去掉「已過 N 天」的前段；找不到回 0（頁頂）。 */
+function findPageLine(content, match) {
+  const lines = String(content == null ? '' : content).split('\n').map((l) => l.replace(/\r$/, ''));
+  const want = String(match || '').trim();
+  if (!want) return 0;
+  let at = lines.findIndex((l) => l.trim() === want);
+  if (at < 0) at = lines.findIndex((l) => l.includes(want));
+  if (at < 0) {
+    const head = want.replace(/\s*已過 \d+ 天\s*$/, '');
+    at = lines.findIndex((l) => l.includes(head));
+  }
+  return at < 0 ? 0 : at;
+}
+
+/** kb entity panel 的結果 → 要畫的（D-340）；沒有日程也沒有帳的回 null（不畫）。商品的庫存已經在帳那行，不另畫。 */
+function panelModel(j) {
+  if (!isObject(j)) return null;
+  const agenda = asArray(j.agenda).filter(isObject);
+  const m = isObject(j.money) ? j.money : null;
+  const st = isObject(j.stock) ? j.stock : null;
+  const stockLine = st && typeof st.line === 'string' && !('total' in st) ? st.line : null;
+  if (!agenda.length && !m && !stockLine) return null;
+  return {
+    agenda,
+    money: m ? { head: m.head || '', open: asArray(m.open).filter(isObject), recent: asArray(m.recent).filter(isObject), total: Number(m.total_n) || 0, page: m.page || MONEY_PAGE } : null,
+    stockLine,
+  };
 }
 
 function versionMismatch(homeVersion, pluginVersion) {
@@ -933,6 +991,7 @@ const actions = {
   /** 打勾：done；復原 reopen（重複的日程完成會跳到下一次，復原改回原日期）。 */
   done(item) {
     const id = item.id;
+    if (isMoneyItem(item)) return { id: 'done', args: ['money', 'settle', id], undo: () => ({ args: ['money', 'reopen', id] }) }; // 全額收付（新定 2）
     return {
       id: 'done',
       args: ['agenda', 'done', id],
@@ -946,6 +1005,12 @@ const actions = {
   /** 改日期、時間：只送有變的；復原改回原值（原本沒有時間的沒辦法清掉，那一項不復原）。 */
   edit(item, change) {
     const id = item.id;
+    if (isMoneyItem(item)) {
+      const was = itemDate(item);
+      const v = change && change.date;
+      if (!v || v === was) return null;
+      return { id: 'edit', args: ['money', 'edit', id, '--due', v], undo: was ? () => ({ args: ['money', 'edit', id, '--due', was]}) : null };
+    }
     const args = ['agenda', 'edit', id];
     const back = ['agenda', 'edit', id];
     const orig = { date: itemDate(item), start: item.start || '', time: item.time || '' };
@@ -1130,7 +1195,8 @@ async function openOriginal(ctx, open) {
 // ---------------------------------------------------------------------------------------------------------------
 
 function isManagedPage(p) {
-  return MANAGED_PAGES.includes(String(p || '').replace(/\\/g, '/'));
+  const s = String(p || '').replace(/\\/g, '/');
+  return MANAGED_PAGES.includes(s) || MONEY_YEAR_RE.test(s);
 }
 
 function isGeneratedPage(p) {
@@ -1138,7 +1204,44 @@ function isGeneratedPage(p) {
   return s === '總目錄.md' || s.startsWith('系統/工作日誌/') || s.startsWith('系統/健檢報告/');
 }
 
-/** 離開被改的那一行（游標換行）、或切到別頁，才叫 kb renders apply。 */
+/** 卡底下那段接在哪（照 Obsidian 1.15 的 DOM，記帳 3 確認 #1、#2）：
+ *  - 閱讀模式：renderer 的 footer（.mod-footer，內建「筆記底部顯示反向連結」也接這裡）。直接接在 .markdown-preview-sizer
+ *    會被 renderer 重畫時拿掉；footer 的元素 renderer 一直留著。
+ *  - 即時預覽：.cm-sizer 裡、內容（.cm-contentContainer）緊後面、反向連結前面。接在 sizer 最後會排在內容底部的半頁留白後面。
+ *  回 [{parent, before, renderer}]；找不到的那邊不接。 */
+function panelSpots(view) {
+  const spots = [];
+  const root = view && (view.containerEl || view.contentEl);
+  const q = (el, sel) => (el && el.querySelector ? el.querySelector(sel) : null);
+  let renderer = null;
+  try {
+    renderer = view && view.previewMode && view.previewMode.renderer;
+  } catch (e) {
+    renderer = null;
+  }
+  const footer = (renderer && renderer.footer && renderer.footer.el) || q(q(root, '.markdown-preview-sizer'), '.mod-footer');
+  if (footer) spots.push({ parent: footer, before: null, renderer: renderer && renderer.footer && renderer.footer.el === footer ? renderer : null });
+  const cm = q(root, '.cm-sizer');
+  if (cm) {
+    const kids = Array.from(cm.children || []);
+    const i = kids.findIndex((k) => k.classList && k.classList.contains('cm-contentContainer'));
+    spots.push({ parent: cm, before: i >= 0 ? kids[i + 1] || null : null, renderer: null });
+  }
+  return spots;
+}
+
+/** 拿掉這個分頁裡的那段；keep 是現在這個檔的路徑時，是這個檔的留著。 */
+function removePanels(view, keep) {
+  for (const { parent } of panelSpots(view)) {
+    for (const old of Array.from(parent.children || [])) {
+      if (!old.classList || !old.classList.contains(PANEL_CLS)) continue;
+      if (keep !== undefined && old.getAttribute && old.getAttribute(PANEL_CARD_ATTR) === keep) continue;
+      parent.removeChild(old);
+    }
+  }
+}
+
+/** 離開被改的那一行（游標換行）、切到別頁、或 Obsidian 視窗失去焦點（切到 Claude），才叫 kb renders apply。 */
 function createApplyTracker() {
   const dirty = new Map();
   const lastEdit = new Map();
@@ -1174,6 +1277,10 @@ function createApplyTracker() {
     },
     isDirty(page) {
       return dirty.has(page);
+    },
+    /** 有沒套用修改的頁（視窗失去焦點時全套用）。 */
+    dirtyPages() {
+      return [...dirty.keys()];
     },
     isTyping(page, now, windowMs) {
       const t = lastEdit.get(page);
@@ -1856,6 +1963,12 @@ class HomeView extends ItemView {
     el.appendChild(
       h('div', { cls: 'wwh-greet' }, h('p', { cls: 'wwh-date', text: longDate(home.today) }), h('h1', { cls: 'wwh-cheer', text: home.cheer || '' })),
     );
+    const link = home.links && home.links.money; // 記帳 3：帳關著而且沒有任何筆時 kb 給 null，不出
+    if (link) {
+      el.appendChild(
+        h('div', { cls: 'wwh-top-links' }, h('a', { cls: 'wwh-link wwh-money-link', text: '帳', title: '開帳頁', on: { click: () => this.plugin.openPathInVault(link) } })),
+      );
+    }
   }
 
   // ---- 搜尋 ----
@@ -2691,17 +2804,37 @@ class HomeView extends ItemView {
         box.appendChild(h('div', { cls: 'wwh-empty', text: '沒有' }));
         continue;
       }
-      for (const it of g.items) box.appendChild(this.todoRow(it, g.key));
+      for (const it of g.items) box.appendChild(g.key === 'stock' ? this.stockRow(it) : g.key === 'owed' ? this.owedRow(it) : this.todoRow(it, g.key));
     }
+  }
+
+  /** 庫存不足（D-282）：沒有勾選框，點了開那個商品的卡；補了貨 kb 就不給了。 */
+  stockRow(it) {
+    const unit = it.unit ? ` ${it.unit}` : '';
+    const amount = typeof it.text === 'string' && it.text ? it.text : `${money(it.stock)}${unit}`; // D-344 補：換不了的分開列
+    const text = `${it.entity || ''}剩 ${amount}（安全庫存 ${money(it.min)}）`;
+    const open = () => (it.card ? this.plugin.openPathInVault(it.card) : this.plugin.openEntity(it.entity));
+    return h('div', { cls: ['wwh-todo', 'is-stock'] }, h('div', { cls: 'wwh-todo-body' }, h('span', { cls: 'wwh-todo-text', title: '開這個商品的卡', text, on: { click: open } })));
+  }
+
+  /** 公司還欠你（D-338，只有墊的人看得到）：沒有勾選框，點了開帳頁那一行。 */
+  owedRow(it) {
+    const text = `公司還欠你 ${money(it.amount)}` + (it.text ? `（${it.text}）` : '');
+    return h(
+      'div',
+      { cls: ['wwh-todo', 'is-owed'] },
+      h('div', { cls: 'wwh-todo-body' }, h('span', { cls: 'wwh-todo-text', title: '開帳頁那一行', text, on: { click: () => this.plugin.openPageLine(it.page || MONEY_PAGE, it.match) } })),
+    );
   }
 
   /** 一件待辦：勾選框、標題（點下去開日程.md 那一行）、案子·種類·推測合成一行淡小字、日期（點了改日期時間）。 */
   todoRow(it, groupKey) {
     const row = h('div', { cls: ['wwh-todo', groupKey === 'overdue' || it.late ? 'is-late' : '', it.inferred ? 'is-inferred' : ''] });
-    const box = h('input', {
+    // 帳的件（記帳 3，新定 2）：打勾 = 全額收付；金額未知的不給勾（點標題開帳頁那一行，部分收付跟 AI 說）
+    const box = isMoneyItem(it) && it.settle_ok === false ? h('span', { cls: 'wwh-check-none', title: '金額未知：點標題開帳頁，或跟 Claude 說收了多少' }) : h('input', {
       cls: 'wwh-check',
       attrs: { type: 'checkbox' },
-      title: '打勾 = 完成',
+      title: isMoneyItem(it) ? '打勾 = 整筆收付了' : '打勾 = 完成',
       on: {
         click: () => {
           row.classList.add('is-done');
@@ -3043,9 +3176,12 @@ class WikiWithWillyPlugin extends Plugin {
     const ws = this.app.workspace;
     this.registerEvent(ws.on('file-open', (file) => this.onFileOpen(file)));
     this.registerEvent(ws.on('active-leaf-change', () => this.onActiveChange()));
+    this.registerEvent(ws.on('layout-change', () => this.onLayoutChange())); // 同一分頁切閱讀模式／即時預覽：卡底下那段重接
     this.registerEvent(ws.on('editor-change', (editor, info) => this.onEditorChange(editor, info)));
     this.registerEvent(this.app.vault.on('modify', (file) => this.onVaultModify(file)));
     this.registerDomEvent(document, 'selectionchange', () => this.onSelection());
+    // 改了一行沒換行就切到 Claude 對話：Obsidian 視窗失去焦點也套用（記帳 3 確認 #5）
+    if (typeof window !== 'undefined') this.registerDomEvent(window, 'blur', () => this.onWindowBlur());
     this.registerInterval(setInterval(() => this.checkSelfUpdate(), 60000));
 
     ws.onLayoutReady(() => {
@@ -3066,6 +3202,7 @@ class WikiWithWillyPlugin extends Plugin {
     }
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     if (this.gitTimer) clearTimeout(this.gitTimer);
+    if (this.panelTimer) clearTimeout(this.panelTimer);
     if (this.gitWatcher) {
       try {
         this.gitWatcher.close();
@@ -3189,6 +3326,7 @@ class WikiWithWillyPlugin extends Plugin {
         this.checkSelfUpdate();
         await this.readNote();
         this.renderAll();
+        this.refreshPanels();
         if (this.ui.drawer.open && this.ui.drawer.stack.length) this.loadDrawer(false);
       } while (this.refreshAgain);
     } finally {
@@ -3494,6 +3632,7 @@ class WikiWithWillyPlugin extends Plugin {
   // ---- 點下去：日程開相關的卡、案子開綜合卡（D-266、裁定 32）----
   /** 點日程那件：kb 給的 card（origin 的檔案卡 → 掛的第一個實體的綜合卡）；都沒有才開日程.md 那一行。 */
   async openItem(it) {
+    if (isMoneyItem(it)) return this.openPageLine(it.page || MONEY_PAGE, it.match); // 帳的件開帳頁那一行（記帳 3）
     const card = it && isObject(it.card) ? it.card : null;
     if (card && card.path) {
       this.openPathInVault(card.path);
@@ -3511,6 +3650,23 @@ class WikiWithWillyPlugin extends Plugin {
       console.error('[wiki-with-willy] 讀不到日程.md', e);
     }
     await this.app.workspace.openLinkText(rel.replace(/\.md$/, ''), '', false);
+    const view = this.app.workspace.getActiveViewOfType ? this.app.workspace.getActiveViewOfType(MarkdownView) : null;
+    if (view && view.editor) {
+      const pos = { line, ch: 0 };
+      view.editor.setCursor(pos);
+      if (view.editor.scrollIntoView) view.editor.scrollIntoView({ from: pos, to: pos }, true);
+    }
+  }
+
+  /** 開一頁、游標跳到 kb 給的那一行（帳頁、年頁、日程頁；卡底下那段與首頁帳的件用）。 */
+  async openPageLine(rel, match) {
+    let line = 0;
+    try {
+      line = findPageLine(await this.app.vault.adapter.read(rel), match);
+    } catch (e) {
+      console.error('[wiki-with-willy] 讀不到', rel, e);
+    }
+    await this.app.workspace.openLinkText(String(rel).replace(/\.md$/, ''), '', false);
     const view = this.app.workspace.getActiveViewOfType ? this.app.workspace.getActiveViewOfType(MarkdownView) : null;
     if (view && view.editor) {
       const pos = { line, ch: 0 };
@@ -3558,6 +3714,16 @@ class WikiWithWillyPlugin extends Plugin {
   }
 
   async editDateForm(it) {
+    if (isMoneyItem(it)) { // 帳的件只改到期日（kb money edit --due）
+      const v = await openForm(this.app, { title: `改「${it.text || ''}」的到期日`, okText: '改', fields: [{ key: 'date', label: '到期日', type: 'date', value: itemDate(it), required: true }] });
+      if (!v) return null;
+      const a = actions.edit(it, v);
+      if (!a) {
+        this.toast('沒有要改的');
+        return null;
+      }
+      return this.runAction(a);
+    }
     const isPeriod = isPeriodKind(it.kind);
     const fields = [{ key: 'date', label: isPeriod ? '結束日' : '日期', type: 'date', value: itemDate(it), required: true }];
     if (isPeriod) fields.unshift({ key: 'start', label: '開始日', type: 'date', value: it.start || '' });
@@ -3613,11 +3779,116 @@ class WikiWithWillyPlugin extends Plugin {
 
   onFileOpen(file) {
     const p = this.filePathOf(file);
+    this.sweepPanels();
     this.switchedTo(p);
     if (p && isGeneratedPage(p)) this.makeReadOnly(p);
+    if (p && file) this.showPanel(file);
+  }
+
+  // ---- 綜合卡底下的「日程與帳」（記帳 3，D-340）：畫面，不寫進卡檔 ----
+  /** 是綜合卡（檔頭的編號是 e-）才叫 kb entity panel；kb 叫不到時那段不畫、不報錯（記 console）。 */
+  async showPanel(file) {
+    const p = this.filePathOf(file);
+    if (!p || !p.endsWith('.md') || p.startsWith('系統/') || p.startsWith('檔案索引/')) return;
+    let id = null;
+    try {
+      const cache = this.app.metadataCache.getFileCache(file);
+      const fm = cache && cache.frontmatter;
+      id = fm && typeof fm['編號'] === 'string' && /^e-[0-9a-z]+$/i.test(fm['編號']) ? fm['編號'] : null;
+    } catch (e) {
+      id = null;
+    }
+    if (!id || !this.runner) return;
+    if (!this.panels) this.panels = new Map();
+    let model = null;
+    try {
+      const res = await this.kb(['entity', 'panel', id, '--json']);
+      const c = classify(res);
+      if (c.kind === 'ok') model = panelModel(parseJson(res.stdout));
+      else console.error('[wiki-with-willy] kb entity panel 失敗', res.stderr || res.stdout || c.message);
+    } catch (e) {
+      console.error('[wiki-with-willy] kb entity panel 失敗', e);
+    }
+    if (model) this.panels.set(p, model);
+    else this.panels.delete(p);
+    this.drawPanels(p);
+  }
+
+  /** 開著這張卡的每個分頁：閱讀模式與即時預覽各接一份（先拿掉舊的；接在哪看 panelSpots）。 */
+  drawPanels(p) {
+    const model = this.panels ? this.panels.get(p) : null;
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      const view = leaf.view;
+      if (!view || !view.file || this.filePathOf(view.file) !== p) continue;
+      removePanels(view);
+      if (!model) continue;
+      for (const spot of panelSpots(view)) {
+        const box = this.buildPanel(model);
+        box.setAttribute(PANEL_CARD_ATTR, p);
+        spot.parent.insertBefore(box, spot.before);
+        if (spot.renderer && typeof spot.renderer.updateFooter === 'function') {
+          try {
+            spot.renderer.updateFooter(); // footer 高度變了，讓閱讀模式重算捲動
+          } catch (e) {
+            console.error('[wiki-with-willy] 閱讀模式重算 footer 失敗', e);
+          }
+        }
+      }
+    }
+  }
+
+  /** 分頁換了檔（點那段的一行跳到帳頁）：不是它現在這個檔的那段拿掉（記帳 3 確認 #3）。 */
+  sweepPanels() {
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      const view = leaf.view;
+      if (view) removePanels(view, view.file ? this.filePathOf(view.file) : '');
+    }
+  }
+
+  /** 版面變了（同一分頁切閱讀模式與即時預覽、分頁搬動、換檔）：換了檔的拿掉；已經算好的那段照接回去，不再叫 kb；drawPanels 先拿掉舊的，不會重複。 */
+  onLayoutChange() {
+    this.sweepPanels();
+    if (!this.panels || !this.panels.size) return;
+    if (this.panelTimer) clearTimeout(this.panelTimer);
+    this.panelTimer = softTimeout(() => {
+      this.panelTimer = null;
+      for (const p of this.panels.keys()) this.drawPanels(p);
+    }, PANEL_REDRAW_MS);
+  }
+
+  /** 首頁資料重讀時（日程或帳變了），開著的綜合卡底下那段跟著重算。 */
+  refreshPanels() {
+    if (!this.panels || !this.panels.size) return;
+    const open = new Map();
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      const f = leaf.view && leaf.view.file;
+      if (f && this.panels.has(this.filePathOf(f))) open.set(this.filePathOf(f), f);
+    }
+    for (const p of [...this.panels.keys()]) if (!open.has(p)) this.panels.delete(p);
+    for (const f of open.values()) this.showPanel(f);
+  }
+
+  buildPanel(model) {
+    const line = (text, page, match) =>
+      h('li', { cls: 'wwh-panel-line', text, title: '開那一頁的這一行', on: { click: () => this.openPageLine(page, match) } });
+    const box = h('div', { cls: [PANEL_CLS, 'markdown-rendered'], attrs: { contenteditable: 'false' } }, h('div', { cls: 'wwh-panel-title', text: PANEL_TITLE }));
+    if (model.agenda.length) {
+      box.appendChild(h('div', { cls: 'wwh-panel-head', text: '日程' }));
+      box.appendChild(h('ul', {}, ...model.agenda.map((a) => line(a.line || a.text || '', a.page || MANAGED_PAGES[0], a.match || a.text))));
+    }
+    const m = model.money;
+    if (m) {
+      box.appendChild(h('div', { cls: 'wwh-panel-head', text: `帳：${m.head}` }));
+      const rows = m.open.concat(m.recent).map((x) => line(x.line || '', x.page || m.page, x.match));
+      if (m.total > m.recent.length) rows.push(h('li', { cls: 'wwh-panel-more wwh-link', text: `…共 ${m.total} 筆，看帳`, on: { click: () => this.openPathInVault(m.page) } }));
+      if (rows.length) box.appendChild(h('ul', {}, ...rows));
+    }
+    if (model.stockLine) box.appendChild(h('div', { cls: 'wwh-panel-stock', text: model.stockLine }));
+    return box;
   }
 
   onActiveChange() {
+    this.sweepPanels();
     const view = this.app.workspace.getActiveViewOfType ? this.app.workspace.getActiveViewOfType(MarkdownView) : null;
     this.switchedTo(view && view.file ? this.filePathOf(view.file) : null);
   }
@@ -3662,6 +3933,11 @@ class WikiWithWillyPlugin extends Plugin {
     if (!p || !isManagedPage(p)) return;
     const line = editor.getCursor().line;
     if (this.tracker.edited(p, line, Date.now())) this.applyPage(p);
+  }
+
+  /** Obsidian 視窗失去焦點：還沒套用的受管頁都套用（她改了一行沒換行就切到 Claude 對話，記帳 3 確認 #5）。 */
+  onWindowBlur() {
+    for (const p of this.tracker.dirtyPages()) if (this.tracker.leave(p)) this.applyPage(p);
   }
 
   onSelection() {
@@ -3929,6 +4205,9 @@ module.exports.lib = {
   openOriginal,
   isManagedPage,
   isGeneratedPage,
+  findPageLine,
+  panelModel,
+  MONEY_PAGE,
   createApplyTracker,
   shouldToastModified,
   gitRefreshNotice,

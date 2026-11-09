@@ -21,6 +21,9 @@ entities.json schema 2 → 3（標籤記在實體上，D-505 七）：每個 act
 AI 產出／收件匣的檔搬進暫存區、同名一樣的拿掉、空夾拿掉），有就算 0（要遷）、沒有算 1；升級前照 D-215 拍快照，不另備路徑。
 彈性區撤回（#51，D-532）：彈性區那列（dir 是彈性區名改回預設名）與 _extras 改名那列拿掉；schema 6 → 7 照第一列寫回，dir 不動。
 apply 按列判斷（同一個 rel 兩列各看各的），migrated 同一個 rel 只列一次；補編號那列多回 notes（「型別夾補上編號：…」，finish 印）。
+記帳開關（記帳 1b，D-335 看內容、D-343）：再一列，rel 也是 profile.json，不看 schema：設定檔有沒有 money（第十節）——有算 1、沒有算 0。
+rewrite 補第十節一列「只記我講的」（spoken、來源推測、日期今天；免得一升級就回頭讀舊卡抽錢，記帳 1b 新定 2）、第九節空的、
+重畫 md（九、十節）；md 有手改未套用時 Skip。schema_version 不動（D-335）。
 """
 import json
 from collections import namedtuple
@@ -163,6 +166,32 @@ def _rewrite_dirs(vault, turn_id):
     return {"notes": notes}
 
 
+def _money_stored(vault):
+    """記帳開關那列（記帳 1b）：設定檔有第十節（money 鍵）算 1、沒有算 0；沒有設定檔、讀不了回 None。"""
+    try:
+        data = profile.load(vault)
+    except (ValueError, OSError):
+        return None
+    if data is None:
+        return None
+    return 1 if "money" in data else 0
+
+
+def _rewrite_money(vault, turn_id):
+    """補第十節「只記我講的」與空的第九節，重畫 md（兩檔備進回合）。"""
+    with profile.lock(vault):
+        data = profile.load(vault)
+        if data is None or "money" in data:
+            return None
+        if profile.md_sha256(vault) not in (None, data.get("md_sha256")):  # md 有沒套用的手改：重渲染會蓋掉
+            raise Skip(DIRS_PENDING)
+        today = profile._today()
+        new = dict(data, money=[{"mode": "spoken", "places": [], "source": "inferred", "date": today}],
+                   fields=list(data.get("fields") or []))
+        profile.write_locked(vault, new, turn_id)
+    return None
+
+
 def _rewrite_pending(vault, turn_id):
     """schema 1 → 2（lint 題，D-226）：load 補 set_aside、returned，照 pending 自己的寫法寫回（兩檔備進回合、重渲染）。"""
     pending_lib.refresh(vault, turn_id)
@@ -186,6 +215,7 @@ STATE_FILES = (
               _rewrite_pending),
     Migration(profile.PROFILE_POSIX, lambda: profile.SCHEMA_VERSION, _dirs_stored, _rewrite_dirs),
     Migration(hold_migrate.REL, lambda: 1, _hold_stored, hold_migrate.rewrite),  # 收件匣與 AI 產出合成暫存區（放寬甲第二輪 13）
+    Migration(profile.PROFILE_POSIX, lambda: 1, _money_stored, _rewrite_money),  # 記帳開關補第十節（記帳 1b，看內容）
 )
 CARD_HEADER_MIGRATIONS = []
 
@@ -297,6 +327,8 @@ def pending(vault):
         due = _due(vault, m)
         if due:
             was = out.get(m.rel)
+            if was and was["to"] != due[1]:  # 看內容的列（記帳開關算 0／1）不跟看版本號的列併：留先列的那一項
+                continue
             out[m.rel] = {"rel": m.rel, "from": min(due[0], was["from"]) if was else due[0], "to": due[1]}
     for rel, version in _synthesis_cards(vault) or []:
         mig = _synthesis_due(version)

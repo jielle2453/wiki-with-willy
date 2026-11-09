@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 from kb import guard, journal_cli
-from kb._lib import agenda, obsidian, profile, skeleton, upgrade
+from kb._lib import agenda, money, obsidian, profile, skeleton, upgrade
 from kb._lib import vault as vault_lib
 from kb._lib import sources as sources_lib
 from kb._lib.io import read_text, write_json_atomic, write_text_atomic
@@ -25,7 +25,7 @@ from kb._lib.paths import plugin_root
 
 SKELETON_REL = "skeleton"
 PROFILE_FILES = (profile.PROFILE_POSIX, profile.MD_POSIX)  # 不住 skeleton：由 profile 的預設值與渲染寫（D-067）
-GENERATED_FILES = PROFILE_FILES + (agenda.MD_POSIX,)  # 日程.md 也由程式渲染，缺的才補
+GENERATED_FILES = PROFILE_FILES + (agenda.MD_POSIX, money.MD_POSIX)  # 日程.md、帳.md 也由程式渲染，缺的才補
 GITKEEP = ".gitkeep"
 HIDDEN_ITEMS = ("CLAUDE.md", "AGENTS.md", ".claude", ".system")
 EMPTY_SOURCES = {"schema_version": 1, "sources": []}
@@ -198,6 +198,12 @@ def run(args):
             created.append(agenda.MD_POSIX)
         except ValueError as e:  # agenda.json 壞了：骨架照建，日程.md 之後 kb agenda render 補
             notes.append(f"{agenda.MD_POSIX} 沒補：{e}")
+    if not have.get(money.MD_POSIX, True):  # 帳.md（記帳 3）：空白的總覽
+        try:
+            money.render(p, hand={})
+            created.append(money.MD_POSIX)
+        except ValueError as e:  # money.json 壞了：骨架照建，帳.md 之後記帳時補
+            notes.append(f"{money.MD_POSIX} 沒補：{e}")
     placed = []
     try:  # Obsidian 外掛（#22，D-258、D-260）：每次都換成目前版本、community-plugins.json 補一項；不算骨架項目、不進「建了 N 項」
         placed, obs_notes = obsidian.place(p)

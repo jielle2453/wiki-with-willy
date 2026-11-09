@@ -30,6 +30,7 @@
 # 流水檔合起來的衍生副本（正本是 .system/streams/）
 .system/statements.json
 .system/agenda.json
+.system/money.json
 .system/rulings.json
 .system/findings.json
 .system/entities.json

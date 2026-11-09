@@ -8,6 +8,7 @@
 (e) 記這次的 HEAD（.system/local/last_head）與 pull 進來的檔（.system/local/pulled.json，手改基準用）。
 git 不在或不是 repo：什麼都不做（回空結果）。
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -93,8 +94,8 @@ def _run(vault, turn_id, out):
 # ---------- (b) 重畫 ----------
 
 def _render_pages(vault, turn_id):
-    """日程、待處理、裁示照 purge.py 的做法在 renders.suppressed 裡、hand={} 重畫；設定檔 md 她改過就不蓋；總目錄重畫。"""
-    from kb._lib import agenda, cards, pending, profile, renders, rulings
+    """日程、待處理、裁示、帳頁照 purge.py 的做法在 renders.suppressed 裡、hand={} 重畫；設定檔 md 她改過就不蓋；總目錄重畫。"""
+    from kb._lib import agenda, cards, money, pending, profile, renders, rulings
     done = []
 
     def step(rel, fn):
@@ -111,6 +112,14 @@ def _render_pages(vault, turn_id):
         step(pending.MD_POSIX, lambda: pending.render(vault, turn_id=turn_id))
     if (Path(vault) / rulings.MD_POSIX).exists():
         step(rulings.MD_POSIX, lambda: rulings.render(vault, turn_id, hand={}))
+    if (Path(vault) / money.MD_POSIX).exists() or money.exists(vault):  # 帳頁（記帳 3，D-293）：年頁一起
+
+        def money_pages():
+            with contextlib.ExitStack() as stack:
+                for rel in money.page_rels(vault):
+                    stack.enter_context(renders.suppressed(rel))
+                money.render(vault, turn_id, hand={})
+        step(money.MD_POSIX, money_pages)
 
     def prof():
         data = profile.load(vault)

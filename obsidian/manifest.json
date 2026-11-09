@@ -1,7 +1,7 @@
 {
   "id": "wiki-with-willy",
   "name": "willy 首頁",
-  "version": "0.34.0",
+  "version": "0.35.1",
   "minAppVersion": "1.5.0",
   "description": "wiki-with-willy 的首頁：日程的時間軸與月曆、待辦、要你確認的，和找檔的搜尋框。",
   "author": "wiki-with-willy",

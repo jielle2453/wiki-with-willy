@@ -2,31 +2,26 @@
 
 每一筆是一張檔案卡、一個數字、卡上的〔位置〕（可省）。數字收千分位逗號、小數、負號、「萬」字尾（乘一萬），其他拒絕；
 卡要在清冊、原檔 active、有檔案卡（同 cards.card_of）。回逐筆表（卡標題、數字、位置）與筆數、合計、平均；
-人讀不印編號（日程確認後裁定 6），數字一律印成千分位。拒絕的第一行就是原因、exit 3，一字不差。
+人讀不印編號（日程確認後裁定 6），數字一律印成千分位。數字的讀法在 _lib/numbers（記帳 1b 搬過去，數字欄共用）。拒絕的第一行就是原因、exit 3，一字不差。
 上限（answer 裁定 16）：整數最多 15 位、小數最多 4 位（超過「數字太大」）；千分位要合法；位置一行、最多 30 字、不收 |；
 同一張卡可以有好幾筆（一份報價好幾項）。其他例外也接住，exit 3 一句白話、不印路徑。
 """
 import argparse
 import json
-import re
 from decimal import ROUND_HALF_UP, Decimal
 
 from kb._lib import cards
+from kb._lib.numbers import BAD_NUMBER, TOO_BIG, NumberRefused, parse_number, plain as _plain, show  # noqa: F401  搬到 _lib/numbers（記帳 1b）
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
 NO_ROWS = "至少要一筆"
-BAD_NUMBER = "看不懂這個數字：{}"
-_NUMBER = re.compile(r"^(-?)([1-9][0-9]{0,2}(?:,[0-9]{3})+|[0-9]+)(\.[0-9]+)?(萬?)$")  # 只收半形數字（\d 會收全形）
-TOO_BIG = "數字太大：{}"
-WHOLE_MAX, FRAC_MAX = 15, 4  # 整數、小數最多幾位：遠在 Decimal 預設 28 位精度以內，加總不會失準
 WHERE_MAX = 30
 BAD_WHERE = "位置要一行、最多 30 字，不能有 |"
 CRASHED = "加總沒算出來（{}），沒有結果"
 AVERAGE_PLACES = Decimal("0.01")
 
 
-class TallyRefused(ValueError):
-    """kb tally 的拒絕：訊息就是給人看的那句。"""
+TallyRefused = NumberRefused  # kb tally 的拒絕：訊息就是給人看的那句（數字看不懂的同一種，numbers 搬家前的名字）
 
 
 def add_arguments(sub):
@@ -34,30 +29,6 @@ def add_arguments(sub):
                      help="一筆：「<卡編號> <數字> [位置]」，可以重複；數字可寫 1,280,000、54萬、-3.5")
     sub.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
     sub.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
-
-
-def parse_number(text):
-    """「1,280,000」「54萬」「-3.5」→ Decimal；看不懂丟 TallyRefused。"""
-    m = _NUMBER.match(text)
-    if not m:
-        raise TallyRefused(BAD_NUMBER.format(text))
-    sign, whole, frac, wan = m.groups()
-    if len(whole.replace(",", "")) > WHOLE_MAX or len((frac or ".")[1:]) > FRAC_MAX:
-        raise TallyRefused(TOO_BIG.format(text))
-    value = Decimal(sign + whole.replace(",", "") + (frac or ""))
-    return value * 10000 if wan else value
-
-
-def show(value):
-    """千分位；整數不帶小數，有小數的去掉尾巴的 0。"""
-    if value == value.to_integral_value():
-        return f"{int(value):,}"
-    text = f"{value:,f}".rstrip("0").rstrip(".")
-    return text
-
-
-def _plain(value):
-    return int(value) if value == value.to_integral_value() else float(value)
 
 
 def tally(vault, rows):

@@ -270,35 +270,13 @@ def _search(vault, q, parsed, cond, ent_data):
     tag_ids = set().union(*[_tag_entities(ent_data, rows) for rows in cond["tag"]]) if cond["tag"] else set()
     types = {entities.key(t) for t in cond["type"]}
     words = cond["word"]
-    rows = []
     rul = rulings.load(vault)
     ruled = cards.ruled_out_ids(rul)
-    for entry, card in cards.active_cards(vault):
-        brief = cards.card_brief(vault, entry, card, ruled)
-        front = card["front"]
-        if cond["entity"] or cond["tag"]:
-            mine = set(_card_entity_ids(ent_data, front))
-            if cond["entity"] and not (mine & ent_ids):
-                continue
-            if cond["tag"] and not (mine & tag_ids):
-                continue
-        if types and entities.key(brief["card_type"]) not in types:
-            continue
-        if cond["time"]:
-            d = brief["date"]
-            if not re.match(r"^\d{4}-\d{2}-\d{2}$", d) or not any(lo <= d <= hi for lo, hi in cond["time"]):
-                continue
-        hit = "filter"
-        if words:
-            title = entities.key(brief["title"])
-            if any(w in title for w in words):
-                hit = "title"
-            else:
-                body = _body(vault, brief["path"])
-                if not any(w in body for w in words):
-                    continue
-                hit = "body"
-        rows.append((hit, brief, entry))
+    rows = _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, all)
+    if not rows and len(words) > 1:  # 每個字都中的沒有，才放寬成中一個就算（jacky 2026-11-09）
+        rows = _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, any)
+        if rows:
+            out["some_words"] = True
     ordered = cards.newest_first([r[1] for r in rows])
     first = {r[1]["id"]: r for r in rows}
     titled = [b for b in ordered if first[b["id"]][0] == "title"]
@@ -317,6 +295,39 @@ def _search(vault, q, parsed, cond, ent_data):
     if words:
         out["entities"] += _synthesis_hits(vault, ent_data, words, seen)
     return out
+
+
+def _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, need):
+    """照條件篩卡；字用 need（all＝每個字都要在標題或內文、any＝中一個就算）。回 [(hit, brief, entry)]。"""
+    rows = []
+    for entry, card in cards.active_cards(vault):
+        brief = cards.card_brief(vault, entry, card, ruled)
+        front = card["front"]
+        if cond["entity"] or cond["tag"]:
+            mine = set(_card_entity_ids(ent_data, front))
+            if cond["entity"] and not (mine & ent_ids):
+                continue
+            if cond["tag"] and not (mine & tag_ids):
+                continue
+        if types and entities.key(brief["card_type"]) not in types:
+            continue
+        if cond["time"]:
+            d = brief["date"]
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", d) or not any(lo <= d <= hi for lo, hi in cond["time"]):
+                continue
+        hit = "filter"
+        if words:
+            title = entities.key(brief["title"])
+            in_title = [w in title for w in words]
+            if need(in_title):
+                hit = "title"
+            else:
+                body = _body(vault, brief["path"])
+                if not need(t or w in body for t, w in zip(in_title, words)):
+                    continue
+                hit = "title" if any(in_title) else "body"
+        rows.append((hit, brief, entry))
+    return rows
 
 
 def _synthesis_hits(vault, ent_data, words, seen):

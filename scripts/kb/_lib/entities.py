@@ -15,6 +15,9 @@ note 改知識：alias 加與拿掉別名（D-148）；rename／merge 連口述�
 schema 3（標籤記在實體上，D-505）：每筆多 tags（{欄: 詞 | [詞…]}；"" 與 [] 是看過、沒有；沒有這個鍵是還沒標過）、
 tags_said（她親口定的欄）與 tags_at（tags 最後寫入的時間，健檢比卡的修改時間，裁定 5）。schema 2 讀進來不補（沒有 tags 就是還沒標過），
 寫的時候寫 3。set_tags 是唯一寫 tags 的地方：照第八節驗、她說過的欄只有 said 才改；綜合卡檔頭的標籤行是它的渲染。
+數字欄（記帳 1b，D-272、D-281、D-336；schema 不升）：一個數字一欄 欄:<第九節的欄名>，值 {value, from: said|card|hand, card, doc_date,
+at, old: [{value, from, card, at, who}]}；set_fields 是唯一寫它的地方（她說的檔案蓋不掉、兩份檔照文件日期新的蓋舊的、分不出開待處理）；
+清掉是 value null、舊值留著。改名、換型別跟著實體走（新型別第九節沒有的不顯示、值留著），合併兩邊都有留目標的（merge_fields）。
 """
 import os
 import posixpath
@@ -496,36 +499,48 @@ def tag_edit_problem(entry, row, v):
     return TAG_EDIT_PROBLEM.format(name=entry["name"], word="、".join(extra), field=row["field"], back=back)
 
 
+def _fields_newer(vault, rel, entry, prof):
+    """數字行可能被她改了：實體上記過的數字欄，有一欄的 at 比卡舊（只看修改時間）。"""
+    stamps = [v.get("at") for v in fields_of(entry).values()]  # 還沒記過的欄不算（不然每句開頭都要讀那幾張卡）
+    return any(field_newer(vault, rel, s) for s in stamps)
+
+
 def _edited(vault, data, prof):
-    """[(實體, 卡的相對路徑)]：有綜合卡的 active 實體、型別有標籤欄、卡比正本新的（只看修改時間，不讀檔）。"""
+    """[(實體, 卡的相對路徑)]：有綜合卡的 active 實體、型別有標籤欄而卡比 tags_at 新，或型別有數字欄（實體上有數字欄）而卡比
+    其中一欄的 at 新（記帳 1b 第 6 點；只看修改時間，不讀檔）。"""
     out = []
     for e in data["entities"]:
         if not e.get("card") or e.get("status") != "active" or is_self(e) or not e.get("type"):
             continue
-        if not profile.tags_for(prof, e.get("type")):
+        tagged = bool(profile.tags_for(prof, e.get("type")))
+        numbered = bool(fields_of(e))
+        if not tagged and not numbered:
             continue
         rel = locate(vault, e)
-        if rel and card_newer(vault, rel, e):
+        if rel and ((tagged and card_newer(vault, rel, e)) or (numbered and _fields_newer(vault, rel, e, prof))):
             out.append((e, rel))
     return out
 
 
 def tag_edits(vault, data=None):
-    """她在 Obsidian 手改綜合卡的標籤行（D-505 六-1、裁定 6）：卡的修改時間晚於 tags_at、檔頭標籤行跟正本不同的。只讀；
-    先比修改時間，晚的才讀檔頭。回 [{"name","fields": [欄…],"ok": 全部合字典嗎,"problem": 不合字典的那幾句或 None}]。"""
+    """她在 Obsidian 手改綜合卡的標籤行（D-505 六-1、裁定 6）或數字行（記帳 1b 第 6 點，field_diffs）：卡的修改時間晚於正本、
+    跟正本不同的。只讀；先比修改時間，晚的才讀檔頭。回 [{"name","fields": [欄…],"ok": 全部合字典、是數字嗎,"problem": 那幾句或 None}]。"""
     data = data if data is not None else load(vault)
     prof = _profile(vault)
     out = []
     for e, rel in _edited(vault, data, prof):
-        good, bad = card_diffs(vault, e, prof, rel=rel)
-        if good or bad:
-            out.append({"name": e["name"], "fields": list(good) + [row["field"] for row, _v in bad], "ok": not bad,
-                        "problem": "；".join(tag_edit_problem(e, row, v) for row, v in bad) or None})
+        good, bad = card_diffs(vault, e, prof, rel=rel) if card_newer(vault, rel, e) else ({}, [])
+        nums, nbad = field_diffs(vault, e, prof, rel=rel)
+        if good or bad or nums or nbad:
+            problems = [tag_edit_problem(e, row, v) for row, v in bad] + [q for _f, _raw, q in nbad]
+            out.append({"name": e["name"], "fields": list(good) + [row["field"] for row, _v in bad] + list(nums)
+                        + [f for f, _raw, _q in nbad], "ok": not bad and not nbad, "problem": "；".join(problems) or None})
     return out
 
 
 def copy_card_edits(vault, refs, turn_id, by=None):
-    """kb entity tag --from-card、健檢（六-2、六-4）：refs 這幾個（None 是 tag_edits 全部）卡上合字典的標籤行照她改的寫進正本、
+    """kb entity tag／field --from-card、健檢（六-2、六-4）：refs 這幾個（None 是 tag_edits 全部）卡上合字典的標籤行照她改的寫進正本、
+    數字行是數字的照她改的寫進數字欄（from hand，記帳 1b；不是數字的列進 number_bad、number_problems）、
     算她說的；不合字典的不寫；整行拿掉的記成沒有，卡上那一行照正本寫回空的（備進回合 by program，裁定 12）。
     回 [{"entity","written": [欄…],"bad": [(第八節那列, 卡上的值)],"problems": [句…]}]，沒得記的不列。給了名稱但沒有綜合卡丟 EntityRefused。"""
     data = load(vault)
@@ -542,15 +557,24 @@ def copy_card_edits(vault, refs, turn_id, by=None):
             pairs.append((e, rel))
     out = []
     for e, rel in pairs:
-        good, bad = card_diffs(vault, e, prof, rel=rel)
-        if not good and not bad:
+        # 全部（refs None）時標籤行照 tag_edits 那道關：卡比 tags_at 新才算她改的（只因數字行被挑進來的不動標籤）
+        good, bad = card_diffs(vault, e, prof, rel=rel) if refs is not None or card_newer(vault, rel, e) else ({}, [])
+        nums, nbad = field_diffs(vault, e, prof, rel=rel)
+        if not good and not bad and not nums and not nbad:
             continue
         entry = e
         if good:
             entry = set_tags(vault, e["id"], good, turn_id, said=True, by=by)["entity"]
             _rewrite_dropped(vault, rel, entry, turn_id)
+        if nums:  # 她在屬性欄改的數字：算她說的（from hand，記帳 1b 第 6 點）；整行刪掉是清掉
+            entry = set_fields(vault, e["id"], {f: ("" if v is None else v) for f, v in nums.items()}, turn_id,
+                               hand=True, by=by)["entity"]
+            from kb._lib import synthesis
+            synthesis.rewrite_field_lines(vault, entry, turn_id)  # 她寫的 1,800、3萬 換成純數字，屬性欄才認得（D-272）
         out.append({"entity": entry, "written": list(good), "bad": bad,
-                    "problems": [tag_edit_problem(entry, row, v) for row, v in bad]})
+                    "problems": [tag_edit_problem(entry, row, v) for row, v in bad],
+                    "numbers": list(nums), "number_bad": [(f, raw) for f, raw, _q in nbad],
+                    "number_problems": [q for _f, _raw, q in nbad]})
     return out
 
 
@@ -595,6 +619,339 @@ def merge_tags(dst, src):
     said += [f for f in src.get("tags_said") or [] if key(f) not in {key(x) for x in said}]
     dst["tags_said"] = said
     dst["tags_at"] = _now_stamp()
+
+
+# ---------- 數字欄（記帳 1b，D-272、D-281、D-336） ----------
+
+FIELD_PREFIX = profile.FIELD_PREFIX
+FIELD_NO_FIELD = "第九節沒有「{field}」這個數字欄；{type}有：{have}"
+FIELD_NEED_HOW = "要說是她說的（--said）還是哪張卡讀到的（--card f-…）"
+FIELD_BOTH_HOW = "--said 跟 --card 只能給一個"
+FIELD_CARD_ID = "--card 要給檔案卡編號（f- 加 8 碼）：{card}"
+FIELD_CARD_MISSING = "清冊裡找不到這張卡：{card}"
+FIELD_CARD_EMPTY = "卡上讀到的「{field}」要給數字（清掉只有她說的才算）"
+FIELD_CONFLICT = "{name} 的 {field}：〔{old_card}〕寫 {old}、〔{new_card}〕寫 {new}，不知道哪份比較新"
+_CARD_ID = re.compile(r"^f-[0-9a-f]{8}$")
+
+
+def fields_of(entry):
+    """實體上 欄: 開頭的那幾欄收成一組：{欄名: 那欄的值（{"value","from","card","doc_date","at","old"}）}。"""
+    return {k[len(FIELD_PREFIX):]: v for k, v in (entry or {}).items()
+            if isinstance(k, str) and k.startswith(FIELD_PREFIX) and isinstance(v, dict)}
+
+
+def _field_key(entry, field):
+    """實體上這一欄的鍵（比對照 key）；沒有回 None。"""
+    return next((k for k in (entry or {}) if isinstance(k, str) and k.startswith(FIELD_PREFIX)
+                 and key(k[len(FIELD_PREFIX):]) == key(field)), None)
+
+
+def field_value(entry, field):
+    """這一欄現在的值（數；清掉或沒有是 None）。"""
+    k = _field_key(entry, field)
+    return (entry.get(k) or {}).get("value") if k else None
+
+
+def _number(raw):
+    """數字欄的值：字串照 numbers.parse_number（不收負數）、數照收；回 int 或 float。看不懂丟 EntityRefused。"""
+    from kb._lib import numbers
+    if isinstance(raw, bool):
+        raise EntityRefused(numbers.BAD_NUMBER.format(raw))
+    try:
+        value = numbers.parse_number(str(raw).strip() if not isinstance(raw, (int, float)) else repr(raw), negative=False)
+    except numbers.NumberRefused as e:
+        raise EntityRefused(str(e)) from None
+    return numbers.plain(value)
+
+
+def _same_number(a, b):
+    from decimal import Decimal
+    return a is not None and b is not None and Decimal(str(a)) == Decimal(str(b))
+
+
+def _in_inventory(vault, card):
+    """這張卡的編號在清冊裡（製卡助手給的 --card 要是真的卡，測試報告低 #4）。"""
+    from kb._lib import inventory
+    return any(e.get("id") == card for e in inventory.load(vault)["entries"])
+
+
+def absorb_field_edits(vault, ref, turn_id, by=None):
+    """要重寫綜合卡檔頭的數字行之前（kb entity field、mark_synced）：卡上她在屬性欄改過、還沒 --from-card 的數字行
+    （卡比那欄的 at 新、值跟正本不同，field_diffs）先照她改的抄回、算她說的（from hand），免得被正本蓋掉（測試報告中 #2）。
+    回抄回的 {欄: 值（清掉是 None）}；沒有卡、沒得抄回 {}。不是數字的不抄（照舊由 --from-card 問她）。"""
+    try:
+        data = load(vault)
+    except ValueError:
+        return {}
+    e, _hit = find(data, ref)
+    if e is None or is_self(e) or not e.get("type") or not e.get("card") or e.get("status") != "active":
+        return {}
+    rel = locate(vault, e, data)
+    if not rel:
+        return {}
+    good, _bad = field_diffs(vault, e, _profile(vault), rel=rel)
+    if not good:
+        return {}
+    set_fields(vault, e["id"], {f: ("" if v is None else v) for f, v in good.items()}, turn_id, hand=True, by=by)
+    return good
+
+
+def _card_doc_date(vault, card):
+    """檔案卡的文件日期（YYYY-MM-DD）；卡還沒寫、未載、讀不到回 None。"""
+    from kb._lib import cards
+    try:
+        got = cards.card_of(vault, card)
+    except (cards.CardRefused, ValueError, OSError):
+        return None
+    day = got["front"].get("文件日期")
+    return day if isinstance(day, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", day) else None
+
+
+def _snapshot(cur):
+    """推進 old 的一筆：原值、來源、出處卡、時間、誰（多人時記的人）。"""
+    return {"value": cur.get("value"), "from": cur.get("from"), "card": cur.get("card"), "at": cur.get("at"),
+            "who": cur.get("who")}
+
+
+def _put_field(entry, field, value, how, card, doc_date, who):
+    """寫一欄：原值（有值的）推進 old；回 [舊值, 新值]。"""
+    k = _field_key(entry, field)
+    cur = entry.pop(k) if k else None
+    old = list((cur or {}).get("old") or [])
+    if cur is not None and cur.get("value") is not None:
+        old.append(_snapshot(cur))
+    new = {"value": value, "from": how, "card": card, "doc_date": doc_date, "at": _now_stamp(), "old": old}
+    if who:
+        new["who"] = who
+    entry[FIELD_PREFIX + field] = new
+    return [(cur or {}).get("value"), value]
+
+
+def set_fields(vault, ref, updates, turn_id, said=False, card=None, by=None, hand=False, undo=None):
+    """寫數字欄（kb entity field，D-281、D-336）。updates {欄名: 數字字串或數}：欄要是這個型別在第九節的欄，數字照 parse_number
+    （收千分位、小數、萬，不收負數），錯了丟 EntityRefused。said=True 她說的（"" 是清掉）、hand=True 她在卡的屬性欄改的（同她說的）；
+    card="f-…" 製卡從那張卡讀的：那欄是她說的（said、hand）不改（kept，why said）、值一樣不改、兩張卡都有文件日期而新卡比較舊不改
+    （why older）、有一張沒有文件日期或兩張同一天而值不同不改並開一條待處理 conflict（D-281 分不出新舊），其他照設。值沒變不寫。
+    回 {"entity","changed": {欄: [舊, 新]},"kept": [{"field","why"}],"conflicts": [{"field","old","new","old_card","new_card"}],
+    "card": 綜合卡在哪或 None}。"""
+    from kb._lib import people
+    if bool(said or hand) == bool(card):
+        raise EntityRefused(FIELD_BOTH_HOW if card else FIELD_NEED_HOW)
+    if card and not _CARD_ID.match(str(card)):
+        raise EntityRefused(FIELD_CARD_ID.format(card=card))
+    if card and not _in_inventory(vault, card):
+        raise EntityRefused(FIELD_CARD_MISSING.format(card=card))
+    prof = _profile(vault)
+    how = "said" if said else "hand" if hand else "card"
+    doc_date = _card_doc_date(vault, card) if card else None
+    who = people.me(vault)
+    with lock(vault):
+        data = load(vault)
+        entry, _hit = _need(data, ref)
+        _need_plain(entry, "記數字")
+        rows = {key(f["field"]): f for f in profile.fields_for(prof, entry.get("type"))}
+        clean = []
+        for field, raw in updates.items():
+            row = rows.get(key(field))
+            if row is None:
+                have = "、".join(f["field"] for f in rows.values()) or "（還沒有）"
+                raise EntityRefused(FIELD_NO_FIELD.format(field=field, type=entry.get("type") or "", have=have))
+            if raw is None or str(raw).strip() == "":
+                if card:
+                    raise EntityRefused(FIELD_CARD_EMPTY.format(field=row["field"]))
+                clean.append((row["field"], None))
+            else:
+                clean.append((row["field"], _number(raw)))
+        changed, kept, conflicts = {}, [], []
+        for field, value in clean:
+            k = _field_key(entry, field)
+            cur = entry.get(k) if k else None
+            have = (cur or {}).get("value")
+            if card and cur is not None and cur.get("from") in ("said", "hand"):
+                kept.append({"field": field, "why": "said"})
+                continue
+            if cur is not None and (have == value if value is None or have is None else _same_number(have, value)) \
+                    and (card or cur.get("from") == how):
+                continue
+            if card and have is not None and cur.get("card") != card:
+                was = cur.get("doc_date")
+                if was and doc_date and doc_date < was:
+                    kept.append({"field": field, "why": "older"})
+                    continue
+                if not (was and doc_date) or was == doc_date:  # 分不出哪份新（沒有文件日期、同一天）：問她（D-281）
+                    conflicts.append({"field": field, "old": have, "new": value, "old_card": cur.get("card"),
+                                      "new_card": card})
+                    continue
+            changed[field] = _put_field(entry, field, value, how, card, doc_date, who)
+        if changed:
+            _save(vault, data, turn_id, undo, by=by)
+    if changed:
+        _export_agenda(vault)
+    for c in conflicts:
+        _field_conflict(vault, entry, c, turn_id)
+    where = locate(vault, entry) if entry.get("type") and entry.get("card") else None
+    return {"entity": entry, "changed": changed, "kept": kept, "conflicts": conflicts, "card": where}
+
+
+def _field_conflict(vault, entry, c, turn_id):
+    """分不出哪份新（D-281）：開一條待處理 conflict（同一對卡已有 open 的不重複）。"""
+    from kb._lib import agenda, numbers, pending
+    titles = agenda.card_titles(vault)
+    ids = [x for x in (c["old_card"], c["new_card"]) if x]
+    text = FIELD_CONFLICT.format(name=entry["name"], field=c["field"],
+                                 old_card=titles.get(c["old_card"]) or c["old_card"] or "?", old=numbers.show(c["old"]),
+                                 new_card=titles.get(c["new_card"]) or c["new_card"], new=numbers.show(c["new"]))
+    pending.add_conflict(vault, ids, text, turn_id, entity_ids=[entry["id"]], titles=[titles.get(x) or x for x in ids])
+
+
+def drop_field(vault, type_, field, turn_id, undo=None):
+    """第九節拿掉一欄（記帳 1b 新定 4）：那型別每個實體那欄的值設成 null、原值進 old（欄留著）。程式照設定檔改的，備份 by program。
+    回受影響的實體 [名稱]（原本有值的）。"""
+    with lock(vault):
+        data = load(vault)
+        names = []
+        for e in data["entities"]:
+            if not e.get("type") or key(e["type"]) != key(type_):
+                continue
+            k = _field_key(e, field)
+            if not k or (e.get(k) or {}).get("value") is None:
+                continue
+            cur = e[k]
+            e[k] = dict(cur, value=None, card=None, doc_date=None, at=_now_stamp(), **{"from": None},
+                        old=list(cur.get("old") or []) + [_snapshot(cur)])  # 欄拿掉不是她說清掉：之後加回來檔案照樣填得進
+            names.append(e["name"])
+        if names:
+            _save(vault, data, turn_id, undo, by="program")
+    if names:
+        _export_agenda(vault)
+    return names
+
+
+def rename_field(vault, type_, old, new, turn_id, undo=None):
+    """第九節改欄名（她說是改名）：那型別每個實體 欄:<old> 搬成 欄:<new>（新名已有值的留新名那欄、舊的進 old）。回搬了的 [名稱]。"""
+    with lock(vault):
+        data = load(vault)
+        names = []
+        for e in data["entities"]:
+            if not e.get("type") or key(e["type"]) != key(type_):
+                continue
+            k = _field_key(e, old)
+            if not k:
+                continue
+            moved = e.pop(k)
+            have = _field_key(e, new)
+            if have and (e.get(have) or {}).get("value") is not None:
+                e[have] = dict(e[have], old=list(e[have].get("old") or []) + list(moved.get("old") or [])
+                               + ([_snapshot(moved)] if moved.get("value") is not None else []))
+            else:
+                if have:
+                    e.pop(have)
+                e[FIELD_PREFIX + new] = moved
+            names.append(e["name"])
+        if names:
+            _save(vault, data, turn_id, undo, by="program")
+    if names:
+        _export_agenda(vault)
+    return names
+
+
+def merge_fields(dst, src):
+    """合併實體時數字欄（記帳 1b 驗收 12）：兩邊都有值的留目標的、來源的值（與它的 old）進目標那欄的 old；目標沒有值的拿來源那欄
+    （目標原本那欄的 old 接在前面）。"""
+    for field, v in fields_of(src).items():
+        k = _field_key(dst, field)
+        cur = dst.get(k) if k else None
+        if cur is not None and cur.get("value") is not None:
+            extra = list(v.get("old") or []) + ([_snapshot(v)] if v.get("value") is not None else [])
+            dst[k] = dict(cur, old=list(cur.get("old") or []) + extra)
+            continue
+        if k:
+            dst.pop(k)
+        dst[FIELD_PREFIX + field] = dict(v, old=list((cur or {}).get("old") or []) + list(v.get("old") or []))
+
+
+def field_newer(vault, rel, stamp):
+    """卡的修改時間晚於那欄最後寫入（at）；沒有 at 也算。"""
+    from datetime import datetime
+    if not stamp:
+        return True
+    try:
+        return datetime.fromtimestamp((Path(vault) / rel).stat().st_mtime) > datetime.fromisoformat(str(stamp))
+    except (OSError, ValueError):
+        return False
+
+
+FIELD_EDIT_BAD = "{name}的卡上「{field}」寫了「{raw}」，不是數字：要記成多少？"
+FIELD_EDIT_GONE = "{name}的卡上「{field}」寫了 {raw}，可是{type}的第九節沒有這一欄：要加一欄嗎？"
+FIELD_EDIT_NEW = "{name}的卡上多了「{field}: {raw}」，可是{type}的第九節沒有這一欄：要加一欄嗎？"
+
+
+def field_diffs(vault, entry, prof, text=None, rel=None):
+    """她在 Obsidian 改了綜合卡檔頭的數字行（記帳 1b 第 6 點）：卡比那欄的 at 新、數字行跟正本不一樣的欄。
+    回 (合的 {欄: 數或 None（整行刪掉或空著是清掉）}, 不合的 [(欄, 卡上的字, 問句)])。不是數字（「一千八」）、
+    欄不在第九節（實體上還留著值、卡上又有那一行）的進不合的。卡讀不懂回 ({}, [])。"""
+    from kb._lib import synthesis
+    rows = profile.fields_for(prof, entry.get("type"))
+    mine = fields_of(entry)
+    if not rows and not mine:
+        return {}, []
+    try:
+        rel = rel or locate(vault, entry)
+        if text is None:
+            text = (Path(vault) / rel).read_text(encoding="utf-8")
+        front = synthesis.read_front(text)
+    except (OSError, UnicodeDecodeError, ValueError, TypeError):
+        return {}, []
+    have = {key(k): v for k, v in front.items() if k not in synthesis.KEYS}
+    good, bad = {}, []
+    names = {key(r["field"]) for r in rows}
+    for r in rows:
+        f = r["field"]
+        k = _field_key(entry, f)
+        cur = entry.get(k) if k else None
+        if not field_newer(vault, rel, (cur or {}).get("at")):
+            continue
+        canon = (cur or {}).get("value")
+        raw = have.get(key(f))
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            if canon is not None:
+                good[f] = None
+            continue
+        if isinstance(raw, list):
+            bad.append((f, str(raw), FIELD_EDIT_BAD.format(name=entry["name"], field=f, raw=", ".join(raw))))
+            continue
+        try:
+            value = _number(raw)
+        except EntityRefused:
+            bad.append((f, raw, FIELD_EDIT_BAD.format(name=entry["name"], field=f, raw=raw)))
+            continue
+        if not _same_number(value, canon):
+            good[f] = value
+    for f, cur in mine.items():
+        if key(f) in names or key(f) not in have:
+            continue
+        raw = have[key(f)]
+        if field_newer(vault, rel, cur.get("at")) and not (isinstance(raw, str) and _numeric_same(raw, cur.get("value"))):
+            bad.append((f, raw, FIELD_EDIT_GONE.format(name=entry["name"], field=f, raw=raw, type=entry.get("type") or "")))
+    # 她自己加的一行、是數字、欄名不在第九節（「會員價: 12」）：照標籤 bad 那條問她，不寫（測試報告低 #3）；
+    # 不是數字的鍵照舊算她自加的屬性（標籤裁定 13）
+    known = names | {key(f) for f in mine} | {key(t["field"]) for t in profile.tags_for(prof, entry.get("type"))}
+    for k, raw in front.items():
+        if k in synthesis.KEYS or key(k) in known or not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            _number(raw)
+        except EntityRefused:
+            continue
+        bad.append((k, raw, FIELD_EDIT_NEW.format(name=entry["name"], field=k, raw=raw.strip(), type=entry.get("type") or "")))
+    return good, bad
+
+
+def _numeric_same(raw, value):
+    try:
+        return _same_number(_number(raw), value)
+    except EntityRefused:
+        return False
 
 
 def _profile(vault):
@@ -1003,7 +1360,7 @@ def _refresh_fields(vault, entry, prof, turn_id, changed, undo):
     if not loc:
         return
     text = (Path(vault) / loc).read_text(encoding="utf-8")
-    new = synthesis.replace_front(text, _card_fields(prof, entry))
+    new = synthesis.write_field_lines(synthesis.replace_front(text, _card_fields(prof, entry)), entry, prof)  # 數字行跟著型別（記帳 1b）
     if new != text:
         turn.backup(vault, loc, turn_id, by="program")
         _write(vault, loc, new, undo)
@@ -1098,6 +1455,7 @@ def rename(vault, ref, new_name, new_type, turn_id, undo=None):
                 text = (Path(vault) / loc).read_text(encoding="utf-8")
                 text = synthesis.replace_title(synthesis.replace_front(text, _card_fields(prof, entry)), old_name,
                                                entry["name"])
+                text = synthesis.write_field_lines(text, entry, prof)  # 換了型別：新型別第九節沒有的數字行拿掉、值留著（記帳 1b）
                 synced = card_base.in_sync(vault, loc)  # 她有沒處理的手改就不換基準（D-270）
                 moved = _move_card(vault, loc, target, text, turn_id, changed, undo)
                 fake = "---\n---\n"  # replace_title 認得檔頭之後的第一個「# 舊名」
@@ -1107,6 +1465,7 @@ def rename(vault, ref, new_name, new_type, turn_id, undo=None):
             changed += [{"path": rel, "action": "modify"} for rel, _names in touched]
             if key(old_name) != key(new_name):
                 changed += _agenda_follow(vault, {key(old_name): new_name}, turn_id)
+                changed += _money_follow(vault, {key(old_name): new_name}, turn_id)
                 changed += _knowledge_follow(vault, {key(old_name): new_name}, turn_id)
             _save(vault, data, turn_id, undo)
             changed.append({"path": ENTITIES_POSIX, "action": "modify"})
@@ -1232,6 +1591,7 @@ def merge(vault, src_ref, dst_ref, turn_id):
         src["status"] = "merged"
         src["merged_into"] = dst["id"]
         merge_tags(dst, src)
+        merge_fields(dst, src)
 
         def act(undo):
             changed = []
@@ -1246,6 +1606,7 @@ def merge(vault, src_ref, dst_ref, turn_id):
             changed += [{"path": rel, "action": "modify"}
                         for rel, _n in retarget_cards(vault, {key(src["name"]): dst["name"]}, turn_id, undo)]
             changed += _agenda_follow(vault, {key(src["name"]): dst["name"]}, turn_id)
+            changed += _money_follow(vault, {key(src["name"]): dst["name"]}, turn_id)
             changed += _knowledge_follow(vault, {key(src["name"]): dst["name"]}, turn_id)
             changed += _drop_close_items(vault, src, f"實體已合併進「{dst['name']}」", turn_id, undo)
             _save(vault, data, turn_id, undo)
@@ -1467,6 +1828,9 @@ def _agenda_snapshot(vault, undo):
     if (Path(vault) / agenda.AGENDA_POSIX).exists():
         undo.file(agenda.AGENDA_POSIX)
         undo.file(agenda.MD_POSIX)
+    from kb._lib import money
+    if money.exists(vault):  # 帳也一起（記帳 2）
+        undo.file(money.MONEY_POSIX)
 
 
 def _agenda_follow(vault, mapping, turn_id):
@@ -1474,6 +1838,14 @@ def _agenda_follow(vault, mapping, turn_id):
     from kb._lib import agenda
     if agenda.rename_entity(vault, mapping, turn_id):
         return [{"path": agenda.AGENDA_POSIX, "action": "modify"}, {"path": agenda.MD_POSIX, "action": "modify"}]
+    return []
+
+
+def _money_follow(vault, mapping, turn_id):
+    """帳裡掛的實體、品項的商品與地點跟著換（記帳 2）；拿掉的實體不叫這裡，名字留在帳裡。回給日誌的 changed。"""
+    from kb._lib import money
+    if money.rename_entity(vault, mapping, turn_id):
+        return [{"path": money.MONEY_POSIX, "action": "modify"}]
     return []
 
 

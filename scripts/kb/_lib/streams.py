@@ -1,8 +1,11 @@
 """共用流水檔（多人共用 1，D-288）：每台只寫自己的 .system/streams/<種類>/<這台代號>.jsonl，一行一筆改動，讀的時候合起來。
 
-行：{"v","op":"create|set|mask","id","seq","base","by","who","at","turn","set":{欄:值},"unset":[欄],"reverts":[…]}。
+行：{"v","op":"create|set|mask","id","seq","base","by","who","at","turn","set":{欄:值},"unset":[欄],"reverts":[…],
+"drop":{欄:[元素]},"undrop":{欄:[元素]}}。
 合併：同一筆照 seq、同 seq 照 by 排；每一欄取最後一個設這一欄的行；兩行設同一欄、值不同、彼此都沒看過對方
 （A.seq > B.base 而且 B.seq > A.base）才算撞到，進 conflicts。
+只往後加的欄（APPEND_ONLY，D-337）：不取最後一行，把每一行帶來的清單合起來（同內容只留一次、照 date 再照版號排），不算撞到；
+退回的行帶 drop（被退回那次加的元素，之後別台的行再帶著也不回來）、undrop（退回一次退回：放回來）。
 各模組照舊「整份讀進、整份交回」：io.read_json／write_json_atomic 認得 LEGACY 的檔名，轉到這裡（doc_to_records／records_to_doc）。
 刪掉一筆寫 set {"_del": true}（讀回來不列）；undo 一筆新增寫 RETRACT 的收回欄（kb versions undo）。
 """
@@ -15,7 +18,7 @@ from pathlib import Path
 
 from kb._lib.io import FileLock, read_json, write_json_atomic
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2  # 跟大升級走（D-335）：遷移表有新列的那一版 +1，tools/release.py 守；舊版讀到比它新的行照讀、寫之前停（D-298）
 STREAMS_REL = ".system/streams"
 LOCAL_REL = ".system/local"
 LEGACY_REL = ".system/legacy"
@@ -36,7 +39,10 @@ KINDS = {
     "profile": (".system/profile.json", "profile", None, {}),
     "inventory": (".system/inventory.json", "list", "entries", {"status": "deleted"}),
     "pending": (".system/pending.json", "list", "items", {"status": "done"}),
+    "money": (".system/money.json", "list", "items", {"status": "cancelled"}),  # 帳（記帳 2，D-339）
 }
+# 種類 → 只往後加的欄（D-337）：合起來時各行的清單聯集、不算撞到；退回只拿掉那次加的元素
+APPEND_ONLY = {"agenda": ("history",), "money": ("history",)}
 # 掃描看到的、只在這台算的那一半放 .system/local/<種類>.json（新定 3）；共用那一半走流水檔
 SPLIT = ("inventory", "pending", "profile")
 LOCAL_PROFILE = ("md_sha256",)  # 設定檔 md 這台渲染出的指紋：md 不進 git、每台自己畫（#42），比手改要用這台的
@@ -62,6 +68,12 @@ def legacy_rel(kind):
 
 def _is_archived(rec):
     return bool(rec.get("archived"))
+
+
+def append_only(kind):
+    """這種類只往後加的欄（D-337）；沒有回空的。"""
+    return APPEND_ONLY.get(base(kind), ())
+
 
 COMPACT_BYTES = 1_000_000  # 自己的檔超過這個大小，寫完順手併掉被同一台後面的行蓋過的舊行
 hard_delete = False  # purge 期間：刪掉的筆連這台檔裡的舊行一起拿掉（原文不留在自己的檔裡）
@@ -301,20 +313,20 @@ def load(vault, kind):
     cp = _cache_path(vault, kind)
     try:
         c = json.loads(cp.read_text(encoding="utf-8"))
-        if c.get("sig") == sig:
+        if c.get("sig") == sig and c.get("v") == FORMAT_VERSION:  # 舊版算的快取（合併規則可能不同，D-337）不用
             st = State()
             st.records = {k: v for k, v in c["records"]}
             st.meta, st.conflicts = c["meta"], c["conflicts"]
             return st
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    st = _merge(vault, files)
+    st = _merge(vault, files, kind)
     if files:
         _mirror(vault, kind, st)
     try:
         cp.parent.mkdir(parents=True, exist_ok=True)
         tmp = cp.with_name(cp.name + f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"sig": sig, "records": list(st.records.items()), "meta": st.meta,
+        tmp.write_text(json.dumps({"sig": sig, "v": FORMAT_VERSION, "records": list(st.records.items()), "meta": st.meta,
                                    "conflicts": st.conflicts}, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, cp)
     except OSError:
@@ -386,17 +398,76 @@ def _mirror_edited(vault, kind, derived=None):
     return doc if isinstance(doc, dict) else None
 
 
-def _merge(vault, files):
+def _ekey(e):
+    return json.dumps(e, ensure_ascii=False, sort_keys=True)
+
+
+def _seq(row):
+    s = row.get("seq", 0)
+    return s if isinstance(s, int) else 0
+
+
+def _old_format(row):
+    v = row.get("v", 1)
+    return not isinstance(v, int) or v < 2
+
+
+class _Fold:
+    """一行一行套到一筆上：一般欄取最後一行；只往後加的欄（D-337）把各行帶來的清單合起來，
+    同內容只留一次、照 date 再照版號（seq、by、行的先後、清單裡的位置）排；drop 的拿掉、undrop 的放回。
+    格式 1（0.34.0 以前）的行在這種欄照舊整份取代。"""
+
+    def __init__(self, kind):
+        self.lists = append_only(kind) if kind else ()
+        self.acc = {}  # (id, 欄) → ({內容: (排序, 元素)}, {拿掉的內容})
+
+    def apply(self, rec, rid, row, n=0):
+        touched = set()
+        for k, v in (row.get("set") or {}).items():
+            if k in self.lists and isinstance(v, list):
+                if _old_format(row):  # 格式 1 的行照舊讀（整份取代，含舊版退回寫的較短清單）；從格式 2 的行起才合起來
+                    self.acc[(rid, k)] = ({}, set())
+                seen = self.acc.setdefault((rid, k), ({}, set()))[0]
+                for i, e in enumerate(v):
+                    key = _ekey(e)
+                    if key not in seen:
+                        date = e.get("date") if isinstance(e, dict) else None
+                        seen[key] = ((str(date or ""), _seq(row), str(row.get("by", "")), n, i), e)
+                touched.add(k)
+            else:
+                rec[k] = v
+                self.acc.pop((rid, k), None)
+        for k in row.get("unset") or []:
+            rec.pop(k, None)
+            self.acc.pop((rid, k), None)
+        for name in ("drop", "undrop"):
+            got = row.get(name)
+            for k, es in (got.items() if isinstance(got, dict) else ()):
+                if k not in self.lists or not isinstance(es, list):
+                    continue
+                gone = self.acc.setdefault((rid, k), ({}, set()))[1]
+                for e in es:
+                    (gone.add if name == "drop" else gone.discard)(_ekey(e))
+                if isinstance(rec.get(k), list):
+                    touched.add(k)
+        for k in touched:
+            seen, gone = self.acc[(rid, k)]
+            rec[k] = [e for key, (_s, e) in sorted(seen.items(), key=lambda kv: kv[1][0]) if key not in gone]
+        return rec
+
+
+def _merge(vault, files, kind=None):
     stats["merges"] += 1
     rows = []
     for f in files:
         for i, row in _read_file(vault, f):
-            rows.append((row.get("seq", 0) if isinstance(row.get("seq", 0), int) else 0, str(row.get("by", "")), len(rows), row))
+            rows.append((_seq(row), str(row.get("by", "")), len(rows), row))
     rows.sort(key=lambda r: r[:3])
     st = State()
+    fold = _Fold(kind)
     setters = {}  # (id, field) → [行]
     masks = []
-    for _seq, _by, _n, row in rows:
+    for _s, _by, n, row in rows:
         op = row.get("op")
         if op == "mask":
             masks.append(row)
@@ -405,13 +476,11 @@ def _merge(vault, files):
         if not isinstance(rid, str):
             continue
         rec = st.records.setdefault(rid, {})
-        for k, v in (row.get("set") or {}).items():
-            rec[k] = v
-            setters.setdefault((rid, k), []).append(row)
-        for k in row.get("unset") or []:
-            rec.pop(k, None)
-            setters.setdefault((rid, k), []).append(row)
-        st.meta[rid] = {"seq": max(row.get("seq", 0), st.meta.get(rid, {}).get("seq", 0)), "by": row.get("by"),
+        fold.apply(rec, rid, row, n)
+        for k in list(row.get("set") or {}) + list(row.get("unset") or []):
+            if k not in fold.lists:  # 只往後加的欄不算撞到（D-337）
+                setters.setdefault((rid, k), []).append(row)
+        st.meta[rid] = {"seq": max(_seq(row), st.meta.get(rid, {}).get("seq", 0)), "by": row.get("by"),
                         "who": row.get("who"), "at": row.get("at")}
     for (rid, field), lines in setters.items():
         if len(lines) < 2:
@@ -490,8 +559,8 @@ def diff(before, after, state=None):
     return out
 
 
-def write(vault, kind, before, after, turn_id=None, who=None, reverts=None):
-    """比出新增、刪掉、改了哪幾欄，每筆一行 append 進這台的檔。回寫了幾行。"""
+def write(vault, kind, before, after, turn_id=None, who=None, reverts=None, row_extra=None):
+    """比出新增、刪掉、改了哪幾欄，每筆一行 append 進這台的檔。回寫了幾行。row_extra 是每行另外帶的欄（退回的 drop／undrop）。"""
     vault = Path(vault)
     path = own_file(vault, kind)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -537,6 +606,8 @@ def write(vault, kind, before, after, turn_id=None, who=None, reverts=None):
                 row["unset"] = un
             if reverts:
                 row["reverts"] = reverts
+            if row_extra:
+                row.update(row_extra)
             app = _app()
             if app:
                 row["app"] = app
@@ -872,39 +943,50 @@ def _history(vault, kind, rid):
     for f in _files(vault, kind):
         for _i, row in _read_file(vault, f):
             if row.get("op") != "mask" and row.get("id") == rid:
-                rows.append((row.get("seq", 0), str(row.get("by", "")), len(rows), row))
+                rows.append((_seq(row), str(row.get("by", "")), len(rows), row))
     rows.sort(key=lambda r: r[:3])
     return [r[3] for r in rows]
 
 
-def _apply(rec, row):
-    rec = {} if rec is None else rec
-    rec.update(row.get("set") or {})
-    for k in row.get("unset") or []:
-        rec.pop(k, None)
-    return rec
-
-
 def line_effects(vault, kind, rid, seq, by):
-    """一行改了什麼：{"op", "old"（改之前這筆的欄，沒有是 None）, "new", "fields", "row"}；找不到回 None。"""
+    """一行改了什麼：{"op", "old"（改之前這筆的欄，沒有是 None）, "new", "fields", "row"}；找不到回 None。
+    old／new 照合併的規則算（只往後加的欄是到那一行為止的聯集，D-337）。"""
     rec = None
-    for row in _history(vault, kind, rid):
+    fold = _Fold(base(kind))
+    for n, row in enumerate(_history(vault, kind, rid)):
         if row.get("seq") == seq and row.get("by") == by:
             old = None if rec is None else dict(rec)
-            new = _apply(dict(rec) if rec is not None else None, row)
+            new = fold.apply(dict(rec or {}), rid, row, n)
             fields = list((row.get("set") or {}).keys()) + list(row.get("unset") or [])
             return {"op": row.get("op"), "old": old, "new": new, "fields": fields, "row": row}
-        rec = _apply(rec, row)
+        rec = fold.apply({} if rec is None else rec, rid, row, n)
     return None
 
 
 def later_lines(vault, kind, rid, seq, fields, skip_turns=()):
-    """比 seq 大、設了 fields 其中一欄的行（skip_turns 的回合寫的不算）。"""
+    """比 seq 大、設了 fields 其中一欄的行（skip_turns 的回合寫的不算）。只往後加的欄不算（D-337：別人加了歷程不是改了同一欄）。"""
+    fields = set(fields) - set(append_only(kind))
     out = []
     for row in _history(vault, kind, rid):
-        if row.get("seq", 0) > seq and row.get("turn") not in skip_turns and                 set(fields) & (set(row.get("set") or {}) | set(row.get("unset") or [])):
+        if _seq(row) > seq and row.get("turn") not in skip_turns and \
+                fields & (set(row.get("set") or {}) | set(row.get("unset") or [])):
             out.append(row)
     return out
+
+
+def _undo_list(old, new, cur):
+    """退回一行時只往後加的欄（D-337）：那行加的元素拿掉（drop）、那行拿掉的放回（undrop，退回一次退回）；別人加的照留。
+    old／new 是那行之前、之後的清單，cur 是現在的。回 (新清單, drop, undrop)。"""
+    old = old if isinstance(old, list) else []
+    new = new if isinstance(new, list) else []
+    cur = cur if isinstance(cur, list) else []
+    was, now = {_ekey(e) for e in old}, {_ekey(e) for e in new}
+    drop = [e for e in new if _ekey(e) not in was]
+    undrop = [e for e in old if _ekey(e) not in now]
+    gone = {_ekey(e) for e in drop}
+    out = [e for e in cur if _ekey(e) not in gone]
+    have = {_ekey(e) for e in out}
+    return out + [e for e in undrop if _ekey(e) not in have], drop, undrop
 
 
 def current(vault, kind, rid):
@@ -919,15 +1001,22 @@ def revert_line(vault, kind, rid, effects, turn_id, who=None):
     row = effects["row"]
     ref = [{"kind": kind, "id": rid, "seq": row.get("seq"), "by": row.get("by")}]
     new = dict(cur)
+    lists = {}
     if effects["op"] == "create" or effects["old"] is None:
         new.update(RETRACT.get(kind) or {"_del": True})
     else:
         for f in effects["fields"]:
-            if f in effects["old"]:
+            if f in append_only(kind):  # 只拿掉那次加的那幾行，別人加的留著（D-337）
+                new[f], drop, undrop = _undo_list(effects["old"].get(f), (effects["new"] or {}).get(f), cur.get(f))
+                if drop:
+                    lists.setdefault("drop", {})[f] = drop
+                if undrop:
+                    lists.setdefault("undrop", {})[f] = undrop
+            elif f in effects["old"]:
                 new[f] = effects["old"][f]
             else:
                 new.pop(f, None)
-    write(vault, kind, {rid: cur}, {rid: new}, turn_id=turn_id, who=who, reverts=ref)
+    write(vault, kind, {rid: cur}, {rid: new}, turn_id=turn_id, who=who, reverts=ref, row_extra=lists)
     return True
 
 

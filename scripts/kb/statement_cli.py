@@ -23,9 +23,11 @@ RESTORED_LINE = "恢復了：{}（說「退回」可以改回去）"
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="statement_command", metavar="<子子命令>", required=True)
     ad = subs.add_parser("add", help="記一條客戶口述", description="記一句客戶說的事實或決定，掛在登記過的實體上。")
-    ad.add_argument("--entity", action="append", required=True, help="掛的實體名稱，可以重複（客戶自己也可以）")
+    ad.add_argument("--entity", action="append", default=[], help="掛的實體名稱，可以重複（客戶自己也可以）；帶 --money 的可以不掛")
     ad.add_argument("--text", required=True, help="一句話，最多 200 字")
     ad.add_argument("--replaces", help="改的是哪一條舊口述（s-…）：舊的記成被這條取代")
+    ad.add_argument("--money", nargs=2, metavar=("收或付", "金額"),
+                    help="帳關著時錢的話加這個記號（例 --money 收 5000）：問加總時 kb money sum 照它算（D-343）")
     wd = subs.add_parser("withdraw", help="收回一條口述", description="客戶說沒這回事：這條記成已收回（紀錄留著）。")
     wd.add_argument("id", help="口述編號（s-…）")
     rs = subs.add_parser("restore", help="恢復被取代的那條", description="取代它的那條已經收回：原本那條改回有效。")
@@ -33,6 +35,7 @@ def add_arguments(sub):
     ls = subs.add_parser("list", help="列出口述", description="預設列有效的；--all 含被取代與收回的。")
     ls.add_argument("--entity", help="只列掛在這個實體上的")
     ls.add_argument("--all", action="store_true", help="全部列出")
+    ls.add_argument("--money", action="store_true", help="只列標過錢的（帳關著時記的，D-343）")
     for p in (ad, wd, rs, ls):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
@@ -51,10 +54,12 @@ def _masked(vault, text):
 
 
 def _add(vault, args, as_json, conversation, turn_id):
+    money = statements.money_mark(*args.money) if args.money else None
     it, old = statements.add(vault, args.text, [n.strip() for n in args.entity], turn_id,
-                             replaces=args.replaces.strip() if args.replaces else None)
+                             replaces=args.replaces.strip() if args.replaces else None, money=money)
     if old is None:
-        line, note = f"已記下：{it['text']}（{'、'.join(it['entities'])}）", f"記下口述：{_masked(vault, it['text'])}"
+        where = f"（{'、'.join(it['entities'])}）" if it["entities"] else ""
+        line, note = f"已記下：{it['text']}{where}", f"記下口述：{_masked(vault, it['text'])}"
     else:
         line = f"已改：{old['text']} → {it['text']}"
         note = f"改口述：{_masked(vault, old['text'])} → {_masked(vault, it['text'])}"
@@ -96,6 +101,8 @@ def _list(vault, args, as_json):
         if found is not None:
             k = entities.key(found["name"])
         items = [s for s in items if any(entities.key(n) == k for n in s.get("entities") or [])]
+    if args.money:
+        items = [s for s in items if isinstance(s.get("money"), dict)]
     order = {id(s): i for i, s in enumerate(data["statements"])}  # 同一天照記的先後，新的在上
     items = sorted(items, key=lambda s: (s.get("date") or "", order[id(s)]), reverse=True)
     if as_json:

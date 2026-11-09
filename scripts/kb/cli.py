@@ -46,6 +46,8 @@ COMMANDS = {
                                "decline 檔名像密碼的這份不要讀，list 列出"),
     "unlock": ("kb.unlock", "密碼：save 存進這台電腦的憑證管理員，get 取出，forget 忘掉，list 列名字，"
                             "authorize 這一種的 PDF 用這組開，revoke 不再自動開"),
+    "money": ("kb.money_cli", "帳：add 記一筆，settle 收付了，edit 改，cancel／reopen，attach 補出處，merge 兩筆是同一筆，count 盤點，"
+              "unsure 看不出是不是她的錢，scanned 卡的錢抽過了，list、candidates、sum、stock、backfill 只讀"),
     "agenda": ("kb.agenda_cli", "日程：add 加一條，edit 改，done／cancel／reopen 改狀態，recheck 原檔新版看過了，list 列出，render 重寫日程.md，export 把日程放到指定資料夾"),
     "asks": ("kb.asks_cli", "要問客戶的事：列出跟這一句有關的與有時間性的（--about 名稱、--all 全部），其餘報件數；set-aside 先放著"),
     "lookup": ("kb.lookup_cli", "查一個實體：只讀，一次給齊綜合卡、檔案卡、口述、裁示、推算、日程與還沒整理的份數"),

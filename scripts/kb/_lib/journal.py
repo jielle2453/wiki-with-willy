@@ -491,6 +491,7 @@ def recent(vault, n, changed=False, find=None, since=None, skip=None):
 # 系統檔的白話（D-158）：同一件事的 JSON 與 md 說成同一個詞；不在這裡的照檔名說
 SYSTEM_WORDS = {
     ".system/agenda.json": "日程", "系統/日程.md": "日程",
+    ".system/money.json": "帳", "系統/帳.md": "帳",
     ".system/pending.json": "待處理", "系統/待處理.md": "待處理",
     ".system/statements.json": "口述",
     ".system/rulings.json": "裁示", "系統/裁示.md": "裁示",
@@ -504,7 +505,7 @@ SYSTEM_WORDS = {
     ".system/lint.json": "健檢紀錄", ".system/set_aside.json": "先放著的清單", ".system/renders.json": "手改比對紀錄",
     ".system/statements-archive.json": "口述封存", ".system/findings-archive.json": "推算封存",
 }
-SYSTEM_PREFIXES = ((".system/handedits/", "你手改的那份"), ("系統/健檢報告/", "健檢報告"))
+SYSTEM_PREFIXES = ((".system/handedits/", "你手改的那份"), ("系統/健檢報告/", "健檢報告"), ("系統/帳/", "帳"))
 NAMES_SHOWN = 3
 _TOP_RESERVED = ("檔案索引", "系統", ".system", HOLD_DIR)
 

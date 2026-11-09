@@ -153,7 +153,7 @@ def build(out, vault, config, tell_all=True):
     steps = [s for s in full if s["step"] in ("sync",) + PURGE_STEPS] if batch else full  # 清殘留批次時也留（疑義第 8 條）
     asks, hidden = visible(vault, annotate(vault, asks, config))  # 先放著的不列（D-226），有時間性的照列
     if not tell_all:
-        return {"plan": steps, "asks": _number(asks), "tell": agenda.tell_lines(vault) + _tagged_tell(vault),
+        return {"plan": steps, "asks": _number(asks), "tell": agenda.tell_lines(vault) + _money_tell(vault) + _tagged_tell(vault),
                 "set_aside": hidden}
     waiting = _waiting(out, vault)
     announce = ANNOUNCE.format(n=waiting, how_long=_how_long(waiting, vault, config)) if waiting and not batch else None
@@ -688,6 +688,15 @@ def _inbox_asks(vault):
     return out
 
 
+def _money_tell(vault):
+    """這一回合從檔案記的帳（記帳 2，照 agenda.tell_lines）；讀不到就沒有。"""
+    try:
+        from kb._lib import money
+        return money.tell_lines(vault)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _number(asks):
     n = 0
     for ask in asks:
@@ -706,11 +715,14 @@ def renumber(asks):
 
 SET_ASIDE_POSIX = ".system/set_aside.json"
 PENDING_KEYED = ("missing", "close")  # 這兩種題目住在 pending.json，key 就是 p- 編號
-PENDING_ONLY = ("handedit", "tag_edit", "lint", "unreadable", "script_touched", "conflict", "report")  # 沒有整理題的待處理，照這個順序
+PENDING_ONLY = ("handedit", "tag_edit", "lint", "unreadable", "script_touched", "conflict", "money_dupe", "money_unsure", "report")  # 沒有整理題的待處理，照這個順序
 # 急的排前面：有時間性的 → 整理題照 _asks 的順序 → 沒有整理題的待處理
 _ORDER = ("batch", "drift", "missing", "credential_same_kind", "ruling_recheck", "overdue", "agenda_conflict", "close", "draft",
           "inbox_place", "name") + tuple(f"pending_{k}" for k in PENDING_ONLY) + ("carried",)
 PENDING_HOW = "{客戶的話}"
+MONEY_FILL = "帳的欄"
+MONEY_FILL_RULE = ("照那張卡與她的話寫 --amount、--date（收付那天）或 --due（到期日）、--entity、--item、--text，沒有的不寫；"
+                   "字有 $ 這類符號用單引號包")
 
 
 def _digest(text):
@@ -899,6 +911,17 @@ def _pending_results(item):
         return (got or [resolve]) + [drop]
     if kind == "conflict":
         return [_result("說哪個對", note="照 note skill 記下她說的（口述或裁示），記完 kb pending resolve " + pid), drop]
+    data = item.get("data") or {}
+    if kind == "money_dupe":  # 記帳 2：D-276 看不出是不是同一筆
+        return [_result("是同一筆", [cmd("money", "merge", data.get("keep", ""), data.get("other", ""))]),  # merge 自己關這件
+                _result("不是", [cmd("pending", "resolve", pid, "--how", "不是同一筆，兩筆都留")])]
+    if kind == "money_unsure":  # 記帳 2：D-274 看不出流向；do 帶 --resolves，記完程式就關這件（確認報告 #6）
+        card = data.get("card", "")
+        fill = [_fill(MONEY_FILL, MONEY_FILL_RULE)]
+        adds = [(label, cmd("money", "add", "--card", card, "--dir", d, "--resolves", pid)) for label, d in (("她收的", "收"), ("她付的", "付"))]
+        return [_result(label, [c and c + " {" + MONEY_FILL + "}"], fill=fill, argv=None)  # 首頁不直接跑（帳的欄要 AI 填）
+                for label, c in adds] + [
+                _result("不是她的錢", [cmd("pending", "resolve", pid, "--how", "不是她的錢，不記")])]
     return [resolve, drop]
 
 
@@ -967,6 +990,7 @@ def _tell(out, vault):
     if out.get("unbacked"):
         lines.append(UNBACKED_TELL.format(n=out["unbacked"]))
     lines.extend(agenda.tell_lines(vault))
+    lines.extend(_money_tell(vault))
     lines.extend(_opened_tell(vault))
     lines.extend(_judged_tell(vault))
     lines.extend(_tagged_tell(vault))

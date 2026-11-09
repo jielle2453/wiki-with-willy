@@ -513,6 +513,24 @@ def set_agenda_fp(vault, fid, fp, turn_id):
     return True
 
 
+def set_money_fp(vault, fid, fp, turn_id):
+    """選填欄 money_fp（記帳 2，照 set_agenda_fp）：製卡者對這張卡抽完錢與數字欄時那張卡的指紋；帳不是開的時候只抽數字欄，
+    記成 <fp>:fields（改成開時要重抽，D-343）。鎖裡備份再寫，值沒變什麼都不做；回有沒有寫。清冊沒有這個編號丟 KeyError。"""
+    p = _path(vault)
+    with FileLock(p):
+        data = load(vault)
+        entry = next((e for e in data["entries"] if e.get("id") == fid), None)
+        if entry is None:
+            raise KeyError(fid)
+        if entry.get("money_fp") == fp:
+            return False
+        from kb._lib import turn
+        turn.backup(vault, INVENTORY_POSIX, turn_id)
+        entry["money_fp"] = fp
+        _write(vault, data["entries"])
+    return True
+
+
 def set_credential_declined(vault, fid, day, turn_id):
     """選填欄 credential_declined（密碼與守門 D-181 第 1 點）：檔名像密碼、客戶說不要讀（或 AI 判斷不是同一種）的日期，
     之後 asks 不再問。鎖裡備份再寫，已經記過就不改；回有沒有寫。清冊沒有這個編號丟 KeyError。"""

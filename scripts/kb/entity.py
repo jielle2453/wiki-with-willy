@@ -1,4 +1,4 @@
-"""kb entity add／confirm／accept／rename／merge／remove／rebuild／clean／list／render／log／progress／suggest-close／alias
+"""kb entity add／confirm／accept／rename／merge／remove／rebuild／clean／list／render／log／progress／suggest-close／alias／panel
 （實體與綜合卡第 3 點，D-115～D-117、D-057；日程第 4 點，D-126、D-127；note 改知識第 4 點，D-148）。
 
 實體清單只准這裡寫（I-080）：寫入的子子命令在 entities.json 的鎖裡讀改寫（等 30 秒，等不到「等不到鎖，沒有寫入」exit 3），
@@ -14,7 +14,12 @@ tag <名稱> 欄=詞[,詞] …（D-505）：寫標籤正本（欄= 後面空著�
 rename 搬了夾、夾裡有客戶原檔時，鎖外接著 inventory.scan（只掃知識庫）加 apply，讓原檔的新位置入冊（同 folders add）。
 log <名稱> <行>…（D-521）：紀事由程式加進綜合卡（synthesis.add_events），--synced 加完標記整理到。
 render [名稱…]：只重寫那幾張的快取欄；--synced 另換 整理到、更新日（D-518，AI 用 Edit 改完內文之後跑），有沒寫的 exit 1。
+field <名稱> 欄=數字 … (--said | --card f-…)（記帳 1b，D-281、D-336）：寫數字欄（entities.set_fields；「欄=」空著加 --said 是清掉），
+有綜合卡就把數字行照正本寫回卡上（備份 by program）；她說過的欄卡蓋不掉、分不出哪份新開待處理。field --from-card [<名稱>…]：
+她在 Obsidian 屬性欄改了數字行（或標籤行），照她改的記回來（同 tag --from-card，數字算她說的、from hand）。
 終端機跑的記一段工作日誌程式段（D-085），command 是 entity <子子命令>；對話裡叫的併進回合。
+panel <名稱或編號> --json（記帳 3，D-340，唯讀、不開回合）：Obsidian 外掛在她打開綜合卡時叫，回這個實體的日程（還沒做完的、照 D-289
+這台看得到的）與帳（money.panel：合計、未收付全部、最近幾筆；商品的庫存與各店、地點的各商品），每行帶要開的頁與那一行；外掛只畫。
 """
 import argparse
 import json
@@ -22,6 +27,7 @@ from pathlib import Path
 
 from kb import journal_cli
 from kb._lib import agenda, cards, entities, inventory, pending, plan, streams, synthesis, turn
+from kb._lib import profile as profile_lib
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
@@ -84,7 +90,17 @@ def add_arguments(sub):
     tg.add_argument("pairs", nargs="*", help="欄=詞（多個詞用逗號分開；欄= 後面空著是看過、沒有）；--from-card 時是更多名稱")
     tg.add_argument("--said", action="store_true", help="她親口說的：這一欄之後照她說的留著")
     tg.add_argument("--from-card", action="store_true", help="她在卡上手改了標籤行：合字典的照她改的記進正本")
-    for p in (ad, cf, ac, rn, mg, rm, rb, cl, ls, rd, lg, pg, sc, al, tg):
+    pn = subs.add_parser("panel", help="卡底下的日程與帳（唯讀，外掛用）",
+                         description="綜合卡底下「日程與帳」那段的資料：日程（全隊的＋我的）、帳、庫存；只讀、不開回合。")
+    pn.add_argument("name", help="實體名稱、別名或編號（e-…）")
+    fd = subs.add_parser("field", help="記實體的數字欄", description="照設定檔第九節記售價、進價這類數字；有綜合卡的卡上數字行跟著改。")
+    fd.add_argument("ref", nargs="?", help="名稱或編號（e-…）")
+    fd.add_argument("pairs", nargs="*", help="欄=數字（收 1,800、1.5、3萬；欄= 空著加 --said 是清掉）；--from-card 時是更多名稱")
+    how = fd.add_mutually_exclusive_group()
+    how.add_argument("--said", action="store_true", help="她親口說的：之後檔案蓋不掉")
+    how.add_argument("--card", help="製卡從這張檔案卡讀到的（f-…）")
+    how.add_argument("--from-card", action="store_true", help="她在卡的屬性欄改了數字：照她改的記回來")
+    for p in (ad, cf, ac, rn, mg, rm, rb, cl, ls, rd, lg, pg, sc, al, tg, fd, pn):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -427,24 +443,35 @@ def _tag_text(tags, fields):
 
 FROM_CARD_DONE = "照你在卡上改的記下了：{what}"
 FROM_CARD_NONE = "卡上的標籤跟實體清單一樣，沒有要記的"
+FIELD_FROM_CARD_NONE = "卡上的數字與標籤跟實體清單一樣，沒有要記的"
 
 
 def _from_card(vault, args, as_json, conversation, turn_id):
+    """tag／field --from-card：標籤行與數字行一起照她改的記回來（記帳 1b 第 6 點）。"""
     refs = [r for r in [args.ref, *args.pairs] if r] or None
     got = entities.copy_card_edits(vault, refs, turn_id)
-    done = [g for g in got if g["written"]]
+    done = [g for g in got if g["written"] or g.get("numbers")]
     lines = []
     if done:
-        what = "；".join(f"{g['entity']['name']} {_tag_text(g['entity'].get('tags') or {}, g['written'])}" for g in done)
-        lines.append(FROM_CARD_DONE.format(what=what))
+        prof = entities._profile(vault)
+        bits = []
+        for g in done:
+            text = "；".join(x for x in (_tag_text(g["entity"].get("tags") or {}, g["written"]) if g["written"] else "",
+                                         _field_text(prof, g["entity"], g["numbers"]) if g.get("numbers") else "") if x)
+            bits.append(f"{g['entity']['name']} {text}")
+        lines.append(FROM_CARD_DONE.format(what="；".join(bits)))
         journal_cli.record_program_or_warn(vault, lines[0], [{"path": entities.ENTITIES_POSIX, "action": "modify"}],
-                                           "entity tag", conversation)
-    lines += [p for g in got for p in g["problems"]]
-    _out(as_json, lines or [FROM_CARD_NONE],
-         {"recorded": [{"name": g["entity"]["name"], "fields": g["written"], "tags": g["entity"].get("tags") or {}}
+                                           f"entity {args.entity_command}", conversation)
+    lines += [p for g in got for p in g["problems"] + g.get("number_problems", [])]
+    none = FIELD_FROM_CARD_NONE if args.entity_command == "field" else FROM_CARD_NONE
+    _out(as_json, lines or [none],
+         {"recorded": [{"name": g["entity"]["name"], "fields": g["written"], "tags": g["entity"].get("tags") or {},
+                        "numbers": {f: entities.field_value(g["entity"], f) for f in g.get("numbers") or []}}
                        for g in done],
           "problems": [{"name": g["entity"]["name"], "field": row["field"], "card": v, "problem": text}
-                       for g in got for (row, v), text in zip(g["bad"], g["problems"])]})
+                       for g in got for (row, v), text in zip(g["bad"], g["problems"])]
+          + [{"name": g["entity"]["name"], "field": f, "card": raw, "problem": text}
+             for g in got for (f, raw), text in zip(g.get("number_bad", []), g.get("number_problems", []))]})
     return 0
 
 
@@ -474,6 +501,84 @@ def _tag(vault, args, as_json, conversation, turn_id):
         journal_cli.record_program_or_warn(vault, line, changed, "entity tag", conversation)
     _out(as_json, [line], {"name": e["name"], "changed": got["changed"], "kept": got["kept"], "tags": tags,
                            "card": got["card"]})
+    return 0
+
+
+FIELD_FORMAT = "要寫成 kb entity field <名稱> 欄=數字 … 加 --said 或 --card f-…（或 --from-card 把卡上手改的記回來）"
+FIELD_KEPT = {"said": "（{fields}是你說過的，照你說的留著）", "older": "（{fields}這份檔比較舊，沒換）"}
+FIELD_CONFLICT_LINE = "{field}兩份檔寫的不一樣、分不出哪份比較新，記了一件待處理問你：{old}／{new}"
+
+
+ABSORBED = "卡上你在屬性欄改的數字先照你改的記下了：{what}"
+
+
+def _took_text(prof, entry, took):
+    """抄回的那幾欄：「售價 2,000 元、進價 沒有」。"""
+    from kb._lib import numbers
+    parts = []
+    for f, v in took.items():
+        unit = _unit(prof, entry.get("type"), f)
+        parts.append(f"{f} 沒有" if v is None else f"{f} {numbers.show(v)}" + (f" {unit}" if unit else ""))
+    return "、".join(parts)
+
+
+def _field_pairs(raw):
+    """欄=數字 → {欄: 字}；欄= 後面空著是清掉（""）。寫法不對丟 EntityRefused。"""
+    out = {}
+    for arg in raw:
+        field, sep, rest = str(arg).partition("=")
+        if not sep or not field.strip():
+            raise entities.EntityRefused(FIELD_FORMAT)
+        out[field.strip()] = rest.strip()
+    return out
+
+
+def _unit(prof, type_, field):
+    row = next((f for f in profile_lib.fields_for(prof, type_) if entities.key(f["field"]) == entities.key(field)), None)
+    return (row or {}).get("unit") or ""
+
+
+def _field_text(prof, entry, fields):
+    """「售價 1,800 元、進價 1,200 元」；清掉的寫「沒有」。"""
+    from kb._lib import numbers
+    parts = []
+    for f in fields:
+        v = entities.field_value(entry, f)
+        unit = _unit(prof, entry.get("type"), f)
+        parts.append(f"{f} 沒有" if v is None else f"{f} {numbers.show(v)}" + (f" {unit}" if unit else ""))
+    return "、".join(parts)
+
+
+def _field(vault, args, as_json, conversation, turn_id):
+    if args.from_card:
+        return _from_card(vault, args, as_json, conversation, turn_id)
+    if not args.ref or not args.pairs:
+        raise entities.EntityRefused(FIELD_FORMAT)
+    pairs = _field_pairs(args.pairs)
+    took = entities.absorb_field_edits(vault, args.ref, turn_id)  # 卡上她改過還沒抄回的數字先抄回（測試報告中 #2）
+    got = entities.set_fields(vault, args.ref, pairs, turn_id, said=args.said, card=args.card)
+    e = got["entity"]
+    prof = entities._profile(vault)
+    changed = [{"path": entities.ENTITIES_POSIX, "action": "modify"}] if got["changed"] or took else []
+    rel = synthesis.rewrite_field_lines(vault, e, turn_id) if got["changed"] else None
+    if rel:
+        changed.append({"path": rel, "action": "modify"})
+    line = f"{e['name']}：{_field_text(prof, e, list(got['changed']))}" if got["changed"] else f"{e['name']}：沒有要改的"
+    lines = [line]
+    if took:
+        lines.append(ABSORBED.format(what=f"{e['name']} {_took_text(prof, e, took)}"))
+    for why, text in FIELD_KEPT.items():
+        names = [k["field"] for k in got["kept"] if k["why"] == why]
+        if names:
+            lines.append(text.format(fields="、".join(names)))
+    from kb._lib import numbers
+    for c in got["conflicts"]:
+        lines.append(FIELD_CONFLICT_LINE.format(field=c["field"], old=numbers.show(c["old"]), new=numbers.show(c["new"])))
+    if changed:
+        journal_cli.record_program_or_warn(vault, line, changed, "entity field", conversation)
+    _out(as_json, lines, {"entity": e["name"], "changed": got["changed"], "kept": got["kept"],
+                          "conflicts": got["conflicts"], "card": got["card"],
+                          **({"absorbed": took} if took else {})})
     return 0
 
 
@@ -525,20 +630,73 @@ def _print_tagged(vault, rows, got):
     return 0
 
 
+PANEL_NO_ENTITY = "實體清單沒有「{}」"
+
+
+def panel_data(vault, name, today=None):
+    """kb entity panel 的本體（D-340）：{"entity","type","agenda": [...],"money": {...}|None,"stock": {...}|None}。
+    日程照 agenda.visible（這台這個人看得到的，D-289）、掛這個實體、還沒做完的（含逾期），每行帶 line（畫的字）、page、match
+    （點了開日程頁的那一行）；帳與庫存照 money.panel。名稱、別名、編號都認。"""
+    from kb._lib import money
+    data = entities.load(vault)
+    text = str(name or "").strip()
+    e = next((x for x in data["entities"] if x.get("id") == text), None) or entities.find(data, text)[0]
+    if e is None or e.get("status") != "active":
+        raise entities.EntityRefused(PANEL_NO_ENTITY.format(text))
+    today = today or agenda._today()
+    k = entities.key(e["name"])
+    link = agenda.linker(vault, data)
+    rows = []
+    for it in sorted(agenda.visible(vault, agenda.load(vault)["items"]), key=agenda._order):
+        if it.get("status") != "open" or not any(entities.key(n) == k for n in it.get("entities") or []):
+            continue
+        day = it.get("date")
+        late = it.get("kind") in agenda.TRACKED and isinstance(day, str) and day < today
+        span = agenda._span(it) if it.get("kind") == "period" else money._wd(day)
+        line = f"{span}{agenda.KIND_TEXT.get(it.get('kind'), it.get('kind'))}：{it.get('text')}"
+        if late:
+            line += f"（已過 {(agenda.dt.date.fromisoformat(today) - agenda.dt.date.fromisoformat(day)).days} 天）"
+        rows.append({"id": it.get("id"), "date": day, "kind": agenda.KIND_TEXT.get(it.get("kind"), it.get("kind")),
+                     "text": it.get("text"), "late": late, "line": line, "page": agenda.MD_POSIX,
+                     "match": agenda._line(it, link) if it.get("kind") != "period" else None})
+    got = money.panel(vault, e["name"], today)
+    return {"entity": e["name"], "type": e.get("type"), "agenda": rows, "money": got["money"], "stock": got["stock"]}
+
+
+def _panel(vault, args, as_json):
+    got = panel_data(vault, args.name)
+    lines = [f"{got['entity']}的日程與帳"] + [f"- {a['line']}" for a in got["agenda"]]
+    if got["money"]:
+        lines.append(f"帳：{got['money']['head']}")
+        lines += [f"- {r['line']}" for r in got["money"]["open"] + got["money"]["recent"]]
+    if got["stock"] and got["stock"].get("line") and not (got["money"] and "total" in got["stock"]):
+        lines.append(got["stock"]["line"])
+    _out(as_json, lines, got)
+    return 0
+
+
 SYNCED_NEEDS_NAME = "--synced 要給至少一個實體名稱"
 
 
 def _render(vault, args, as_json, conversation, turn_id):
     names = list(getattr(args, "names", None) or [])
+    absorbed = []
     if getattr(args, "synced", False):
-        written, skipped = synthesis.mark_synced(vault, names, turn_id)
+        written, skipped = synthesis.mark_synced(vault, names, turn_id, absorbed=absorbed)
     else:
         written, skipped = synthesis.render_cache(vault, names or None, turn_id), []
     line = f"重寫了 {len(written)} 張綜合卡的檔頭"
-    if written:
-        journal_cli.record_program_or_warn(vault, line, [{"path": rel, "action": "modify"} for rel in written],
-                                           "entity render", conversation)
-    _out(as_json, [line] + [f"沒寫 {s['name']}：{s['reason']}" for s in skipped], {"written": written, "skipped": skipped})
+    changed = [{"path": rel, "action": "modify"} for rel in written]
+    if absorbed:
+        changed.append({"path": entities.ENTITIES_POSIX, "action": "modify"})
+    if written or absorbed:
+        journal_cli.record_program_or_warn(vault, line, changed, "entity render", conversation)
+    prof = entities._profile(vault) if absorbed else None
+    took = [ABSORBED.format(what="；".join(
+        f"{a['name']} {_took_text(prof, entities.find(entities.load(vault), a['name'])[0] or {}, a['fields'])}" for a in absorbed))] \
+        if absorbed else []
+    _out(as_json, [line] + took + [f"沒寫 {s['name']}：{s['reason']}" for s in skipped],
+         dict({"written": written, "skipped": skipped}, **({"absorbed": absorbed} if absorbed else {})))
     return 1 if skipped else 0
 
 
@@ -557,7 +715,7 @@ def _log(vault, args, as_json, conversation, turn_id):
 
 WRITERS = {"add": _add, "confirm": _confirm, "accept": _accept, "rename": _rename, "merge": _merge, "remove": _remove,
            "rebuild": _rebuild, "clean": _clean, "progress": _progress, "suggest-close": _suggest_close, "alias": _alias,
-           "tag": _tag, "log": _log}
+           "tag": _tag, "log": _log, "field": _field}
 
 
 def run(args):
@@ -571,6 +729,8 @@ def run(args):
     try:
         if command == "list":
             return _list(vault, as_json, args.tag)
+        if command == "panel":  # 唯讀，不開回合（外掛每開一張綜合卡就叫一次）
+            return _panel(vault, args, as_json)
         if command == "render" and getattr(args, "synced", False) and not args.names:
             _out(as_json, [SYNCED_NEEDS_NAME], {"error": SYNCED_NEEDS_NAME})
             return 2

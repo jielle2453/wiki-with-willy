@@ -4,6 +4,9 @@
 要你確認的（跟 kb asks 同一支）、其他要處理的、最近。外掛只畫，不自己推日期、不判逾期（D-252）：逾期、今天、這週照 agenda 既有的
 算法（counts 的條件），marks 的 late 照 D-129。日程第二題的欄位（baseline、critical、slack、derived、children、links）這題一律給預設值。
 任何一區讀不到只記進 warnings、那一區給空的，其他區照畫。
+記帳 3（D-273（2）、D-282、D-338，新定 2、3）加欄不改舊欄：待辦三組也排帳裡還沒收付、有到期日的（id m-…、source money、dir、amount、
+settle_ok：金額未知時 false；page／match 是點標題要開的帳頁那一行）；todo.stock 是低於安全庫存的商品、todo.owed 是這台的人墊的還沒還的；
+時間軸在它掛的事類實體那一列畫帳的點（沒掛事類實體的不上時間軸）；links.money 是帳頁（帳關著而且沒有任何筆時 null）。
 """
 import contextlib
 import copy
@@ -88,22 +91,79 @@ def _card_resolver(vault, ent_data):
     return resolve
 
 
-def _todo(vault, items, today, card_of=None):
-    """待辦三組：已經過了（TRACKED 逾期）、今天、這週（今天之後 lead_days 天內）；條件跟 agenda.counts 一樣。"""
+def _money_mark(m, today, card=None, link=None, ents=None):
+    """帳的到期件 → 跟日程那件同形狀的 mark（到期種類），多 source money、dir、amount、settle_ok；page／match 是點標題要開的帳頁那一行。
+    拿掉的實體不放 entities（點不開），名字加註「（已拿掉）」寫進 text（記帳 2）。"""
+    from kb._lib import money
+    ents = ents or {"entities": []}
+    names = list(m.get("entities") or [])
+    gone = [money._label(ents, n) for n in names if money._label(ents, n) != n]
+    it = {"id": m.get("id"), "kind": "deadline", "date": m.get("due"), "status": "open", "text": "",
+          "entities": [n for n in names if money._label(ents, n) == n], "source": m.get("source")}
+    out = _mark(it, today, card)
+    amt = money._amt_text(m)
+    out.update(text=" ".join(x for x in (money.DIR_TEXT.get(m.get("dir"), ""), amt or "（金額未知）", "、".join(gone),
+                                         m.get("text") or "") if x)
+               + (f"（{m['advanced_by']}墊）" if m.get("advanced_by") else ""),
+               source="money", dir=m.get("dir"), amount=m.get("amount"), settle_ok=m.get("amount") is not None,
+               page=money.MD_POSIX, match=money.open_line(m, link or (lambda n: n), today))
+    return out
+
+
+def _todo(vault, items, today, card_of=None, money_items=(), link=None, ents=None):
+    """待辦三組：已經過了（TRACKED 逾期）、今天、這週（今天之後 lead_days 天內）；條件跟 agenda.counts 一樣。
+    帳的到期件（money_items）照到期種類排進去（記帳 3）。"""
     now = dt.date.fromisoformat(today)
     groups = {"overdue": [], "today": [], "week": []}
-    for it in sorted(items, key=agenda._order):
+    rows = list(items) + [agenda._money_row(m) for m in money_items]
+    for it in sorted(rows, key=lambda i: (i.get("date", ""), i.get("time") or "", i.get("text") or "", i.get("id", ""))):
         d = agenda._day(it)
         if it.get("status") != "open" or it.get("kind") == "period" or d is None:
             continue
+        card = card_of(it.get("money") or it) if card_of else None
+        mark = _money_mark(it["money"], today, card, link, ents) if "money" in it else _mark(it, today, card)
         if d < now:
             if it.get("kind") in agenda.TRACKED:
-                groups["overdue"].append(_mark(it, today, card_of(it) if card_of else None))
+                groups["overdue"].append(mark)
         elif d == now:
-            groups["today"].append(_mark(it, today, card_of(it) if card_of else None))
+            groups["today"].append(mark)
         elif d <= now + dt.timedelta(days=agenda._window(vault, it)):
-            groups["week"].append(_mark(it, today, card_of(it) if card_of else None))
+            groups["week"].append(mark)
     return groups
+
+
+def _stock_todo(vault, ent_data):
+    """庫存不足（D-282）：合計低於安全庫存的商品，補了自動消失；card 是那個商品的綜合卡（點了開它）。只比換得到基本單位的那組，
+    text 是「12 瓶＋2 箱（不知道一箱幾瓶）」（D-344 補，同 money.low_stock）。"""
+    from kb._lib import money
+    out = []
+    for p in money.stock(vault)["products"]:
+        if p.get("min") is None or p["unit"] != p["base"] or p["total"] >= p["min"]:
+            continue
+        e = entities.find(ent_data, p["name"])[0]
+        card = entities.locate(vault, e, ent_data) if e is not None and e.get("type") else None
+        out.append({"entity": money._label(ent_data, p["name"]), "stock": p["total"], "min": p["min"], "unit": p["unit"], "text": p["text"], "places": p["places"],
+                    "card": card})
+    return out
+
+
+def _owed_todo(vault, link=None):
+    """公司還欠你（D-338）：這台的人是墊的人、還沒還的；照 D-289「我的」只給他看。單人沒有。"""
+    from kb._lib import money, people
+    me = people.me(vault)
+    if not me:
+        return []
+    return [{"id": i.get("id"), "amount": i.get("amount"), "text": i.get("text") or "", "date": i.get("due"),
+             "page": money.MD_POSIX, "match": money.open_line(i, link or (lambda n: n), agenda._today())}
+            for i in money.owed_to(vault, me)["items"]]
+
+
+def _money_link(vault):
+    """首頁上方的「帳」連結：帳關著而且沒有任何筆時不出。"""
+    from kb._lib import money
+    if money.mode(vault) == "off" and not money.load(vault)["items"]:
+        return None
+    return money.MD_POSIX
 
 
 def _matter_rows(vault, ent_data):
@@ -129,8 +189,9 @@ def _in_window(it, lo, hi):
     return start <= hi
 
 
-def _timeline(vault, items, ent_data, today, card_of=None, lo=None, hi=None):
-    """lo、hi 是外掛捲到別段時指定的起訖（裁定 34）；沒給就是今天前 7 天到後 home_timeline_days 天。"""
+def _timeline(vault, items, ent_data, today, card_of=None, lo=None, hi=None, money_items=(), link=None):
+    """lo、hi 是外掛捲到別段時指定的起訖（裁定 34）；沒給就是今天前 7 天到後 home_timeline_days 天。
+    帳的到期件（新定 3）畫成點，在它掛的事類實體那一列；沒掛事類實體的不上時間軸（只在待辦）。"""
     now = dt.date.fromisoformat(today)
     lo = lo or (now - dt.timedelta(days=7)).isoformat()
     hi = hi or (now + dt.timedelta(days=config.get(vault, "home_timeline_days"))).isoformat()
@@ -141,10 +202,20 @@ def _timeline(vault, items, ent_data, today, card_of=None, lo=None, hi=None):
             continue
         owner = next((matters[entities.key(n)] for n in it.get("entities") or [] if entities.key(n) in matters), None)
         buckets.setdefault(owner["id"] if owner else OTHER_KEY, (owner, []))[1].append(it)
+    for m in money_items:
+        row = agenda._money_row(m)
+        owner = next((matters[entities.key(n)] for n in m.get("entities") or [] if entities.key(n) in matters), None)
+        if owner is not None and _in_window(row, lo, hi):
+            buckets.setdefault(owner["id"], (owner, []))[1].append(row)
     histories = agenda._histories(vault)
     rows = []
+
+    def mark_of(i):
+        card = card_of(i.get("money") or i) if card_of else None
+        return _money_mark(i["money"], today, card, link, ent_data) if "money" in i else _mark(i, today, card)
     for key, (owner, its) in buckets.items():
-        marks = [_mark(i, today, card_of(i) if card_of else None) for i in sorted(its, key=agenda._order)]
+        marks = [mark_of(i) for i in sorted(its, key=lambda i: (i.get("date", ""), i.get("time") or "", i.get("text") or "",
+                                                                  i.get("id", "")))]
         pauses = []
         if owner is not None:
             pauses = [{"start": a, "end": b} for a, b in agenda._pauses(histories, owner["name"], today) if b >= lo and a <= hi]
@@ -411,7 +482,11 @@ def _build(vault, opened, today, hour, lo=None, hi=None):
     sources = safe("來源清單", lambda: sources_lib.load(vault), None)  # 壞了只「最近」那區空白
     got = agenda.counts(vault, {"items": items}, today)
     card_of = safe("卡", lambda: _card_resolver(vault, ent_data), None)  # 讀不到只是點下去開不了卡，外掛退回開日程.md
-    todo = _todo(vault, items, today, card_of)
+    money_items = agenda.money_due(vault)  # 讀不到當沒有（記帳 3）
+    link = agenda.linker(vault, ent_data, mark_removed=True)  # 帳頁上的寫法（點了找那一行用）
+    todo = _todo(vault, items, today, card_of, money_items, link, ent_data)
+    todo["stock"] = safe("庫存", lambda: _stock_todo(vault, ent_data), [])
+    todo["owed"] = safe("報帳", lambda: _owed_todo(vault, link), [])
     asks = safe("要問你的事", lambda: _asks(vault), [])
     asked = {a.get("key") for a in asks}
     others = safe("待處理", lambda: _others(vault, asked), [])
@@ -421,9 +496,10 @@ def _build(vault, opened, today, hour, lo=None, hi=None):
         "cheer": cheer(today, hour),
         "counts": {"overdue": got["overdue"], "today": got["today"], "week": got["upcoming"], "confirm": len(confirm),
                    "other": len(others), "claude": len(claude) + len(others)},
-        "timeline": _timeline(vault, items, ent_data, today, card_of, lo, hi),
+        "timeline": _timeline(vault, items, ent_data, today, card_of, lo, hi, money_items, link),
         "todo": todo, "confirm": confirm, "claude": claude, "others": others,
         "recent": [] if sources is None else safe("最近", lambda: _recent(vault, list(opened or []), sources), []),
+        "links": {"money": safe("帳", lambda: _money_link(vault), None)},
     }
     if warnings:
         out["warnings"] = warnings

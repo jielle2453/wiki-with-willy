@@ -1648,7 +1648,7 @@ def _unmark(vault, led, acting_tid):
 
 
 def _render_record_md(vault, path, rt):
-    """條目改回後，由它重算的 md 重畫（日程、待處理、裁示）；重畫失敗只記 log。"""
+    """條目改回後，由它重算的 md 重畫（日程、待處理、裁示、帳頁）；重畫失敗只記 log。"""
     try:
         if path == ".system/agenda.json":
             from kb._lib import agenda
@@ -1659,6 +1659,11 @@ def _render_record_md(vault, path, rt):
         elif path == ".system/rulings.json":
             from kb._lib import rulings
             rulings.render(vault, turn_id=rt)
+        elif path == ".system/money.json":  # 帳（記帳 3）：帳頁與年頁，日程頁也列帳的到期件
+            from kb._lib import agenda, money
+            money.render(vault, turn_id=rt)
+            if (Path(vault) / agenda.MD_POSIX).exists():
+                agenda.render(vault, turn_id=rt)
     except Exception as e:  # noqa: BLE001
         ledger.log_error(vault, f"undo 重畫 {path} 失敗：{type(e).__name__}: {e}", source="versions")
 
@@ -1856,6 +1861,7 @@ def _undo_stream_item(ctx, it):
         others = set()
         for r in _other_machine_lines(vault, it):
             others |= set(r.get("set") or {}) | set(r.get("unset") or [])
+        others -= set(streams.append_only(st["kind"]))  # 歷程照拿掉自己那一行，別人加的留著（D-337）
         eff = dict(eff, fields=[f for f in eff["fields"] if f not in others])
         if not eff["fields"]:
             return "skipped", "gone", f"{it['what']} 的欄位都被別人改過了，沒有可改回的"

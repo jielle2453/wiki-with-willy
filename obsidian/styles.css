@@ -1892,3 +1892,78 @@
 .wwh-infer-pop .wwh-pop-open {
   color: var(--text-accent);
 }
+
+/* ---- 記帳 3：首頁的帳（「帳」連結、庫存不足、公司還欠你、金額未知的件） ---- */
+.wwh-top-links {
+  margin: 4px 0 0;
+  font-size: var(--font-ui-small);
+}
+
+.wwh-check-none {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin: 2px 0 0;
+}
+
+.wwh-group-head.is-stock {
+  color: var(--wwh-orange);
+}
+
+.wwh-todo.is-stock .wwh-todo-body,
+.wwh-todo.is-owed .wwh-todo-body {
+  padding-left: 30px;
+}
+
+/* ---- 記帳 3：綜合卡底下外掛畫的「日程與帳」（D-340，不在卡檔裡） ---- */
+.wwh-panel {
+  margin: 24px 0 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
+  user-select: text;
+}
+
+/* 即時預覽：Obsidian 把底部半頁留白寫在 .cm-content 的 padding-bottom，那段接在內容後面會被推到留白下面。
+   有那段時收掉內容的留白、改在那段後面留（確認 #2）；後面有顯示中的反向連結時，留白由反向連結那邊管。 */
+.markdown-source-view.mod-cm6 .cm-sizer:has(> .wwh-panel) .cm-content {
+  padding-bottom: 0 !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-sizer > .wwh-panel {
+  margin-bottom: 40vh;
+}
+
+.markdown-source-view.mod-cm6 .cm-sizer > .wwh-panel:has(+ .embedded-backlinks:not([style*="display: none"])) {
+  margin-bottom: 12px;
+}
+
+.wwh-panel-title {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.wwh-panel-head {
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+.wwh-panel ul {
+  margin: 2px 0;
+  padding-left: 1.2em;
+}
+
+.wwh-panel-line {
+  cursor: pointer;
+}
+
+.wwh-panel-line:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+.wwh-panel-stock {
+  margin-top: 6px;
+  color: var(--text-muted);
+}

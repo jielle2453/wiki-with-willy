@@ -31,6 +31,8 @@ _BOX = re.compile(r"^-\s*\[\s?\]\s*")
 _DATE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}|\d{1,2}-\d{1,2}")
 _WEEKDAY = re.compile(r"（週[一二三四五六日]）")
 _COUNT = re.compile(r"（\d+）$")  # 日程每行日期後面的星期，改日期時跟著變
+_LINK = re.compile(r"\[\[([^\[\]|]*)\|([^\[\]]*)\]\]")
+_BARE_LINK = re.compile(r"\[\[([^\[\]|]*)\]\]")
 
 
 CARRIED_TITLE = "你加的（還沒處理）"
@@ -284,7 +286,14 @@ def saved(vault):
 
 # ---------- 她改了什麼 ----------
 
-def _lines(text, ignore_sections):
+def unlink(text):
+    """程式頁上的連結還原成名字（記帳 3，D-280）：[[路徑|名字]] → 名字，[[路徑]] → 路徑最後一段。
+    比對手改前先過一遍：她沒動連結的行、Obsidian 搬卡時改了路徑的行都不算改。"""
+    text = _LINK.sub(lambda m: m.group(2), str(text))
+    return _BARE_LINK.sub(lambda m: m.group(1).rsplit("/", 1)[-1].split("#", 1)[0].split("^", 1)[0], text)
+
+
+def _lines(text, ignore_sections, skip_line=None):
     ignore_sections = tuple(ignore_sections) + (CARRIED_TITLE,)  # 「你加的」那段另外處理（kb renders apply），不當條目比
     out, skip, fence = [], False, False
     for raw in str(text).splitlines():
@@ -298,7 +307,7 @@ def _lines(text, ignore_sections):
             skip = any(line[3:].startswith(s) for s in ignore_sections)
             out.append(_COUNT.sub("", line))  # 段名後面的件數不比（件數變了不是她改的，T-29）
             continue
-        if skip or not line.strip():
+        if skip or not line.strip() or (skip_line is not None and skip_line(line)):
             continue
         out.append(line)
     return out
@@ -308,12 +317,14 @@ def _undated(line):
     return _DATE.sub("#", _WEEKDAY.sub("", line))
 
 
-def diff(base, hers, lines, ignore_sections=()):
+def diff(base, hers, lines, ignore_sections=(), skip=None):
     """base 是程式寫的那份、hers 是她改的；lines 是 [(條目那行, 編號)]。回 {"checked","removed","changed_date","other"}：
-    前三種每項 {"id","line"}（改日期多 "to"：她寫的日期），other 是看不出對到哪一條的行（她加的、改了字的）。"""
+    前三種每項 {"id","line"}（改日期多 "to"：她寫的日期），other 是看不出對到哪一條的行（她加的、改了字的）。
+    比之前三樣都先 unlink（連結還原成名字，回的行也是還原過的）；skip(行) 為真的行不比（帳頁的表與合計，記帳 3）。"""
+    lines = [(unlink(line), pid) for line, pid in lines]
     ids = {line: pid for line, pid in lines}
-    base_lines = _lines(base, ignore_sections)
-    hers_lines = _lines(hers, ignore_sections)
+    base_lines = _lines(unlink(base), ignore_sections, skip)
+    hers_lines = _lines(unlink(hers), ignore_sections, skip)
     base_set = set(base_lines)
     got = {"checked": [], "removed": [], "changed_date": [], "other": []}
     seen = set()

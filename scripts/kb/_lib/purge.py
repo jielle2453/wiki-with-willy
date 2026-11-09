@@ -11,7 +11,9 @@
    manifest 那幾行 action 改 purged、path 換「（已排除）」（Stop 補記的「改了」才不會帶出卡名，疑義第 4 條）；
 4. .system/temp/ 裡那些條目的轉出檔（<編號>.md、<編號>_p<N>.png），office 工作區裡同檔名的副本；
 5. 目前的 pending.json 那些條目刪掉、agenda.json 從那些卡抽的推測條目刪掉（確認過的留著、拿掉出處卡）、
-   rulings.json 掛那些卡的拿掉卡編號（只掛那些卡的標已收回）、findings.json 依據含那些卡的推算整條刪掉；
+   rulings.json 掛那些卡的拿掉卡編號（只掛那些卡的標已收回）、findings.json 依據含那些卡的推算整條刪掉、
+   entities.json 數字欄出處是那些卡的值清掉、old 裡那幾筆拿掉（記帳 1b；回合夾的 entities.json 舊版同一支）；
+   money.json 出處是那些卡的帳：推測的整筆拿掉、她說過的留著出處清掉（記帳 2；回合夾的舊版同一支）；
 6. 工作日誌：changed 與 note 裡指到那夾的路徑換「（已排除）」，有指到的回合 result 整欄換掉，prompt 不動（journal.scrub）；
 7. ledger.tsv 與 hook-errors.log 裡指到那夾的路徑換「（已排除）」。
 先改目前的狀態（備進這一回合），再清全部回合（含這一回合剛備的），最後是暫存、日誌與留痕。
@@ -29,7 +31,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from kb._lib import agenda, card_base, cards, entities, findings, inventory, journal, ledger, pending, rulings, synthesis, turn
+from kb._lib import agenda, card_base, cards, entities, findings, inventory, journal, ledger, money, pending, rulings, synthesis, turn
 from kb._lib import sources as sources_lib
 from kb._lib.io import FileLock, read_json, write_json_atomic, write_text_atomic
 from kb._lib.paths import decode_uri, long_path, normalize
@@ -339,6 +341,41 @@ def drop_findings(data, ids):
     return before - len(data["findings"])
 
 
+def drop_entity_fields(data, ids):
+    """實體的數字欄（記帳 1b 第 9 點）：值的出處卡是那些卡的，值清掉（null）；old 裡出處是那些卡的那幾筆拿掉。回有沒有改。"""
+    if not isinstance(data, dict) or not isinstance(data.get("entities"), list):
+        return False
+    changed = False
+    for e in data["entities"]:
+        if not isinstance(e, dict):
+            continue
+        for k, v in list(e.items()):
+            if not (isinstance(k, str) and k.startswith(entities.FIELD_PREFIX) and isinstance(v, dict)):
+                continue
+            old = [o for o in v.get("old") or [] if not (isinstance(o, dict) and o.get("card") in ids)]
+            new = dict(v, old=old)
+            if v.get("card") in ids:
+                new.update(value=None, card=None, doc_date=None, at=entities._now_stamp())
+            if new != v:
+                e[k] = new
+                changed = True
+    return changed
+
+
+def _entity_fields(vault, ids, turn_id):
+    """目前的實體清單：數字欄的出處卡在那夾的清掉（entities 的鎖、先備進這一回合）。"""
+    with entities.lock(vault):
+        data = entities.load(vault)
+        before = {e.get("id"): {k: (v or {}).get("value") for k, v in entities.fields_of(e).items()} for e in data["entities"]}
+        if not drop_entity_fields(data, ids):
+            return
+        entities._save(vault, data, turn_id)
+    for e in data["entities"]:  # 卡上那幾行跟著拿掉，不然下一句會當成她在屬性欄寫的
+        now = {k: (v or {}).get("value") for k, v in entities.fields_of(e).items()}
+        if now != before.get(e.get("id")):
+            synthesis.rewrite_field_lines(vault, e, turn_id)
+
+
 def _pending_md(data):
     with tempfile.TemporaryDirectory() as d:
         pending.render(d, data)
@@ -363,7 +400,9 @@ def _current_state(vault, ids, turn_id, counts):
              (agenda.AGENDA_POSIX, lambda: agenda._mutate(vault, turn_id, lambda data: (None, drop_agenda(data, ids)))),
              (rulings.RULINGS_POSIX, lambda: rulings._mutate(vault, turn_id, lambda data: (None, drop_rulings(data, ids)))),
              (findings.FINDINGS_POSIX, lambda: counts.__setitem__(
-                 "findings", counts["findings"] + findings._mutate(vault, turn_id, f_change))))
+                 "findings", counts["findings"] + findings._mutate(vault, turn_id, f_change))),
+             (entities.ENTITIES_POSIX, lambda: _entity_fields(vault, ids, turn_id)),
+             (money.MONEY_POSIX, lambda: money.purge_cards(vault, ids, turn_id)))  # 帳：推測的整筆拿掉、她說過的清出處（記帳 2）
     for rel, act in parts:
         if (Path(vault) / rel).exists():
             try:
@@ -521,6 +560,8 @@ def _lint_files(vault, ids, words, turn_id, counts, plain=None, derived=(), gone
                     agenda.render(vault, turn_id, hand={})
                 elif rel == rulings.MD_POSIX:
                     rulings.render(vault, turn_id, hand={})
+                elif money.is_page(rel):  # 帳頁（記帳 3）
+                    money.render(vault, turn_id, hand={})
 
     def obsidian():
         _obsidian_traces(vault, ids, folder, counts)
@@ -656,6 +697,14 @@ def _derived(vault, ids, names=()):
                     words.add(str(i["text"]))
     except (OSError, ValueError):
         pass
+    try:  # 帳：從那些卡推測記的（記帳 2）
+        for i in money.load(vault)["items"]:
+            if isinstance(i, dict) and (i.get("origin") or {}).get("card") in ids and i.get("source") == "inferred":
+                gone.add(i.get("id"))
+                if i.get("text"):
+                    words.add(str(i["text"]))
+    except (OSError, ValueError):
+        pass
     try:
         for i in pending.load(vault)["items"]:
             if set(i.get("file_ids") or []) & set(ids):
@@ -774,6 +823,8 @@ JSON_DROPS = {
     rulings.RULINGS_POSIX: lambda data, ids, prefix: drop_rulings(data, ids),
     findings.FINDINGS_POSIX: lambda data, ids, prefix: bool(drop_findings(data, ids)),
     findings.ARCHIVE_POSIX: lambda data, ids, prefix: bool(drop_findings(data, ids)),  # lint 題：推算封存檔（T-8）
+    entities.ENTITIES_POSIX: lambda data, ids, prefix: drop_entity_fields(data, ids),  # 數字欄的出處卡（記帳 1b）
+    money.MONEY_POSIX: lambda data, ids, prefix: bool(money.drop_cards(data, ids)),  # 帳的出處卡（記帳 2）
 }
 
 
@@ -1028,7 +1079,7 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state, mask=None
             write_text_atomic(f, "".join(kept))
             counts["backups"] += 1
     elif mask is not None and rel != sources_lib.SOURCES_REL and f.suffix.casefold() in TEXT_SUFFIXES \
-            and not any(rel == md for _j, md, _r in MD_RENDERS):
+            and not any(rel == md for _j, md, _r in MD_RENDERS) and not money.is_page(rel):
         # 別的檔的舊版（其他文字檔）：文字裡那夾的路徑換掉；字詞（編號、標題）只套工作日誌（第六輪）
         _mask_file(f, mask, counts)
     if gone:
@@ -1041,12 +1092,18 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state, mask=None
 MD_RENDERS = ((pending.PENDING_POSIX, pending.MD_POSIX, lambda vault, data: _pending_md(data)),
               (agenda.AGENDA_POSIX, agenda.MD_POSIX, lambda vault, data: agenda.render_text(vault, data)),
               (rulings.RULINGS_POSIX, rulings.MD_POSIX,
-               lambda vault, data: rulings.render_text(data, agenda.card_titles(vault))))
+               lambda vault, data: rulings.render_text(data, agenda.card_titles(vault))),
+              (money.MONEY_POSIX, money.MD_POSIX, lambda vault, data: money.render_text(vault, data)))  # 帳頁（記帳 3）
 
 
 def _scrub_md(vault, files, rows, mask, counts, datas, state):
     """待處理.md、日程.md、裁示.md 的舊版：同一回合有 JSON 舊版就照改過的重渲染，沒有而內容指到那夾就刪掉、標 purged。"""
-    for json_rel, md_rel, render in MD_RENDERS:
+    year_dir = files / money.YEAR_DIR  # 帳的年頁：照「系統/帳/ 底下」認，跟總覽同一份帳（記帳 3）
+    years = [(money.MONEY_POSIX, f"{money.YEAR_DIR}/{f.name}",
+              lambda vault, data, rel=f"{money.YEAR_DIR}/{f.name}": money.render_pages(vault, data)[rel][0])
+             for f in sorted(year_dir.glob("*.md")) if money.is_page(f"{money.YEAR_DIR}/{f.name}")] \
+        if _under_files(files, year_dir) and year_dir.is_dir() else []
+    for json_rel, md_rel, render in tuple(MD_RENDERS) + tuple(years):
         md = files / md_rel
         if not _under_files(files, md) or not md.is_file():
             continue  # files/ 底下巢狀的 junction 不跟（第三輪修）
@@ -1431,7 +1488,7 @@ def _scrub_streams(vault, mask, counts):
         for kind in streams.KINDS:
             streams.purge_tombstones(vault, kind)
         for f in sorted((root / streams.STREAMS_REL).glob(f"*/{own}.jsonl")):
-            if f.parent.name in ("card_base", "entities", "agenda", "rulings", "findings", "set_aside"):
+            if f.parent.name in ("card_base", "entities", "agenda", "rulings", "findings", "set_aside", "money"):
                 _mask_file(f, mask, quiet)  # 其他種類（清冊、待處理、口述、來源登記）各有自己的清法，不整檔遮
         legacy = root / streams.LEGACY_REL
         for f in sorted(legacy.rglob("*.json")) if legacy.is_dir() else []:

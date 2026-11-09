@@ -1,4 +1,4 @@
-"""程式產生的頁（系統/日程.md、待處理.md、裁示.md）被她手改：認得出的照做，認不出的留在頁面上（Obsidian 首頁，#22，D-263 修訂 D-223）。
+"""程式產生的頁（系統/日程.md、待處理.md、裁示.md、帳.md 與帳的年頁）被她手改：認得出的照做，認不出的留在頁面上（Obsidian 首頁，#22，D-263 修訂 D-223）。
 
 認得出的（renders.diff）：打勾、刪掉一行、改日期；每頁能做的不一樣（日程：完成、取消、改日期；待處理：處理好了、不用管；裁示：收回），
 這頁做不了的（例如裁示打勾）算認不出。認不出的（新打的行、改了某行的字）記進 renders.json 的 carried，重新產生時放在那頁最底下
@@ -15,19 +15,28 @@ from kb._lib import ledger, renders
 KEEP_FAILED = renders.KEEP_FAILED
 UNRECOGNIZED = "unrecognized"  # 認手改時出錯：她那份存了、開了 handedit，頁面照常重寫（裁定 22）
 SIMILAR = 0.6  # 刪掉的那行跟新打的那行像到這個程度，算「改了某行的字」而不是刪一行加一行
-PAGE_NAMES = {"系統/日程.md": "日程.md", "系統/待處理.md": "待處理.md", "系統/裁示.md": "裁示.md"}
+PAGE_NAMES = {"系統/日程.md": "日程.md", "系統/待處理.md": "待處理.md", "系統/裁示.md": "裁示.md", "系統/帳.md": "帳.md"}
+MONEY_YEAR_PREFIX = "系統/帳/"  # 帳的每年一頁（記帳 3，D-284）：照「系統/帳/ 底下」認，不一頁一頁列
+
+
+def page_name(rel):
+    """工作日誌與每句開頭說的頁名：三頁加帳.md 照 PAGE_NAMES；帳的年頁說「帳/2026.md」。"""
+    rel = str(rel)
+    if rel.startswith(MONEY_YEAR_PREFIX):
+        return rel[len("系統/"):]
+    return PAGE_NAMES.get(rel, rel)
 
 
 def _strip(line):
     return line[2:] if line.startswith("- ") else line
 
 
-def plan(vault, rel, hers, base_text, lines, known_ids, ignore_sections=()):
+def plan(vault, rel, hers, base_text, lines, known_ids, ignore_sections=(), skip=None):
     """她改了什麼，分好：{"checked","removed","changed_date"（認得出，每項 {"id","line"}，改日期多 "to"）,
     "add": [{"kind","text","orig"}]（認不出的）, "drop": [carried 編號]（她在「你加的」那段刪掉的）}。
     比對出錯只記 log、當成改了別的。"""
     try:
-        got = renders.diff(base_text, hers, lines, ignore_sections)
+        got = renders.diff(base_text, hers, lines, ignore_sections, skip)
     except Exception as e:  # noqa: BLE001
         ledger.log_error(vault, f"{rel} 手改比對失敗：{type(e).__name__}: {e}", source="renders")
         got = {"checked": [], "removed": [], "changed_date": [], "other": ["（比對不出改了哪裡）"]}
@@ -60,12 +69,12 @@ def is_empty(got):
     return not any(got.get(k) for k in ("checked", "removed", "changed_date", "add", "drop"))
 
 
-def consume(vault, rel, hers, base_text, lines, known_ids, apply_fn, ignore_sections=(), state=None):
+def consume(vault, rel, hers, base_text, lines, known_ids, apply_fn, ignore_sections=(), state=None, skip=None):
     """在鎖裡（呼叫端拿著）處理她那份：回 None（沒有要做的）、KEEP_FAILED（她那份沒存成，這次不重寫）或報告
     {"applied": [句子], "carried": [認不出的字], "dropped": 幾筆不用了, "saved": 她那份存到哪}。
     apply_fn(got) 在資料上做認得出的，回 (做了什麼的句子, 這頁做不了而改記成認不出的)。state 是 dict 時，她那份存好就把路徑放進
     state["saved"]（guarded 靠它知道不用再存一份）。"""
-    got = plan(vault, rel, hers, base_text, lines, known_ids, ignore_sections)
+    got = plan(vault, rel, hers, base_text, lines, known_ids, ignore_sections, skip)
     if is_empty(got):
         return None
     try:
@@ -109,7 +118,7 @@ def guarded(vault, rel, hers, data, run, open_item):
 
 def note(rel, report):
     """工作日誌那句：「照你在日程.md 改的：記成完成『…』、…」。"""
-    name = PAGE_NAMES.get(rel, rel)
+    name = page_name(rel)
     parts = list(report.get("applied") or [])
     if report.get("carried"):
         parts.append(f"{len(report['carried'])} 段字放進「你加的」")

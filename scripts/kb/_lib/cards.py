@@ -943,8 +943,35 @@ def collect(vault, sources, restored=0):
         ledger.log_error(vault, f"日程讀不到，agenda_recheck 與 agenda_unscanned 先給空的：{e}", source="cards")
         out["agenda_recheck"], out["agenda_unscanned"] = [], []
         out["agenda_counts"] = {"overdue": 0, "today": 0, "upcoming": 0}
+    _money_unscanned(vault, out, groups, entries)
     out[plan.UNLOCK_STEP], out["unlock_kinds"] = plan.locked_same_kind(vault, out)  # 密碼與守門 D-181 第 2 點
     return out
+
+
+def _money_unscanned(vault, out, groups, entries):
+    """記帳 2：money_unscanned（還沒抽錢與數字欄的卡）；跟日程的待抽同一批做——日程已經抽過的那張也併進 agenda_unscanned
+    （existing 照日程的給，製卡者照 agenda-scan.md 與 money.md 一起做）。帳讀不到給空的、記 log，不擋整理。"""
+    from kb._lib import agenda, ledger, money
+    try:
+        got = money.unscanned(vault, None, groups, entries, skip={b["id"] for b in out["broken"] if b.get("id")})
+    except ValueError as e:
+        ledger.log_error(vault, f"帳讀不到，money_unscanned 先給空的：{e}", source="cards")
+        got = {"money_unscanned": []}
+    out.update(got)
+    have = {i["id"] for i in out.get("agenda_unscanned") or []}
+    extra = [m for m in got["money_unscanned"] if m["id"] not in have]
+    if not extra:
+        return
+    try:
+        items = agenda.load(vault)["items"]
+    except ValueError:
+        items = []
+    for m in extra:
+        existing = [{"id": i["id"], "kind": agenda.KIND_TEXT.get(i.get("kind"), i.get("kind")), "date": i.get("date"),
+                     "text": i.get("text")} for i in items
+                    if i.get("status") == "open" and (i.get("origin") or {}).get("card") == m["id"]]
+        out.setdefault("agenda_unscanned", []).append({"id": m["id"], "card_path": m["card_path"], "title": m["title"],
+                                                        "existing": existing})
 
 
 def _purge_pending(vault, sources):

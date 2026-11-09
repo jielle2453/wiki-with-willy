@@ -16,6 +16,9 @@ entity_drift（D-057）；前兩桶每項帶這個實體的口述、裁示與推
 header_for 帶正本（實體清單的 tags，D-505）的標籤行；有卡的另帶卡上有那一行、正本還沒有的（字典內的照卡、字典外留空）與她自加的鍵，
 沒有卡的照第八節列出每一欄（正本沒有的留空）。綜合卡檔頭是正本的渲染：hook 驗過之後抄進正本，write_tag_lines 照正本寫回那幾行；
 retag 只改一行（kb profile tag）。tag_changes 比對正本在那一回合的備份（回答末尾那句）。
+數字行（記帳 1b，D-272、D-336）：標籤行後面照設定檔第九節這個型別、有值的欄一欄一行「欄名: 數字」（純數字、不加千分位與單位，
+Obsidian 才認得是數字）；正本是實體的 欄:<欄名>（entities.set_fields），卡上那幾行是它的渲染：header_for 帶、mark_synced 與
+copy_tags 照正本換回（AI 寫錯或改了不算數）、write_field_lines 照正本重寫（沒有值的、型別換了第九節沒有的那幾行拿掉）。
 """
 import re
 from datetime import date, datetime
@@ -52,14 +55,25 @@ def category_text(prof, type_name):
     return profile._REVERSED[0].get(row.get("category"), "") if row else ""
 
 
+MONEY_HINT_OFF = "報價、合約總價、付款期別與已付"  # 帳關著時事的「金額」照舊提示（D-279）
+
+
+def _money_hint(prof, name, hint):
+    """金額段的提示是新的預設、帳關著（第十節 off）→ 換回舊提示（帳關著已付只在卡上，D-274）；她改過的不換。"""
+    new = dict(profile.CATEGORY_SECTIONS["matter"]).get("金額")
+    if name == "金額" and hint == new and profile.money_mode(prof or {}) == "off":
+        return MONEY_HINT_OFF
+    return hint
+
+
 def sections_for(prof, type_):
     """綜合卡要寫的段 [{"name","required","hint"}]：現況、設定檔第四節那個型別的列、推算、紀事（D-523）。"""
     base = [{"name": n, "required": False, "hint": BASE_HINTS[n]} for n in BASE_SECTIONS]
     out = base[:1]
     for s in (prof or {}).get("synthesis_sections") or []:
         if entities.key(s.get("type")) == entities.key(type_):
-            out += [{"name": x["name"], "required": bool(x.get("required")), "hint": x.get("hint", "")}
-                    for x in s.get("sections") or []]
+            out += [{"name": x["name"], "required": bool(x.get("required")),
+                     "hint": _money_hint(prof, x["name"], x.get("hint", ""))} for x in s.get("sections") or []]
     return out + base[1:]
 
 
@@ -186,7 +200,7 @@ def _front_text(front, tags=()):
             out.append(f"{k}: [{', '.join(v)}]")
         else:
             out.append(f"{k}: {v}")
-    out.extend(tag_line(f, v) for f, v in tags)
+    out.extend(tag_line(f, v) for f, v in tags)  # 數字行的值是 number_text 給的字，照寫
     out.append("---")
     return "\n".join(out) + "\n"
 
@@ -228,10 +242,73 @@ def card_tags(front, prof, type_):
             if entities.key(t["field"]) in have]
 
 
-def extra_tags(front, prof, type_):
-    """卡檔頭上 KEYS 與第八節那個型別的欄以外的鍵（她自己加的屬性，裁定 13）[(鍵, 值)]，照卡上的順序。"""
+def extra_tags(front, prof, type_, entity=None):
+    """卡檔頭上 KEYS、第八節那個型別的欄、第九節的數字欄（與實體上留著的數字欄）以外的鍵（她自己加的屬性，裁定 13）
+    [(鍵, 值)]，照卡上的順序。"""
     fields = {entities.key(t["field"]) for t in profile.tags_for(prof, type_)}
+    fields |= {entities.key(f["field"]) for f in profile.fields_for(prof, type_)}
+    fields |= {entities.key(f) for f in entities.fields_of(entity)}
     return [(k, v) for k, v in front.items() if k not in KEYS and entities.key(k) not in fields]
+
+
+def number_text(v):
+    """數字行的值：純數字（整數不帶小數點、不加千分位），Obsidian 屬性欄才認得是數字。"""
+    from decimal import Decimal
+    d = Decimal(str(v))
+    if d == d.to_integral_value():
+        return str(int(d))
+    return format(d.normalize(), "f")
+
+
+def field_lines(entity, prof):
+    """header_for 要帶的數字行 [(欄, 字)]：第九節這個型別、正本有值的欄，照第九節的順序。"""
+    out = []
+    for f in profile.fields_for(prof, (entity or {}).get("type")):
+        v = entities.field_value(entity, f["field"])
+        if v is not None:
+            out.append((f["field"], number_text(v)))
+    return out
+
+
+def write_field_lines(text, entity, prof):
+    """卡檔頭的數字行照正本寫（D-272：數字由程式顯示）：第九節這個型別有值的欄改成正本的數字（沒有那一行補在檔頭結尾的 --- 前），
+    沒有值的、實體上留著但第九節沒有的那幾行拿掉。其他行與內文原樣。回新文字（沒變回原文）。"""
+    want = dict(field_lines(entity, prof))
+    names = [f["field"] for f in profile.fields_for(prof, (entity or {}).get("type"))]
+    names += [f for f in entities.fields_of(entity) if entities.key(f) not in {entities.key(n) for n in names}]
+    for name in names:
+        if name in want:
+            text = _set_raw_line(text, name, want[name])
+        else:
+            text = retag(text, name, lambda v: DROP)
+    return text
+
+
+def rewrite_field_lines(vault, entity, turn_id, undo=None, drop=()):
+    """set_fields／drop_field／rename_field 之後：有綜合卡的那張檔頭數字行照正本重寫（turn.backup by program，同 write_tag_lines）；
+    drop 是另外要拿掉的行（改名前的欄名）。回改到的相對路徑或 None。"""
+    from kb._lib import turn
+    if not entity or entities.is_self(entity) or not entity.get("type") or not entity.get("card"):
+        return None
+    rel = entities.locate(vault, entity)
+    if not rel:
+        return None
+    p = Path(vault) / rel
+    try:
+        text = p.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    new = text
+    for name in drop:
+        new = retag(new, name, lambda v: DROP)
+    new = write_field_lines(new, entity, entities._profile(vault))
+    if new == text:
+        return None
+    turn.backup(vault, rel, turn_id, by="program")
+    if undo is not None:
+        undo.file(rel)
+    write_text_atomic(p, new)
+    return rel
 
 
 def header_tags(vault, entity, prof):
@@ -257,7 +334,7 @@ def header_tags(vault, entity, prof):
                 continue
             v = front_tag(front, t["field"])
         out.append((t["field"], v if v is not None and _tag_ok(t, v) else None))
-    return out + (extra_tags(front, prof, type_) if front is not None else [])
+    return out + (extra_tags(front, prof, type_, entity) if front is not None else [])
 
 
 def _tag_ok(row, v):
@@ -280,7 +357,7 @@ def header_for(vault, entity, mounts_of_it, today=None, data=None, mounts=None, 
         "整理到": synced_lines(mounts_of_it, stmts, ruls, redo_ids(vault, know, mounts_of_it), finds),
         "更新日": today or date.today().isoformat(),
         "檔案卡": card_lines(mounts_of_it), "相關實體": related(data, mounts, entity)},
-        tags if tags is not None else header_tags(vault, entity, prof))
+        (tags if tags is not None else header_tags(vault, entity, prof)) + field_lines(entity, prof))
 
 
 def tag_words(v):
@@ -413,12 +490,12 @@ def copy_tags(vault, rel, turn_id, by=None):
         got.update(changed=res["changed"], kept=res["kept"])
         entry, kept = res["entity"], res["kept"]
     back = kept + missing_tag_fields(text, entry, prof)
-    if back:
-        new = write_tag_lines(text, entry.get("tags"), back)
-        if new != text:
-            turn.backup(vault, rel, turn_id, by="program")
-            write_text_atomic(p, new)
-            got["rewrote"] = True
+    new = write_tag_lines(text, entry.get("tags"), back) if back else text
+    new = write_field_lines(new, entry, prof)  # 數字行 AI 寫錯或改了不算數，照正本寫回（記帳 1b 第 5 點）
+    if new != text:
+        turn.backup(vault, rel, turn_id, by="program")
+        write_text_atomic(p, new)
+        got["rewrote"] = True
     return got
 
 
@@ -441,6 +518,31 @@ def write_tag_lines(text, tags, fields):
         if v is None:
             continue
         text = _set_line(text, field, v)
+    return text
+
+
+def _set_raw_line(text, field, raw):
+    """檔頭 field 那一行換成「field: raw」（底下的清單項一起拿掉）；沒有那一行補在檔頭結尾的 --- 前。"""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n").lstrip("﻿").strip() != "---":
+        return text
+    for i in range(1, len(lines)):
+        bare = lines[i].rstrip("\r\n")
+        eol = lines[i][len(bare):] or "\n"
+        if bare.strip() == "---":
+            lines[i:i] = [f"{field}: {raw}{eol}"]
+            return "".join(lines)
+        k, sep, _raw = bare.partition(":")
+        if not sep or bare.startswith((" ", "- ")) or k.strip() in KEYS or entities.key(k.strip()) != entities.key(field):
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j].startswith(("  - ", "- ")):
+            j += 1
+        new = f"{k.strip()}: {raw}{eol}"
+        if lines[i:j] == [new]:
+            return text
+        lines[i:j] = [new]
+        return "".join(lines)
     return text
 
 
@@ -885,11 +987,13 @@ def _synced_card(vault, e, data, mounts, prof, know):
     return rel, text, (bad[0] if bad else None)
 
 
-def mark_synced(vault, names, turn_id, keep_crlf=False):
+def mark_synced(vault, names, turn_id, keep_crlf=False, absorbed=None):
     """AI 用 Edit 改完內文之後（D-518）：合法綜合卡（只差整理到也算）的 整理到（header_for 同一算法）、更新日（今天）、
     檔案卡、相關實體 換成現行的，其他檔頭行與內文不動；內容沒變不寫；寫前 turn.backup(by="program")。
     名稱可以是別名。回 (寫了的相對路徑, skipped [{"name","reason"}])；找不到、沒卡、卡有別的錯的不寫、列進 skipped。
-    keep_crlf：原檔是 CRLF 就照 CRLF 寫回（entity log 用，裁定 16）。"""
+    keep_crlf：原檔是 CRLF 就照 CRLF 寫回（entity log 用，裁定 16）。
+    數字行換回正本之前，她在屬性欄改過、還沒抄回的先照 --from-card 抄回（entities.absorb_field_edits，記帳 1b 測試報告中 #2）；
+    absorbed 給了清單就把 {"name","fields": {欄: 值}} 放進去（給成功句）。"""
     from kb._lib import turn
     data = entities.load(vault)
     mounts = entities.mounts(vault, data)
@@ -911,10 +1015,16 @@ def mark_synced(vault, names, turn_id, keep_crlf=False):
             skipped.append({"name": name, "reason": reason})
             continue
         p = Path(vault) / rel
+        took = entities.absorb_field_edits(vault, e["id"], turn_id)
+        if took:
+            e = next((x for x in entities.load(vault)["entities"] if x.get("id") == e.get("id")), e)
+            if absorbed is not None:
+                absorbed.append({"name": e["name"], "fields": took})
         ms = mounts.get(e["name"], [])
         stmts, ruls, finds = basis(know, e["name"], mounts)
         new = replace_front(text, {"整理到": synced_lines(ms, stmts, ruls, redo_ids(vault, know, ms), finds),
                                    "更新日": today, "檔案卡": card_lines(ms), "相關實體": related(data, mounts, e)})
+        new = write_field_lines(new, e, prof)  # 數字行照正本（AI 改成別的或刪掉都換回，記帳 1b 第 5 點）
         need = new != text or bool(e.get("aliases"))
         if need and maps is None:
             maps = _fix_maps(vault)

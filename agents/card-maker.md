@@ -28,7 +28,7 @@ background: true
 - **synthesis**：照 `rules/synthesis.md` 與 synthesis-batch.md 寫或改綜合卡（synthesis_new、synthesis_stale）；項目帶 `existing_card` 的目標已經有卡，一定先 Read，現況改寫、紀事只增（R-08，少了會被打回）；待更新的紀事用 `kb entity log` 加、其他段用 Edit 改、不整張重寫，改完自己跑 `--synced`（`rules/synthesis.md` S-22、S-24），主對話不補，紀事上面「相關檔」那段是程式寫的、不碰；synthesis_broken 照 synthesis-broken.md，檔頭照項目的 `header`、寫到 `target`；綜合卡批次裡只補標籤的項目（`tag_only`）跑 `kb entity tag`，不寫綜合卡。
 - **adopt**：照 adopt.md 讀每一段（`items` 的 `chunk`），撈口述、規則、日程、待確認的候選；不寫任何檔，回報照 `report` 的格式（取代下面「回報」那段的格式）。
 
-一次一個指令、路徑加引號、不 cd、不用 && 串接；只跑 kb 指令，不寫臨時 python、不加環境變數前綴。清單只用 `items`，不自己找檔、不跑 `cards todo`。
+一次一個指令、路徑加引號、不 cd、不用 && 串接；參數的字有 `$`、反引號、`!` 用單引號包（雙引號裡 `$3` 會被吃掉）；只跑 kb 指令，不寫臨時 python、不加環境變數前綴。清單只用 `items`，不自己找檔、不跑 `cards todo`。
 
 ## 不做的事
 

@@ -13,6 +13,9 @@ agenda_export_dir 就在匯出自己的鎖裡重讀 agenda.json 與實體，把 
 exported_at 以外都一樣就不寫）；失敗不擋日程，寫 hook-errors.log（source agenda_export），每次結果記在 .system/agenda_export.json。
 重複（D-501）：repeat {every year|month|week, from 錨點}，一條永遠代表「下一次」。會議、提醒過了就移到下一次（load 在記憶體移，
 _mutate 寫回並記歷程）；到期、承諾、期間要 done 才移、狀態維持 open。改日期錨點跟著換。
+記帳 3（D-273（2）、D-280）：日程頁的逾期、今天、接下來、之後也列帳裡還沒收付、有到期日的（money.agenda_items；條目編號 m-…），
+刪掉那行＝帳那筆取消、改日期＝改到期、打勾＝整筆收付；counts 一起算。實體名字寫成連到卡實際位置的連結（linker）。
+手改套用到帳時日程拿著自己的鎖（holding），帳那邊寫完不再回頭重畫日程頁（日程寫完自己會畫）。
 """
 import calendar
 import copy
@@ -62,6 +65,52 @@ _CHANGE_DATE = re.compile(r"date (\d{4}-\d{2}-\d{2}) → (\d{4}-\d{2}-\d{2})")
 
 class AgendaRefused(ValueError):
     """kb agenda 的拒絕：訊息就是給人看的那句。"""
+
+
+_HOLDING = set()  # 正拿著日程鎖的知識庫（這個行程裡）：帳寫完不回頭重畫日程頁，免得同一把鎖等自己
+
+
+def holding(vault):
+    return str(vault) in _HOLDING
+
+
+def linker(vault, ents=None, mark_removed=False):
+    """實體名字 → 程式頁上的寫法（D-280）：有綜合卡寫 [[<卡的實際位置去掉 .md>|<名稱>]]（卡搬過夾也對，entities.locate），
+    沒有卡的、不在清單的照寫名字。同一頁查過的名字記住，不重複找卡。mark_removed：拿掉的實體加註「（已拿掉）」（帳頁、首頁的帳，記帳 2）。"""
+    from kb._lib import entities
+    try:
+        data = entities.load(vault) if ents is None else ents
+    except ValueError:
+        data = {"entities": []}
+    memo = {}
+
+    def link(name):
+        if name in memo:
+            return memo[name]
+        out = name
+        try:
+            e = entities.find(data, name)[0]
+            if mark_removed and e is not None and e.get("status") == "removed" and entities.key(e.get("name")) == entities.key(name):
+                from kb._lib import money
+                out = f"{name}{money.REMOVED_MARK}"
+            elif e is not None and e.get("status") == "active" and e.get("type") and not entities.is_self(e):
+                where = entities.locate(vault, e, data)
+                if where:
+                    out = f"[[{where[:-3] if where.endswith('.md') else where}|{name}]]"
+        except (OSError, ValueError):
+            out = name
+        memo[name] = out
+        return out
+    return link
+
+
+_WIKILINK = re.compile(r"\[\[[^\[\]]*\]\]")
+
+
+def table_cell(text):
+    r"""md 表格的一行（或一格）：連結 [[路徑|名字]] 裡的 | 寫成 \|，不然 Obsidian 把它當欄分隔、格子錯位（記帳 3 確認 #4）。
+    已經寫成 \| 的不重複加；連結外的字不動。程式產生的表格都過這個。"""
+    return _WIKILINK.sub(lambda m: re.sub(r"(?<!\\)\|", r"\\|", m.group(0)), str(text))
 
 
 def _today():
@@ -156,23 +205,27 @@ def _mutate(vault, turn_id, fn, hand_out=None):
     p = _path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(p):
-        data = _load_raw(vault)
-        before = copy.deepcopy(data)
-        rolled = _roll_all(data, turn_id)
-        hand = _consume_hand(vault, data, turn_id)
-        if hand_out is not None:
-            hand_out.append(hand)
-        result, changed = fn(data)
-        changed = changed or rolled or isinstance(hand, dict) or hand == "unrecognized"  # hand.UNRECOGNIZED：頁面照常重寫
-        if changed:
-            from kb._lib import turn
-            turn.backup(vault, AGENDA_POSIX, turn_id)
-            write_json_atomic(p, data)
-            try:  # 資料已存好；md 重畫不了只記 log，不讓 AI 以為沒記到又加一次（B-470）
-                render(vault, turn_id, data, base=before, hand=hand or {})
-            except Exception as e:  # noqa: BLE001
-                from kb._lib import ledger
-                ledger.log_error(vault, f"日程.md 重畫失敗：{type(e).__name__}: {e}", source="agenda_render")
+        _HOLDING.add(str(vault))
+        try:
+            data = _load_raw(vault)
+            before = copy.deepcopy(data)
+            rolled = _roll_all(data, turn_id)
+            hand = _consume_hand(vault, data, turn_id)
+            if hand_out is not None:
+                hand_out.append(hand)
+            result, changed = fn(data)
+            changed = changed or rolled or isinstance(hand, dict) or hand == "unrecognized"  # hand.UNRECOGNIZED：頁面照常重寫
+            if changed:
+                from kb._lib import turn
+                turn.backup(vault, AGENDA_POSIX, turn_id)
+                write_json_atomic(p, data)
+                try:  # 資料已存好；md 重畫不了只記 log，不讓 AI 以為沒記到又加一次（B-470）
+                    render(vault, turn_id, data, base=before, hand=hand or {})
+                except Exception as e:  # noqa: BLE001
+                    from kb._lib import ledger
+                    ledger.log_error(vault, f"日程.md 重畫失敗：{type(e).__name__}: {e}", source="agenda_render")
+        finally:
+            _HOLDING.discard(str(vault))
     if changed:
         safe_export(vault)  # 放開 agenda.json 的鎖之後（T-1）
     return result
@@ -639,12 +692,27 @@ def _day(it):
         return None
 
 
+def money_due(vault):
+    """帳裡還沒收付、有到期日的（記帳 3，D-273（2））；帳讀不到當沒有，不擋日程。"""
+    try:
+        from kb._lib import money
+        return money.agenda_items(vault)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _money_row(it):
+    """帳的到期件當成到期種類的條目排（逾期、今天、接下來的算法跟日程一樣）。"""
+    return {"id": it.get("id"), "kind": "deadline", "date": it.get("due"), "status": "open", "money": it}
+
+
 def counts(vault, data, today=None):
     """{"overdue","today","upcoming"}：只看 open 的非期間條目（D-129）。overdue 是 TRACKED 日期已過；today 是日期等於今天；
-    upcoming 是今天之後 N 天內（N 是條目的 lead_days，沒有就 agenda_window_days）。會議與提醒過了不算逾期。"""
+    upcoming 是今天之後 N 天內（N 是條目的 lead_days，沒有就 agenda_window_days）。會議與提醒過了不算逾期。
+    帳裡還沒收付、有到期日的一起算（到期種類，記帳 3）。"""
     now = dt.date.fromisoformat(today or _today())
     out = {"overdue": 0, "today": 0, "upcoming": 0}
-    for it in visible(vault, data["items"]):
+    for it in visible(vault, data["items"]) + [_money_row(m) for m in money_due(vault)]:
         d = _day(it)
         if it.get("status") != "open" or it.get("kind") == "period" or d is None:
             continue
@@ -749,9 +817,9 @@ def card_titles(vault):
 
 # ---------- 渲染 ----------
 
-def _entities_suffix(it):
+def _entities_suffix(it, link=None):
     names = it.get("entities") or []
-    return f"（{'、'.join(names)}）" if names else ""
+    return f"（{'、'.join(link(n) if link else n for n in names)}）" if names else ""
 
 
 def repeat_suffix(it):
@@ -759,18 +827,21 @@ def repeat_suffix(it):
     return f"（{REPEAT_TEXT[every]}）" if every in REPEAT_TEXT else ""
 
 
-def _line(it):
-    d = dt.date.fromisoformat(it["date"])
+def _line(it, link=None):
+    if "money" in it:  # 帳的到期件（記帳 3）
+        from kb._lib import money
+        return money.agenda_line(it["money"], link or (lambda n: n))
     when = with_weekday(it["date"]) + (f"{it['time']} " if it.get("time") else "")
     mark = INFERRED_MARK if it.get("source") == "inferred" else ""
-    return f"- {when}{KIND_TEXT.get(it.get('kind'), it.get('kind'))} {it.get('text')}{_entities_suffix(it)}{repeat_suffix(it)}{mark}"
+    return (f"- {when}{KIND_TEXT.get(it.get('kind'), it.get('kind'))} {it.get('text')}{_entities_suffix(it, link)}"
+            f"{repeat_suffix(it)}{mark}")
 
 
 def _order(it):
     return (it.get("date", ""), it.get("time") or "", it.get("text", ""), it.get("id", ""))
 
 
-def _past_row(it, now, cutoff):
+def _past_row(it, now, cutoff, link=None):
     """過去區：(排序用日期, 句子) 或 None。完成與取消只看日期不早於 cutoff；open 的只有會議與提醒、日期已過才算「已過去」。"""
     status = it.get("status")
     ref = it.get("ended") if it.get("kind") == "period" and status == "done" and it.get("ended") else it.get("date")
@@ -782,7 +853,7 @@ def _past_row(it, now, cutoff):
         label = PAST_OPEN
     else:
         return None
-    return ref, f"- {ref} {KIND_TEXT.get(it.get('kind'), it.get('kind'))} {it.get('text')}{_entities_suffix(it)}{label}"
+    return ref, f"- {ref} {KIND_TEXT.get(it.get('kind'), it.get('kind'))} {it.get('text')}{_entities_suffix(it, link)}{label}"
 
 
 def _pauses(histories, name, now):
@@ -807,16 +878,23 @@ def _histories(vault):
         return {}
 
 
-def render_text(vault, data, today=None):
+def _live_rows(vault, items):
+    """上面四區要排的：open 的非期間條目，加帳的到期件（記帳 3）；照日期排。"""
+    rows = [i for i in items if i.get("status") == "open" and i.get("kind") != "period" and _day(i) is not None]
+    rows += [_money_row(m) for m in money_due(vault)]
+    return sorted(rows, key=lambda i: (i.get("date", ""), i.get("time") or "", i.get("text") or "", i.get("id", "")))
+
+
+def render_text(vault, data, today=None, link=None):
     now = today or _today()
     items = visible(vault, data["items"])
-    if not items:
+    live = _live_rows(vault, items)
+    if not items and not live:
         return HEADER + f"\n{EMPTY_SENTENCE}\n"
+    link = linker(vault) if link is None else link
     past_days = config.get(vault, "agenda_past_days")
     window = config.get(vault, "agenda_window_days")
     cutoff = (dt.date.fromisoformat(now) - dt.timedelta(days=past_days)).isoformat()
-    live = sorted((i for i in items if i.get("status") == "open" and i.get("kind") != "period" and _day(i) is not None),
-                  key=_order)
     overdue, today_, soon, later = [], [], [], []
     for it in live:
         d = _day(it)
@@ -829,28 +907,30 @@ def render_text(vault, data, today=None):
             soon.append(it)
         else:
             later.append(it)
-    past = sorted((r for r in (_past_row(i, now, cutoff) for i in items) if r), key=lambda r: r[0], reverse=True)
+    past = sorted((r for r in (_past_row(i, now, cutoff, link) for i in items) if r), key=lambda r: r[0], reverse=True)
 
     def block(title, lines):
         return f"## {title}\n" + "\n".join(lines or [NO_ITEMS])
-    blocks = [block("逾期", [_line(i) for i in overdue]), block("今天", [_line(i) for i in today_]),
-              block(f"接下來 {window} 天", [_line(i) for i in soon]), block("之後", [_line(i) for i in later])]
+    blocks = [block("逾期", [_line(i, link) for i in overdue]), block("今天", [_line(i, link) for i in today_]),
+              block(f"接下來 {window} 天", [_line(i, link) for i in soon]), block("之後", [_line(i, link) for i in later])]
     blocks.append(block(f"過去 {past_days} 天", [line for _d, line in past]))
     from kb._lib import renders
     return HEADER + "\n" + "\n\n".join(blocks) + "\n" + renders.carried_section(vault, MD_POSIX)
 
 
-def item_lines(vault, data, today=None):
-    """[(日程.md 裡那一行, 編號)]：上面四區與過去區（手改比對用）。"""
+def item_lines(vault, data, today=None, link=None):
+    """[(日程.md 裡那一行, 編號)]：上面四區（含帳的到期件，編號 m-…）與過去區（手改比對用）。"""
     now = today or _today()
+    link = linker(vault) if link is None else link
     cutoff = (dt.date.fromisoformat(now) - dt.timedelta(days=config.get(vault, "agenda_past_days"))).isoformat()
     out = []
     for it in visible(vault, data["items"]):
         if it.get("status") == "open" and it.get("kind") != "period" and _day(it) is not None:
-            out.append((_line(it), it.get("id")))
-        row = _past_row(it, now, cutoff)
+            out.append((_line(it, link), it.get("id")))
+        row = _past_row(it, now, cutoff, link)
         if row:
             out.append((row[1], it.get("id")))
+    out += [(_line(_money_row(m), link), m.get("id")) for m in money_due(vault)]
     return out
 
 
@@ -866,8 +946,16 @@ def _hand_date(to, it):
 def _apply_hand(vault, data, got, turn_id):
     """她在日程.md 打勾（完成）、刪掉一行（取消）、改日期：直接改 data（歷程 by hand）。回 (做了什麼的句子, 做不了而改記成認不出的)。
     已經不是 open 的、日期看不懂或不合規矩的不硬做，記成「你改成…」留在頁面上。"""
+    from kb._lib import renders
     by_id = {i.get("id"): i for i in data["items"]}
     applied, extra = [], []
+    for kind in ("checked", "removed", "changed_date"):  # 帳的到期件（m-…）交給帳（記帳 3）
+        mine = [c for c in got[kind] if str(c.get("id") or "").startswith("m-")]
+        got[kind] = [c for c in got[kind] if c not in mine]
+        for c in mine:
+            done, left = _apply_money(vault, kind, c, turn_id)
+            applied += done
+            extra += left
     for c in got["checked"]:
         it = by_id.get(c["id"])
         if it is not None and it.get("status") == "open":
@@ -888,8 +976,31 @@ def _apply_hand(vault, data, got, turn_id):
             _edit_fn(vault, it["id"], turn_id, HAND_BY, None, {"date": day})(data)
             applied.append(f"『{it['text']}』改到 {md_of(day)}（原本 {md_of(was)}）")
         except (AgendaRefused, ValueError):
-            extra.append({"kind": "changed", "text": f"{c['line'][2:]}（你改的日期：{c['to']}）", "orig": c["line"][2:]})
+            extra.append({"kind": "changed", "text": f"{renders.unlink(c['line'])[2:]}（你改的日期：{c['to']}）",
+                          "orig": renders.unlink(c["line"])[2:]})
     return applied, extra
+
+
+def _apply_money(vault, kind, c, turn_id):
+    """日程頁上帳的那行（記帳 3）：打勾＝整筆收付、刪掉＝取消、改日期＝改到期；經 money（帳自己的鎖）。做不了的回成認不出的。"""
+    from kb._lib import money
+    line = c["line"][2:]
+    try:
+        it = money.get(vault, c["id"])
+        if it.get("status") != "open":
+            return [], []
+        if kind == "checked":
+            money.settle(vault, c["id"], turn_id, by=HAND_BY)
+            return [f"記成收付了『{money.short(it)}』"], []
+        if kind == "removed":
+            money.set_status(vault, c["id"], "cancelled", turn_id, by=HAND_BY)
+            return [f"取消『{money.short(it)}』"], []
+        day = _hand_date(c["to"], {"date": it.get("due")})
+        money.edit(vault, c["id"], turn_id, by=HAND_BY, due=day)
+        return [f"『{money.short(it)}』到期改到 {md_of(day)}"], []
+    except (money.MoneyRefused, AgendaRefused, ValueError, TimeoutError) as e:
+        why = {"checked": "你打了勾", "removed": "你刪掉了", "changed_date": f"你改的日期：{c.get('to')}"}[kind]
+        return [], [{"kind": "changed", "text": f"{line}（{why}；{e}）", "orig": line}]
 
 
 def _consume_hand(vault, data, turn_id):
@@ -906,9 +1017,10 @@ def _consume_hand(vault, data, turn_id):
     except Exception:  # noqa: BLE001  算不出她看到的那份：只比得出「其他」
         base_text, lines = "", []
     from kb._lib import pending
+    ids = {i.get("id") for i in data["items"]} | {m.get("id") for m in money_due(vault)}
     return hand.guarded(
         vault, MD_POSIX, hers, data,
-        lambda st: hand.consume(vault, MD_POSIX, hers, base_text, lines, {i.get("id") for i in data["items"]},
+        lambda st: hand.consume(vault, MD_POSIX, hers, base_text, lines, ids,
                                 lambda got: _apply_hand(vault, data, got, turn_id), state=st),
         lambda saved, diff: pending.add_handedit(vault, MD_POSIX, saved, diff, turn_id))
 
@@ -925,11 +1037,12 @@ def render(vault, turn_id=None, data=None, today=None, base=None, hand=None):
     data = data if data is not None else load(vault)
     if hand == hand_lib.KEEP_FAILED:
         return False
-    text = render_text(vault, data, today)
+    link = linker(vault)
+    text = render_text(vault, data, today, link)
     target = Path(vault) / MD_POSIX
     try:
         if target.is_file() and target.read_text(encoding="utf-8") == text:
-            renders.record(vault, MD_POSIX, text, day=today or _today(), lines=item_lines(vault, data, today))
+            renders.record(vault, MD_POSIX, text, day=today or _today(), lines=item_lines(vault, data, today, link))
             return False
     except (OSError, UnicodeDecodeError):
         pass
@@ -938,7 +1051,7 @@ def render(vault, turn_id=None, data=None, today=None, base=None, hand=None):
         turn.backup(vault, MD_POSIX, turn_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     write_text_atomic(target, text)
-    renders.record(vault, MD_POSIX, text, day=today or _today(), lines=item_lines(vault, data, today))
+    renders.record(vault, MD_POSIX, text, day=today or _today(), lines=item_lines(vault, data, today, link))
     return True
 
 

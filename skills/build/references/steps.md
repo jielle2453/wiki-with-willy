@@ -1,0 +1,99 @@
+# 建置的每一步
+
+步名對照（`kb build done|redo <步>` 用左邊的）：env 環境、setup 訪談、inventory 盤點、sample 抽樣、cards 全量整理、names 確認名字、synthesis 綜合卡、adopt 收舊 wiki、tags 標籤、obsidian Obsidian、finish 交付報告。跟她說話只用中文的步名。
+
+每一步：動到客戶東西的（登記夾、不讀哪些、解密）先講要做什麼、說好才做；其他直接做 → 做完跑 `kb build done <步>` → 接著下一步（D-194）。
+
+這份檔裡別的 skill 的檔都寫成相對本 skill 資料夾的路徑（`../ingest/…`、`../manage/…`），接在 SKILL.md 給的 skill 資料夾後面讀。
+
+## 環境
+
+- 跑 `kb build env --json`：`ok` 的不用講；`warn`、`fail` 講是什麼、會怎樣、怎麼辦，能自己處理的先處理。
+- Python（python）`fail`（太舊）：自己裝（`winget install Python.Python.3.12`），跳出系統管理員視窗請客戶按「是」，一次講一步；裝好請客戶關掉 Claude 重開再打一次 build；這項沒過不建。
+- 信任（trust）`fail`：一步一步帶客戶按「信任」（講畫面上會看到的字、按哪裡，按完說一聲）；沒按的話每一步都會被問、自動模式也會被擋。`warn` 是看不出來，問客戶按過沒有。
+- 智慧型應用程式控制（sac）：開著沒擋到我們的，一句帶過；「評估中」講它之後可能自己打開，到時被擋的會在這一項看到。她問「要關嗎」→ 白話講：這是 Windows 擋沒有數位簽章的程式的保護，關了以後可能要重灌才開得回來；不建議關，被擋到的那項先不用或換方法、寫進報告；關不關她決定，你不代關。
+- PDF 元件（pdf）帶 `fix`：講缺了的話 PDF 都讀不到、要不要現在裝（大約一分鐘、要網路、裝在這台電腦使用者自己的工具夾，不動系統）；說好才跑 `kb office setup`，裝完再跑一次 `kb build env --json` 看那一項。「被擋」的照 sac 那點講。
+- Office（office）：`warn` 講做不到的事（轉 PDF、重算 Excel），讀檔不受影響；帶 `fix` 的照 PDF 那點問要不要裝做文件的工具。
+- 磁碟（disk）`warn`：講剩多少、建議先清出空間。
+- 舊 llm-wiki（old_wiki）`fail`：兩套同時開會注入兩份規則、互搶；自己跑 `claude plugin disable` 停用 llm-wiki，不行再一步一步帶客戶到外掛頁停用（舊的 vault 留著不動，只是沒有 AI 在顧），停好再跑一次 env 確認；`warn` 看一眼是停用的。
+- 還沒建知識庫時 `after` 是 `kb build start`：先講「要在這個資料夾建知識庫（幾個夾與設定檔）」，說好才跑。python 或舊 llm-wiki 是 `fail` 先處理好再建；其他項 `warn`、`fail` 講清楚後可以建，之後再補。已經建好、又回到這步的，`after` 照它給的跑。
+- `kb build start` 被擋：印的那句原句照貼。是「另一個對話正在建置」照 SKILL 分辨的接手那條；是「這裡已經是建好的知識庫」就帶客戶換一個空資料夾開對話。
+
+## 訪談
+
+只問用得到的（D-191）。有事先填好的設定檔照 D-052 只問缺的。設定檔的欄位照 `kb profile show --json` 給的欄位與指令範本寫。
+
+- 先問有沒有事先填好的客戶設定檔：有就 `kb profile apply --from "<那份>"`；讀不懂照它回的節與列講，改好再跑一次。套好後複述讀到什麼，下面只問缺的。
+- 資料夾在哪：每個 `kb folders add "<路徑>"`，先照 `--check` 講份數與有密碼的份數，說好才登記（拒絕怎麼講看 `../manage/references/sources.md`）。
+- 哪些不讀與理由：不想讓 AI 看到的 `kb folders exclude "<別名/相對路徑>" --kind hidden --reason "<她的話>"`；只是用不到的 `--kind unused`。
+- 公司或她自己叫什麼、有沒有別的叫法：記進設定檔第五節（關於你）。
+- 哪些資料只記種類不記值（第三節）：預設已有身分證、帳號、密碼這些；問有沒有別的不想讓你抄下來的，記成「只記種類」（整份不要整理的記成「不整理」）。
+- 幾個人用：照她的原話 `kb build set people "<她的話>"`。話裡有數字就一起設好設定檔的人數；設定檔建好後數字沒進去、或抓不到數字，問一次再 `kb profile set people <N>`。2 人以上順便問這台是誰在用（預設 `kb who` 給的名字），答了 `kb who set <名字>`。
+- 幾個人用：照她的原話 `kb build set people "<她的話>"`。
+- 多人用時多問（D-302、D-323、D-324、D-326；設定給服務人員看 `team.md`）：
+  - 「團隊有沒有共用的 OneDrive、Google Drive 或 NAS 夾？」有就 `kb folders add` 登記（多人時預設 `shared: true`）；沒有的建議開一個（原檔留在雲端、git 只放 willy 產的文字），真的不要的原檔才放在知識庫裡，太大的檔 willy 會自己排除在 git 外並問要不要搬。
+  - 多人時在團隊雲端開一個暫存區夾，登記成 `暫存區`。
+  - 講明資料去哪：git 主機存一份 willy 產的文字（卡、口述、日程、設定、紀錄），原檔與暫存區在團隊雲端硬碟；AI 讀與回答時內容會送到 Claude，自架只保護存放這段。
+  - 提醒：只有部分人能看的資料，先別放進共用的知識庫；想讓同事看到的放團隊雲端硬碟。只給自己的、不想讓 AI 看的，放進來後說一句設成不讀，不預先建。
+- 以前有沒有用過別的 wiki 或筆記：舊 llm-wiki 的照 `adopt.md` 第一節；其他筆記照一般資料夾登記。
+- 不問：型別表與每類最想知道什麼（AI 從抽樣定）、提醒幾天前（用預設）。
+- 精確數字：訪談後判斷這位客戶要不要（會計、報稅、財務這類），要的話 `kb profile add 偏好` 記一條「數字先核對再答」，建置報告寫一句；answer 照偏好先核對再答。
+- 沒有資料夾的客戶：不用登記；`done setup` 後直接到報告（記了舊 wiki 的話先收舊 wiki，D-044），之後她說的話記在綜合卡，檔案放暫存區。
+
+## 盤點
+
+- 跑 `kb build facts --json`，講：每個來源幾份（`files`，跟登記時講的同一個數；`duplicates` 有數字就加一句幾份內容重複、只做一張卡）、主要是什麼格式、分成哪些夾；讀不到幾份與原因（有密碼的之後給密碼或說哪一份可以讀、舊格式另存新格式、只在雲端的按右鍵保留在這台電腦）；`estimate` 的時間照講，`usage` 有句子就加這一句。不講 token、金額、換算幾次問答（D-199）。
+- 她說要做才 `kb build done inventory`。
+
+## 抽樣
+
+- 從 facts 挑 10 份左右：跨不同的夾與格式，避開讀不到的；從 `kb cards todo --json` 的 `new` 拿編號，跑 `kb cards dispatch --ids <f-…,f-…> --json`，等它做完（還在跑時 `done sample` 會擋）。
+- 做完用 `kb cards list --json` 找到那幾張卡讀過，配上 facts，自己定型別表、狀態詞、卡型，只講一句「我會照案子、廠商來整理，之後想改跟我說」（D-192）；哪幾個名字看起來是同一個留到確認名字。
+- 她要改的經 kb 寫：型別與卡型照 `kb profile show --json` 的範本加或改，型別改名、合併先 `kb profile type rename|merge … --check` 看影響再做（舊名只在卡的待補型別裡、型別表沒有時，rename 照樣做：新名不在型別表會回問題問大類，照結果帶 `--category`）；實體 `kb entity rename|merge`。
+- 每類最想知道什麼：從抽樣的卡自己推、記進設定檔第四節，有疑問照 R-06 問。
+
+## 全量整理
+
+- `kb cards todo --json` 看 `plan`；份數多那題（`asks` 裡 `id` 是 batch 的那題）她在盤點時已經說好，照它「現在做」那個結果的 `then` 做，不再問。
+- `kb cards dispatch --json` 做到 `done`；`plan` 有 `cards` 那步（線上文件、密碼檔）照 `../ingest/references/carding.md` 自己做。
+- 今天做不完：她說「先到這裡」照 `../ingest/SKILL.md` 骨架的「客戶說停」做；隔天再打 build 就從這步接著做（D-190）。
+- `done cards` 被擋「還有 N 份」：多半是還在跑或剛放進來的，再跑一次 dispatch。
+
+## 確認名字
+
+- `kb cards todo --json`：`plan` 的 `names` 每個照 `../ingest/references/carding.md` 第十一節判斷，有把握的跑 `kb entity accept <名>`（記成 AI 判斷，D-202）。
+- 有疑慮的：重跑 `kb cards todo --json`，`asks` 裡名字那幾題建置時一次全列（不受一次問一件的限制），每題一行：名字、掛幾份、你的疑慮（可能跟哪個是同一個、分不清是人還是公司），先講猜測；她一題一題答，照那題的結果跑。
+- 最後一句講直接登記了幾個、問了幾個，要看名單或有不對的跟我說（`tell` 有那句就照貼）。
+
+## 綜合卡
+
+- 到門檻的全部寫（D-201）：`kb cards dispatch --json` 做到 `done`；`approval` 有帶就直接跑它的 `do`，不問。製卡助手回報的字典外那幾行先記著，到標籤那步一起提，這步不問。
+
+## 收舊 wiki
+
+照 `adopt.md`。
+
+## 標籤
+
+- 先問她平常會不會照條件找（例：做水電的廠商、在意醫療的客戶）；她說不用就 `kb build done tags`（第八節空的也過）。
+- 要的話：`kb profile show --json` 看第一節的型別與第八節已有的欄；`kb entity list --json` 找各型別 `has_card` 的實體（綜合卡在 `<型別夾>/<名稱>/<名稱>.md`，型別夾前面有編號，例：`01 案子/信義王/信義王.md`），一個型別讀一輪它們的綜合卡（超過 `build status` 給的 `tag_suggest_cards_max` 張就挑那麼多張讀），提出最常出現的幾類條件、每類的詞與各有幾張（例：工種：水電 3、木作 2、磁磚 1），之前記著的字典外那幾行也併進來，一欄一行列給她。只用卡上寫得到的，不自己編條件。
+- 她刪、改名、說好之後，一欄一個指令：`kb profile add 標籤 型別=<型別> 欄名=<欄> 詞=<詞、詞…>`，一張卡能同時有好幾個詞的加 `可多選=✓`。
+- 加完程式會把那個型別的綜合卡標成要補標籤；接著 `kb cards dispatch --json` 做到 `done`（原因只有補標籤的只改檔頭的標籤行，內文不動），補完再 `kb build done tags`；被擋照那句講。
+
+## Obsidian
+
+這一步沒有前提，她不用 Obsidian 也能建完（D-259）：問一句、她說不用就直接 `kb build done obsidian`。沒登記資料夾的建置也走這一步。
+
+- 先問她平常會不會用 Obsidian 看這些資料（首頁會把手上的事、待辦、要她確認的放在一起，也能用一個框找檔）；不用就跳過。
+- 跑 `kb obsidian status --json`，三項講白話：`installed` 這台電腦有沒有裝 Obsidian、`registered` 這個知識庫 Obsidian 登記了沒、`plugin` 首頁外掛放了沒（`kb init` 會放，沒放好 `open` 會補）。
+- 沒裝：請她到 obsidian.md 下載安裝，裝好再說一次；不替她裝。
+- 裝了：先說一聲「Obsidian 第一次打開會問要不要信任這個資料夾的外掛，請按『信任』」，她說好才跑 `kb obsidian open`；它會替她把知識庫加進 Obsidian 並打開，她不用自己挑資料夾（選到上一層資料夾外掛和設定都讀不到）。
+- 被擋「先關掉 Obsidian 再說一次」：Obsidian 開著的時候加不進去，請她關掉再說一次；其他被擋照印的那句講。
+- 打開後請她看一眼：首頁出現了、左邊檔案樹看得到她的資料夾；做完或她說不用，跑 `kb build done obsidian`。
+
+## 交付報告
+
+- `kb build report --facts --json` 拿數字與清單；`given_up`（製卡助手沒做成的）與 `adopt_skipped`（舊 wiki 裡檔名像密碼、沒讀的）寫進「讀不到的」或「要你決定的」。
+- 照 SKILL.md 參考那節給的報告範本（`build-report.md`）寫成白話：六個 `##` 標題都留著，沒內容的留空（程式會拿掉），「數字」那段留空（程式接上）；不寫檔案內容細節、英文或內部編號。用 Write 存到 `build status` 的 `do` 給的工作區路徑。
+- 跑 `kb build report --from "<那份>"`：說少了或多了哪一段就照改再跑。
+- 對話裡講三句重點：資料去了哪、怎麼開始問、還有什麼要她決定；問她要不要現在試問一個問題。最後 `kb build done finish`。

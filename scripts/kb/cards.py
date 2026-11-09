@@ -1,0 +1,849 @@
+"""kb cards todo／sync／drop／index（ingest 製卡第 4 點，D-103、D-104、D-105）。
+
+todo：讀清冊、卡與待處理現算該做的事，不寫任何檔、不開回合；--json 全列帶 header，人讀照 --limit（預設 ingest_auto_max）。
+sync：moved 的卡搬到現在該在的夾（檔名不變；同夾只改檔頭），原檔清單與開原檔重算、其他行原樣；舊路徑備成 delete、新路徑備成 create。
+drop <編號>：原檔不見（status missing）才做；先備清冊，卡備成 delete 後刪、條目改 deleted、對應 missing_file 待處理 done。
+index：手動重渲染總資料夾根的 總目錄.md。sync、drop、index 都把 總目錄.md 備進回合（實作疑義裁定 4）。
+skip <編號> --kind <種類>：客戶設定檔第三節說不整理的種類，清冊記 skip_kind、有卡的拿掉（客戶設定檔與型別第 6 點，D-113）。
+redo <編號>：客戶說卡讀錯了（D-147 第一種），清冊記 redo，下次 todo 把它列進 stale、帶 reason；
+mount <編號> --entity <名>…：卡掛錯實體，重設檔頭的 實體 欄，重寫總目錄與兩邊綜合卡的快取（note 改知識第 5 點）。
+list：列卡（answer 第 2 點，D-153、D-157），按卡型、年、實體、來源篩，窮舉不挑；另回庫裡實際有的卡型與份數，只讀、不開回合。
+todo 在對話裡跑時在目前回合記 ingest（turn.mark，回合狀態不是知識）：主對話自己整理時被按停止，下一句的 UserPromptSubmit 認得出來（D-156）。
+整批製卡（card-maker，D-195～D-200）：dispatch 開或沿用 job、切批、回每批給 Agent 工具的 prompt（終端機跑拒絕）；
+batch <批次> 給 card-maker 自己那批的材料（只讀，帶 --agent 記上 agent_id；--done 標主對話自己做的批次做完，#48；codex 分支：製卡者也自己 --done [--failed …] 收尾）；status 看進度（只讀）；
+stop 放掉這個 session 的批次、關 job、目前回合記 ingest_stopped（背景整理要停：說一聲，D-200）。
+mode <編號> full|pointer [--track yes|no]：會一直改的檔記成指路卡或完整卡（放寬丙 11，D-331）：只記清冊 card_mode、track（記進回合），
+指路卡且記過程時現在的抽字存本機 .system/local/textcache/<編號>.txt；seen <編號>：AI 看完指路卡的檔改了什麼，卡檔頭指紋與 textcache 換成現在的。
+todo --json 的 stale 每項多 change，指路卡的檔改了改列進 pointer_changed（帶 diff）；封存（kb archive）的不列。
+unreadable <編號> --reason：線上文件（link 條目）讀不到記進待處理（B-415；檔案讀不到由 convert 記）。
+build（第 6 點）：dispatch --ids f-…,f-… 只派那幾份做卡（建置抽樣）；dispatch --adopt 派第四種工作（讀舊 wiki 切好的段）。
+todo 的第一行接 待掛實體、綜合卡（待建、待更新、有問題）、實體夾有變、日程待重對、日程待抽；drop 拿掉卡也把從那張卡抽的推測日程改成取消（D-130）；sync、drop、skip 動到卡之後重渲染相關綜合卡的快取（實體與綜合卡第 4、5 點）。
+終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合。
+"""
+import argparse
+import json
+from datetime import date
+from pathlib import Path
+
+from kb import journal_cli
+from kb._lib import agenda, batches, card_base, cards, config, credentials, inventory, pending, statements, turn
+from kb._lib import io as kio
+from kb._lib import sources as sources_lib
+from kb.inventory_cli import NOT_IN_VAULT, find_vault, name_of
+
+CLI_LOCK_TIMEOUT = 30
+SKIPPED_TEXT = (("credential", "檔名像密碼或金鑰"), ("placeholder", "只在雲端"), ("too_large", "太大"),
+                ("error", "讀不到"), ("skipped", "依設定不整理"))
+PROFILE_MISSING = "客戶設定檔讀不到，卡型用預設"
+
+
+def _limit(text):
+    try:
+        n = int(text)
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"要是 0 以上的整數：{text}")
+    return n
+
+
+def _year(text):
+    if not (len(text) == 4 and text.isdigit()):
+        raise argparse.ArgumentTypeError(f"年份要寫成 YYYY：{text}")
+    return text
+
+
+def add_arguments(sub):
+    subs = sub.add_subparsers(dest="cards_command", metavar="<子子命令>", required=True)
+    td = subs.add_parser("todo", help="列出該做的卡", description="列出還沒有卡、該重做、該搬的卡；不寫檔。")
+    td.add_argument("--limit", type=_limit, help="人讀輸出最多列幾份，預設 ingest_auto_max")
+    td.add_argument("--full", action="store_true", help="--json 給整份（預設 moved 只給前 10 筆、profile 只給 about）")
+    sy = subs.add_parser("sync", help="原檔搬了，卡跟著搬", description="把 todo 裡 moved 的卡搬到原檔現在的位置。")
+    dr = subs.add_parser("drop", help="拿掉原檔已刪的卡", description="原檔不見、客戶說刪了，拿掉它的卡。")
+    dr.add_argument("id", help="清冊編號（f-…）")
+    ix = subs.add_parser("index", help="重寫總目錄", description="重寫總資料夾根的 總目錄.md。")
+    sk = subs.add_parser("skip", help="記成依設定不整理", description="客戶設定檔說不整理的種類：這份不做卡，有卡的拿掉。")
+    sk.add_argument("id", help="清冊編號（f-…）")
+    sk.add_argument("--kind", help="不整理的種類；可以省略（記成 AI 看過、不用卡）；不在設定檔第三節就自己加進去")
+    rd = subs.add_parser("redo", help="卡讀錯了，標成要重做", description="客戶說卡讀錯原檔：標成要重做，下次整理時照原檔重寫。")
+    rd.add_argument("id", nargs="?", help="清冊編號（f-…）")
+    rd.add_argument("--job", action="append", help="整批重做：這次整理的編號（cards status --json 的 jobs），可以重複")
+    rd.add_argument("--ids", help="這幾張一起重做：清冊編號用逗號隔開（健檢「設定檔改了之後的卡」，lint 題）")
+    rd.add_argument("--check", action="store_true", help="只列要標的卡，不寫")
+    mt = subs.add_parser("mount", help="卡掛錯實體，改掛", description="重設這張卡掛的實體；原本與新掛的實體的綜合卡下次整理會更新。")
+    mt.add_argument("id", help="清冊編號（f-…）")
+    mt.add_argument("--entity", action="append", required=True, help="改掛的實體名稱，可以重複")
+    ed = subs.add_parser("edits", help="列她手改過的卡（只讀）", description="比每張卡現在的內文跟程式與 Claude 最後寫的那一版，不一樣的列出來；--done 把處理完的換成現在的內容。")
+    ed.add_argument("--done", nargs="+", metavar="路徑", help="處理完了：這幾張卡（知識庫相對路徑）的基準換成現在的內容")
+    ls = subs.add_parser("list", help="列卡（只讀）", description="按卡型、年、實體、來源列卡，窮舉不挑；另列庫裡實際有的卡型與份數。")
+    ls.add_argument("--type", action="append", default=[], help="卡型（照字面），可以重複")
+    ls.add_argument("--year", type=_year, help="文件日期的年 YYYY；沒寫日期的另外講份數")
+    ls.add_argument("--entity", action="append", default=[], help="掛的實體名稱，可以重複")
+    ls.add_argument("--source", help="原檔的來源別名")
+    dp = subs.add_parser("dispatch", help="派背景製卡（對話裡用）", description="切批交給 card-maker，回每批的 prompt。")
+    dp.add_argument("--source", help="只整理這個來源（別名）")
+    dp.add_argument("--ids", action="append", help="只做這幾份（清冊編號，逗號隔開或重複寫；建置抽樣用）")
+    dp.add_argument("--adopt", action="store_true", help="讀舊 wiki 切好的段（建置收舊 wiki 用）")
+    bt = subs.add_parser("batch", help="card-maker 拿自己那批的材料（只讀）", description="列這一批要做的項目與要讀的規則。")
+    bt.add_argument("batch", help="批次編號（b-…）")
+    bt.add_argument("--done", action="store_true", help="這批做完了：主對話自己做的（dispatch 回 self）；codex 分支：製卡者自己收尾")
+    bt.add_argument("--failed", action="append", default=[], help="跟 --done 一起：沒做成的一份「<編號>：<原因>」，可重複")
+    st = subs.add_parser("status", help="背景整理到哪了（只讀）", description="還在跑幾批、這次做好幾份、還剩幾份。")
+    sp = subs.add_parser("stop", help="停背景整理", description="放掉這個對話的批次；回要停的子代理。")
+    wp = subs.add_parser("wip", help="製作中的檔（只讀）", description="新放、改過、她還沒說整理的檔（md 以外）與算在哪個實體下（D-525）。")
+    mo = subs.add_parser("mode", help="這份檔記成完整卡或指路卡", description="會一直改的檔：記成指路卡（pointer）或完整卡（full）；只記清冊，判斷交 AI。")
+    mo.add_argument("id", help="清冊編號（f-…）")
+    mo.add_argument("state", choices=["full", "pointer"], help="full 完整卡、pointer 指路卡")
+    mo.add_argument("--track", choices=["yes", "no"], help="指路卡要不要記過程（沒給不改，預設記）")
+    sn = subs.add_parser("seen", help="指路卡的檔改了，我看過了", description="指路卡的檔改了、AI 看完差別之後跑：卡的指紋與上次看過的文字換成現在的。")
+    sn.add_argument("id", help="清冊編號（f-…）")
+    ur = subs.add_parser("unreadable", help="線上文件讀不到，記進待處理", description="只收線上文件（link 條目）。")
+    ur.add_argument("id", help="清冊編號（out-… 或 f-…）")
+    ur.add_argument("--reason", required=True, help="讀不到的原因，例：線上文件打不開")
+    for p in (td, sy, dr, ix, sk, rd, mt, ed, ls, dp, bt, st, sp, wp, mo, sn, ur):
+        p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
+
+
+# ---------- todo ----------
+
+def _todo_lines(vault, data, limit):
+    new, stale = len(data["new"]), len(data["stale"])
+    moved, unreadable, missing, broken, dups = (len(data[k]) for k in ("moved", "unreadable", "missing", "broken",
+                                                                      "duplicates"))
+    lines = []
+    if data.get("pdf_restored"):
+        lines.append(f"PDF 元件裝好了，{data['pdf_restored']} 份 PDF 回到待製卡")
+    extra = _entity_parts(data)
+    if new or stale or moved or unreadable or missing or broken or dups or extra:
+        first = (f"待製卡 {new + stale} 份（新 {new}、重做 {stale}）；搬動 {moved}；"
+                 f"讀不到 {unreadable}、原檔不見 {missing}（見 系統/待處理.md）")
+        if broken:
+            first += f"；檔頭有問題 {broken} 張"
+        if dups:
+            first += f"；同編號多張 {dups} 組（跑 kb cards sync）"
+        lines.append(first + "".join(f"；{x}" for x in extra))
+    else:
+        lines.append("卡都是最新的")
+    if data.get("missing_types"):
+        lines.append("型別表沒有：" + "、".join(f"{t} {n} 張" for t, n in data["missing_types"].items()))
+    skipped = [f"{text} {data['skipped'][k]}" for k, text in SKIPPED_TEXT if data["skipped"][k]]
+    if skipped:
+        lines.append("不製卡：" + "、".join(skipped))
+    work = [("新", i) for i in data["new"]] + [("重做", i) for i in data["stale"]]
+    for label, item in work[:limit]:
+        target = item["existing_card"] or f"{item['dir']}/{item['filename_pattern']}"
+        lines.append(f"- {label} {item['id']} {name_of(item['uri'])} → {target}")
+    if len(work) > limit:
+        lines.append(f"……還有 {len(work) - limit} 份")
+    if data.get("profile_missing"):
+        lines.append(PROFILE_MISSING)
+    return lines
+
+
+def _entity_parts(data):
+    """第一行後面接的實體與綜合卡幾段（實體與綜合卡第 5 點）；0 的項不印。"""
+    parts = []
+    if data.get("unlinked"):
+        parts.append(f"待掛實體 {len(data['unlinked'])}")
+    new = data.get("synthesis_new") or []
+    unconfirmed = sum(1 for i in new if not i.get("confirmed"))
+    bits = []
+    if new:
+        bits.append(f"待建 {len(new)}" + (f"（待確認 {unconfirmed}）" if unconfirmed else ""))
+    if data.get("synthesis_stale"):
+        bits.append(f"待更新 {len(data['synthesis_stale'])}")
+    if data.get("synthesis_broken"):
+        bits.append(f"有問題 {len(data['synthesis_broken'])}")
+    if bits:
+        parts.append("綜合卡 " + "、".join(bits))
+    if data.get("entity_drift"):
+        parts.append(f"實體夾有變 {len(data['entity_drift'])}")
+    if data.get("agenda_recheck"):
+        parts.append(f"日程待重對 {len(data['agenda_recheck'])}")
+    if data.get("agenda_unscanned"):
+        parts.append(f"日程待抽 {len(data['agenda_unscanned'])}")
+    if data.get("pointer_changed"):
+        parts.append(f"指路卡的檔有變 {len(data['pointer_changed'])}")
+    return parts
+
+
+def _wip(vault, as_json):
+    rows = cards.wip(vault)
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False))
+        return 0
+    print(f"製作中 {len(rows)} 份" + ("：" if rows else ""))
+    for r in rows:
+        print(f"- {cards.wip_label(r)}" + (f"（{'、'.join(r['entities'])}）" if r["entities"] else ""))
+    return 0
+
+
+MOVED_SHOWN = 10
+
+
+def _brief(data):
+    """todo --json 預設給主對話的精簡版（輕流程 todo 精簡）：搬動由 cards sync 做、主對話只要筆數，moved 超過 10 筆只留前 10 筆
+    加 moved_total；profile 只留 about（S-03 認客戶自己），給製卡者的整份在 cards batch 裡照舊。"""
+    out = dict(data)
+    if len(data.get("moved") or []) > MOVED_SHOWN:
+        out["moved"], out["moved_total"] = data["moved"][:MOVED_SHOWN], len(data["moved"])
+    if isinstance(data.get("profile"), dict):
+        out["profile"] = {"about": data["profile"].get("about") or []}
+    return out
+
+
+def _todo(vault, args, as_json):
+    data = cards.todo(vault, sources_lib.load(vault))
+    try:  # 回合狀態：記了才認得出「整理中被按停止」（D-156）；記不到不擋 todo
+        turn.mark(vault, "ingest")
+    except OSError:
+        pass
+    if as_json:
+        print(json.dumps(data if args.full else _brief(data), ensure_ascii=False))
+        return 0
+    limit = args.limit if args.limit is not None else config.get(vault, "ingest_auto_max")
+    print("\n".join(_todo_lines(vault, data, limit)))
+    return 0
+
+
+# ---------- list ----------
+
+def _list(vault, args, as_json):
+    got = cards.listing(vault, types=[t.strip() for t in args.type], year=args.year,
+                        names=[n.strip() for n in args.entity], source=args.source.strip() if args.source else None)
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+        return 0
+    print("\n".join(_list_lines(got, args.year)))
+    return 0
+
+
+def _list_lines(got, year):
+    rows = got["cards"]
+    kinds = "、".join(f"{t['card_type'] or '（沒寫卡型）'} {t['count']}" + ("" if t["in_profile"] else "（設定檔沒有）")
+                     for t in got["types"])
+    lines = [f"共 {len(rows)} 張卡" + (f"；庫裡的卡型：{kinds}" if kinds else "")]
+    if got["undated"]:
+        lines.append(f"沒寫日期的 {got['undated']} 張" + ("，沒算進這一年" if year else ""))
+    for c in rows:
+        detail = "，".join(x for x in [c["card_type"]] + c["entities"] if x)
+        mark = ("〔要重做〕" if c["redo"] else "〔原檔改過〕" if c["stale"] else "") + ("〔你說別信〕" if c["ruled_out"] else "")
+        lines.append(f"- {c['date']} {c['title']}" + (f"（{detail}）" if detail else "") + mark)
+    return lines
+
+
+# ---------- sync ----------
+
+def _remove_card(vault, rel, turn_id, changed):
+    cards.remove_card(vault, rel, turn_id)
+    changed.append({"path": rel, "action": "delete"})
+
+
+def _sync(vault, as_json, conversation):
+    turn_id = turn.current(vault)["turn"]
+    got = cards.sync(vault, sources_lib.load(vault), turn_id)  # 本體在 _lib（型別改名與合併也叫它）
+    moved, updated, skipped, dropped = got["moved"], got["updated"], got["skipped"], got["dropped"]
+    changed, touched = got["changed"], got["touched"]
+    rebuilt = cards.index_broken(vault)  # 總目錄不見或壞了：自己重寫（放寬丙 6-3）
+    if moved or updated or dropped or rebuilt:
+        cards.render_index(vault, turn_id)
+        changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
+        cards.refresh_synthesis(vault, touched, turn_id)
+        note = f"搬了 {len(moved)} 張卡" + (f"、刪掉重複卡 {len(dropped)} 張" if dropped else "")
+        if rebuilt and not (moved or updated or dropped):
+            note = "總目錄不見或壞了，重寫了一份"
+        journal_cli.record_program_or_warn(vault, note, changed, "cards sync", conversation)
+    if as_json:
+        print(json.dumps({"moved": moved, "updated": updated, "dropped": dropped, "skipped": skipped},
+                         ensure_ascii=False))
+        return 0
+    print(f"搬了 {len(moved)} 張卡、更新 {len(updated)} 張卡的原檔位置"
+          + (f"；刪掉同編號的重複卡 {len(dropped)} 張" if dropped else ""))
+    for line in skipped:
+        print(line)
+    return 0
+
+
+# ---------- drop ----------
+
+def _drop(vault, fid, as_json, conversation):
+    sources = sources_lib.load(vault)
+    entry = next((e for e in inventory.load(vault)["entries"] if e.get("id") == fid), None)
+    if entry is None:
+        print(f"清冊沒有 {fid}")
+        return 3
+    status = entry.get("status")
+    if status == "active":
+        path = inventory.path_of(vault, sources, entry["locations"][0]["uri"])
+        print(f"原檔還在：{path}，不能拿掉卡")
+        return 3
+    if status != "missing":
+        print(f"只能拿掉原檔不見的卡（{fid} 現在是 {status}）")
+        return 3
+    turn_id = turn.current(vault)["turn"]
+    groups, _broken = cards._scan_groups(vault)
+    group = groups.get(fid) or []
+    card = group[0] if group else None
+    changed = []
+    title = None
+    touched = cards.entity_names_of(group)
+    # 先拿清冊的鎖再刪卡（測試後修正裁定 30）：等不到鎖就什麼都還沒動
+    with kio.FileLock(Path(vault) / inventory.INVENTORY_POSIX):
+        turn.backup(vault, inventory.INVENTORY_POSIX, turn_id)
+        if card:
+            title = card["front"].get("標題") or card["path"].rpartition("/")[2][:-3]
+        for c in group:  # 同編號多張一起拿掉
+            _remove_card(vault, c["path"], turn_id, changed)
+        data = inventory.load(vault)
+        for e in data["entries"]:
+            if e.get("id") == fid:
+                e["status"] = "deleted"
+        inventory._write(vault, data["entries"])
+    changed.append({"path": inventory.INVENTORY_POSIX, "action": "modify"})
+    how = f"客戶 {date.today().isoformat()} 說刪了"
+    try:
+        if pending.auto_done(vault, fid, "missing_file", how, turn_id):
+            changed += [{"path": pending.PENDING_POSIX, "action": "modify"}, {"path": pending.MD_POSIX, "action": "modify"}]
+    except ValueError as e:  # pending.json 壞了：卡與清冊已改好，待處理下次 scan 補
+        print(f"待處理沒更新：{e}")
+    cancelled = []
+    try:  # 從這張卡抽的推測日程跟著取消（D-130）；日程檔壞了或等不到鎖，卡與清冊已經改好，只說一聲
+        cancelled = agenda.cancel_from_card(vault, fid, turn_id)
+    except (ValueError, OSError) as e:
+        print(f"日程沒更新：{e}")
+    if cancelled:
+        changed += [{"path": agenda.AGENDA_POSIX, "action": "modify"}, {"path": agenda.MD_POSIX, "action": "modify"}]
+    cards.render_index(vault, turn_id)
+    changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
+    cards.refresh_synthesis(vault, touched, turn_id)
+    name = title or name_of(entry["locations"][0]["uri"]).rpartition("/")[2]
+    note = f"拿掉「{name}」的卡（原檔已刪）" if card else f"記下「{name}」已刪（沒有卡）"
+    journal_cli.record_program_or_warn(vault, note, changed, "cards drop", conversation)
+    if as_json:
+        print(json.dumps({"id": fid, "card": card["path"] if card else None, "title": title,
+                          "agenda_cancelled": [i["id"] for i in cancelled]}, ensure_ascii=False))
+        return 0
+    if card:
+        print(f"已拿掉「{title}」的卡；說「退回上一版」救得回來")
+    else:
+        print(f"已記下「{name}」刪了（這份沒有卡）；說「退回上一版」救得回來")
+    if cancelled:
+        print(f"從這張卡抽的日程 {len(cancelled)} 條改成取消")
+    return 0
+
+
+# ---------- index ----------
+
+def _index(vault, as_json, conversation):
+    n = cards.render_index(vault, turn.current(vault)["turn"])
+    journal_cli.record_program_or_warn(vault, f"總目錄：{n} 張卡", [{"path": cards.INDEX_POSIX, "action": "modify"}],
+                                       "cards index", conversation)
+    if as_json:
+        print(json.dumps({"cards": n}, ensure_ascii=False))
+    else:
+        print(f"總目錄：{n} 張卡")
+    return 0
+
+
+# ---------- skip ----------
+
+def _add_skip_kind(vault, kind, conversation):
+    """--kind 不在設定檔第三節：先 profile add 不整理與敏感（同一回合）。已經在就不動。回 True 表示加了。"""
+    import argparse
+    import contextlib
+    import io
+    from kb import profile_cli
+    from kb._lib import profile as profile_lib
+    data = profile_lib.load(vault)
+    if data is None or kind in profile_lib.no_card_kinds(data):
+        return False
+    ns = argparse.Namespace(section="不整理與敏感", fields=[f"種類={kind}", "處理=不整理"])
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            code = profile_cli._locked(vault, profile_cli._edit_locked, "add", ns, False, conversation)
+    except profile_cli.Refused as e:
+        raise cards.SkipRefused(e.line) from e
+    if code != 0:
+        raise cards.SkipRefused(buf.getvalue().strip())
+    return True
+
+
+def _skip(vault, fid, kind, as_json, conversation):
+    kind_added = False
+    try:
+        if kind:
+            kind_added = _add_skip_kind(vault, kind, conversation)
+        got = cards.skip(vault, sources_lib.load(vault), fid, kind, turn.current(vault)["turn"])
+    except cards.SkipRefused as e:
+        print(str(e))
+        return 3
+    except TimeoutError:
+        print("等不到鎖，沒有寫入")
+        return 3
+    changed = ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}]
+               + [{"path": rel, "action": "delete"} for rel in got["removed"]]
+               + [{"path": cards.INDEX_POSIX, "action": "modify"}])
+    name = name_of(got["uri"]).rpartition("/")[2]
+    kind = got["kind"]
+    journal_cli.record_program_or_warn(vault, f"依設定不整理：{kind}（{name}）", changed, "cards skip", conversation)
+    if as_json:
+        out = {"id": fid, "kind": kind, "card": got["card"]}
+        if kind_added:
+            out["kind_added"] = True
+        print(json.dumps(out, ensure_ascii=False))
+    else:
+        extra = f"（「{kind}」加進了設定檔第三節）" if kind_added else ""
+        print(f"已記成不整理（{kind}）：{got['uri']}；有卡的已拿掉，說「退回上一版」救得回來{extra}")
+    return 0
+
+
+# ---------- redo、mount ----------
+
+REDO_WHICH = "給一張卡的編號，或用 --job 給整理的編號，擇一"
+REDO_NO_IDS = "沒有寫好的卡可以重做"
+REDO_NO_JOB = "沒有這次整理：{}"
+REDO_NO_CARDS = "這次整理沒有寫好的卡"
+REDO_CHECK = "要標成重做的卡 {n} 張："
+REDO_JOB_DONE = "已標成要重做：{n} 張卡，下次整理時照原檔重寫"
+REDO_SHOWN = 30
+
+
+def _redo_ids(vault, ids, check, as_json, conversation):
+    """這幾張一起標要重做（lint 題：設定檔改了之後、之前做的卡，她說好）：清冊 active、卡寫好了的才標，其餘跳過。"""
+    ids = list(dict.fromkeys(x.strip() for x in ids.split(",") if x.strip()))
+    got = cards.mark_redo_many(vault, ids, turn.current(vault)["turn"], check=check)
+    if not got["cards"]:
+        print(REDO_NO_IDS)
+        return 3
+    if not check and (got["changed"] or got["synthesis_paths"]):
+        changed = ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if got["changed"] else []) + [
+            {"path": rel, "action": "modify"} for rel in got["synthesis_paths"]]
+        journal_cli.record_program_or_warn(vault, REDO_JOB_DONE.format(n=len(got["cards"])), changed, "cards redo --ids",
+                                           conversation)
+    if as_json:
+        print(json.dumps({"ids": ids, "check": check, "cards": got["cards"], "synthesis": got["synthesis"]}, ensure_ascii=False))
+        return 0
+    print((REDO_CHECK if check else REDO_JOB_DONE).format(n=len(got["cards"])))
+    if not check and got["synthesis"]:
+        print("連帶要更新的綜合卡：" + "、".join(got["synthesis"]))
+    return 0
+
+
+def _redo_jobs(vault, jobs, check, as_json, conversation):
+    """整批重做（B 段：客戶說剛剛那批整理得不對）：這幾次整理寫好的卡照 D-147 標要重做；--check 只列。"""
+    jobs = list(dict.fromkeys(j.strip() for j in jobs if j.strip()))
+    try:
+        ids, missing = batches.job_cards(vault, jobs)
+    except batches.Unreadable as e:
+        print(str(e))
+        return 3
+    if missing:
+        print(REDO_NO_JOB.format("、".join(missing)))
+        return 3
+    got = cards.mark_redo_many(vault, ids, turn.current(vault)["turn"], check=check)
+    if not got["cards"]:
+        print(REDO_NO_CARDS)
+        return 3
+    if not check and (got["changed"] or got["synthesis_paths"]):
+        changed = ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if got["changed"] else []) + [
+            {"path": rel, "action": "modify"} for rel in got["synthesis_paths"]]
+        journal_cli.record_program_or_warn(vault, REDO_JOB_DONE.format(n=len(got["cards"])), changed, "cards redo --job",
+                                           conversation)
+    if as_json:
+        print(json.dumps({"jobs": jobs, "check": check, "cards": got["cards"], "synthesis": got["synthesis"]},
+                         ensure_ascii=False))
+        return 0
+    if check:
+        print(REDO_CHECK.format(n=len(got["cards"])))
+        for c in got["cards"][:REDO_SHOWN]:
+            print(f"- {c['title']}（{c['source']}）")
+        if len(got["cards"]) > REDO_SHOWN:
+            print(f"……共 {len(got['cards'])} 張")
+        return 0
+    print(REDO_JOB_DONE.format(n=len(got["cards"])))
+    if got["synthesis"]:
+        print("連帶要更新的綜合卡：" + "、".join(got["synthesis"]))
+    return 0
+
+
+def _edits(vault, args, as_json):
+    """她手改過的卡（D-270）：只讀狀態檔與卡；--done 只換基準。"""
+    if args.done:
+        try:
+            rels = card_base.done(vault, args.done, turn.current(vault)["turn"])
+        except card_base.DoneRefused as e:
+            print(str(e))
+            return 3
+        print(json.dumps({"done": rels}, ensure_ascii=False) if as_json else f"記下了（{len(rels)} 張）")
+        return 0
+    got = card_base.edits(vault)
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+        return 0
+    if not got["edits"]:
+        print("沒有你改過的卡" + ("（時間不夠，可能還有沒比完的）" if got["more"] else ""))
+        return 0
+    for item in got["edits"]:
+        label = item.get("title") or item.get("entity") or ""
+        print(f"{item['path']}" + (f"（{label}）" if label else ""))
+        for h in item["hunks"]:
+            for line in (h["before"].split(chr(10)) if h["before"] else []):
+                print(f"  - {line}")
+            for line in (h["after"].split(chr(10)) if h["after"] else []):
+                print(f"  + {line}")
+    if got["more"]:
+        print("（時間不夠，可能還有沒比完的）")
+    return 0
+
+
+def _mode(vault, args, as_json, conversation):
+    track = {"yes": True, "no": False}.get(args.track)
+    got = cards.mode(vault, sources_lib.load(vault), args.id, args.state, track, turn.current(vault)["turn"])
+    if got["changed"]:
+        journal_cli.record_program_or_warn(vault, f"記成{'指路卡' if got['mode'] == cards.POINTER else '完整卡'}：{args.id}",
+                                           got["changed"], "cards mode", conversation)
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+    elif got["mode"] == cards.POINTER:
+        print(f"已記成指路卡（{'記過程' if got['track'] else '不記過程'}）：{args.id}")
+    else:
+        print(f"已記成完整卡：{args.id}")
+    return 0
+
+
+def _seen(vault, args, as_json, conversation):
+    got = cards.seen(vault, sources_lib.load(vault), args.id, turn.current(vault)["turn"])
+    if got["changed"]:
+        journal_cli.record_program_or_warn(vault, f"看過指路卡的改動：{got['title']}", got["changed"], "cards seen", conversation)
+    print(json.dumps(got, ensure_ascii=False) if as_json else f"記下了：「{got['title']}」的改動看過了")
+    return 0
+
+
+def _redo(vault, fid, as_json, conversation):
+    got = cards.mark_redo(vault, fid, turn.current(vault)["turn"])
+    if got["changed"] or got["synthesis_paths"]:
+        changed = ([{"path": inventory.INVENTORY_POSIX, "action": "modify"}] if got["changed"] else []) + [
+            {"path": rel, "action": "modify"} for rel in got["synthesis_paths"]]
+        journal_cli.record_program_or_warn(vault, f"標成要重做：{got['title']}", changed, "cards redo", conversation)
+    if as_json:
+        print(json.dumps({"id": fid, "title": got["title"], "redo": got["redo"], "synthesis": got["synthesis"]},
+                         ensure_ascii=False))
+    else:
+        print(f"已標成要重做：「{got['title']}」，下次整理時重寫")
+        if got["synthesis"]:
+            print("連帶要更新的綜合卡：" + "、".join(got["synthesis"]))
+    return 0
+
+
+def _mount(vault, fid, names, as_json, conversation):
+    turn_id = turn.current(vault)["turn"]
+    got = cards.mount(vault, fid, names, turn_id)
+    now, was = "、".join(got["entities"]), "、".join(got["was"])
+    if got["changed"]:
+        changed = [{"path": got["path"], "action": "modify"}]
+        cards.render_index(vault, turn_id)
+        changed.append({"path": cards.INDEX_POSIX, "action": "modify"})
+        changed += [{"path": rel, "action": "modify"}
+                    for rel in cards.refresh_synthesis(vault, list(got["was"]) + list(got["entities"]), turn_id)]
+        journal_cli.record_program_or_warn(vault, f"改掛實體：{got['title']} → {now}", changed, "cards mount", conversation)
+    if as_json:
+        print(json.dumps({"id": fid, "title": got["title"], "entities": got["entities"], "was": got["was"]},
+                         ensure_ascii=False))
+    elif not got["changed"]:
+        print(f"「{got['title']}」本來就掛在 {now}")
+    else:
+        print(f"已改：「{got['title']}」掛在 {now}（{'原本是 ' + was if was else '原本沒有掛實體'}）")
+    return 0
+
+
+# ---------- 背景製卡（card-maker） ----------
+
+NOT_IN_CONVERSATION = "整理要在對話裡派"
+NOT_RUNNING = "現在沒有在整理"
+LINK_ONLY = "這個指令只收線上文件；檔案讀不到由 convert 記"
+STOPPED_HERE = "這一句說了停，不再派；客戶說整理再派"
+REASON_LABEL = "原因"
+
+
+class UnreadableRefused(Exception):
+    pass
+
+
+def _session(vault, args, strict=False):
+    """主對話的 session（第一輪修：兩個視窗開同一個知識庫不串）：守門插的 --session 優先；製卡助手的呼叫從 agents 反查；
+    strict（dispatch）到這裡就沒有了（終端機跑的）。不 strict 才退到 current.json。"""
+    if turn.SESSION:
+        return turn.SESSION
+    agent = getattr(args, "agent", None)
+    if agent:
+        sid = batches.session_of_agent(vault, agent)
+        if sid:
+            return sid
+    if strict:
+        return None
+    data = turn.now(vault)
+    return data.get("session_id") if data else None
+
+
+
+def _waiting_text(parts):
+    """還有幾份沒整理完，拆開講（B 段落差 5）：「還有 61 份沒整理完（49 份還沒做卡、1 份線上文件我自己做、11 份卡做好了還沒抽日程）」。"""
+    if not parts["total"]:
+        return "都整理完了"
+    bits = [f"{parts['cards']} 份還沒做卡" if parts["cards"] else "",
+            f"{parts['main']} 份我自己做（線上文件或有密碼的）" if parts["main"] else "",
+            f"{parts['agenda']} 份卡做好了還沒抽日程" if parts["agenda"] else ""]
+    bits = [b for b in bits if b]
+    return f"還有 {parts['total']} 份沒整理完" + (f"（{'、'.join(bits)}）" if len(bits) > 1 else "")
+
+
+def _left_text(left):
+    parts = [f"{batches.KIND_TEXT[k]} {n}" for k, n in left.items() if n]
+    return "還剩 " + "、".join(parts) if parts else "還剩 0"
+
+
+def _ids(raw):
+    """--ids 收逗號、頓號隔開或重複寫；去重、照順序。"""
+    if not raw:
+        return None
+    got = []
+    for chunk in raw:
+        for x in chunk.replace("、", ",").split(","):
+            x = x.strip()
+            if x and x not in got:
+                got.append(x)
+    return got or None
+
+
+ADOPT_WITH = "--adopt 不跟 --source、--ids 一起用"
+
+
+def _dispatch(vault, args, as_json):
+    source = args.source.strip() if args.source else None
+    ids = _ids(args.ids)
+    sid = _session(vault, args, strict=True)
+    if not sid:
+        print(NOT_IN_CONVERSATION)
+        return 3
+    if args.adopt and (source or ids):
+        print(ADOPT_WITH)
+        return 3
+    tid = turn.current(vault, sid)["turn"]
+    try:
+        got = (batches.dispatch_adopt(vault, sid, tid) if args.adopt
+               else batches.dispatch(vault, sid, tid, source, ids))
+    except batches.Refused as e:
+        print(str(e))
+        return 3
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+        return 0
+    if got["stopped"]:
+        print(STOPPED_HERE)
+        return 0
+    if got.get("offline"):
+        print("連不到 git，等連上再整理")  # 多人共用 3：認領標籤推不出去，這次全部不派
+        return 0
+    if got.get("claimed_elsewhere") and not got["batches"]:
+        print("這幾份別台在整理，這台不做：" + "、".join(sorted({c["by"] for c in got["claimed_elsewhere"]})) + " 那台")
+        return 0
+    if not got["batches"] and not got["running"] and not got["done"] and got["say"]:
+        print(got["say"])  # 別的對話認領著（認領不分對話）
+        return 0
+    if got["done"]:
+        print(got["say"] if args.adopt else
+              "整理完了" + (f"；沒做成 {len(got['failed'])} 份" if got["failed"] else ""))
+        return 0
+    made = got["batches"]
+    if made and made[0].get("self"):
+        for b in made:
+            print(f"這 {b['items']} 項我自己做（{batches.KIND_TEXT[b['kind']]}）：先跑 {b['do'][0]}，做完跑 {b['do'][1]}")
+        return 0
+    head = (f"派了 {len(made)} 批（{batches.KIND_TEXT[made[0]['kind']]} " + "、".join(str(b["items"]) for b in made) + "）"
+            if made else "沒有新派的")
+    print(f"{head}；還在跑 {got['running']} 批；{_left_text(got['left'])}"
+          + (f"；沒做成 {len(got['failed'])} 份" if got["failed"] else ""))
+    if got["approval"]:
+        print(got["approval"]["question"])
+    return 0
+
+
+def _batch(vault, batch_id, agent, as_json):
+    try:
+        got = batches.batch_view(vault, batch_id, agent)
+    except batches.Refused as e:
+        print(str(e))
+        return 3
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+    else:
+        print(f"批次 {batch_id}：{batches.KIND_TEXT[got['kind']]} {len(got['items'])} 項；先讀 " + batches.read_text(got["read"]))
+    return 0
+
+
+def _batch_done(vault, args, as_json):
+    """#48：dispatch 回 self 的批次，主對話做完標 done（跟製卡助手停下時同一段），再 dispatch 拿下一步。
+    codex 分支（spec 裁定 8）：不是 self 的（交給製卡者的）由製卡者自己 --done 收（Codex 沒有 SubagentStop），可帶 --failed。"""
+    from kb._lib import journal
+    sid = _session(vault, args, strict=True)
+    try:
+        if not sid:
+            raise batches.Refused(batches.NOT_SELF)  # 沒有對話編號：不會是這個對話 self 的批次，照製卡者的收
+        tid = batches.self_done(vault, sid, args.batch)
+    except batches.Refused as e:
+        if str(e) != batches.NOT_SELF:
+            print(str(e))
+            return 3
+        try:
+            b = batches.batch_done(vault, args.batch, args.failed)
+        except batches.Refused as e2:
+            print(str(e2))
+            return 3
+        if b is None:
+            print(batches.STOPPED)
+            return 3
+        journal.refresh_changed(vault, b["turn"])
+        n = len(b.get("items") or [])
+        if as_json:
+            print(json.dumps({"batch": args.batch, "done": n - len(b["failed"]), "failed": b["failed"],
+                              "ignored": b["ignored"]}, ensure_ascii=False))
+        else:
+            print(f"批次 {args.batch} 記成做完：做好 {n - len(b['failed'])}、沒做成 {len(b['failed'])}"
+                  + (f"（不是這批的編號沒記：{'、'.join(b['ignored'])}）" if b["ignored"] else "")
+                  + "；接著跑 kb cards dispatch --json")
+        return 0
+    journal.refresh_changed(vault, tid)
+    print(f"批次 {args.batch} 做完了；接著跑 kb cards dispatch --json")
+    return 0
+
+def _status(vault, args, as_json):
+    got = batches.status(vault, _session(vault, args))
+    if as_json:
+        print(json.dumps(got, ensure_ascii=False))
+    elif got["job"] is None:
+        last = got["last"]
+        done = (f"；{'停下' if last['stopped'] else '上次'}做好 {last['done']} 份" if last else "")
+        print(f"{NOT_RUNNING}{done}；{_waiting_text(got['waiting_parts'])}")
+    else:  # 先講還在做幾份（B 段落差 3：「還剩 0」會被讀成都做完了）
+        left = sum(got["left"].values())
+        print(f"正在整理：還在做 {got['in_progress']} 份（{len(got['running'])} 批），做好 {got['done']} 份"
+              + (f"；還沒輪到的 {left} 份" if left else ""))
+    return 0
+
+
+def _stop(vault, args, as_json):
+    sid = _session(vault, args)
+    got = batches.stop(vault, sid, turn.current(vault, sid)["turn"] if sid else None)
+    try:  # 這個對話不再自動整理（D-200）：照 D-156 的記號
+        turn.mark(vault, "ingest_stopped")
+    except OSError:
+        pass
+    if got is None:
+        print(json.dumps({"agents": [], "done": 0, "left": None}, ensure_ascii=False) if as_json else NOT_RUNNING)
+        return 0
+    if as_json:
+        print(json.dumps({"agents": got["agents"], "done": got["done"], "left": got["left"],
+                          "waiting_parts": got["waiting_parts"]}, ensure_ascii=False))
+    else:
+        print(f"已停：這次做好 {got['done']} 份；{_waiting_text(got['waiting_parts'])}；這個對話不再自動整理，說「整理」再接著做")
+    return 0
+
+
+def _unreadable(vault, fid, reason, as_json, conversation):
+    entry = next((e for e in inventory.load(vault)["entries"] if e.get("id") == fid), None)
+    if entry is None:
+        print(f"清冊沒有 {fid}")
+        return 3
+    if not inventory.is_link(entry) or entry.get("status") != "active":
+        print(LINK_ONLY)
+        return 3
+    try:  # 跟口述同一套（第一輪修 S5）：一句、200 字內、不收密碼與 " $ ` \
+        reason = statements.check_text(reason, REASON_LABEL, UnreadableRefused)
+    except UnreadableRefused as e:
+        print(str(e))
+        return 3
+    reason = credentials.mask_secrets(reason, credentials.known_names(vault))
+    label = f"「{entry.get('title') or entry['locations'][0]['uri']}」"
+    turn_id = turn.current(vault)["turn"]
+    pid = pending.add(vault, "unreadable", [fid], f"{label}讀不到", reason, turn_id)
+    journal_cli.record_program_or_warn(vault, f"記下線上文件讀不到：{label}",
+                                       [{"path": pending.PENDING_POSIX, "action": "modify"},
+                                        {"path": pending.MD_POSIX, "action": "modify"}], "cards unreadable", conversation)
+    if as_json:
+        print(json.dumps({"id": fid, "pending_id": pid}, ensure_ascii=False))
+    else:
+        print(f"已記進待處理（{pid}）")
+    return 0
+
+
+def run(args):
+    vault = find_vault(args)
+    if vault is None:
+        print(NOT_IN_VAULT)
+        return 3
+    kio.LOCK_TIMEOUT = CLI_LOCK_TIMEOUT
+    as_json = getattr(args, "json", False)
+    command = args.cards_command
+    try:
+        if command == "todo":
+            return _todo(vault, args, as_json)
+        if command == "list":
+            return _list(vault, args, as_json)
+        if command == "wip":
+            return _wip(vault, as_json)
+        if command == "edits":
+            return _edits(vault, args, as_json)
+        if command == "dispatch":
+            return _dispatch(vault, args, as_json)
+        if command == "batch":
+            if args.failed and not args.done:
+                print('--failed 要跟 --done 一起用：kb cards batch <批次> --done --failed "<編號>：<原因>"')
+                return 2
+            if args.done:
+                return _batch_done(vault, args, as_json)
+            return _batch(vault, args.batch, getattr(args, "agent", None), as_json)
+        if command == "status":
+            return _status(vault, args, as_json)
+        if command == "stop":
+            return _stop(vault, args, as_json)
+        conversation = journal_cli.in_conversation(vault)
+        if getattr(args, "id", None) and str(args.id).startswith("f-"):
+            turn.touch(vault, files=[args.id])  # 這一句動過的卡（lint 題，D-225）；終端機不記
+        if command == "sync":
+            return _sync(vault, as_json, conversation)
+        if command == "drop":
+            return _drop(vault, args.id, as_json, conversation)
+        if command == "skip":
+            return _skip(vault, args.id, (args.kind or "").strip() or None, as_json, conversation)
+        if command == "redo":
+            if sum(bool(x) for x in (args.id, args.job, args.ids)) != 1 or (args.check and not (args.job or args.ids)):
+                print(REDO_WHICH)
+                return 3
+            if args.ids:
+                return _redo_ids(vault, args.ids, args.check, as_json, conversation)
+            if args.job:
+                return _redo_jobs(vault, args.job, args.check, as_json, conversation)
+            return _redo(vault, args.id, as_json, conversation)
+        if command == "mode":
+            return _mode(vault, args, as_json, conversation)
+        if command == "seen":
+            return _seen(vault, args, as_json, conversation)
+        if command == "mount":
+            return _mount(vault, args.id, [n.strip() for n in args.entity], as_json, conversation)
+        if command == "unreadable":
+            return _unreadable(vault, args.id, args.reason, as_json, conversation)
+        return _index(vault, as_json, conversation)
+    except cards.CardRefused as e:
+        print(str(e))
+        return 3
+    except ValueError as e:
+        print(f"狀態檔讀不到：{e}")
+        return 3
+    except TimeoutError:
+        print("等不到鎖（別的指令正在改），沒有寫入；請稍後再試")
+        return 3
+    except OSError as e:
+        print(f"沒有寫入：{type(e).__name__}: {e}")
+        return 3

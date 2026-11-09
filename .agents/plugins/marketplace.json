@@ -1,0 +1,20 @@
+{
+  "name": "wiki-with-willy",
+  "interface": {
+    "displayName": "wiki-with-willy"
+  },
+  "plugins": [
+    {
+      "name": "wiki-with-willy",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

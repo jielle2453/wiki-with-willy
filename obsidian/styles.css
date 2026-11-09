@@ -1,0 +1,1894 @@
+/* wiki-with-willy 的 Obsidian 外掛樣式。顏色一律用 Obsidian 的 CSS 變數，深淺色都看得到。 */
+
+/* ---- 藏「檔案索引」夾（B-050 第 3 列）：只藏檔案樹，總目錄、檔頭連結、搜尋照常找得到卡 ---- */
+.nav-folder-title[data-path="檔案索引"],
+.nav-folder-title[data-path="檔案索引"] + .nav-folder-children {
+  display: none;
+}
+
+.nav-folder:has(> .nav-folder-title[data-path="檔案索引"]) {
+  display: none;
+}
+
+/* ---- 藏知識庫根的 CLAUDE.md（D-266）：只藏檔案樹，檔案還在 ---- */
+.nav-file-title[data-path="CLAUDE.md"] {
+  display: none;
+}
+
+.nav-file:has(> .nav-file-title[data-path="CLAUDE.md"]) {
+  display: none;
+}
+
+/* ---- 程式產生的頁（總目錄、工作日誌、健檢報告）最上面那一條 ---- */
+.wwh-generated {
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+/* ---- 首頁 ---- */
+.wwh-view {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+}
+
+.wwh-root {
+  position: relative; /* 小框（推測的日程、月曆點日期）定位用 */
+  /* 設計稿（design/mockups/Obsidian首頁-設計稿.dc.html）的顏色換成 Obsidian 的變數；橘是設計稿那個橘（逾期、今天線同色），深色主題換亮一點 */
+  --wwh-orange: #a4410e;
+  --wwh-orange-soft: #fbede4;
+  --wwh-on-orange: #fff;
+  --wwh-bar: color-mix(in srgb, var(--text-muted) 26%, var(--background-primary));
+  --wwh-accent-soft: color-mix(in srgb, var(--interactive-accent) 13%, var(--background-primary));
+  --wwh-line-soft: color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
+  --wwh-left: 38%;
+  --wwh-pad: 14px;
+  --wwh-paper: var(--background-primary);
+  --wwh-shadow: 0 4px 18px rgba(0, 0, 0, 0.05);
+  /* 月曆期間的淡色（每件事一個，同一件跨週同色） */
+  --wwh-mc0: #dce8f5;
+  --wwh-mc1: #dcefdc;
+  --wwh-mc2: #e8e0f4;
+  --wwh-mc3: #f3ecc9;
+  --wwh-mc4: #f5dde6;
+  --wwh-mc5: #d4eeec;
+  --wwh-mc6: #e1e4ee;
+  --wwh-mc7: #e6efcf;
+  /* 時間軸的條、點、列標題的色點：同一個色相，濃一點 */
+  --wwh-mt0: #8fb4de;
+  --wwh-mt1: #86c586;
+  --wwh-mt2: #b39ddb;
+  --wwh-mt3: #e0c45c;
+  --wwh-mt4: #e598b5;
+  --wwh-mt5: #72c4be;
+  --wwh-mt6: #96a3cf;
+  --wwh-mt7: #aecb62;
+  --wwh-note-bg: #fff6c9;
+  background: var(--background-secondary);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  height: 100%;
+  overflow: auto;
+  padding: 28px 36px 56px;
+  color: var(--text-normal);
+}
+
+.theme-dark .wwh-root {
+  --wwh-orange: #f2a072;
+  --wwh-orange-soft: rgba(242, 160, 114, 0.16);
+  --wwh-on-orange: #1e1e1e;
+  --wwh-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  --wwh-mc0: rgba(96, 165, 250, 0.3);
+  --wwh-mc1: rgba(74, 222, 128, 0.24);
+  --wwh-mc2: rgba(167, 139, 250, 0.32);
+  --wwh-mc3: rgba(250, 204, 21, 0.22);
+  --wwh-mc4: rgba(244, 114, 182, 0.28);
+  --wwh-mc5: rgba(45, 212, 191, 0.24);
+  --wwh-mc6: rgba(129, 140, 248, 0.32);
+  --wwh-mc7: rgba(163, 230, 53, 0.22);
+  --wwh-mt0: rgba(96, 165, 250, 0.62);
+  --wwh-mt1: rgba(74, 222, 128, 0.5);
+  --wwh-mt2: rgba(167, 139, 250, 0.62);
+  --wwh-mt3: rgba(250, 204, 21, 0.5);
+  --wwh-mt4: rgba(244, 114, 182, 0.55);
+  --wwh-mt5: rgba(45, 212, 191, 0.5);
+  --wwh-mt6: rgba(129, 140, 248, 0.62);
+  --wwh-mt7: rgba(163, 230, 53, 0.5);
+  --wwh-note-bg: #3f3b24;
+  --wwh-bar: color-mix(in srgb, var(--text-muted) 38%, var(--background-primary));
+}
+
+.wwh-root > * {
+  flex: 0 0 auto;
+  max-width: 1600px;
+}
+
+.wwh-hidden {
+  display: none !important;
+}
+
+/* 套色：時間軸每一列一個顏色，月曆同一個（沒有 class = 淡灰） */
+.wwh-tone0 { --wwh-mark-c: var(--wwh-mt0); --wwh-mark-bg: var(--wwh-mc0); }
+.wwh-tone1 { --wwh-mark-c: var(--wwh-mt1); --wwh-mark-bg: var(--wwh-mc1); }
+.wwh-tone2 { --wwh-mark-c: var(--wwh-mt2); --wwh-mark-bg: var(--wwh-mc2); }
+.wwh-tone3 { --wwh-mark-c: var(--wwh-mt3); --wwh-mark-bg: var(--wwh-mc3); }
+.wwh-tone4 { --wwh-mark-c: var(--wwh-mt4); --wwh-mark-bg: var(--wwh-mc4); }
+.wwh-tone5 { --wwh-mark-c: var(--wwh-mt5); --wwh-mark-bg: var(--wwh-mc5); }
+.wwh-tone6 { --wwh-mark-c: var(--wwh-mt6); --wwh-mark-bg: var(--wwh-mc6); }
+.wwh-tone7 { --wwh-mark-c: var(--wwh-mt7); --wwh-mark-bg: var(--wwh-mc7); }
+
+.wwh-row-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--wwh-mark-c, var(--text-faint));
+}
+
+.wwh-paper {
+  background: var(--wwh-paper);
+  border-radius: 12px;
+  box-shadow: var(--wwh-shadow);
+}
+
+.wwh-nokb {
+  padding: 40px 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-medium);
+}
+
+.wwh-muted {
+  color: var(--text-muted);
+}
+
+.wwh-empty {
+  padding: 6px 0;
+  color: var(--text-faint);
+  font-size: var(--font-ui-small);
+}
+
+.wwh-link {
+  cursor: pointer;
+  color: var(--text-accent);
+}
+
+.wwh-link:hover {
+  color: var(--text-accent-hover);
+  text-decoration: underline;
+}
+
+.wwh-small-btn {
+  padding: 2px 10px;
+  font-size: var(--font-ui-smaller);
+  height: auto;
+}
+
+.wwh-small-btn.is-on {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.wwh-icon-btn {
+  padding: 0 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  height: auto;
+  cursor: pointer;
+}
+
+.wwh-icon-btn:hover {
+  color: var(--text-normal);
+}
+
+.wwh-fold {
+  padding: 0 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  height: auto;
+  cursor: pointer;
+}
+
+/* 提示條 */
+.wwh-banner {
+  display: block;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  text-align: left;
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+}
+
+.wwh-banner-reload {
+  cursor: pointer;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.wwh-banner-warn {
+  border-color: var(--color-orange);
+}
+
+/* ---- 今天、鼓勵句與件數 ---- */
+.wwh-top {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px 32px;
+}
+
+.wwh-greet {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wwh-date {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.wwh-cheer {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.wwh-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 28px;
+}
+
+.wwh-count {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  color: var(--text-faint);
+}
+
+.wwh-count-n {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.wwh-count-label {
+  font-size: 12px;
+}
+
+.wwh-count.has.overdue {
+  color: var(--wwh-orange);
+}
+
+.wwh-count.has.today,
+.wwh-count.has.confirm {
+  color: var(--text-accent);
+}
+
+.wwh-counts-minor {
+  align-self: flex-end;
+  padding-bottom: 2px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+
+/* ---- 搜尋框與它的下拉（含「最近」）---- */
+.wwh-search {
+  position: relative;
+  z-index: 6;
+  width: 100%;
+  max-width: 720px;
+}
+
+.wwh-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  height: auto;
+  font-size: 15px;
+  border-radius: 8px;
+}
+
+.wwh-dropdown {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  max-height: 560px;
+  overflow-y: auto;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  background: var(--background-primary);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.18);
+}
+
+.wwh-dropdown.is-open {
+  display: block;
+}
+
+.wwh-dd-head {
+  margin: 4px 6px 2px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.wwh-dd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.wwh-dd-entity,
+.wwh-dd-ask,
+.wwh-file {
+  cursor: pointer;
+}
+
+.wwh-dd-entity:hover,
+.wwh-dd-ask:hover,
+.wwh-file:hover {
+  background: var(--background-secondary);
+}
+
+.wwh-dd-entity {
+  justify-content: space-between;
+  color: var(--text-accent);
+  font-weight: 500;
+}
+
+.wwh-dd-ask {
+  margin-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+  border-radius: 0 0 8px 8px;
+  color: var(--text-accent);
+  font-size: 13px;
+}
+
+.wwh-dd-title {
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wwh-chips {
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+}
+
+.wwh-chip {
+  height: auto;
+  padding: 1px 8px;
+  border: none;
+  border-radius: 10px;
+  box-shadow: none;
+  background: var(--wwh-accent-soft);
+  color: var(--text-accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wwh-chip-x {
+  opacity: 0.6;
+}
+
+.wwh-file {
+  gap: 4px;
+  padding: 0 0 0 0;
+}
+
+.wwh-file-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 8px;
+}
+
+.wwh-file-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.wwh-file-meta {
+  font-size: 12px;
+}
+
+.wwh-ext {
+  display: flex;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  --wwh-ext: var(--text-muted);
+  color: var(--wwh-ext);
+  background: color-mix(in srgb, var(--wwh-ext) 16%, transparent);
+}
+
+.wwh-ext.ext-xls {
+  --wwh-ext: var(--color-green);
+}
+
+.wwh-ext.ext-doc,
+.wwh-ext.ext-link {
+  --wwh-ext: var(--color-blue);
+}
+
+.wwh-ext.ext-ppt {
+  --wwh-ext: var(--color-orange);
+}
+
+.wwh-ext.ext-pdf {
+  --wwh-ext: var(--color-red);
+}
+
+.wwh-ext.ext-img {
+  --wwh-ext: var(--color-purple);
+}
+
+.wwh-card-btn {
+  display: flex;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-right: 6px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+}
+
+/* ---- 區塊（卡片）---- */
+.wwh-section,
+.wwh-block,
+.wwh-col-left {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.wwh-timeline-section {
+  padding: 16px 0 10px;
+  overflow: clip;
+  background: var(--wwh-paper);
+  border-radius: 12px;
+  box-shadow: var(--wwh-shadow);
+}
+
+.wwh-timeline-section > .wwh-section-head,
+.wwh-timeline-section > .wwh-month-head,
+.wwh-timeline-section > .wwh-month,
+.wwh-timeline-section > .wwh-legend,
+.wwh-timeline-section > .wwh-empty {
+  margin-right: 18px;
+  margin-left: 18px;
+}
+
+.wwh-section h2,
+.wwh-block h2,
+.wwh-col-left h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+
+.wwh-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.wwh-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.wwh-text-btn {
+  display: inline-block;
+  padding: 2px 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.wwh-text-btn:hover {
+  color: var(--text-normal);
+  text-decoration: underline;
+}
+
+.wwh-text-btn.wwh-add-btn {
+  color: var(--text-accent);
+  font-size: 14px;
+}
+
+.wwh-text-btn.wwh-add-btn:hover {
+  color: var(--text-accent-hover);
+}
+
+.wwh-toggle {
+  display: flex;
+  gap: 4px;
+}
+
+.wwh-seg {
+  padding: 2px 8px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+
+.wwh-seg.is-on {
+  border-bottom-color: var(--text-normal);
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+
+
+.wwh-chev {
+  display: inline-flex;
+  flex: 0 0 14px;
+  color: var(--text-muted);
+  transition: transform 0.12s;
+}
+
+.wwh-chev.is-open {
+  transform: rotate(90deg);
+}
+
+/* ---- 時間軸（表格）：左欄約 250px 放每件的圖示、文字、日期，右邊同一列只放記號 ---- */
+.wwh-gantt {
+  display: flex;
+  flex-direction: column;
+}
+
+.wwh-line {
+  display: flex;
+  align-items: center;
+}
+
+.wwh-cell-left {
+  flex: 0 0 var(--wwh-left);
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.wwh-cell-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: clip;
+}
+
+/* 軸頭、每一件的記號、每一塊的背景層都放在一層 slide 裡：寬度 = 整段 ÷ 畫面看的天數，--wwh-tx（在 .wwh-gantt 上）平移 */
+.wwh-slide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(var(--wwh-tx, 0%));
+  will-change: transform;
+}
+
+.wwh-gantt {
+  --wwh-tx: 0%;
+}
+
+.wwh-gantt.is-dragging,
+.wwh-gantt.is-dragging * {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.wwh-gantt .wwh-cell-track,
+.wwh-gantt .wwh-axis-track {
+  cursor: grab;
+}
+
+.wwh-gantt .wwh-mark {
+  cursor: pointer;
+}
+
+.wwh-axis {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  padding: 0 var(--wwh-pad);
+  background: var(--wwh-paper);
+}
+
+.wwh-axis-track {
+  position: relative;
+  flex: 1;
+  overflow: clip;
+  height: 46px;
+  border-bottom: 1px solid var(--wwh-line-soft);
+}
+
+.wwh-tick {
+  position: absolute;
+  padding-left: 4px;
+  white-space: nowrap;
+}
+
+.wwh-tick.is-month {
+  top: 3px;
+  color: var(--text-normal);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.wwh-tick.is-day {
+  top: 24px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wwh-tick.is-pinned {
+  left: 0;
+  z-index: 2;
+  padding-right: 6px;
+  background: var(--wwh-paper);
+}
+
+.wwh-today-flag {
+  position: absolute;
+  top: 24px;
+  transform: translateX(-50%);
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--wwh-orange);
+  color: var(--wwh-on-orange);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.wwh-axis-track .wwh-grid {
+  position: absolute;
+  top: 40px;
+  bottom: 0;
+}
+
+.wwh-row {
+  position: relative;
+  padding: 0 var(--wwh-pad);
+  border-top: 1.5px solid var(--wwh-line-soft);
+}
+
+.wwh-row.is-alt {
+  background: color-mix(in srgb, var(--background-secondary) 55%, var(--wwh-paper));
+}
+
+
+.wwh-head-line {
+  min-height: 48px;
+}
+
+.wwh-head-line .wwh-cell-track {
+  align-self: stretch;
+  min-height: 48px;
+}
+
+.wwh-row-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wwh-fold {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 10px 4px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+  text-align: left;
+}
+
+/* 收合只靠名字前的小箭頭（裁定 41）：點的範圍放大一點 */
+.wwh-fold-btn {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  margin: -10px 0 -10px -4px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.wwh-row-name.is-link,
+.wwh-todo-entity,
+.wwh-pop-row-name.is-link {
+  cursor: pointer;
+}
+
+.wwh-row-name.is-link:hover,
+.wwh-pop-row-name.is-link:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+.wwh-row-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+.wwh-row-count {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.wwh-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* 每塊的背景層：週線、暫停、連線、今天線（蓋在右邊那欄上，不吃點擊） */
+.wwh-overlay {
+  position: absolute;
+  top: 0;
+  right: var(--wwh-pad);
+  bottom: 0;
+  left: calc(var(--wwh-pad) + (100% - 2 * var(--wwh-pad)) * 0.38);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.wwh-overlay .wwh-grid,
+.wwh-axis-track .wwh-grid {
+  width: 1px;
+  background: var(--wwh-line-soft);
+}
+
+.wwh-overlay .wwh-grid.is-month {
+  background: var(--background-modifier-border);
+}
+
+.wwh-overlay .wwh-grid.is-day {
+  opacity: 0.6;
+}
+
+.wwh-overlay .wwh-grid,
+.wwh-overlay .wwh-pause,
+.wwh-overlay .wwh-today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.wwh-pause {
+  background: repeating-linear-gradient(135deg, transparent 0 5px, var(--background-modifier-border) 5px 6px);
+  opacity: 0.8;
+}
+
+.wwh-today-line {
+  width: 2px;
+  background: var(--wwh-orange);
+}
+
+.wwh-links {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.wwh-link-path {
+  stroke: var(--text-faint);
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.wwh-link-path.is-critical {
+  stroke: var(--text-muted);
+  stroke-width: 2;
+}
+
+/* 收起來的摘要列：期間色條加每件一個點 */
+.wwh-summary {
+  position: absolute;
+  inset: 0;
+}
+
+.wwh-sum-bar {
+  position: absolute;
+  top: 21px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--wwh-mark-c, var(--wwh-bar));
+}
+
+.wwh-sum-bar.is-late {
+  background: var(--wwh-orange);
+}
+
+
+.wwh-sum-dot {
+  position: absolute;
+  top: 19px;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 2px solid var(--background-primary);
+  border-radius: 50%;
+  transform: translateX(-50%);
+  background: var(--wwh-mark-c, var(--text-faint));
+}
+
+
+.wwh-sum-dot.is-late {
+  background: var(--wwh-orange);
+}
+
+.wwh-sum-dot.is-today {
+  background: var(--interactive-accent);
+}
+
+.wwh-sum-dot.is-inferred {
+  border: 1.5px solid var(--wwh-mark-c, var(--text-faint));
+  background: transparent;
+}
+
+
+/* 展開後：一件一列 */
+.wwh-mark-line {
+  height: 40px;
+}
+
+.wwh-mark-line .wwh-cell-track {
+  height: 40px;
+}
+
+.wwh-mark-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding: 6px 8px 6px 26px;
+  cursor: pointer;
+}
+
+.wwh-mark-label.is-child {
+  padding-left: 44px;
+}
+
+.wwh-kind-ico {
+  display: flex;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.wwh-kind-ico.kind-period {
+  color: var(--text-muted);
+}
+
+.wwh-mark-label.is-late .wwh-kind-ico {
+  background: var(--wwh-orange-soft);
+  color: var(--wwh-orange);
+}
+
+.wwh-mark-label.is-today .wwh-kind-ico {
+  background: var(--wwh-accent-soft);
+  color: var(--text-accent);
+}
+
+.wwh-mark-lines {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.wwh-mark-text {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wwh-mark-when {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.wwh-mark-label.is-late .wwh-mark-text {
+  color: var(--wwh-orange);
+  font-weight: 600;
+}
+
+.wwh-mark-label.is-today .wwh-mark-text {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+
+
+
+.wwh-mark {
+  position: absolute;
+  cursor: pointer;
+}
+
+.wwh-mark.is-bar {
+  top: 15px;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--wwh-mark-c, var(--wwh-bar));
+}
+
+.wwh-mark.is-bar.is-child {
+  top: 16px;
+  height: 8px;
+  border-radius: 4px;
+  opacity: 0.85;
+}
+
+.wwh-mark.is-bar.clip-left {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.wwh-mark.is-bar.clip-right {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.wwh-mark.is-bar.is-late {
+  background: var(--wwh-orange);
+}
+
+/* 推測的：淡一點的填色加虛線外框（不是整條白底虛線框） */
+.wwh-mark.is-bar.is-inferred {
+  box-sizing: border-box;
+  border: 1.5px dashed var(--text-muted);
+  background: color-mix(in srgb, var(--wwh-mark-c, var(--wwh-bar)) 35%, transparent);
+}
+
+.wwh-mark.is-bar.is-critical {
+  box-shadow: 0 0 0 2px var(--text-muted);
+}
+
+.wwh-mark.is-point {
+  top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  border: 1.5px solid var(--wwh-mark-c, var(--background-modifier-border-hover));
+  border-radius: 50%;
+  transform: translateX(-50%);
+  background: var(--wwh-mark-bg, var(--background-primary));
+  color: var(--text-muted);
+}
+
+.wwh-mark.is-point.is-late {
+  border-color: var(--wwh-orange);
+  color: var(--wwh-orange);
+}
+
+.wwh-mark.is-point.is-today {
+  border-color: var(--interactive-accent);
+  color: var(--text-accent);
+}
+
+.wwh-mark.is-point.is-inferred {
+  border-style: dashed;
+}
+
+.wwh-mark.is-point.is-critical {
+  border-color: var(--text-muted);
+  border-width: 2px;
+}
+
+.wwh-baseline {
+  position: absolute;
+  top: 28px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text-faint);
+  opacity: 0.7;
+}
+
+.wwh-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding-top: 10px;
+  font-size: 12px;
+  color: var(--text-normal);
+}
+
+.wwh-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wwh-legend-swatch {
+  display: inline-block;
+  box-sizing: border-box;
+}
+
+.wwh-legend-swatch.is-bar {
+  width: 18px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--wwh-bar);
+}
+
+.wwh-legend-swatch.is-inferred {
+  width: 18px;
+  height: 8px;
+  border: 1.5px dashed var(--text-muted);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--wwh-bar) 35%, transparent);
+}
+
+.wwh-legend-swatch.is-late {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--wwh-orange);
+  border-radius: 50%;
+}
+
+.wwh-legend-swatch.is-pause {
+  width: 18px;
+  height: 8px;
+  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--text-faint) 3px 4px);
+}
+
+.wwh-legend-swatch.is-today {
+  width: 2px;
+  height: 12px;
+  background: var(--wwh-orange);
+}
+
+/* 月曆：期間畫成橫跨那一週的一條 bar，名字只寫在開頭；單天的才佔格子 */
+.wwh-month-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.wwh-month-title {
+  font-weight: var(--font-semibold);
+}
+
+.wwh-month-head .wwh-text-btn {
+  font-size: 16px;
+}
+
+.wwh-month {
+  display: flex;
+  flex-direction: column;
+}
+
+.wwh-month-dows,
+.wwh-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.wwh-month-dow {
+  padding: 2px 6px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.wwh-week {
+  grid-auto-rows: auto;
+  row-gap: 3px;
+  min-height: 84px;
+  padding-bottom: 6px;
+  border-top: 1px solid var(--wwh-line-soft);
+}
+
+.wwh-day {
+  padding: 4px 6px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.wwh-day.is-out {
+  color: var(--text-faint);
+}
+
+.wwh-day.is-today .wwh-day-num {
+  display: inline-block;
+  min-width: 20px;
+  border-radius: 10px;
+  background: var(--wwh-orange);
+  color: var(--wwh-on-orange);
+  font-weight: 700;
+  text-align: center;
+}
+
+.wwh-mbar {
+  box-sizing: border-box;
+  height: 22px;
+  margin: 0 2px;
+  padding: 0 8px;
+  overflow: hidden;
+  border-radius: 11px;
+  background: var(--wwh-mark-bg, var(--wwh-bar));
+  color: var(--text-normal);
+  font-size: 12px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+
+.wwh-mbar.clip-left {
+  margin-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.wwh-mbar.clip-right {
+  margin-right: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.wwh-mbar.is-inferred {
+  opacity: 0.65;
+  color: var(--text-muted);
+}
+
+/* 過期的：自己的顏色不變，加橘色字和橘色外框 */
+.wwh-mbar.is-late {
+  box-shadow: inset 0 0 0 1.5px var(--wwh-orange);
+  color: var(--wwh-orange);
+  font-weight: 600;
+}
+
+.wwh-day-marks {
+  min-width: 0;
+  padding: 0 4px;
+}
+
+.wwh-day-mark {
+  margin-bottom: 2px;
+  padding: 1px 6px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--wwh-mark-bg, var(--wwh-bar));
+  color: var(--text-normal);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.wwh-day-mark:hover {
+  box-shadow: inset 0 0 0 1px var(--background-modifier-border-hover);
+}
+
+.wwh-day-mark.is-late {
+  box-shadow: inset 0 0 0 1.5px var(--wwh-orange);
+  color: var(--wwh-orange);
+  font-weight: 600;
+}
+
+.wwh-day-mark.is-today {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.wwh-day-mark.is-inferred {
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
+.wwh-day-more {
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+/* ---- 待辦（左）、要你確認的與其他要處理的（右）---- */
+.wwh-cols {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 28px 20px;
+}
+
+.wwh-col-left {
+  flex: 3 1 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
+  padding: 16px 18px 12px;
+}
+
+.wwh-col-right {
+  flex: 2 1 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.wwh-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wwh-block-confirm {
+  gap: 10px;
+}
+
+.wwh-block-confirm h2 {
+  color: var(--text-accent);
+}
+
+.wwh-group-head.is-confirm {
+  padding: 0;
+}
+
+.wwh-confirm-more {
+  align-self: flex-start;
+  color: var(--text-faint);
+}
+
+.wwh-group {
+  display: flex;
+  flex-direction: column;
+  padding-top: 10px;
+}
+
+.wwh-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--text-normal);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wwh-group-head.is-overdue {
+  color: var(--wwh-orange);
+}
+
+.wwh-group-head.is-week {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.wwh-group-count {
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.wwh-todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--wwh-line-soft);
+}
+
+.wwh-check {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin: 2px 0 0;
+  accent-color: var(--interactive-accent);
+}
+
+.wwh-todo-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wwh-todo-text {
+  font-size: 15px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.wwh-todo-text:hover {
+  text-decoration: underline;
+}
+
+.wwh-todo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.wwh-todo-entity {
+  color: var(--text-muted);
+}
+
+.wwh-tag-inferred {
+  font-style: italic;
+}
+
+.wwh-todo-when {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.wwh-todo-when:hover {
+  color: var(--text-normal);
+  text-decoration: underline;
+}
+
+.wwh-todo.is-late .wwh-todo-when,
+.wwh-todo.is-late .wwh-todo-text {
+  color: var(--wwh-orange);
+}
+
+.wwh-todo.is-done .wwh-todo-text {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.wwh-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+.wwh-confirm-text {
+  color: var(--text-normal); /* 題目照主文字色，答案改淡灰（裁定 41） */
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.wwh-confirm-foot {
+  margin-top: 8px; /* 題目與答案之間多留約 8px（裁定 41） */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.wwh-confirm-buttons {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+
+/* 點了就做的答案：淡灰，滑過才變主色（裁定 41，改掉 37 的主色） */
+.wwh-answer {
+  color: var(--text-muted);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+/* 右邊淡淡的收尾：先放著、不處理、對話圖示 */
+.wwh-confirm-quiet {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+
+.wwh-quiet {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wwh-quiet:hover {
+  color: var(--text-muted);
+}
+
+.wwh-chat-btn svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.wwh-answer:hover {
+  color: var(--text-normal);
+  text-decoration: underline;
+}
+
+/* 實體總覽（右側抽屜） */
+.wwh-drawer {
+  display: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 90vw);
+  padding: 12px 16px;
+  overflow: auto;
+  z-index: 20;
+  background: var(--background-primary);
+  border-left: 1px solid var(--background-modifier-border);
+  box-shadow: var(--shadow-l);
+}
+
+.wwh-drawer.is-open {
+  display: block;
+}
+
+.wwh-drawer-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.wwh-drawer-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.wwh-drawer-title h3 {
+  margin: 0;
+}
+
+.wwh-drawer-line {
+  padding: 3px 0;
+  font-size: var(--font-ui-small);
+}
+
+.wwh-drawer-aliases {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 6px 0;
+}
+
+.wwh-alias {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+}
+
+.wwh-drawer .is-cancelled {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+/* 對話框 */
+.wwh-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0;
+}
+
+.wwh-field-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.wwh-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.wwh-modal-line {
+  margin: 4px 0;
+}
+
+.wwh-undo {
+  margin-left: 6px;
+  padding: 0 8px;
+  height: auto;
+  cursor: pointer;
+}
+
+/* ---- 待辦與要你確認的下面一行淡字 ---- */
+.wwh-others:empty {
+  display: none;
+}
+
+.wwh-others-line {
+  padding-left: 4px;
+  color: var(--text-faint);
+}
+
+/* ---- 隨手記便條（首頁右上角，D-267 修訂、裁定 39）：小小一張淡黃底，整個框就是 系統/隨手記.md ---- */
+.wwh-toprow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start; /* 日期跟便條的上緣對齊（裁定 40） */
+  justify-content: space-between;
+  gap: 16px 32px;
+}
+
+.wwh-topleft {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.wwh-note {
+  display: flex;
+  flex: 0 0 240px;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
+  width: 240px;
+  padding: 10px 12px 8px;
+  border-radius: 8px;
+  background: var(--wwh-note-bg);
+  box-shadow: var(--wwh-shadow);
+}
+
+.wwh-note h2 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wwh-note-title {
+  cursor: pointer;
+}
+
+.wwh-note-title:hover {
+  color: var(--text-normal);
+  text-decoration: underline;
+}
+
+/* 滑鼠移入、打字時照樣淡黃，不變白：蓋掉 Obsidian 對 textarea 的 hover／focus 底色 */
+.wwh-note .wwh-note-text,
+.wwh-note .wwh-note-text:hover,
+.wwh-note .wwh-note-text:focus,
+.wwh-note .wwh-note-text:focus-visible,
+.wwh-note .wwh-note-text:active {
+  width: 100%;
+  height: 8em; /* 剛好 5 行（line-height 1.6），不切半行 */
+  min-height: 8em;
+  max-height: 8em;
+  box-sizing: border-box;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-y: auto;
+  resize: none;
+  scrollbar-width: thin;
+}
+
+/* 字多時看得出可以捲：細捲軸一直在 */
+.wwh-note-text::-webkit-scrollbar {
+  width: 6px;
+}
+
+.wwh-note-text::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-muted) 45%, transparent);
+}
+
+@media (max-width: 640px) {
+  .wwh-note {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}
+
+/* ---- 待辦與要你確認的下面一行淡字：還有 N 件要跟 Claude 一起看 ---- */
+.wwh-others:empty {
+  display: none;
+}
+
+.wwh-others-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 4px;
+  color: var(--text-faint);
+}
+
+/* ---- 要你確認的：卡上展開要填的那一格 ---- */
+.wwh-answer.has-fill.is-on {
+  text-decoration: underline;
+}
+
+.wwh-fill {
+  margin-top: 8px;
+}
+
+.wwh-fill-input,
+.wwh-fill-select {
+  width: 100%;
+  max-width: 280px;
+}
+
+.wwh-tag-inferred.is-link {
+  cursor: pointer;
+}
+
+.wwh-tag-inferred.is-link:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+/* ---- 小框：推測的日程問她對不對、月曆點日期列那天所有的事 ---- */
+.wwh-pop {
+  position: absolute;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 300px;
+  max-width: calc(100% - 16px);
+  padding: 12px 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+.wwh-pop-title {
+  font-weight: 600;
+}
+
+.wwh-pop-meta {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.wwh-pop-ask {
+  color: var(--text-muted);
+}
+
+.wwh-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.wwh-pop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.wwh-pop-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.wwh-pop-row.is-late .wwh-pop-text {
+  color: var(--wwh-orange);
+  font-weight: 600;
+}
+
+.wwh-pop-time {
+  flex: 0 0 40px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wwh-pop-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--wwh-mark-c, var(--text-faint));
+}
+
+.wwh-pop-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wwh-pop-row-name {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+.wwh-pop-add,
+.wwh-pop-open {
+  align-self: flex-start;
+}
+
+/* ---- 月曆：每天之間淡直線、點日期的底、收起（細色線與色點）---- */
+.wwh-day-bg {
+  z-index: 0;
+  border-left: 1px solid var(--wwh-line-soft);
+  cursor: pointer;
+}
+
+.wwh-day-bg.is-first {
+  border-left: none;
+}
+
+.wwh-day-bg:hover {
+  background: var(--background-modifier-hover);
+}
+
+.wwh-day,
+.wwh-day-marks,
+.wwh-mbar {
+  position: relative;
+  z-index: 1;
+}
+
+.wwh-day {
+  cursor: pointer;
+}
+
+.wwh-month.is-collapsed .wwh-week {
+  min-height: 52px;
+}
+
+.wwh-mbar.is-thin {
+  align-self: center;
+  height: 4px;
+  margin-top: 3px;
+  margin-bottom: 3px;
+  padding: 0;
+  border-radius: 2px;
+  background: var(--wwh-mark-c, var(--wwh-bar));
+  line-height: 0;
+}
+
+.wwh-mbar.is-thin.is-late {
+  background: var(--wwh-orange);
+  box-shadow: none;
+}
+
+.wwh-day-marks.is-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 6px;
+}
+
+.wwh-day-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--wwh-mark-c, var(--text-faint));
+  cursor: pointer;
+}
+
+.wwh-day-dot.is-late {
+  background: var(--wwh-orange);
+}
+
+.wwh-day-dot.is-inferred {
+  box-sizing: border-box;
+  border: 1.5px solid var(--wwh-mark-c, var(--text-faint));
+  background: transparent;
+}
+
+/* ---- 出處〔f-…〕的小檔案圖示（閱讀與編輯模式，裁定 41）：跟字同高、淡色 ---- */
+.wwh-cardref {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 1px;
+  color: var(--text-faint);
+  cursor: pointer;
+  text-decoration: none;
+  vertical-align: -0.125em;
+}
+
+.wwh-cardref:hover {
+  color: var(--text-accent);
+}
+
+.wwh-cardref .wwh-ico {
+  width: 1em;
+  height: 1em;
+}
+
+/* 推測的小框（裁定 41）：題目主色、答案淡灰（同確認卡），中間多 8px；「開相關的卡」紫色 */
+.wwh-infer-pop .wwh-confirm-buttons {
+  margin-top: 8px;
+}
+
+.wwh-infer-pop .wwh-pop-open {
+  color: var(--text-accent);
+}

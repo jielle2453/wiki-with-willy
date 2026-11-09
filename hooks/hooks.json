@@ -1,0 +1,76 @@
+{
+  "description": "Codex 版（codex 分支）：開場帶入核心規則與 kb 指令前綴；每句開頭比對清冊印變動行與整理指示、手改的卡與設定檔、這台電腦找不到的來源只報一次（記在 .system/env.json），這台每天第一句另外帶日程、版本、搬家；整理中按了停止，這個對話不再自動整理（背景整理時說停也是）；wiki-with-willy 守門與事務層：客戶原檔只讀、排除的夾不讀、總資料夾各區照路徑表決定能不能寫、kb.py 不用按允許；每句話一個回合、寫綜合卡／暫存區／檔案索引前先備份、暫存區寫後登記成品、檔案索引的卡寫後驗檔頭並重寫總目錄；每句話記進工作日誌；對話結束時把那個對話還在整理的批次放掉；Codex 的 apply_patch 逐檔守門、Windows 的 Bash 照 PowerShell 判、密碼動作改成客戶下一句同意才放行（hooks/_codex.py）",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/hooks/session.py\"",
+            "timeout": 10,
+            "additionalContextLimit": 0
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/hooks/turn.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch|view_image)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/hooks/guard.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/hooks/output_log.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/hooks/stop.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "other",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/hooks/session_end.py\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

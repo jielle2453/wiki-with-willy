@@ -1,0 +1,67 @@
+# wiki-with-willy 出貨的同步忽略清單（多人共用 1，D-292）：同步只放 willy 產的文字；機器的、本機的、可重算的不放。
+# 這份由骨架複製進知識庫；要加自己的規則請另起幾行，不要改上面的。
+
+# 本機狀態
+.system/local/
+.system/legacy/
+.system/journal/
+.system/versions/
+.system/turns/
+.system/snapshots/
+.system/temp/
+.system/guard-status/
+.system/handedits/
+.system/broken/
+.system/env.json
+.system/renders.json
+.system/lint.json
+.system/batches.json
+.system/purge-pending.json
+.system/unlock.json
+.system/upgrade-history.json
+.system/agenda_export.json
+.system/ledger.tsv
+.system/hook-errors.log
+.system/asks_seen.json
+.system/revert*
+.system/*.lock
+.system/*.tmp
+
+# 流水檔合起來的衍生副本（正本是 .system/streams/）
+.system/statements.json
+.system/agenda.json
+.system/rulings.json
+.system/findings.json
+.system/entities.json
+.system/sources.json
+.system/set_aside.json
+.system/card_base.json
+.system/profile.json
+.system/statements-archive.json
+.system/findings-archive.json
+.system/inventory.json
+.system/pending.json
+
+# 渲染頁、每台自己的東西
+系統/*
+/總目錄.md
+暫存區/
+.obsidian/workspace*.json
+.obsidian/cache
+.obsidian/plugins/wiki-with-willy/data.json
+
+# 憑證檔名樣式（同 kb/_lib/credentials.py）
+.env
+.env.*
+*.pem
+*.ppk
+*.kdbx
+id_rsa*
+id_ed25519*
+*password*
+*passwd*
+*secret*
+*credential*
+*密碼*
+*帳密*
+*金鑰*

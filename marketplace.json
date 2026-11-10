@@ -6,11 +6,11 @@
   "plugins": [
     {
       "name": "wiki-with-willy",
-      "version": "0.36.0",
+      "version": "0.37.0",
       "source": {
         "source": "archive",
-        "url": "https://github.com/jielle2453/wiki-with-willy/releases/download/v0.36.0/wiki-with-willy-0.36.0.zip",
-        "sha256": "1cf7362e742086c24a0fc99faeb4457024bc8f3872768fd8e55cef349cd0cb54"
+        "url": "https://github.com/jielle2453/wiki-with-willy/releases/download/v0.37.0/wiki-with-willy-0.37.0.zip",
+        "sha256": "f0b7bd649360803c5c70874bc6ea385f1a56cf2acc2503ff8a6c9770dd1ddb13"
       }
     }
   ]

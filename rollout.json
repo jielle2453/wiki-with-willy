@@ -88,6 +88,10 @@
     "0.38.0": {
       "for": "all",
       "note": "現在可以叫 willy 在知識庫裡幫你做 skill（例如「幫我做一個查報價的 skill」），第一次寫進去時 Claude 會問你允不允許，按允許就好。用 Codex 的：升級到這版後，在 Codex 打一次 `/hooks` 重新信任 willy，不然 willy 不會動。"
+    },
+    "0.41.0": {
+      "for": "all",
+      "note": "Obsidian 開在你原本的資料夾也能看 willy 首頁，一個 Obsidian 可以切換好幾個知識庫。"
     }
   }
 }

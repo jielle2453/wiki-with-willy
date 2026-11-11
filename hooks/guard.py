@@ -2,7 +2,7 @@
 
 守門內部出錯：寫 .system/hook-errors.log 一行；知識庫裡一律印 deny（fail closed，D-034、I-101；Bash／PowerShell 也擋，
 密碼與守門 D-186 第 4 點），知識庫外不表態。hook 本身起不來或逾時由 hooks.json 的 onFailure: block 擋。
-事務層：檔案工具寫 Z1／Z4／Z5 放行後先 kb._lib.turn.before_write 備份；大改動（big_change）或備份失敗（backup_failed）改印 deny。
+事務層：檔案工具寫 Z1／Z4／Z5（與 BACKUP_ZONES 其他區；Z13 skill 夾 willy 不管、不備份，D-538）放行後先 kb._lib.turn.before_write 備份；大改動（big_change）或備份失敗（backup_failed）改印 deny。
 子代理（card-maker，D-195）：payload 帶 agent_id、batches.json 的 agents 有它 → 檔案工具寫入的備份與大改動計數算它記的回合；
 放行的單一 kb 呼叫回 allow 加 updatedInput（整個 tool_input 照抄、只換 command：kb.py 路徑後面插 --turn <回合> --agent <id>）。
 主對話、沒記過的子代理照舊；kb.guard 的判斷不改，插的值照 plan.shell_arg 加引號，給不出就不改寫。
@@ -22,7 +22,6 @@ import json
 import os
 import sys
 
-sys.dont_write_bytecode = True
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -32,14 +31,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 sys.path.insert(0, HERE)
 try:
-    import _codex  # noqa: E402  Codex 轉接（codex 分支）
+    import _codex  # noqa: E402  Codex 轉接
 except BaseException:  # noqa: BLE001  轉接載不進來：main 照守門出錯處理（知識庫裡 deny），不讓 Codex 因 hook 起不來而放行（review 6）
     _codex = None
 
 FILE_TOOLS = ("Read", "Glob", "Grep", "Edit", "Write", "MultiEdit", "NotebookEdit")
 WRITE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 SHELL_TOOLS = ("Bash", "PowerShell")
-BACKUP_ZONES = ("Z1", "Z2", "Z4", "Z5", "Z6", "Z8", "Z9")  # 放行的檔案工具寫前都先回合備份（D-046 補；放寬甲 D-306：使用者的區與客戶設定檔也備）
+BACKUP_ZONES = ("Z1", "Z2", "Z4", "Z5", "Z6", "Z8", "Z9")  # 放行的檔案工具寫前都先回合備份（D-046 補；放寬甲 D-306：使用者的區與客戶設定檔也備；D-538：skill 夾不備）
 ERROR_REASON = "守門出錯，這次沒放行，已記在 hook-errors.log：改跑 kb selftest 看原因，修不好照核心規則請服務人員。"
 AGENT_DENY = "製卡助手不能做這件事"
 SELF_FLAGS = "kb 指令不能自己帶 --turn、--agent、--session 或 --via"
@@ -78,10 +77,10 @@ def main():
         tool = str(payload.get("tool_name", "") or "") if isinstance(payload, dict) else ""
         if not isinstance(payload, dict):
             raise ValueError(f"payload 不是物件：{type(payload).__name__}")
-        if _codex is None:
-            raise ImportError("hooks/_codex.py 載不進來")
-        if not _codex.is_codex(payload):
+        if "turn_id" not in payload:  # Claude 的 payload 不靠 _codex（#56 review 1：轉接壞了 Claude 版照舊）；同 _codex.is_codex
             decision, reason, updated, _vault = _judge(payload, tool)
+        elif _codex is None:
+            raise ImportError("hooks/_codex.py 載不進來")
         else:
             decision, reason, updated = _codex_main(payload, tool)
         if decision in ("allow", "deny", "ask"):  # ask：開新口子的密碼動作，Claude Code 跳允許詢問（D-212）；Codex 不會走到 ask
@@ -91,7 +90,7 @@ def main():
 
 
 def _codex_main(payload, tool):
-    """Codex（codex 分支）：apply_patch 逐檔判、合併；ask 換成「客戶下一句同意才放行」（_codex 檔頭）。"""
+    """Codex：apply_patch 逐檔判、合併；ask 換成「客戶下一句同意才放行」（_codex 檔頭）。"""
     from kb import guard
     from kb._lib import ledger
 

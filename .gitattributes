@@ -1,4 +1,1 @@
 * text=auto eol=lf
-# 兩人同時加條目時兩邊都留；合併後看一眼索引與編號
-design/decisions.md merge=union
-design/backlog.md merge=union

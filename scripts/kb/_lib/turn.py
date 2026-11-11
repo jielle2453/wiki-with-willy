@@ -429,7 +429,7 @@ def set_prompt_head(vault, session_id, text):
 
 # mark 記的回合旗標；退回自己這句時 start(inherit=) 帶過去。secret_shown（密碼與守門）：這句回答給了密碼，Stop 不記結果；
 # asks_told（lint 題，D-225）：這個對話說過「還有 N 件要你決定的事」，start 從同 session 的上一句帶下去
-MARK_FLAGS = ("ingest", "ingest_stopped", "secret_shown", "asks_told")
+MARK_FLAGS = ("ingest", "ingest_stopped", "secret_shown", "asks_told", "codex")  # codex：Codex 的對話（hooks/turn.py 每句標，#56）
 SESSION_FLAG = "asks_told"
 
 

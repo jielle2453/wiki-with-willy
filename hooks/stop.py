@@ -19,7 +19,6 @@ import sys
 
 CODEX = False
 
-sys.dont_write_bytecode = True
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -27,7 +26,6 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
-sys.path.insert(0, HERE)  # 共用的 _checks.py 在同一夾
 
 NO_MESSAGE = "（這版 Claude Code 沒給最後回答）"
 SECRET_RESULT = "（這句回答有密碼，沒記）"  # 密碼與守門：回合記了 secret_shown（kb unlock get、讀「可以讀」的密碼檔）
@@ -40,7 +38,7 @@ def main():
         if not isinstance(payload, dict):
             raise ValueError(f"payload 不是物件：{type(payload).__name__}")
         global CODEX
-        CODEX = "turn_id" in payload  # Codex 的 Stop 要 exit 0 時有 JSON（codex 分支）
+        CODEX = "turn_id" in payload  # Codex 的 Stop 要 exit 0 時有 JSON
         from kb import guard
 
         vault = guard.find_vault(payload.get("cwd") or os.getcwd())
@@ -56,7 +54,6 @@ def main():
         data = turn._read_turn(turn._session_file(vault, sid))
         try:
             _record_after(vault, data, payload)  # 多人共用 3：這回合碰過的檔的 sha 記進 after.jsonl，退回時比別人改過沒
-            _after_answer(vault, sid, payload)  # 先寫 detected.jsonl，下面日誌的 actions 才抄得到
             if data and not data.get("done"):
                 _finish(vault, sid, data, message, payload)
             elif data:  # 已經答完的那句（背景整理的通知回合）：主對話後來跑的 kb 改了的照補（card-maker 第一輪修）
@@ -75,17 +72,6 @@ def _record_after(vault, data, payload):
             from kb._lib import refresh
 
             refresh.write_after(vault, data["turn"])
-    except BaseException as e:  # noqa: BLE001
-        _log(e, payload)
-
-
-def _after_answer(vault, sid, payload):
-    """答完再比一次檔案（放寬丙 要做的事 1-2）；例外只寫 log，不擋日誌。"""
-    try:
-        import _checks
-
-        _checks.SOURCE = "stop"
-        _checks.after_answer(vault, sid)
     except BaseException as e:  # noqa: BLE001
         _log(e, payload)
 

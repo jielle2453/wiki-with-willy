@@ -942,6 +942,7 @@ def _save_check(vault, **fields):
     old = env.update_check(vault) or {}
     if old.get("told") and "told" not in fields:
         fields["told"] = old["told"]  # 開場講過的記號不跟著整份換掉
+    fields.setdefault("checked_with", plugin_version())  # 哪一版查的；開場判撤回只信現在這版查的（裁定 27）
     env.set_update_check(vault, dict(BLANK_CHECK, date=_today(), **fields))
 
 
@@ -949,7 +950,8 @@ def _save_error(vault, e):
     """連不上：只記錯誤與日期，上一次查到的結果留著（開場只用上一次的；驗不過的紀錄也留著）。"""
     prev = env.update_check(vault) or {}
     keep = {k: prev.get(k) for k in ("latest", "kind", "allowed", "note", "verify_failed")}
-    _save_check(vault, error=str(e) or type(e).__name__, **{k: v for k, v in keep.items() if v is not None})
+    _save_check(vault, error=str(e) or type(e).__name__, checked_with=prev.get("checked_with"),  # 沒有也照傳 None（裁定 27）
+                **{k: v for k, v in keep.items() if v is not None})
 
 
 def background(vault):
@@ -1066,7 +1068,7 @@ def opening(vault):
                 line = (NEW_VERSION_LINE.format(version=chk["latest"], note=note) if note
                         else NEW_VERSION_LINE_NO_NOTE.format(version=chk["latest"]))
                 chk = _mark_told(vault, chk, chk["latest"])
-        elif k == "downgrade" and chk.get("told") != f"withdrawn:{plugin}":
+        elif k == "downgrade" and chk.get("checked_with") == plugin and chk.get("told") != f"withdrawn:{plugin}":
             line = WITHDRAWN_OPENING.format(version=plugin)
             chk = _mark_told(vault, chk, f"withdrawn:{plugin}")
     _maybe_spawn(vault, chk)

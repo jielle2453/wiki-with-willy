@@ -15,7 +15,7 @@ USER_KEYS = (
     "pending_set_aside_days", "set_aside_wake_days", "lint_inferred_days", "preference_lint_days", "versions_keep_days",
     "versions_keep_turns", "backup_keep", "snapshots_keep", "home_timeline_days", "home_recent_max", "find_recent_days",
     "find_results_max", "card_parallel", "preference_max", "preference_max_chars", "ask_expire_days",
-    "card_section_map_min_chars", "card_section_map_min_pages", "index_icons", "index_order",
+    "card_section_map_min_chars", "card_section_map_min_pages", "index_icons", "index_order", "background_scan_minutes",
 )
 CLIENT_REL = Path(".system") / "config.json"
 
@@ -47,6 +47,8 @@ def get(vault, key):
     if key not in client:
         return default
     value = client[key]
+    if type(default) is float and type(value) is int:  # 小數鍵寫整數照收（裁定 30）；bool 不是 int 型別，照擋
+        return float(value)
     if type(value) is not type(default):  # bool 不當 int，"十" 不當 10
         ledger.log_error(vault, f"config.json 的 {key} 型別不對（{type(value).__name__}），用預設 {default!r}")
         return default

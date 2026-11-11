@@ -21,7 +21,6 @@ import json
 import os
 import sys
 
-sys.dont_write_bytecode = True
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -31,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 sys.path.insert(0, HERE)
 try:
-    import _codex  # noqa: E402  Codex 轉接（codex 分支）
+    import _codex  # noqa: E402  Codex 轉接
 except BaseException:  # noqa: BLE001  載不進來：Claude 的 payload 照舊，Codex 的當成不認得（review 二輪 4）
     _codex = None
 

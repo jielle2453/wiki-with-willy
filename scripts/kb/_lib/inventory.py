@@ -1478,6 +1478,7 @@ def path_of(vault, sources, uri):
 # ---------- 新同事第一次：認檔案（多人共用 2，D-300） ----------
 
 LEARNED_REL = Path(".system") / "local" / "learned.json"
+LOCAL_BIG = 4096  # 本機清冊大於這個位元組數就當有東西（裁定 32）
 
 
 def _local_items(vault):
@@ -1491,7 +1492,14 @@ def learning(vault):
         from kb._lib import streams
         if not streams.exists(vault, "inventory"):  # 還沒轉成流水檔的舊庫（升級前）不是新 clone
             return False
-        if (Path(vault) / LEARNED_REL).is_file() or _local_items(vault):
+        if (Path(vault) / LEARNED_REL).is_file():
+            return False
+        try:  # 本機清冊大於 4 KB 就當有東西，不讀整份（3 萬份 0.2 s，裁定 32）
+            if streams.local_path(vault, "inventory").stat().st_size > LOCAL_BIG:
+                return False
+        except FileNotFoundError:
+            pass
+        if _local_items(vault):
             return False
         return any(e.get("status") in LIVE and e.get("locations") for e in load(vault)["entries"])
     except (OSError, ValueError):

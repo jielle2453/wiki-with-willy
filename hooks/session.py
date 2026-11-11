@@ -18,7 +18,6 @@ import os
 import sys
 import time
 
-sys.dont_write_bytecode = True
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")

@@ -58,6 +58,19 @@ def _had_journal(vault, last_guard):
         return True
 
 
+def _turn_days(vault, month):
+    return [str(r["time"])[:10] for r in journal.read_lines(vault, month) if r.get("kind") == "turn" and r.get("time")]
+
+
+def _first_conversation(vault):
+    """最早一段對話的那天（守門一直沒有紀錄時用：新庫第一次開場的背景健檢比守門第一次寫 guard-status 早，#63）。"""
+    for month in journal.months(vault):
+        days = _turn_days(vault, month)
+        if days:
+            return min(days)
+    return None
+
+
 def _last_conversation(vault, last_guard=None):
     """最近一段對話的那天；該有日誌卻一個月都沒有就丟出去（讀不到資料：這項算沒查成，不關它的件，T-28）。"""
     if not journal.months(vault):
@@ -65,9 +78,9 @@ def _last_conversation(vault, last_guard=None):
             raise ValueError("工作日誌讀不到")
         return None
     for month in reversed(journal.months(vault)):
-        rows = [r for r in journal.read_lines(vault, month) if r.get("kind") == "turn" and r.get("time")]
-        if rows:
-            return max(str(r["time"])[:10] for r in rows)
+        days = _turn_days(vault, month)
+        if days:
+            return max(days)
     return None
 
 
@@ -76,7 +89,12 @@ def run(ctx):
     last = _last_guard(ctx.vault)
     out = [runner.finding("guard", "number", "guard", "", data={"denied_week": week, "denied_prev": prev, "last": last})]
     talk = _last_conversation(ctx.vault, last)
-    if talk and (last is None or date.fromisoformat(talk) - date.fromisoformat(last) >= timedelta(days=STALE_DAYS)):
+    if talk and last is None:  # 守門還沒紀錄：最早的對話離今天不到 STALE_DAYS 天不算（新庫第一次開場，#63）
+        first = _first_conversation(ctx.vault) or talk
+        stale = date.fromisoformat(ctx.today) - date.fromisoformat(first) >= timedelta(days=STALE_DAYS)
+    else:
+        stale = bool(talk) and date.fromisoformat(talk) - date.fromisoformat(last) >= timedelta(days=STALE_DAYS)
+    if stale:
         when = f"最後一次是 {last}" if last else "一直沒有跑的紀錄"
         out.append(runner.finding("guard", "decide", "guard_stale",
                                   f"守門好像沒在跑（{when}，最近的對話是 {talk}）；請服務人員看一下",

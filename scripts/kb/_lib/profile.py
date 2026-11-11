@@ -20,7 +20,7 @@ md 不顯示 dir，型別表的列序就是編號順序。
 記帳 1b（D-281、D-336、D-342、D-343；D-335 不升 schema，新節選填）：第九節數字欄（fields）[{type, field, unit, source, date}]
 照型別定要算的數字（值在實體上，entities.set_fields）；第十節記帳（money）最多一列 [{mode: on|spoken|off, places: [型別…], source, date}]；
 第五節成員的列多選填 place（平常在哪，第十節地點型別的實體名稱；多人時 md 才顯示這欄）。舊 JSON 沒有 fields、money 不補（沒有就當空，
-money_mode 讀成 spoken）；補第十節走 _lib/migrate 那列（看有沒有 money）。舊 md 少了九、十節不算錯（看節在不在，不靠版本號）；
+money_mode 讀成 MONEY_DEFAULT，#59 起是 off）；補第十節走 _lib/migrate 那列（看有沒有 money）。舊 md 少了九、十節不算錯（看節在不在，不靠版本號）；
 第十節沒有列當作沒改（fill_missing 取 JSON 的值）。
 """
 import copy
@@ -105,8 +105,7 @@ PROMPTS = (
     "想照什麼條件找人或找案子？一列一個欄，詞用頓號分開；只能從這些詞挑，字典外的我會先問你。不用的型別不用填。",
     "哪一類東西有要算的數字？一列一個欄，例：產品 售價 元、產品 每箱 瓶、產品 安全庫存 瓶、案子 合約總價 元。"
     "值我從檔案讀或聽你說，記在每張卡的屬性欄。",
-    "要不要幫你記做生意的錢？開：你說的與檔案裡的都記；只記我講的：只記你說的；關：你講的錢我照樣記得、可以加總，但不算帳。"
-    "有分店或倉庫的，在『地點的型別』寫那個型別。",
+    "記帳這版還沒開放，先保持關；你講的錢我照樣記得、可以加總。",  # #59（D-534）；原本講開、只記我講的、關三種與地點的型別
 )
 TITLES = ("型別", "卡型與段落", "不整理與敏感", "每類最想知道什麼", "關於你", "偏好", "做文件用的範本", "標籤", "數字欄", "記帳")
 TABLE_HEADS = (("名稱", "大類", "一句說明", "來源", "日期"),
@@ -122,7 +121,7 @@ TABLE_HEADS = (("名稱", "大類", "一句說明", "來源", "日期"),
 PLACE_HEAD = "平常在哪"  # 第五節多人時多這一欄（D-342 (3)），插在別名後面
 MONEY_MODES = {"開": "on", "只記我講的": "spoken", "關": "off"}
 _MONEY_REVERSED = {v: k for k, v in MONEY_MODES.items()}
-MONEY_DEFAULT = "spoken"  # 沒有第十節（舊庫還沒遷）讀成只記我講的（記帳 1b 新定 2）
+MONEY_DEFAULT = "off"  # 沒有第十節（舊庫還沒遷）讀成關（#59：記帳先不開放，2026-11-09；原本是只記我講的）
 FIELD_RESERVED = ("庫存", "累計收", "累計付", "未收", "未付")  # 程式算的，不是欄（D-272 (3)、記帳 1b 新定 3）
 FIELD_NAME_MAX = 20
 FIELD_UNIT_MAX = 10
@@ -192,7 +191,7 @@ def defaults(today=None):
         "templates": [],
         "tags": [],
         "fields": [],
-        "money": [{"mode": "on", "places": [], "source": "inferred", "date": today}],  # 新庫是開（記帳 1b 新定 2）
+        "money": [{"mode": "off", "places": [], "source": "inferred", "date": today}],  # 新庫是關（#59：記帳先不開放，2026-11-09）
     }
 
 
@@ -844,7 +843,7 @@ def field_groups(data):
 
 
 def money_mode(data):
-    """第十節的狀態 on｜spoken｜off；沒有第十節（舊庫還沒遷）讀成 spoken（記帳 1b 新定 2）。"""
+    """第十節的狀態 on｜spoken｜off；沒有第十節（舊庫還沒遷）讀成 MONEY_DEFAULT（#59 起是 off）。"""
     rows = (data or {}).get("money") or []
     mode = rows[0].get("mode") if rows else None
     return mode if mode in _MONEY_REVERSED else MONEY_DEFAULT

@@ -2,7 +2,7 @@
 
 從 session.py 搬來，句子照放寬乙定的版本（design/specs/2026-11-01-放寬乙-說法與規則.md 要做的事 3、4），這裡不改字。
 開場只留 kb 行、核心規則、偏好、摺疊行與「這台今天第一次」那批（daily）；其他每句開頭做（turn_lines）：
-  daily（env.json 的 daily_done 不是今天才做）→ 檔案比對（hook 點，下面 file_compare）→ line_card_edits → line_tags
+  daily（env.json 的 daily_done 不是今天才做）→ 讀背景比對的清單（file_compare，D-536）→ line_card_edits → line_tags
   → line_profile → line_missing_sources → 搬動、變動（change_lines）、實體夾有變（line_drift）。
 新放、改過的檔先算製作中，不叫 AI 整理；md 照舊整理那幾份（D-525）。
 時間到（TURN_BUDGET 秒，從 hook 開始算）就停，沒做完的下一句接著做。各檢查先比修改時間（記在 session 的回合檔 checks，
@@ -14,7 +14,6 @@ import os
 import sys
 import time
 
-sys.dont_write_bytecode = True
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -33,7 +32,7 @@ COLLEAGUE = "（可能是同事動的，不是這台使用者的意思，別從�
 MISSING_LINE = "有 {n} 份不見：跑 kb inventory scan 再 kb cards sync 拿掉卡；不派整理、不做卡。"
 NAMES_SHOWN = 3
 WIP_DAILY = "製作中 {n} 份：{names}；跟客戶說一句還有這幾份沒整理、要整理說一聲，不問、不追。"  # D-525 第 5 點
-CHANGES_INCOMPLETE = "變動還沒比完：下一句接著比，不用跟客戶提。"
+SCHEDULE_LINE = "設好背景比對（每 {n} 分鐘看一次資料夾有沒有新檔或改過的檔）：回答末尾跟她說一句，不講怎麼設的、不教她操作。"  # D-536
 MOVED_HINT = ("有 {n} 件搬動：跑 kb changes --moved --json，照內容判斷要不要改掛（搬到結案夾、桌面、客戶自己的夾就不用動也不用提）；"
               "先看夾名、檔名一批一起判斷，看不出來的才讀內容，卡跟著走不重做；看完 changes --moved 之後要讀搬過的檔，再跑 kb inventory scan。")  # 放寬丙 5-3，字句照乙；刪綜合卡說一聲 裁定 6
 DRIFT_LINE = ("實體夾有變 {n}：跑 kb cards todo --json，照 ingest「實體夾有變」那段處理"
@@ -46,8 +45,6 @@ MISSING_SOURCE_TEAM = "這台找不到來源「{alias}」（預設在 {spec}）�
 LEARNING_LINE = "這台第一次用，還在認檔案，好了再報變動；先不整理、不跟客戶提變動。"  # D-300
 WHO_LINE = "這台第一次用，請先問她這台電腦是誰在用（預設 {name}），答了跑 kb who set <名字>。"  # D-286
 CARD_EDITS_LINE = "客戶在 Obsidian 改了 {n} 張卡（kb cards edits）：先照 note skill 處理完再回答；那是客戶的意思，照做、不跟客戶提指令名。"  # D-270
-CARD_EDITS_MAYBE = "可能有客戶改過的卡（kb cards edits）：先跑一次看看，有的話先照 note skill 處理完再回答；那是客戶的意思，照做、不跟客戶提指令名。"  # 時限內一張都沒比到
-CARD_EDITS_MORE = "客戶在 Obsidian 改了 {n} 張卡（可能還有，kb cards edits）：先照 note skill 處理完再回答；那是客戶的意思，照做、不跟客戶提指令名。"
 PROFILE_CHANGED = "設定檔被手改了（{summary}）：跑 kb profile apply 套用；做完照核心規則講發現什麼、推測使用者的意思、做了什麼。"
 PROFILE_ERROR = "設定檔有改但讀不懂：{error}；改好下次再問"
 PROFILE_LINE_MAX = 120
@@ -58,6 +55,7 @@ TAGS_EDITED = ("客戶在 Obsidian 卡的屬性欄改了 {n} 張綜合卡的標�
 TAGS_EDITED_SHOWN = 3
 AGENDA_OVERDUE_HINT = "（逾期的在回答最後問一件，客戶說先放著就 kb asks set-aside）"
 BACKGROUND_LINT_BUDGET = 7  # 秒，從 hook 開始算；前面用掉太多時間這次就不開
+SCHEDULE_BUDGET = 2.5  # 秒，從 hook 開始算；過了就不查排程（schtasks 最多叫兩次各 2 秒，turn.py 上限 5 秒），明天再查
 TOLD_KEEP = 30  # checks.told 最多留幾條
 FILES_KEEP = 1000  # checks.told_files（變動行講過的檔，「wip|uri」等）最多留幾條：一次放很多份也不會每句重講
 
@@ -129,26 +127,31 @@ def yield_to_upgrade(vault):
 
 # ---------- 清冊比對（hook 點）與變動行 ----------
 
-_SCAN = {}  # vault → (sources, report) 或 None（scan 出錯）
+_SCAN = {}  # vault → (sources, report) 或 None（沒有清單、讀不懂）
 
 
-def file_compare(vault, seconds=None):
-    """每句開頭與答完的檔案比對（放寬丙 要做的事 1）：inventory.scan(quick) 只讀、不 apply。時間上限預設是每句開頭預算剩下的，
-    讀取上限 turn_scan_hash_budget_bytes。回 (sources, report) 或 None（scan 出錯，記一行 log）。同一個行程只比一次。"""
+def file_compare(vault):
+    """每句開頭的檔案比對（D-536）：不比原檔，讀電腦排程寫的清單 .system/local/changes.json（changes_list.compare），
+    回 (sources, report)；沒有清單或讀不懂回 None、不記 log（排程還沒跑過是正常的）。同一個行程只讀一次。"""
     key = str(vault)
     if key not in _SCAN:
         try:
-            from kb._lib import config, inventory
-            from kb._lib import sources as sources_lib
+            from kb._lib import changes_list
 
-            sources = sources_lib.load(vault)
-            left = max(0.0, TURN_BUDGET - (time.monotonic() - START)) if seconds is None else seconds
-            _SCAN[key] = (sources, inventory.scan(vault, sources, quick=True, seconds=left,
-                                                  hash_budget=config.get(vault, "turn_scan_hash_budget_bytes")))
-        except Exception as e:  # noqa: BLE001
+            _SCAN[key] = changes_list.compare(vault)
+        except Exception as e:  # noqa: BLE001  清單在、來源登記讀不了
             _SCAN[key] = None
             log_vault(vault, e)
     return _SCAN[key]
+
+
+def listed_cards_mtime(vault):
+    """清單記的卡最新修改時間；沒有清單或 null（AI 當場跑的、還沒背景跑過）回 None：這句不比卡的手改。"""
+    from kb._lib import changes_list
+
+    data = changes_list.read(vault)
+    value = (data or {}).get("cards_mtime")
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def _session_turn(vault, session_id):
@@ -220,24 +223,6 @@ def record_detected(vault, session_id, got, by, seen):
     return seen[-DETECTED_SEEN_KEEP:]
 
 
-def after_answer(vault, session_id):
-    """Stop 用：答完再比一次（stop_scan_seconds），這一句期間出現、又不是 kb 或守門記過的變動寫進同一個 detected.jsonl（by turn）。
-    只讀清冊、只寫 detected.jsonl 與 session 檔的已記鍵；任何例外只寫 log。"""
-    try:
-        from kb._lib import config, turn
-
-        if not session_id or _session_turn(vault, session_id) is None:
-            return
-        got = file_compare(vault, seconds=config.get(vault, "stop_scan_seconds"))
-        checks = turn.get_checks(vault, session_id)
-        seen = record_detected(vault, session_id, got, "turn", checks.get("detected"))
-        if seen != list(checks.get("detected") or []):
-            checks["detected"] = seen
-            turn.set_checks(vault, session_id, checks)
-    except Exception as e:  # noqa: BLE001
-        log_vault(vault, e)
-
-
 _DRIFT = {}  # vault → 實體夾有變的筆數或 None（出錯）
 
 
@@ -279,22 +264,24 @@ def change_lines(vault, told_files=(), session_id=None):
     """每句開頭的變動（D-525）：回 (行清單, 更新後的 told_files)。md 以外的新增、修改 → WIP_LINE（製作中，不叫整理）；md → MD_LINE
     （這個 session 按過停止不印，answer 裁定 14）；不見 → MISSING_LINE。同一份同一個內容一個對話只講一次，又改了再講（裁定 18：
     鍵「wip|uri|大小:修改時間」「md|uri|…」，記新鍵時同一份的舊鍵拿掉；不見的鍵「missing|uri」在檔回來後拿掉（missing、
-    still_missing 都不算回來），又不見再講）。清冊裡記成指路卡、封存、照設定不整理、讀不了的不算（cards.not_wip，裁定 8）。沒比完 → [CHANGES_INCOMPLETE]；搬動、重複、之前就不見的不算；要先補位置或
+    still_missing 都不算回來），又不見再講）。清冊裡記成指路卡、封存、照設定不整理、讀不了的不算（cards.not_wip，裁定 8）。搬動、重複、之前就不見的不算；要先補位置或
     --finish 轉格式時都不印。不報「還有幾份沒整理」（放寬丙 3，D-310(2)）。"""
     told = list(told_files)
     got = file_compare(vault)
     if got is None or yield_to_upgrade(vault):
         return [], told
     sources, report = got
-    if report["incomplete"]:
-        return [CHANGES_INCOMPLETE], told
     gone = set(report["missing"]) | set(report.get("still_missing") or [])
     told = [k for k in told if not (k.startswith("missing|") and k[len("missing|"):] not in gone)]
     seen = set(told)
-    from kb._lib import cards, inventory
+    from kb._lib import inventory
 
     skip = set()
-    if report["added"] or report["modified"]:
+    listed = report.get("not_wip")
+    if isinstance(listed, list):  # 寫清單時算好的，不載清冊（裁定 28）
+        skip = {inventory.uri_key(u) for u in listed if isinstance(u, str)}
+    elif report["added"] or report["modified"]:  # 升級前寫的舊清單：照舊載一次清冊
+        from kb._lib import cards
         try:  # 指路卡、封存、照設定不整理的不算（裁定 8，同 kb cards wip）；清冊讀不到就不篩、記一行 log
             skip = {inventory.uri_key(loc["uri"]) for e in inventory.load(vault)["entries"] if cards.not_wip(e)
                     for loc in e.get("locations") or [] if loc.get("uri")}
@@ -365,18 +352,20 @@ def _stopped(vault, session_id):
 
 # ---------- 卡、標籤、設定檔、找不到的來源 ----------
 
-def line_card_edits(vault, deadline=None):
-    """客戶手改了卡，系統跟著更新（D-270）：比卡內文跟基準（card_base.edits），有改過的才印；時限內比不完就說可能還有。
-    沒有基準的卡這裡順手補上（第一次開不報）。先 kb upgrade --finish 轉格式、卡要跟著搬的庫先不比。回 (行, 比完了嗎)。"""
+def line_card_edits(vault):
+    """客戶手改了卡，系統跟著更新（D-270）：照背景比對清單 card_edits 印（裁定 19），不載基準、不走全部的卡（裁定 21）。
+    card_base 的版本跟清單記的不同（kb cards edits --done、AI 寫了卡）→ 這句不印，等下一次背景重算；null 是不知道、不印。
+    列的卡已經不在的不算。先 kb upgrade --finish 轉格式、卡要跟著搬的庫先不比。回 (行, 比完了嗎)，一定比完。"""
     if yield_to_upgrade(vault):
         return None, True
-    from kb._lib import card_base
+    from kb._lib import changes_list
 
-    got = card_base.edits(vault, deadline=deadline if deadline is not None else START + TURN_BUDGET)
-    n = len(got["edits"])
-    if not n:
-        return (CARD_EDITS_MAYBE if got["more"] else None), not got["more"]
-    return (CARD_EDITS_MORE if got["more"] else CARD_EDITS_LINE).format(n=n), not got["more"]
+    data = changes_list.read(vault) or {}
+    rels = data.get("card_edits")
+    if not isinstance(rels, list) or data.get("card_base_stamp") != changes_list.card_base_stamp(vault):
+        return None, True
+    n = sum(1 for r in rels if isinstance(r, str) and os.path.isfile(os.path.join(str(vault), r)))
+    return (CARD_EDITS_LINE.format(n=n) if n else None), True
 
 
 def line_learning(vault):
@@ -566,22 +555,30 @@ def daily_pending(vault):
 
 
 def line_wip(vault):
-    """製作中（D-525 第 5 點）：清冊裡新放、改過、還沒說整理的（cards.wip，不含 md）；沒有回 None。
-    算太久（過了這句的時限）或狀態檔讀不到（變動比對那邊已記 log）就不印，不另記 log。"""
-    from kb._lib import cards
+    """製作中（D-525 第 5 點）：背景比對清單記的份數與前 3 個檔名（D-536，不在這裡算 cards.wip）；沒有、沒有清單或 null 回 None。"""
+    from kb._lib import changes_list
 
-    try:
-        rows = cards.wip(vault, deadline=START + TURN_BUDGET)
-    except (TimeoutError, ValueError):
+    wip = (changes_list.read(vault) or {}).get("wip")
+    if not isinstance(wip, dict) or not wip.get("n"):
         return None
-    if not rows:
+    names = [str(x) for x in wip.get("names") or []]
+    return WIP_DAILY.format(n=wip["n"], names="、".join(names[:NAMES_SHOWN]) + ("…" if wip["n"] > NAMES_SHOWN else ""))
+
+
+def line_schedule(vault):
+    """背景比對的排程（D-536）：查在不在、對不對，不對就重設；第一次設或重設回一行給 AI，其他回 None。
+    測試環境變數 WIKI_WITH_WILLY_NO_BACKGROUND 有值時不碰排程。"""
+    if os.environ.get("WIKI_WITH_WILLY_NO_BACKGROUND") or over_budget(SCHEDULE_BUDGET):
         return None
-    names = [r["name"] for r in rows]
-    return WIP_DAILY.format(n=len(rows), names="、".join(names[:NAMES_SHOWN]) + ("…" if len(names) > NAMES_SHOWN else ""))
+    from kb._lib import config, schedule
+
+    if schedule.ensure(vault) not in ("created", "updated"):
+        return None
+    return SCHEDULE_LINE.format(n=config.get(vault, "background_scan_minutes"))
 
 
 def daily_lines(vault):
-    """這台每天第一句（開場或第一句，先到先做）：版本、搬家、日程、公司還欠你（記帳 3）、製作中，順便背景開健檢；做完記今天。
+    """這台每天第一句（開場或第一句，先到先做）：版本、搬家、日程、公司還欠你（記帳 3）、製作中、背景比對的排程，順便背景開健檢；做完記今天。
     每行各自 try，出錯那行不印、其他照做。"""
     out = []
     try:
@@ -590,7 +587,7 @@ def daily_lines(vault):
         env.set_daily_done(vault, _today())  # 先記：中途出錯也不重做一整天
     except Exception as e:  # noqa: BLE001
         log_vault(vault, e)
-    for fn in (line_version, line_moved, line_agenda, line_owed, line_wip):
+    for fn in (line_version, line_moved, line_agenda, line_owed, line_wip, line_schedule):
         try:
             line = fn(vault)
         except Exception as e:  # noqa: BLE001
@@ -611,36 +608,6 @@ def _newest_mtime(paths):
             best = max(best, os.stat(p).st_mtime)
         except OSError:
             pass
-    return best
-
-
-_NOT_CARD_DIRS = {".system", ".git", ".obsidian", ".claude", ".trash", "系統"}
-
-
-def cards_mtime(vault):
-    """卡可能被改的最近修改時間：第一層（不含系統夾、暫存區）底下所有 .md，加 entities.json。"""
-    from kb._lib.areas import HOLD_DIR
-
-    skip = {s.casefold() for s in _NOT_CARD_DIRS | {HOLD_DIR}}
-    best = _newest_mtime([os.path.join(str(vault), ".system", "entities.json")])
-    stack = [str(vault)]
-    top = True
-    while stack:
-        root = stack.pop()
-        try:
-            with os.scandir(root) as it:
-                for e in it:
-                    try:
-                        if e.is_dir(follow_symlinks=False):
-                            if not (top and e.name.casefold() in skip):
-                                stack.append(e.path)
-                        elif e.name.endswith(".md") and not top:
-                            best = max(best, e.stat(follow_symlinks=False).st_mtime)
-                    except OSError:
-                        continue
-        except OSError:
-            continue
-        top = False
     return best
 
 
@@ -766,11 +733,11 @@ def turn_lines(vault, session_id):
     if not over_budget():
         got = guarded(file_compare, vault)
         detected = guarded(record_detected, vault, session_id, got, "outside", detected) or detected
-    # 2. 卡、標籤：比修改時間，沒變不讀
+    # 2. 卡、標籤：清單記的卡最新修改時間比上次看的新才讀（D-536，不走整個知識庫）；沒有或 null 這句不比
     stamp_now = time.time()
     if not over_budget():
-        newest = guarded(cards_mtime, vault) or 0.0
-        if newest > stamps.get("cards", 0.0):
+        newest = guarded(listed_cards_mtime, vault)
+        if newest is not None and newest > stamps.get("cards", 0.0):
             edits, done = guarded(line_card_edits, vault) or (None, True)
             tell(edits, once=not done)
             if not over_budget():
@@ -782,7 +749,7 @@ def turn_lines(vault, session_id):
         if newest > stamps.get("profile", 0.0):
             tell(guarded(line_profile, vault))
             stamps["profile"] = stamp_now
-    if got is not None or not over_budget():  # 比對本身有自己的時限；比完後組句子很快，比過了就不再看這裡的預算
+    if got is not None or not over_budget():  # 清單讀到了就把句子組完（很快），不再看這裡的預算
         tell(guarded(line_missing_sources, vault))
         moved = guarded(line_moved_files, vault, told)
         if moved and not yield_to_upgrade(vault):
@@ -790,7 +757,7 @@ def turn_lines(vault, session_id):
             told.extend(moved[1])
         lines, told_files = guarded(change_lines, vault, told_files, session_id) or ([], told_files)
         for line in lines:
-            tell(line, once=line == CHANGES_INCOMPLETE)
+            tell(line)
         tell(guarded(line_drift, vault), once=True)
     for line in guarded(carried_lines, vault) or []:  # 程式頁上沒照格式的字（D-299）：每行只交一次
         tell(line)

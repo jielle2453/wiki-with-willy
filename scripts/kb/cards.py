@@ -10,7 +10,7 @@ mount <編號> --entity <名>…：卡掛錯實體，重設檔頭的 實體 欄�
 list：列卡（answer 第 2 點，D-153、D-157），按卡型、年、實體、來源篩，窮舉不挑；另回庫裡實際有的卡型與份數，只讀、不開回合。
 todo 在對話裡跑時在目前回合記 ingest（turn.mark，回合狀態不是知識）：主對話自己整理時被按停止，下一句的 UserPromptSubmit 認得出來（D-156）。
 整批製卡（card-maker，D-195～D-200）：dispatch 開或沿用 job、切批、回每批給 Agent 工具的 prompt（終端機跑拒絕）；
-batch <批次> 給 card-maker 自己那批的材料（只讀，帶 --agent 記上 agent_id；--done 標主對話自己做的批次做完，#48；codex 分支：製卡者也自己 --done [--failed …] 收尾）；status 看進度（只讀）；
+batch <批次> 給 card-maker 自己那批的材料（只讀，帶 --agent 記上 agent_id；--done 標主對話自己做的批次做完，#48；Codex：製卡者也自己 --done [--failed …] 收尾）；status 看進度（只讀）；
 stop 放掉這個 session 的批次、關 job、目前回合記 ingest_stopped（背景整理要停：說一聲，D-200）。
 mode <編號> full|pointer [--track yes|no]：會一直改的檔記成指路卡或完整卡（放寬丙 11，D-331）：只記清冊 card_mode、track（記進回合），
 指路卡且記過程時現在的抽字存本機 .system/local/textcache/<編號>.txt；seen <編號>：AI 看完指路卡的檔改了什麼，卡檔頭指紋與 textcache 換成現在的。
@@ -86,7 +86,7 @@ def add_arguments(sub):
     dp.add_argument("--adopt", action="store_true", help="讀舊 wiki 切好的段（建置收舊 wiki 用）")
     bt = subs.add_parser("batch", help="card-maker 拿自己那批的材料（只讀）", description="列這一批要做的項目與要讀的規則。")
     bt.add_argument("batch", help="批次編號（b-…）")
-    bt.add_argument("--done", action="store_true", help="這批做完了：主對話自己做的（dispatch 回 self）；codex 分支：製卡者自己收尾")
+    bt.add_argument("--done", action="store_true", help="這批做完了：主對話自己做的（dispatch 回 self）；Codex：製卡者自己收尾")
     bt.add_argument("--failed", action="append", default=[], help="跟 --done 一起：沒做成的一份「<編號>：<原因>」，可重複")
     st = subs.add_parser("status", help="背景整理到哪了（只讀）", description="還在跑幾批、這次做好幾份、還剩幾份。")
     sp = subs.add_parser("stop", help="停背景整理", description="放掉這個對話的批次；回要停的子代理。")
@@ -685,7 +685,7 @@ def _batch(vault, batch_id, agent, as_json):
 
 def _batch_done(vault, args, as_json):
     """#48：dispatch 回 self 的批次，主對話做完標 done（跟製卡助手停下時同一段），再 dispatch 拿下一步。
-    codex 分支（spec 裁定 8）：不是 self 的（交給製卡者的）由製卡者自己 --done 收（Codex 沒有 SubagentStop），可帶 --failed。"""
+    Codex（Codex版 spec 裁定 8）：不是 self 的（交給製卡者的）由製卡者自己 --done 收（Codex 沒有 SubagentStop），可帶 --failed。"""
     from kb._lib import journal
     sid = _session(vault, args, strict=True)
     try:

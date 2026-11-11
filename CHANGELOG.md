@@ -4,6 +4,38 @@
 bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；事後補就會變成第二份會漂的清單。
 為什麼只寫 spec 或決策裡有的，查不到寫「待補」，不推測。
 
+## 0.38.0 — 2026-11-11
+- **給客戶的一句話**：現在可以叫 willy 在知識庫裡幫你做 skill（例如「幫我做一個查報價的 skill」），第一次寫進去時 Claude 會問你允不允許，按允許就好。用 Codex 的：升級到這版後，在 Codex 打一次 `/hooks` 重新信任 willy，不然 willy 不會動。
+- **改了什麼**：
+  - #52（D-533，D-538 修訂）：知識庫 `.claude/skills/` 不歸 willy 管，守門 Z13 讀寫都放行、不看內容、不備份、不另數；跳出 skill 夾（`..`、連結、junction）與 `.claude/` 其他照 Z7 擋；R-01 改句。
+  - #56、#55（D-539）：Codex 版併進 main，不再維護 `codex` 長期分支。Codex 的 hook 放 `hooks/codex.json`（`hooks/hooks.json` 是 Claude 版，一字不改）；`release.py` 寫公開版 `codex` 分支時把它改名成 `hooks/hooks.json`、Codex manifest 不寫 `hooks` 指標；打包帶 Codex 版的檔、查 `.codex-plugin` 版號與 hooks 引用、publish 最後推公開 repo 的 `codex` 分支（一般 commit、不 force push）；路徑有 `#` 先停。Codex 的對話標 codex、派工照給 Codex 的 prompt；`cards batch --done`、`AGENTS.md`、`.codex` 保留區從 codex 分支搬來。`安裝-Codex.md` 補從 0.34.0（wiki-with-willy-local）升上來與重新信任 hook 的步驟。
+- **為什麼**：客戶要在自己的知識庫建 skill 被守門擋（#52，jacky 2026-11-08）；Codex 版兩條線並存每版都要手動併、容易漏（#56，jacky 2026-11-09 定乙）。確認時發現 Codex 0.167.1 執行時只讀預設的 `hooks/hooks.json`（manifest 的指標只影響 `/hooks` 清單），所以改成發行時改名（D-539）；Codex 信任 hook 時記內容雜湊，hook 檔一變就不跑、只印 Failed。
+- **commit**：8f79c39e、4efafaf5、e545921c（skill夾放寫）；177d1132、653b8fb2、8654d48f、e1dba56b、80ec0834、06d6e24d、af45da2c（Codex併進main）
+- **spec**：design/specs/2026-11-08-skill夾放寫.md、2026-11-09-Codex併進main.md
+- **關掉的 issue**：#52、#55、#56
+- **還沒驗、還沒定的**：寫 skill 時 Claude Code 自己對 `.claude/` 的安全檢查會跳允許（不是 willy 擋），`-p` 模式寫不進去；同一對話說「退回」時 willy 沒有 skill 的備份，AI 可能改把 skill 夾丟進資源回收筒。Codex 沙箱 `unelevated` 下 PDF 元件被擋、PDF 製卡失敗（跟這版改動無關，另案）。main 不能直接給 Codex 裝，要裝公開版的 `codex` 分支。`test_hooks_session` 的 `test_missing_again_told_again`（檔不見、放回、又不見要再講一次，裁定 18）單獨跑固定不過，0.37.0 就是如此、不是這版改的，另案查。
+
+## 0.37.0 — 2026-11-11
+- **給客戶的一句話**：檔案很多時也不會慢下來：電腦會在背景每 10 分鐘幫你看有沒有新檔、改過的檔或改過的卡，你一開口就直接接著做，答完收尾也快很多；新建的知識庫第一次對話也不會再誤報「守門好像沒在跑」。不想要背景檢查的，跟 willy 說關掉就好。
+- **改了什麼**：
+  - #60、#61（D-536，裁定 11～33）：原檔的變動比對搬出對話，Windows 工作排程器每 10 分鐘加登入時跑 `kb changes --background`（`pythonw`、不跳視窗），結果寫成清單 `.system/local/changes.json`，每句開頭與 `stop.py` 照清單印、不再整份掃；卡的手改也在背景比；`background_scan_minutes` 設 0 刪掉排程；知識庫刪掉或搬走，排程下次跑時刪掉自己（排程不設開始位置，裁定 33）；`known_names` 存檔快取、機器名改用 `socket.gethostname`（守門 `touch_status` 一起改）；清單多存要略過的檔，每句開頭不載清冊（裁定 28）；`inventory.learning` 看檔案大小判斷清冊空不空（裁定 32）；設定預設是小數的鍵寫整數照收（裁定 30）；開場的「這版撤回了」只在查版本時裝的就是現在這版才說（`update_check.checked_with`，裁定 27）。
+  - #62（D-535）：拿掉 `kb.py` 與每支 hook 的 `dont_write_bytecode`，`.pyc` 寫進 plugin 夾；`test_repo_hygiene` 改守不准再加回來。
+  - #63：新庫守門還沒紀錄時，最早一段對話不到 `STALE_DAYS` 天不開 `guard_stale`；守門有紀錄後，下一次這台今天第一次開場就關掉已開的那件。
+- **為什麼**：壓力測試（2026-11-09）3 萬份時每句開頭比對 2.7 秒以上、超過上限也比不完，`stop.py` 7～13 秒逼近 hook 的 10 秒上限，每次叫 kb 或 hook 多約 1 秒編譯（#60、#61、#62）；新庫第一次開對話時背景健檢比守門第一次寫狀態早，誤報（#63）。實測 3 萬份：`stop.py` 7 s→0.25～0.54 s、新對話第一句是舊版的 0.60 倍（測試第 3 輪）。
+- **commit**：032bdfa1…9b0d5761（背景比對，依裁定序；重點 d67fa08d、92e2e72a、9b0d5761）；c4d37897（pyc快取）；44335cf4、79c4899f（新庫守門假警報）
+- **spec**：design/specs/2026-11-09-背景比對.md、2026-11-09-pyc快取.md、2026-11-09-新庫守門假警報.md
+- **關掉的 issue**：#60、#61、#62、#63
+- **還沒驗、還沒定的**：willy 目前只支援 Windows，Mac 的排程（launchd）列在 spec「不做」；排程只在一台 Windows 實機驗過；合併後跑相關測試時 `test_hooks_session`、`test_versions_sessions` 有 11 條在整批長跑時不過、單獨重跑全過，判斷是電腦忙（同時跑另一組測試），沒再追。
+
+## 0.36.0 — 2026-11-09
+- **給客戶的一句話**：記帳先暫停開放：新建或剛升級的知識庫不會開始記帳，你講到錢我照樣記下、問加總也算得出來；之前已經開著記帳的照舊能用。
+- **改了什麼**（#59，D-534）：新庫的設定檔第十節是「關」（`profile.defaults`）；升級補第十節寫「關」（`migrate._rewrite_money`，原本只記我講的）；沒有第十節讀成「關」（`MONEY_DEFAULT`）；設定檔第十節提示句改成「還沒開放，先保持關」；build 不判斷、不問記帳；note 不主動把關改成開；README 記帳一節改成還沒開放；已經是開或只記我講的庫不動。
+- **為什麼**（#59）：記帳 0.35.1 在 jacky 這台確認 21 條不過 2（屬性欄改數字下一句沒發現、記事本刪帳頁一行沒套用），帳的存法又要重談（之後改走客製）；jacky 2026-11-09 裁示先關。不退回 0.34.0：0.35.x 流水檔格式是 2，退回舊程式會停寫。
+- **commit**：b2120636、715b3844
+- **spec**：無（輕流程，決定寫在 D-534）；改了升級補第十節的值（遷移表那列），照 D-217 是大升級，版號從 0.35.2 改 0.36.0（0.35.2 沒發出去，tag 已撤）
+- **關掉的 issue**：#59
+- **還沒驗、還沒定的**：已經開著記帳的庫仍有確認報告裡的兩個問題；她明確要求時 AI 仍可能把記帳打開（程式不擋）。
+
 ## 0.35.1 — 2026-11-09
 - **給客戶的一句話**：跟 willy 說「GS 1V UE 的 spec 放在哪」這種有型號、好幾個字的找檔，現在只列每個字都對上的檔，不會一次跑出幾百份；都對不上時才列對到部分字的，並跟你說一聲。
 - **改了什麼**：
@@ -14,7 +46,6 @@ bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；�
 - **commit**：adb8b683、4560636a（kb find）；f92a531e（README）
 - **spec**：無（jacky 2026-11-09 直接裁示）
 - **關掉的 issue**：無
-- **Codex 版**（codex 分支）：同 0.35.1 的功能（含 0.35.0 記帳），Codex 轉接照 0.34.0；公開的 `codex` 分支從 0.34.0 直接到 0.35.1。
 - **還沒驗、還沒定的**：同時有型號與時間詞、全中 0 筆時，會先放寬成中一個，不會先走「去掉時間詞再找」（舊版也是這樣）；沒在客戶真庫實跑。
 
 ## 0.35.0 — 2026-11-09
@@ -35,7 +66,6 @@ bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；�
 - **commit**：3de2108、1959321、8803800（#51）
 - **spec**：design/specs/2026-11-08-拿掉個人.md
 - **關掉的 issue**：#51
-- **Codex 版**（codex 分支，2026-11-09 第一次正式發行，jacky 裁定）：同 0.34.0 的功能，加 OpenAI Codex 的轉接（hooks 用 Codex 格式、`apply_patch`／`view_image` 照檔判、密碼動作改成客戶下一句同意才做、製卡者自己 `cards batch --done` 收批）；從 `jielle2453/wiki-with-willy` 的 `codex` 分支以 git 市集安裝，步驟在 `安裝-Codex.md`。spec：design/specs/2026-11-07-Codex版.md
 
 ## 0.33.0 — 2026-11-08
 - **給客戶的一句話**：請 willy 改你原本的 Word、Excel、PowerPoint，關著的檔改好直接蓋回去、檔名不變，改之前那份存在同一個夾叫「（版本一）」「（版本二）」，說「退回」就換回來，改完會問你要不要刪舊版本；開著的檔照舊直接改你視窗裡那份。現在也能好幾個人一起用同一個知識庫：一個人用的照常，建置時說有 2 人以上，willy 會記每台是誰、各記各的再用 git 同步，日程分全隊的和你自己的。問 willy 某個案子或人時，回答也少跑一步、快一點。

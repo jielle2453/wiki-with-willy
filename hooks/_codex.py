@@ -1,4 +1,4 @@
-"""Codex 轉接（codex 分支，spec 2026-11-07-Codex版）：把 Codex 的 hook payload 轉成守門與寫後登記認得的格式，scripts/kb/ 不改。
+"""Codex 轉接（spec 2026-11-07-Codex版、2026-11-09-Codex併進main）：把 Codex 的 hook payload 轉成守門與寫後登記認得的格式，scripts/kb/ 不改。
 
 認法：PreToolUse／PostToolUse／UserPromptSubmit 的 payload 有 turn_id（Codex 的 schema 必填，Claude Code 沒有）。
 normalize：apply_patch 拆成逐檔的 Write（新增）／Edit（更新、刪除、搬出、搬入）；Windows 上的 Bash 改叫 PowerShell
@@ -11,7 +11,6 @@ import os
 import re
 import sys
 
-sys.dont_write_bytecode = True
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")

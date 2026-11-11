@@ -75,8 +75,9 @@ STOPPED = "這批已經停了或做完了"
 NOT_SELF = "這批是交給製卡助手的，不用標做完"
 NO_SOURCE = "沒有登記這個來源：{}"
 APPROVAL_QUESTION = "這次要更新 {n} 張綜合卡，比平常多；要繼續嗎？"
-# codex 分支（spec 裁定 8）：Codex 沒有子代理定義檔，prompt 自己指到 card-maker.md 並交代收尾（甲乙共用 --done）
-PROMPT = ("批次 {batch}：{what}。你是製卡者：先讀 {maker}，照它做；第一步跑 {prefix} cards batch {batch} --json。"
+PROMPT = "批次 {batch}：{what}。第一步跑 {prefix} cards batch {batch} --json，照它做，做完照你的說明回報。"
+# Codex（Codex版 spec 裁定 8；#56 起只給 Codex 的對話）：Codex 沒有子代理定義檔，prompt 自己指到 card-maker.md 並交代收尾（甲乙共用 --done）
+PROMPT_CODEX = ("批次 {batch}：{what}。你是製卡者：先讀 {maker}，照它做；第一步跑 {prefix} cards batch {batch} --json。"
           "做完跑 {prefix} cards batch {batch} --done（沒做成的每份加一個 --failed \"<編號>：<原因一句>\"），"
           "最後一則照 card-maker.md 的回報格式。")
 DESCRIPTION = "整理第 {n} 批（{what}）"  # 給 Agent 工具的 description：繁中，主對話轉述也不會冒英文（S6）
@@ -658,8 +659,18 @@ def prefix():
     return f'python "{plugin_root().as_posix()}/scripts/kb.py"'
 
 
+def _prompt(vault, session_id):
+    """這個對話是 Codex（turn.py 每句替 Codex 的對話標 codex）就給 PROMPT_CODEX，其他照 Claude 版的 PROMPT（#56 決策 2：
+    Claude 的製卡助手由 SubagentStop 收尾，不能叫它自己 --done）。"""
+    try:
+        sess = turn._read_turn(turn._session_file(vault, session_id)) if session_id else None
+    except Exception:  # noqa: BLE001  讀不到當 Claude：多半是終端機跑的
+        sess = None
+    return PROMPT_CODEX if (sess or {}).get("codex") else PROMPT
+
+
 def maker():
-    """製卡者說明的絕對路徑（codex 分支：prompt 指過去；執行時算、不存，D-019）。"""
+    """製卡者說明的絕對路徑（Codex：prompt 指過去；執行時算、不存，D-019）。"""
     return f'"{plugin_root().as_posix()}/agents/card-maker.md"'
 
 
@@ -879,7 +890,7 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
             changed = True
         if changed:
             save(vault, data, jt)
-    pre = prefix()
+    pre, tpl = prefix(), _prompt(vault, session_id)
     first = fresh and bool(made)
     say = None if (fresh and not made) else _say(first, done, approval, made, run, _done_count(data, job, out), len(failed))
     if job.get("self") and not done:
@@ -889,7 +900,7 @@ def dispatch(vault, session_id, turn_id, source=None, ids=None):
     n0 = sum(1 for b in data["batches"] if b.get("job") == job["job"]) - len(made)
     shown = [{"batch": b["batch"], "kind": b["kind"], "items": len(b["items"]), "agent": AGENT,
               "description": DESCRIPTION.format(n=n0 + i + 1, what=_what(b["kind"], len(b["items"]))),
-              "prompt": PROMPT.format(batch=b["batch"], what=_what(b["kind"], len(b["items"])), prefix=pre, maker=maker())}
+              "prompt": tpl.format(batch=b["batch"], what=_what(b["kind"], len(b["items"])), prefix=pre, maker=maker())}
              if not job.get("self") else
              {"batch": b["batch"], "kind": b["kind"], "items": len(b["items"]), "self": True,
               "do": [f"kb cards batch {b['batch']} --json", f"kb cards batch {b['batch']} --done"]}
@@ -1016,11 +1027,11 @@ def dispatch_adopt(vault, session_id, turn_id):
         say = None
     else:
         say = SAY_ADOPT_PROGRESS.format(done=len(read - set(failed)), failed=tail, running=len(busy) + len(made))
-    pre = prefix()
+    pre, tpl = prefix(), _prompt(vault, session_id)
     n0 = len(mine_b)
     shown = [{"batch": b["batch"], "kind": ADOPT, "items": len(b["items"]), "agent": AGENT,
               "description": DESCRIPTION.format(n=n0 + i + 1, what=_what(ADOPT, len(b["items"]))),
-              "prompt": PROMPT.format(batch=b["batch"], what=_what(ADOPT, len(b["items"])), prefix=pre, maker=maker())}
+              "prompt": tpl.format(batch=b["batch"], what=_what(ADOPT, len(b["items"])), prefix=pre, maker=maker())}
              for i, b in enumerate(made)]
     return {"job": job["job"] if not (fresh and not made) else None, "turn": job["turn"], "batches": shown,
             "running": len(busy), "left": {ADOPT: len(left)}, "approval": None, "done": done and not fresh,
@@ -1333,7 +1344,7 @@ def agent_stop(vault, session_id, agent_id, message=None):
 
 
 def batch_done(vault, batch_id, failed=()):
-    """codex 分支（spec 裁定 8）：交給製卡者（子代理，或沒有子代理時主對話）的批次由它自己記成做完，取代 SubagentStop 的
+    """Codex（Codex版 spec 裁定 8）：交給製卡者（子代理，或沒有子代理時主對話）的批次由它自己記成做完，取代 SubagentStop 的
     agent_stop；self 的 job（#48）走 self_done，這裡不收。認領中（跟 batch_view 同一個 live 判斷）就改 done、`failed`
     （「<編號>：<原因>」）只收這批的編號、做完的卡收認領標籤，回那批（多 `ignored`：不是這批的編號，不存；`turn`：job 的回合，
     給工作日誌補「改了」）；self 的批次丟 Refused（照 #48）；不在、停了、做完了、放掉了、過期了回 None、不改（過期的照舊放回去重派；

@@ -31,7 +31,7 @@
 ## 二、安裝
 
 1. **從 GitHub 加市集**（建議，2026-11-09 Codex CLI 0.167.0 實測）：`codex plugin marketplace add https://github.com/jielle2453/wiki-with-willy --ref codex`。不用下載、不用挑資料夾；之後更新跑 `codex plugin marketplace upgrade wiki-with-willy` 再做第 2 步。
-   - 備用（沒網路或要固定版本）：把 zip 解在一個固定的資料夾（以下叫 `<外掛夾>`），不要放在同步資料夾（OneDrive、Google 雲端硬碟）底下，改跑 `codex plugin marketplace add <外掛夾>`。🔴 **路徑裡不能有 `#`**：Codex 會把 `#` 後面當成 git 分支，報「--ref is only supported for git marketplace sources」；已經在這種夾裡就用 `mklink /J` 建一個不含 `#` 的目錄連結再加。
+   - 備用（沒網路或要固定版本）：把 zip 解在一個固定的資料夾（以下叫 `<外掛夾>`），不要放在同步資料夾（OneDrive、Google 雲端硬碟）底下；🔴 **解開後把 `<外掛夾>\hooks\codex.json` 改名成 `hooks.json`**（蓋掉 Claude 版的那份：zip 是兩版共用，Codex 只跑 `hooks/hooks.json`，不改名就沒有守門），再跑 `codex plugin marketplace add <外掛夾>`。🔴 **路徑裡不能有 `#`**：Codex 會把 `#` 後面當成 git 分支，報「--ref is only supported for git marketplace sources」；已經在這種夾裡就用 `mklink /J` 建一個不含 `#` 的目錄連結再加。
 2. 裝外掛：`codex plugin add wiki-with-willy@wiki-with-willy`，或在 Codex 打 `/plugins`（桌面 App 是「外掛」分頁）找到 wiki-with-willy 安裝、打開。🔴 **裝的時候會複製一份到 `%USERPROFILE%\.codex\plugins\cache\`，實際跑的是那份**：市集更新了新版要再跑一次這步才生效（先 `codex plugin remove wiki-with-willy@wiki-with-willy`）。
 3. 🔴 **信任 hook**：在知識庫資料夾開 Codex 打 `/hooks`（桌面 App 是「設定 > Hooks」），最上面會寫「N hooks need review」；清單一個事件一行，**要選到那一行按 Enter 進去**才看得到個別的 hook（Source: Plugin – wiki-with-willy@wiki-with-willy），逐個按信任，willy 共 6 個（每個事件一個）。沒按就整組不跑，等於沒守門。信任記在 `%USERPROFILE%\.codex\config.toml` 的 `[hooks.state."wiki-with-willy@…:hooks/hooks.json:<事件>:0:0"]`（`trusted_hash`）；**外掛重裝、升級、hook 指令或程式改了，雜湊變了就要再按一次。**（2026-11-08 實測）
 4. 🔴 **沙盒**：Windows 的 Codex（桌面 App 預設）是 `elevated` 沙盒，AI 跑的指令讀不到 `%USERPROFILE%\.codex\` 底下任何東西，外掛的 kb 程式與技能說明都在那裡，整個 willy 不能用（2026-11-08 實測，OpenAI 自家外掛也一樣）。**必做**：在 `%USERPROFILE%\.codex\config.toml` 加上（已有 `[windows]` 就只加第二行）：
@@ -48,7 +48,7 @@
 - 知識庫裡多一份 `AGENTS.md`（Codex 讀它，內容跟 `CLAUDE.md` 一樣）。舊知識庫沒有這份的話，跑一次 `kb init` 補骨架。
 - 整理新檔：Codex 有開子代理的工具就每批派一個去做；沒有就由主對話自己一批一批做（等比較久、做的時候不好插話）。做法程式都一樣，卡的內容不受影響。
 - 密碼相關的動作（顯示存好的密碼、用存好的密碼開檔、讓某一種檔自動用密碼）AI 會先問客戶，**客戶下一句回「好」「可以」「同意」才做**；回別的就不做。
-- 升級（「升級」「有新版嗎」）AI 不會代做：由服務人員跑 `codex plugin marketplace upgrade wiki-with-willy`、照第二節第 2 步重裝，再照第 3 步重新信任 hook（每次重裝都要，2026-11-09 實測）。
+- 升級（「升級」「有新版嗎」）AI 不會代做：由服務人員跑 `codex plugin marketplace upgrade wiki-with-willy`、照第二節第 2 步重裝，再照第 3 步重新信任 hook（每次重裝都要，2026-11-09 實測）。從 0.34.0（市集名 `wiki-with-willy-local`）升上來的那一次，`marketplace upgrade` 用新舊哪個名字都會報錯，改照這個順序：先 `codex plugin remove wiki-with-willy@wiki-with-willy-local`、`codex plugin marketplace remove wiki-with-willy-local`，再照第二節第 1 步重新 `marketplace add`（帶 `--ref codex`）、第 2 步 `plugin add`，最後照第 3 步重新信任 hook。
 - 貼圖片、貼長文字給 AI 收進知識庫：這版可能收不到，AI 會照實說。
 - claude.ai 的線上文件讀不到，會記成「線上文件打不開」。
 

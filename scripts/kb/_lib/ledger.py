@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import re
+import socket
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
@@ -94,7 +95,10 @@ def _safe_host(name):
 
 def touch_status(vault):
     """.system/guard-status/<主機名>.json：{date, python, host, plugin_version}，同一天只寫一次。"""
-    host = platform.node()
+    try:
+        host = socket.gethostname()  # 不叫 platform.node：走 WMI，守門每次都跑（裁定 25）；值一樣、OSError 一樣當 ''
+    except OSError:
+        host = ""
     target = Path(vault) / STATUS_DIR_REL / f"{_safe_host(host)}.json"
     today = date.today().isoformat()
     try:

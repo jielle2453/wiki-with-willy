@@ -10,7 +10,7 @@ daily_done 是選填欄（YYYY-MM-DD）：這台電腦每天第一句要做的�
 讀改寫包 FileLock；壞 JSON 或形狀不對當空的重建（這個檔只有提示記號，別讓它拖垮開場，I-046）。
 """
 import json
-import platform
+import socket
 from datetime import date
 from pathlib import Path
 
@@ -21,7 +21,14 @@ KEY = "missing_sources_reported"
 
 
 def machine_name():
-    return platform.node() or "unknown"
+    """這台的機器名。用 socket.gethostname（不到 1 ms），不用 platform.node（走 WMI，有負載 1.4～1.7 s）；
+    Windows 的 platform.node 本來就是 socket.gethostname、OSError 回 ''，這裡照抄；不用 COMPUTERNAME
+    （全大寫，env.json 會當成另一台）（裁定 24）。"""
+    try:
+        name = socket.gethostname()
+    except OSError:
+        name = ""
+    return name or "unknown"
 
 
 def _path(vault):

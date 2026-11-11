@@ -151,7 +151,9 @@ _NAMES_CACHE = {}
 
 def known_names(vault):
     """清冊裡的檔名（D-187 (c)）：只回含遮值關鍵字的（其他的本來就不會被遮），給日誌與回合的遮值當不遮的字。
-    直接讀 inventory.json（inventory 會 import 這裡，不能反過來）；讀不到回空清單（照舊遮）。照修改時間快取。"""
+    直接讀 inventory.json（inventory 會 import 這裡，不能反過來）；讀不到回空清單（照舊遮）。照修改時間快取：
+    記憶體一份，另存 .system/local/known-names.json（{stamp, names}；每支 hook 是新行程，記憶體快取沒用，裁定 13）；
+    stamp 對得上直接用，對不上重算再寫，寫不進去照舊算。"""
     import json
     if not vault:
         return []
@@ -163,6 +165,15 @@ def known_names(vault):
     hit = _NAMES_CACHE.get(p)
     if hit and hit[0] == stamp:
         return hit[1]
+    saved = os.path.join(str(vault), ".system", "local", "known-names.json")
+    try:
+        with open(saved, encoding="utf-8") as f:
+            d = json.load(f)
+        if d["stamp"] == stamp and isinstance(d["names"], list) and all(isinstance(n, str) for n in d["names"]):
+            _NAMES_CACHE[p] = (stamp, d["names"])
+            return d["names"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
     try:
         with open(p, encoding="utf-8") as f:
             entries = json.load(f).get("entries") or []
@@ -172,6 +183,17 @@ def known_names(vault):
         return []
     out = sorted((n for n in names if n and _KW.search(_norm_key(n))), key=len, reverse=True)
     _NAMES_CACHE[p] = (stamp, out)
+    tmp = f"{saved}.{os.getpid()}.tmp"  # 兩支 hook 同時寫：各寫各的暫存檔再換上
+    try:
+        os.makedirs(os.path.dirname(saved), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"stamp": stamp, "names": out}, f, ensure_ascii=False)
+        os.replace(tmp, saved)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
     return out
 
 

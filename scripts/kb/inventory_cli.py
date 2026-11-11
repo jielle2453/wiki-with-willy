@@ -8,10 +8,11 @@ env.clear_missing（這次找得到的來源）→ 印。印給人最多四行�
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 from kb import guard, journal_cli
-from kb._lib import env, inventory, turn
+from kb._lib import changes_list, env, inventory, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 
@@ -103,7 +104,14 @@ def _scan(vault, args, as_json):
             print(f"沒有叫「{wanted}」的來源")
             return 3
         only = [wanted]
+    start = time.monotonic()
     report = scan_and_apply(vault, sources, only)
+    if only is None:  # 全部來源才更新背景比對的清單（D-536）；帶 --source 只掃一部分
+        try:
+            changes_list.write_carried(vault, changes_list.applied(report), "inventory scan", time.monotonic() - start)
+        except Exception as e:  # noqa: BLE001  清單沒寫成不擋套用
+            from kb._lib import ledger
+            ledger.log_error(vault, f"清單沒寫成：{type(e).__name__}: {e}", source="scan")
     if as_json:
         print(json.dumps(inventory.public(report), ensure_ascii=False))
         return 0

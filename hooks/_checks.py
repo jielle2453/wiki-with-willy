@@ -49,9 +49,8 @@ PROFILE_CHANGED = "設定檔被手改了（{summary}）：跑 kb profile apply �
 PROFILE_ERROR = "設定檔有改但讀不懂：{error}；改好下次再問"
 PROFILE_LINE_MAX = 120
 PROFILE_ORDER = "型別順序"  # 只調了型別表的順序（型別夾會改名）：diff 沒有內容差異時的摘要
-TAGS_EDITED = ("客戶在 Obsidian 卡的屬性欄改了 {n} 張綜合卡的標籤或數字（{names}）：跑 kb entity tag --from-card 記進去"
-               "（數字一起記，同 kb entity field --from-card），跟她說「你在卡的屬性欄改了標籤或數字：…（記了什麼）」；"
-               "不在字典的詞直接加進字典，不是數字的問她要記成多少。")
+TAGS_EDITED = ("客戶在 Obsidian 卡的屬性欄改了 {n} 張綜合卡的標籤（{names}）：跑 kb entity tag --from-card 記進去，"
+               "跟她說「你在卡的屬性欄改了標籤：…（記了什麼）」；不在字典的詞直接加進字典。")
 TAGS_EDITED_SHOWN = 3
 AGENDA_OVERDUE_HINT = "（逾期的在回答最後問一件，客戶說先放著就 kb asks set-aside）"
 BACKGROUND_LINT_BUDGET = 7  # 秒，從 hook 開始算；前面用掉太多時間這次就不開
@@ -474,7 +473,7 @@ def line_profile(vault):
 
 
 def line_tags(vault):
-    """標籤記在實體上（D-505、裁定 6）：客戶在 Obsidian 手改了綜合卡的標籤行或數字行（記帳 1b 第 6 點；entities.tag_edits，只讀）
+    """標籤記在實體上（D-505、裁定 6）：客戶在 Obsidian 手改了綜合卡的標籤行（entities.tag_edits，只讀）
     就印一行，名稱最多列 3 個。"""
     from kb._lib import entities
 
@@ -503,25 +502,6 @@ def line_agenda(vault):
     if counts["upcoming"]:
         parts.append(f"{config.get(vault, 'agenda_window_days')} 天內 {counts['upcoming']}")
     return "日程：" + "、".join(parts) if parts else None
-
-
-OWED_LINE = "公司還欠你 {n} 筆共 {total}（{names}）"
-OWED_NAMES_SHOWN = 3
-
-
-def line_owed(vault):
-    """報帳（D-338，記帳 3）：這台的人是墊的人、公司還沒還的；照 D-289「我的」只給他看。單人、沒有就不印。只讀。"""
-    from kb._lib import money, numbers, people
-
-    me = people.me(vault)
-    if not me or not money.exists(vault):
-        return None
-    got = money.owed_to(vault, me)
-    if not got["items"]:
-        return None
-    names = [i.get("text") or "沒寫是什麼" for i in got["items"]]
-    shown = "、".join(names[:OWED_NAMES_SHOWN]) + ("…" if len(names) > OWED_NAMES_SHOWN else "")
-    return OWED_LINE.format(n=len(names), total=numbers.show(got["total"]), names=shown)
 
 
 def start_background_lint(vault):
@@ -578,7 +558,7 @@ def line_schedule(vault):
 
 
 def daily_lines(vault):
-    """這台每天第一句（開場或第一句，先到先做）：版本、搬家、日程、公司還欠你（記帳 3）、製作中、背景比對的排程，順便背景開健檢；做完記今天。
+    """這台每天第一句（開場或第一句，先到先做）：版本、搬家、日程、製作中、背景比對的排程，順便背景開健檢；做完記今天。
     每行各自 try，出錯那行不印、其他照做。"""
     out = []
     try:
@@ -587,7 +567,7 @@ def daily_lines(vault):
         env.set_daily_done(vault, _today())  # 先記：中途出錯也不重做一整天
     except Exception as e:  # noqa: BLE001
         log_vault(vault, e)
-    for fn in (line_version, line_moved, line_agenda, line_owed, line_wip, line_schedule):
+    for fn in (line_version, line_moved, line_agenda, line_wip, line_schedule):
         try:
             line = fn(vault)
         except Exception as e:  # noqa: BLE001

@@ -4,6 +4,65 @@
 bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；事後補就會變成第二份會漂的清單。
 為什麼只寫 spec 或決策裡有的，查不到寫「待補」，不推測。
 
+## 0.41.0 — 2026-11-11
+- **給客戶的一句話**：Obsidian 開在你原本的資料夾也能看 willy 首頁，一個 Obsidian 可以切換好幾個知識庫。
+- **改了什麼**（#66，D-540～D-546；修訂 D-258～D-260、D-280、D-315）：
+  - 甲（D-541）：日程頁、綜合卡相關檔、總目錄寫的連結改成從那一頁算起的相對路徑，知識庫放在上層 vault 的子夾裡也連得到、不會撞到上層同名檔；升級時總目錄只在需要才重寫。
+  - 乙（D-540、D-543～D-545）：外掛自己往下最多兩層找 vault 裡的知識庫，路徑加前綴；找到好幾個時首頁上方可以切換，畫面、便條、搜尋只看目前選的那一個，改動只寫回那一個；便條沒存好不切、知識庫被搬走不寫便條、查到一半切走不開錯檔。
+  - 丙（D-542、D-545、D-546）：`kb init` 也在上層 vault 放一份同版外掛並跟著升級，建置那一步打開她原本的 vault；`kb folders purge` 連上層記的痕跡一起清；守門把上層那份外掛夾、`<上層>/.obsidian`、`<上層>/.obsidian/plugins` 兩夾本身當成外掛區擋寫入（明確檔名不擋，經 junction 也認得）；上層 vault 自己的 git 不接也不提醒。
+  - 順便補（已發行版本就有的洞，jacky 11-11 定在這版補）：`kb source-edit trash ..`／`rename ..` 原本能把裝著整個知識庫的上層夾丟進回收筒或改名（`rm -rf ..` 會擋），現在照祖先判斷擋；登記來源把知識庫包在裡面時也擋（裁定 10～12）。
+- **為什麼**：使用者原本就有自己的 Obsidian vault（舊筆記、原始檔、obsidian-git），知識庫建在其中一個子夾時外掛找不到 `.system`，只能為每個 willy 另開一個 vault；jacky 2026-11-11 要「不用開很多個 Obsidian 資料庫」、統一管理，選切換看一個、搜尋只搜目前選的那個。jielle2453 同意修訂舊決策（jacky 11-11 轉述，be22e60a）。
+- **commit**：483ce5e4、9ff57924（甲）；f2ef3167、d58c6a43、35c558b2、c7aea2bb（乙）；a1420821、8c70a435、c8196783、0fe6c6c9、feff06b3、98b36f05、8157f3ab、2920f52e、337f4835（丙）；282b03a5（merge main 0.40.1）
+- **spec**：design/specs/2026-11-11-連結改相對寫法.md、design/specs/2026-11-11-外掛認子夾知識庫.md、design/specs/2026-11-11-上層vault的外掛.md
+- **關掉的 issue**：#66
+`\?`- **還沒驗、還沒定的**：知識庫路徑中間有 junction 時，`source-edit` 擋上層夾可能漏（裁定 12，記待辦）；上層夾本身是登記來源、底下有排除子夾時會擋，但沒有測試守著（裁定 12 接受）；外掛找知識庫的結果有快取，重掃之後要重新載入外掛才換（乙裁定 7）；`source-edit` 遇到 `\\?\` 開頭的路徑一律拒（main 本來就這樣）；跟 0.40.1 合併後（guard.py 兩邊都改、沒衝突），用 212 句寫法對上層外掛四個目標實跑守門：.NET 檔案呼叫、Office 另存、下載、直譯器、殼都擋；16 句放行（python openpyxl 的 wb.save 到既有檔、git -C <夾> clean -fdx、base64 解碼餵殼），對知識庫自己的外掛夾與 .system 一樣放行，是 main 本來就有、不是這版造成的，記待辦。知識庫自己的 `.obsidian` 用 `cp -r` 整夾蓋進知識庫根同樣擋不到（本來就有，記待辦）。
+
+## 0.40.1 — 2026-11-11
+- **給客戶的一句話**：AI 改檔、刪檔時更不會漏掉先留一份，你說「退回」更確定救得回來；你平常要它做的事照樣一句做完，不會多被擋或多被問。
+- **改了什麼**（#25，D-348，裁定 1～16）：守門把幾種原本認不出的寫法，判得跟全名寫法一樣（會刪掉或蓋掉既有檔就擋，退回給 AI 改走會先留一份的路）：
+  - `powershell`／`pwsh` 的 `-EncodedCommand`（含 `-enc`、`-e`、`-ec`、冒號寫法、`--encodedcommand`）解碼後照裡面的指令判，解不開擋（對 AI 說改寫）。
+  - PowerShell 別名 `clc`、`epcsv`、`sp`，`iwr`／`irm`／`Invoke-WebRequest`／`Invoke-RestMethod`／`curl`／`wget` 帶 `-OutFile`。
+  - .NET 檔案靜態呼叫（`[System.IO.File]`、`[IO.File]`、`[type]'System.IO.File'`、`[IO.Directory]` 的 Delete、WriteAllText、AppendAllText、Create、CreateText、OpenWrite、AppendText、Open（寫入模式）、Replace、Move、Copy），有字面路徑的實例刪除（`(Get-Item '<p>').Delete()`、`[IO.FileInfo]::new('<p>').Delete()`）。
+  - Office 帶路徑的另存（`SaveAs`、`SaveAs2`、`SaveCopyAs`、`ExportAsFixedFormat`，PowerShell 與 python，含 `FileName=`）到既有檔。
+  - python `open(p, mode='r+b')`、`Path(p).open('rb+')`、`os.open` 帶寫入旗標。
+  - 照放：另存、下載成新檔（含做文件的工作區 `.system/temp/office/`）、開著的 Office 一起改（附著後 `.Save()`、`Range.Delete()`）、`Documents.Open`、沒有字面路徑的寫法（`$f.Delete()`，等 #67 相簿）。
+  - `CONTENT_REASON` 補兩句（下載或匯出會蓋掉既有檔：存成新檔名或先 `kb source-edit trash`；她開著的那份用 `.Save()`）。
+  - 修掉一個舊誤判：python `.Documents.Open('a.docx')` 這類以 a／w／x 開頭的路徑不再被當成寫入模式。
+- **為什麼**：AI 用這些寫法刪檔、蓋檔時守門沒先留一份，她說「退回」退不掉（#25，B-646）；放寬甲（0.2x，11-02）當時接受這些放寬，是預期之後由相簿接住（D-347），相簿還沒做，先補常見的。實測：語料 112 條改前改後對照，71 條從放行變擋（都是會刪掉或蓋掉既有檔的），客戶日常寫法沒有一條被誤擋；確認時用客戶的話跑刪檔退回、改合約存回退回、下載、批次改名、另存 PDF，十句話守門 0 次擋、都一次做完。
+- **commit**：789e2dff、a8ea3c9d、d89f7ea7、fc746f5b、32d01390、567dc92d、b6399308、0161e1d3、27f4304e、1f800307、996d33cc、f1545ee8、46161763、662ecb45、1ab7d939
+- **spec**：design/specs/2026-11-11-守門補洞.md
+- **關掉的 issue**：#25（B-646 收進）
+- **還沒驗、還沒定的**：沒有字面路徑的寫法（變數、管線餵 bash、`$f.Delete()`）照舊放行，等 #67 相簿；路徑外包括號或轉型、覆蓋旗標寫成 `'True'` 等少見寫法沒收；守門抽逗號分隔的路徑會黏上逗號（B-542）；確認落差 B-543～B-546（退回丟進回收筒的檔 kb 拿不回、`soffice --outdir` 蓋同名 PDF、`curl -o` 新檔沒記進回合、`kb output save --to` 錯誤訊息）。main 上本來就紅、不是這版改的：B-534 兩條、B-539 一條。
+
+## 0.40.0 — 2026-11-11
+- **給客戶的一句話**：willy 不再內建記帳：你講到錢（收了、付了、售價多少）我照樣記下來、問加總也算得出來，文件上的付款期限照舊進日程提醒你；要正式記帳的，另外幫你裝記帳工具。之前記過的帳還在「系統/帳.md」，不會再更新。
+- **改了什麼**（#65，D-537，定案 1～7，裁定 1～14）：
+  - 拿掉：`kb money` 整組、`money.py`、`money_cli.py`、帳頁（`系統/帳.md`、`系統/帳/`）的產生與套用、首頁與 `kb lookup`／`kb entity panel` 的帳、製卡抽錢與抽數字欄、錢的待處理（`money_dupe`、`money_unsure`）、低庫存、報帳（「公司還欠你」）、帳與日程連動、設定檔第十節（記帳開關與地點型別）與第五節「平常在哪」、Obsidian 外掛畫的帳。
+  - 數字欄一起拿掉：設定檔第九節、`kb entity field`、`kb profile add 數字欄`、清冊 `money_fp`、綜合卡檔頭新渲染的數字欄。
+  - 留下：`kb tally`、`kb statement add --money`、`kb statement list --money`；加總從 `kb money sum` 搬成 `kb statement sum`。
+  - 製卡：金額不另外抽，付款、收款的期限照 D-062 進日程（例：「12/5 前匯款」加成到期）。
+  - note、answer 加一句：設定檔偏好說錢的事交給別的工具（裝了客製記帳的客戶）就照偏好，不記口述、不加總（定案 5）。
+  - 守門：子代理的 `money`、`entity field` 放行拿掉；`TAG_DENY` 只管 `entity tag`。
+  - 升級遷移（看內容，不看版號）：拿掉設定檔第九、十節與「平常在哪」；舊庫還開著的帳待處理關掉（how「記帳改成另外的客製功能」）；第十節原本是開的，升級輸出多一句舊帳在哪。`.system/money.json`、`.system/streams/money/`、`系統/帳.md`、實體的 `欄:`、清冊 `money_fp`、0.36 已渲染在綜合卡上的數字欄行都原樣留著、不再讀寫；`.gitignore` 照舊排除 `.system/money.json`。
+- **為什麼**：一般客戶不需要記帳；要記帳的客戶要的是多人同時寫不出錯的帳（主機資料庫、單一入口），willy 的流水檔做不到，記帳改成客製（C002-記帳）、要的客戶才加（jacky 2026-11-09，#58 關；jie 2026-11-10 開 #65）。數字欄是為記帳算錢做的，帳拿掉後只剩顯示、跟口述重疊（jacky 2026-11-10）。0.35 起記帳預設關（#59、D-534），應該沒有客戶開過；C001～C003 都沒用過數字欄。
+- **commit**：3686a42e、f5b2f6a3、ed7aa3d6（甲段）；1d8e4a3f、da512e3f、ac1dc8c6（乙段與測試、確認後修）
+- **spec**：design/specs/2026-11-10-拿掉記帳.md
+- **關掉的 issue**：#65
+- **還沒驗、還沒定的**：開過記帳的舊庫，舊帳裡未付的那筆升級後只留在 `系統/帳.md`、不進日程（裁定 12）；在對話外升級的，之後不會再講「舊帳在哪」那句（裁定 4、B-541）；`kb statement list --money` 沒掛實體的那筆括號多一個逗號（B-540，0.39 就有）。main 上本來就紅、不是這版改的：`test_skill_answer::Body::test_size`、`test_small_fixes_1026::SkillText::test_14_ingest_body_size`（B-534）、`test_lib_restore::Apply::test_restored_state_equals_backup_time_except_preserved`（B-539）。
+
+## 0.39.0 — 2026-11-11
+- **給客戶的一句話**：卡片多了以後找東西也很快：在搜尋框打字、或問 willy「哪份檔有提到交期」，幾千張卡也在一兩秒內找到，兩個字的詞也找得到；你在 Obsidian 改了卡、退回、同事同步進來的，下一次找就是新的。
+- **改了什麼**（#57，D-345，裁定 1～17）：
+  - 新 `scripts/kb/_lib/card_index.py`：檔案卡的檔頭與正規化後的標題、內文存進知識庫外的 SQLite 快取（`%LOCALAPPDATA%\wiki-with-willy\index\<vault id>-<路徑雜湊>.sqlite`，測試用 `WIKI_WITH_WILLY_INDEX_DIR`）；每次讀全部的卡先走 `檔案索引/` 比修改時間與大小，只重讀有變的，剛改不到 2 秒的下次一定重讀；讀卡暫時失敗（被鎖、OneDrive 還沒下載）不寫進索引；索引沒有、壞了、鎖住就照舊逐卡讀、不報錯，壞了當場刪掉重建。
+  - `cards._scan_groups` 改走索引（原本的逐卡讀搬成 `_scan_groups_files`）；`_render_index` 用它的結果。`kb find` 與 `kb lookup` 找內文用 SQLite `instr`；`kb find`、`kb lookup`、`kb cards list` 一個指令只走一遍目錄（`card_index.once`）。背景比對（`kb changes --background`）順便更新索引。新指令 `kb index rebuild`。
+  - `paths.plugin_root()`、`config.defaults()` 同一個行程記住，不再每次重讀（裁定 1）；`config.get` 對清單、字典型預設值回複本。
+  - 寫卡的程式一個都沒改：不管誰改的卡（AI、程式、退回、Obsidian 手改、git pull），下一次讀就對。
+- **為什麼**：壓力測試（2026-11-09）3 萬張卡 `kb find` 47～122 s、`kb lookup` 84～111 s，慢在每查一次都把每張卡打開解析；設定檔每張卡重讀一次又多 18 s。實測（測試第 1 輪，3 萬張）：`kb find` 2.3～5.1 s、1 萬張 ≤ 1.8 s、1 千張約 0.3 s；`kb lookup` 3 萬張 13～16 s（B-535）；寫一張卡後的 hook 11.6 → 5.8 s；背景比對 37.5 → 19.6 s。
+- **commit**：2b242a16、cb44fdc0、b8dbd069
+- **spec**：design/specs/2026-11-11-卡片索引.md
+- **關掉的 issue**：#57（B-104 收進）；同一張的第二份「主機補做沒整理的檔」（D-346）另記 B-533，還沒做
+- **還沒驗、還沒定的**：Mac 沒跑過（路徑算法有非 Windows 分支）；知識庫刪掉後 LOCALAPPDATA 裡的索引檔留著；`kb lookup` 3 萬張仍要十幾秒（`cards.wip` 逐張跑 problems，B-535）；確認時 AI 同一個對話接著問沒先跑 `kb find`（B-536）。main 上本來就紅、不是這版改的：`test_skill_answer::Body::test_size`、`test_small_fixes_1026::SkillText::test_14_ingest_body_size`（B-534）、`test_lib_restore::Apply::test_restored_state_equals_backup_time_except_preserved`（B-539）。
+
 ## 0.38.0 — 2026-11-11
 - **給客戶的一句話**：現在可以叫 willy 在知識庫裡幫你做 skill（例如「幫我做一個查報價的 skill」），第一次寫進去時 Claude 會問你允不允許，按允許就好。用 Codex 的：升級到這版後，在 Codex 打一次 `/hooks` 重新信任 willy，不然 willy 不會動。
 - **改了什麼**：

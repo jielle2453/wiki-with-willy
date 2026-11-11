@@ -6,8 +6,8 @@
  * 找 kb、叫 kb（一律帶 --via obsidian）、把 kb 給的 JSON 畫出來、把四個動作變成 kb 指令（和反悔的相反指令；D-266）。
  * 要測的純函式都從 module.exports 的 `lib` 匯出（tests/obsidian/*.test.js 用假的 obsidian 模組載入）。
  * 不把任何路徑寫進設定（D-019）：每次載入照 installed_plugins.json 找 kb.py。
- * 記帳 3（issue #27，D-340）：她打開綜合卡（檔頭編號是 e-）時叫 kb entity panel，把「日程與帳」接在卡的最後（閱讀與即時預覽各一份），
- * 不寫進卡檔；首頁待辦多帳的到期件（打勾 = kb money settle）、庫存不足、公司還欠你，上方多一個「帳」連結。
+ * 她打開綜合卡（檔頭編號是 e-）時叫 kb entity panel，把「日程」接在卡的最後（閱讀與即時預覽各一份），不寫進卡檔（D-340）。
+ * 帳（帳頁、首頁的帳、庫存不足、公司還欠你）#65 起不畫；舊版 kb 給了 stock、owed、links、money 也忽略。
  */
 
 const obsidian = require('obsidian');
@@ -24,7 +24,7 @@ const { Plugin, ItemView, Modal, Notice, MarkdownView } = obsidian;
 
 const PLUGIN_ID = 'wiki-with-willy';
 const VIEW_TYPE = 'wiki-with-willy-home';
-const WATCH_FILES = ['agenda.json', 'pending.json', 'entities.json', 'inventory.json', 'profile.json', 'money.json'];
+const WATCH_FILES = ['agenda.json', 'pending.json', 'entities.json', 'inventory.json', 'profile.json'];
 const DEBOUNCE_MS = 300;
 // 多人共用 3（D-293）：git pull 會改 .git 底下這幾個檔；變了等 2 秒（去抖）叫 kb refresh。不靠 Obsidian 自己的通知。
 const GIT_WATCH_FILES = ['HEAD', 'ORIG_HEAD', 'FETCH_HEAD'];
@@ -49,11 +49,9 @@ const KNOWN_KINDS = Object.keys(KIND_LABEL);
 const KIND_BY_LABEL = { 到期: 'deadline', 會議: 'meeting', 承諾: 'promise', 提醒: 'reminder', 期間: 'period' };
 const KNOWN_SHAPES = ['bar', 'point'];
 const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六'];
-const MONEY_PAGE = '系統/帳.md';
-const MANAGED_PAGES = ['系統/日程.md', '系統/待處理.md', '系統/裁示.md', MONEY_PAGE];
-const MONEY_YEAR_RE = /^系統\/帳\/\d{4}\.md$/; // 帳的每年一頁：照「系統/帳/ 底下」認（記帳 3）
+const MANAGED_PAGES = ['系統/日程.md', '系統/待處理.md', '系統/裁示.md'];
 const PANEL_CLS = 'wwh-panel';
-const PANEL_TITLE = '日程與帳';
+const PANEL_TITLE = '日程';
 const PANEL_CARD_ATTR = 'data-wwh-card'; // 那段是哪張卡的：分頁換了檔，不是它的就拿掉
 const PANEL_REDRAW_MS = 50; // 切閱讀模式／即時預覽後，等 Obsidian 畫好那一邊再接
 const GENERATED_BANNER = '這頁由程式產生；要改請在首頁改，或直接跟 Claude 說';
@@ -640,10 +638,7 @@ function normalizeHome(raw) {
       overdue: asArray(todo.overdue),
       today: asArray(todo.today),
       week: asArray(todo.week),
-      stock: asArray(todo.stock).filter(isObject), // 記帳 3：庫存不足（D-282）
-      owed: asArray(todo.owed).filter(isObject), // 記帳 3：公司還欠你（D-338）
     },
-    links: { money: isObject(r.links) && typeof r.links.money === 'string' ? r.links.money : null },
     confirm: asArray(r.confirm).filter(isObject),
     claude: asArray(r.claude).filter(isObject), // 要跟 Claude 一起看的題（裁定 39）：{key, kind, text}
     others: asArray(r.others).filter(isObject),
@@ -658,20 +653,7 @@ function todoGroups(home) {
     { key: 'today', label: '今天', items: asArray(t.today), defaultCollapsed: false },
     { key: 'week', label: '這週', items: asArray(t.week), defaultCollapsed: true },
   ];
-  // 記帳 3：有才畫，沒有勾選框
-  if (asArray(t.stock).length) out.push({ key: 'stock', label: '庫存不足', items: asArray(t.stock), defaultCollapsed: false });
-  if (asArray(t.owed).length) out.push({ key: 'owed', label: '公司還欠你', items: asArray(t.owed), defaultCollapsed: false });
   return out;
-}
-
-function isMoneyItem(it) {
-  return !!it && it.source === 'money';
-}
-
-/** 金額寫千分位（kb 給的是數字）。 */
-function money(n) {
-  const v = Number(n);
-  return Number.isFinite(v) ? v.toLocaleString('en-US') : String(n == null ? '' : n);
 }
 
 /** 頁上的那一行（kb 給的 match）：整行一樣的先、再找包含的、再找去掉「已過 N 天」的前段；找不到回 0（頁頂）。 */
@@ -688,19 +670,12 @@ function findPageLine(content, match) {
   return at < 0 ? 0 : at;
 }
 
-/** kb entity panel 的結果 → 要畫的（D-340）；沒有日程也沒有帳的回 null（不畫）。商品的庫存已經在帳那行，不另畫。 */
+/** kb entity panel 的結果 → 要畫的（D-340）；沒有日程的回 null（不畫）。舊版 kb 給的 money、stock 不畫。 */
 function panelModel(j) {
   if (!isObject(j)) return null;
   const agenda = asArray(j.agenda).filter(isObject);
-  const m = isObject(j.money) ? j.money : null;
-  const st = isObject(j.stock) ? j.stock : null;
-  const stockLine = st && typeof st.line === 'string' && !('total' in st) ? st.line : null;
-  if (!agenda.length && !m && !stockLine) return null;
-  return {
-    agenda,
-    money: m ? { head: m.head || '', open: asArray(m.open).filter(isObject), recent: asArray(m.recent).filter(isObject), total: Number(m.total_n) || 0, page: m.page || MONEY_PAGE } : null,
-    stockLine,
-  };
+  if (!agenda.length) return null;
+  return { agenda };
 }
 
 function versionMismatch(homeVersion, pluginVersion) {
@@ -740,6 +715,160 @@ function openedIds(data) {
   return sanitizeData(data).opened.map((o) => o.card);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// 知識庫在 vault 的哪裡（#66 乙，D-540）：前綴＝知識庫根相對 vault 的路徑（'/' 分隔；vault 根就是知識庫時是 ''）
+// ---------------------------------------------------------------------------------------------------------------
+
+const NO_ROOTS_TEXT = '這個資料夾裡沒有找到 willy 的知識庫（找了這一層與下面兩層）';
+const ROOT_DEPTH = 2; // vault 根沒有記號時往下找幾層
+const ROOT_SKIP = ['node_modules'];
+const SOURCES_FILE = ['.system', 'sources.json'];
+const SOURCES_STREAM = ['.system', 'streams', 'sources']; // kb 的來源流水檔夾（scripts/kb/_lib/streams.py 的 stream_dir(vault, "sources")）
+
+/** 這個夾是不是知識庫根：有 .system/sources.json（檔案），或來源流水檔夾裡有 *.jsonl（同 kb 的 guard.find_vault）。 */
+function hasKbMark(dir, io) {
+  if (io.exists(path.join(dir, ...SOURCES_FILE))) return true;
+  try {
+    return asArray(io.readdir(path.join(dir, ...SOURCES_STREAM))).some((n) => String(n).endsWith('.jsonl'));
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 回前綴的陣列：vault 根有記號就是 ['']（不往下找）；沒有就看第一、二層子夾，照前綴排序。
+ *  名字以 . 開頭的夾、node_modules 不進去；讀不了的夾略過；有記號的夾不再往裡面找。 */
+function findKbRoots(opts) {
+  const o = opts || {};
+  const isFile = (q) => {
+    try {
+      return fs.statSync(q).isFile();
+    } catch (e) {
+      return false;
+    }
+  };
+  const isDir = (q) => {
+    try {
+      return fs.statSync(q).isDirectory();
+    } catch (e) {
+      return false;
+    }
+  };
+  const io = { exists: o.exists || isFile, readdir: o.readdir || ((q) => fs.readdirSync(q)), isDir: o.isDir || isDir };
+  const base = o.vaultPath;
+  if (!base) return [];
+  if (hasKbMark(base, io)) return [''];
+  const out = [];
+  const walk = (prefix, depth) => {
+    let names;
+    try {
+      names = asArray(io.readdir(prefix ? path.join(base, ...prefix.split('/')) : base)).map(String);
+    } catch (e) {
+      return;
+    }
+    for (const name of names) {
+      if (!name || name.startsWith('.') || ROOT_SKIP.includes(name)) continue;
+      const next = prefix ? `${prefix}/${name}` : name;
+      const dir = path.join(base, ...next.split('/'));
+      if (!io.isDir(dir)) continue;
+      if (hasKbMark(dir, io)) out.push(next);
+      else if (depth < ROOT_DEPTH) walk(next, depth + 1);
+    }
+  };
+  walk('', 1);
+  return out.sort();
+}
+
+/** 庫內路徑 → vault 路徑。 */
+function joinRoot(root, rel) {
+  return root ? `${root}/${rel}` : String(rel);
+}
+
+/** vault 路徑 → 庫內路徑；不在這個庫裡回 null。 */
+function stripRoot(root, vaultRel) {
+  const s = String(vaultRel == null ? '' : vaultRel).replace(/\\/g, '/');
+  if (!root) return s;
+  return s.startsWith(root + '/') ? s.slice(root.length + 1) : null;
+}
+
+/** 包含這個檔（vault 路徑）的知識庫前綴；'' 包含全部；沒有回 null（D-543）。 */
+function rootOfPath(roots, vaultRel) {
+  const s = String(vaultRel == null ? '' : vaultRel).replace(/\\/g, '/');
+  let best = null;
+  for (const r of asArray(roots)) {
+    if (r !== '' && !s.startsWith(r + '/')) continue;
+    if (best === null || r.length > best.length) best = r;
+  }
+  return best;
+}
+
+/** 選單上的名字：前綴的最後一段；最後一段重複的顯示整個前綴。 */
+function rootLabels(roots) {
+  const last = asArray(roots).map((r) => String(r).split('/').pop());
+  return asArray(roots).map((r, i) => (last.filter((x) => x === last[i]).length > 1 ? r : last[i]));
+}
+
+/** data.json 讀進來的樣子（#66 乙）：{current?, roots: {前綴: {opened}}, timelineDays?, monthCollapsed?}。
+ *  current 要在找到的清單裡才算，不然用第一個（一個都沒有就不記）；舊格式最上層的 opened 搬進 roots[current]；
+ *  roots 裡已經不在清單的鍵留著（她可能只是暫時搬走）。不存絕對路徑（D-019）。 */
+function sanitizeStore(raw, roots) {
+  const list = asArray(roots);
+  const r = isObject(raw) ? raw : {};
+  const out = { roots: {} };
+  if (isObject(r.roots)) {
+    for (const k of Object.keys(r.roots)) out.roots[k] = { opened: sanitizeData(r.roots[k]).opened };
+  }
+  const current = typeof r.current === 'string' && list.includes(r.current) ? r.current : list.length ? list[0] : null;
+  if (current !== null) out.current = current;
+  const legacy = sanitizeData(r).opened;
+  if (legacy.length) {
+    const k = current === null ? '' : current;
+    if (!out.roots[k] || !out.roots[k].opened.length) out.roots[k] = { opened: legacy };
+  }
+  const zoom = savedZoom(r.timelineDays);
+  if (zoom !== null) out.timelineDays = zoom;
+  if (r.monthCollapsed === true) out.monthCollapsed = true;
+  return out;
+}
+
+/** 這個庫最近開過的卡編號。data 還是舊樣子（沒有 roots）就照舊讀最上層。 */
+function openedOf(data, root) {
+  const d = isObject(data) ? data : {};
+  if (!isObject(d.roots)) return openedIds(d);
+  return openedIds(d.roots[root == null ? '' : root]);
+}
+
+/** 記進那個庫自己的「最近」（D-545）；其他庫、縮放、收合都不動。 */
+function recordOpenedIn(data, root, card, nowIso) {
+  const d = isObject(data) ? data : {};
+  if (!isObject(d.roots)) return recordOpened(d, card, nowIso);
+  const key = root == null ? '' : root;
+  const one = recordOpened(d.roots[key], card, nowIso);
+  return Object.assign({}, d, { roots: Object.assign({}, d.roots, { [key]: { opened: one.opened } }) });
+}
+
+function cssString(s) {
+  if (typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function') return CSS.escape(s);
+  return String(s).replace(/["\\]/g, '\\$&');
+}
+
+/** 前綴不空的每個知識庫：藏檔案樹裡它的「檔案索引」夾與 CLAUDE.md（同 styles.css 開頭那兩組，data-path 完全相符，D-544）。 */
+function treeHideCss(roots) {
+  return asArray(roots)
+    .filter((r) => r)
+    .map((r) => {
+      const dir = cssString(`${r}/檔案索引`);
+      const md = cssString(`${r}/CLAUDE.md`);
+      return [
+        `.nav-folder-title[data-path="${dir}"],`,
+        `.nav-folder-title[data-path="${dir}"] + .nav-folder-children,`,
+        `.nav-folder:has(> .nav-folder-title[data-path="${dir}"]),`,
+        `.nav-file-title[data-path="${md}"],`,
+        `.nav-file:has(> .nav-file-title[data-path="${md}"]) { display: none; }`,
+      ].join('\n');
+    })
+    .join('\n');
+}
+
 /** 本機的今天（YYYY-MM-DD）；第一次叫 kb home 還不知道 kb 的今天時用。 */
 function localIso(d) {
   const pad = (n) => String(n).padStart(2, '0');
@@ -765,7 +894,8 @@ function claudeDir(env, home) {
 
 /**
  * 照 installed_plugins.json 找 wiki-with-willy 的 kb.py（D-258）。
- * 多筆時先挑 projectPath 是這個知識庫的，再挑 scope user 的，最後一筆。回 {ok, kbPath, …} 或 {ok:false, reason}。
+ * 多筆時依序挑（#66 乙確認後裁定 6）：projectPath 是這個知識庫的；是同一個 vault 裡另一個知識庫的（opts.siblings）；
+ * version 跟這個外掛一樣的（opts.version，user 範圍優先）；scope user 的；最後一筆。回 {ok, kbPath, …} 或 {ok:false, reason}。
  */
 function findKb(opts) {
   const o = opts || {};
@@ -794,9 +924,14 @@ function findKb(opts) {
     .map((r) => ({ rec: r, kbPath: path.join(r.installPath, 'scripts', 'kb.py') }))
     .filter((x) => exists(x.kbPath));
   if (!withKb.length) return { ok: false, reason: 'no-kb' };
-  const mine = withKb.find((x) => x.rec.projectPath && o.vaultPath && samePath(x.rec.projectPath, o.vaultPath, platform));
-  const user = withKb.find((x) => (x.rec.scope || 'user') === 'user');
-  const pick = mine || user || withKb[withKb.length - 1];
+  const isUser = (x) => (x.rec.scope || 'user') === 'user';
+  const at = (dir) => withKb.find((x) => x.rec.projectPath && dir && samePath(x.rec.projectPath, dir, platform));
+  const mine = at(o.vaultPath);
+  let sibling;
+  for (const dir of asArray(o.siblings)) sibling = sibling || at(dir);
+  const same = o.version ? withKb.filter((x) => x.rec.version === o.version) : [];
+  const user = withKb.find(isUser);
+  const pick = mine || sibling || same.find(isUser) || same[same.length - 1] || user || withKb[withKb.length - 1];
   return {
     ok: true,
     kbPath: pick.kbPath,
@@ -991,7 +1126,6 @@ const actions = {
   /** 打勾：done；復原 reopen（重複的日程完成會跳到下一次，復原改回原日期）。 */
   done(item) {
     const id = item.id;
-    if (isMoneyItem(item)) return { id: 'done', args: ['money', 'settle', id], undo: () => ({ args: ['money', 'reopen', id] }) }; // 全額收付（新定 2）
     return {
       id: 'done',
       args: ['agenda', 'done', id],
@@ -1005,12 +1139,6 @@ const actions = {
   /** 改日期、時間：只送有變的；復原改回原值（原本沒有時間的沒辦法清掉，那一項不復原）。 */
   edit(item, change) {
     const id = item.id;
-    if (isMoneyItem(item)) {
-      const was = itemDate(item);
-      const v = change && change.date;
-      if (!v || v === was) return null;
-      return { id: 'edit', args: ['money', 'edit', id, '--due', v], undo: was ? () => ({ args: ['money', 'edit', id, '--due', was]}) : null };
-    }
     const args = ['agenda', 'edit', id];
     const back = ['agenda', 'edit', id];
     const orig = { date: itemDate(item), start: item.start || '', time: item.time || '' };
@@ -1196,7 +1324,7 @@ async function openOriginal(ctx, open) {
 
 function isManagedPage(p) {
   const s = String(p || '').replace(/\\/g, '/');
-  return MANAGED_PAGES.includes(s) || MONEY_YEAR_RE.test(s);
+  return MANAGED_PAGES.includes(s);
 }
 
 function isGeneratedPage(p) {
@@ -1914,11 +2042,14 @@ class HomeView extends ItemView {
     if (!this.root) return;
     const p = this.plugin;
     this.closePop();
-    if (!p.runner) {
+    const noRoots = Array.isArray(p.roots) && p.roots.length === 0; // 這個 vault 裡沒有知識庫（#66 乙）
+    if (noRoots || !p.runner) {
       for (const el of [this.topRowEl, this.searchEl, this.recentEl, this.timelineEl, this.colsEl, this.drawerEl, this.bannerEl]) {
         el.classList.add('wwh-hidden');
       }
-      if (!this.noKbEl) this.noKbEl = h('div', { cls: 'wwh-nokb', text: NO_KB_TEXT });
+      const text = noRoots ? NO_ROOTS_TEXT : NO_KB_TEXT;
+      if (!this.noKbEl) this.noKbEl = h('div', { cls: 'wwh-nokb', text });
+      else if (this.noKbEl.textContent !== text) this.noKbEl.textContent = text;
       if (!this.noKbEl.parentNode) this.root.insertBefore(this.noKbEl, this.root.firstChild);
       return;
     }
@@ -1956,6 +2087,8 @@ class HomeView extends ItemView {
   // ---- 日期與問候（只寫問候，kb 挑的；不放數字，裁定 32）----
   renderTop(el) {
     const home = this.plugin.home;
+    const picker = this.rootPicker();
+    if (picker) el.appendChild(picker);
     if (!home) {
       el.appendChild(h('div', { cls: 'wwh-cheer', text: '載入中……' }));
       return;
@@ -1963,12 +2096,23 @@ class HomeView extends ItemView {
     el.appendChild(
       h('div', { cls: 'wwh-greet' }, h('p', { cls: 'wwh-date', text: longDate(home.today) }), h('h1', { cls: 'wwh-cheer', text: home.cheer || '' })),
     );
-    const link = home.links && home.links.money; // 記帳 3：帳關著而且沒有任何筆時 kb 給 null，不出
-    if (link) {
-      el.appendChild(
-        h('div', { cls: 'wwh-top-links' }, h('a', { cls: 'wwh-link wwh-money-link', text: '帳', title: '開帳頁', on: { click: () => this.plugin.openPathInVault(link) } })),
-      );
-    }
+  }
+
+  /** 同一個 vault 有好幾個知識庫時，最左邊的下拉選單（#66 乙）；只有一個不出現。 */
+  rootPicker() {
+    const p = this.plugin;
+    const roots = typeof p.rootsList === 'function' ? p.rootsList() : [''];
+    if (roots.length < 2) return null;
+    const labels = rootLabels(roots);
+    const cur = p.cur();
+    const sel = h(
+      'select',
+      { cls: 'wwh-root-select', title: '換一個知識庫看', attrs: { 'aria-label': '知識庫' } },
+      ...roots.map((r, i) => h('option', { value: r, text: labels[i], selected: r === cur })),
+    );
+    sel.value = cur;
+    sel.addEventListener('change', () => p.switchRoot(sel.value));
+    return sel;
   }
 
   // ---- 搜尋 ----
@@ -2804,37 +2948,17 @@ class HomeView extends ItemView {
         box.appendChild(h('div', { cls: 'wwh-empty', text: '沒有' }));
         continue;
       }
-      for (const it of g.items) box.appendChild(g.key === 'stock' ? this.stockRow(it) : g.key === 'owed' ? this.owedRow(it) : this.todoRow(it, g.key));
+      for (const it of g.items) box.appendChild(this.todoRow(it, g.key));
     }
-  }
-
-  /** 庫存不足（D-282）：沒有勾選框，點了開那個商品的卡；補了貨 kb 就不給了。 */
-  stockRow(it) {
-    const unit = it.unit ? ` ${it.unit}` : '';
-    const amount = typeof it.text === 'string' && it.text ? it.text : `${money(it.stock)}${unit}`; // D-344 補：換不了的分開列
-    const text = `${it.entity || ''}剩 ${amount}（安全庫存 ${money(it.min)}）`;
-    const open = () => (it.card ? this.plugin.openPathInVault(it.card) : this.plugin.openEntity(it.entity));
-    return h('div', { cls: ['wwh-todo', 'is-stock'] }, h('div', { cls: 'wwh-todo-body' }, h('span', { cls: 'wwh-todo-text', title: '開這個商品的卡', text, on: { click: open } })));
-  }
-
-  /** 公司還欠你（D-338，只有墊的人看得到）：沒有勾選框，點了開帳頁那一行。 */
-  owedRow(it) {
-    const text = `公司還欠你 ${money(it.amount)}` + (it.text ? `（${it.text}）` : '');
-    return h(
-      'div',
-      { cls: ['wwh-todo', 'is-owed'] },
-      h('div', { cls: 'wwh-todo-body' }, h('span', { cls: 'wwh-todo-text', title: '開帳頁那一行', text, on: { click: () => this.plugin.openPageLine(it.page || MONEY_PAGE, it.match) } })),
-    );
   }
 
   /** 一件待辦：勾選框、標題（點下去開日程.md 那一行）、案子·種類·推測合成一行淡小字、日期（點了改日期時間）。 */
   todoRow(it, groupKey) {
     const row = h('div', { cls: ['wwh-todo', groupKey === 'overdue' || it.late ? 'is-late' : '', it.inferred ? 'is-inferred' : ''] });
-    // 帳的件（記帳 3，新定 2）：打勾 = 全額收付；金額未知的不給勾（點標題開帳頁那一行，部分收付跟 AI 說）
-    const box = isMoneyItem(it) && it.settle_ok === false ? h('span', { cls: 'wwh-check-none', title: '金額未知：點標題開帳頁，或跟 Claude 說收了多少' }) : h('input', {
+    const box = h('input', {
       cls: 'wwh-check',
       attrs: { type: 'checkbox' },
-      title: isMoneyItem(it) ? '打勾 = 整筆收付了' : '打勾 = 完成',
+      title: '打勾 = 完成',
       on: {
         click: () => {
           row.classList.add('is-done');
@@ -3136,31 +3260,25 @@ class WikiWithWillyPlugin extends Plugin {
     this.lastKbAt = 0;
     this.applying = new Set();
     this.tracker = createApplyTracker();
-    this.cardIndex = null;
-    this.cardIndexAt = 0;
+    this.cardIndexes = null;
     this.activePath = null;
     this.loadedVersion = this.manifest && this.manifest.version;
     this.vaultPath = this.basePath();
-    this.data = sanitizeData(await this.loadData());
+    this.roots = findKbRoots({ vaultPath: this.vaultPath }); // 這個 vault 裡的知識庫（#66 乙，D-540）
+    this.data = sanitizeStore(await this.loadData(), this.roots);
     this.ui.timelineDays = zoomOf(this.data.timelineDays);
     this.ui.monthCollapsed = this.data.monthCollapsed === true;
-    this.kbInfo = findKb({ vaultPath: this.vaultPath });
+    this.runners = new Map();
+    this.infos = new Map();
     this.runner = null;
-    if (this.kbInfo.ok) {
-      this.runner = createKbRunner({ kbPath: this.kbInfo.kbPath, cwd: this.vaultPath, execFile: this.execFileOverride });
-      const inner = this.runner.run;
-      this.runner.run = async (args) => {
-        try {
-          return await inner(args);
-        } finally {
-          this.lastKbAt = Date.now();
-        }
-      };
-    }
-    try {
-      this.app.vault.setConfig('showUnsupportedFiles', true);
-    } catch (e) {
-      console.error('[wiki-with-willy] 沒辦法開「偵測所有副檔名」', e);
+    this.useRoot(this.data.current === undefined ? null : this.data.current);
+    this.syncTreeStyle();
+    if (this.atVaultRoot()) { // 開在上層時不動她的設定（D-544）
+      try {
+        this.app.vault.setConfig('showUnsupportedFiles', true);
+      } catch (e) {
+        console.error('[wiki-with-willy] 沒辦法開「偵測所有副檔名」', e);
+      }
     }
 
     this.registerView(VIEW_TYPE, (leaf) => new HomeView(leaf, this));
@@ -3168,9 +3286,9 @@ class WikiWithWillyPlugin extends Plugin {
     this.addCommand({ id: 'open-home', name: '開啟首頁', callback: () => this.activateHome() });
     // 卡上的「開原檔」是 obsidian://wiki-with-willy-open?id=<清冊編號>（D-328）：點了叫 kb 查這份在這台的位置再開
     if (this.registerObsidianProtocolHandler) {
-      this.registerObsidianProtocolHandler(OPEN_ACTION, (params) => this.openById(params && params.id));
+      this.registerObsidianProtocolHandler(OPEN_ACTION, (params) => this.openById(params && params.id, this.protocolRoot()));
     }
-    this.registerMarkdownPostProcessor((el) => this.linkifyCardRefs(el));
+    this.registerMarkdownPostProcessor((el, ctx) => this.linkifyCardRefs(el, ctx));
     if (this.registerEditorExtension) this.registerEditorExtension(this.cardRefExtension());
 
     const ws = this.app.workspace;
@@ -3188,29 +3306,179 @@ class WikiWithWillyPlugin extends Plugin {
       this.startWatch();
       this.startGitWatch();
       this.refresh();
-      this.ensureHomeOpen();
+      if (this.atVaultRoot()) this.ensureHomeOpen(); // 開在上層時不自動跳出首頁（D-544）
     });
   }
 
   onunload() {
-    if (this.watcher) {
-      try {
-        this.watcher.close();
-      } catch (e) {
-        // 關不掉也沒關係
-      }
-    }
+    this.stopWatch();
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    if (this.gitTimer) clearTimeout(this.gitTimer);
     if (this.panelTimer) clearTimeout(this.panelTimer);
-    if (this.gitWatcher) {
+    if (this.treeStyleEl && this.treeStyleEl.parentNode) this.treeStyleEl.parentNode.removeChild(this.treeStyleEl);
+    this.treeStyleEl = null;
+    this.flushNote();
+  }
+
+  // ---- 知識庫在 vault 的哪裡（#66 乙）：沒跑過 onload（roots 沒設）當成 vault 根就是知識庫 ----
+  rootsList() {
+    return Array.isArray(this.roots) ? this.roots : [''];
+  }
+
+  /** 首頁目前看的知識庫前綴；一個都沒有是 null。 */
+  cur() {
+    return this.current === undefined ? '' : this.current;
+  }
+
+  atVaultRoot() {
+    const r = this.rootsList();
+    return r.length === 1 && r[0] === '';
+  }
+
+  rootOf(vaultRel) {
+    return rootOfPath(this.rootsList(), vaultRel);
+  }
+
+  /** vault 路徑 → {root, rel（庫內路徑）}；不在任何知識庫裡回 null（D-543：什麼都不做）。 */
+  loc(vaultRel) {
+    const s = String(vaultRel || '').replace(/\\/g, '/');
+    if (!s) return null;
+    const root = this.rootOf(s);
+    return root === null ? null : { root, rel: stripRoot(root, s) };
+  }
+
+  /** 庫內路徑 → vault 路徑；root 沒給就是首頁目前看的那個。 */
+  vp(rel, root) {
+    return joinRoot(root === undefined ? this.cur() : root, rel);
+  }
+
+  rootDir(root) {
+    return root ? path.join(this.vaultPath, ...String(root).split('/')) : this.vaultPath;
+  }
+
+  /** 那個知識庫的 kb runner（cwd 是知識庫根，findKb 比對的 projectPath 也是它）；用到才建，找不到 kb 是 null。 */
+  ensureRunner(root) {
+    if (!this.runners) this.runners = new Map();
+    if (!this.infos) this.infos = new Map();
+    if (this.runners.has(root)) return this.runners.get(root);
+    const dir = this.rootDir(root);
+    const siblings = this.rootsList().filter((r) => r !== root).map((r) => this.rootDir(r));
+    const info = findKb({ vaultPath: dir, siblings, version: this.loadedVersion });
+    let runner = null;
+    if (info.ok) {
+      runner = createKbRunner({ kbPath: info.kbPath, cwd: dir, execFile: this.execFileOverride });
+      const inner = runner.run;
+      runner.run = async (args) => {
+        try {
+          return await inner(args);
+        } finally {
+          this.lastKbAt = Date.now();
+        }
+      };
+    }
+    this.infos.set(root, info);
+    this.runners.set(root, runner);
+    return runner;
+  }
+
+  runnerFor(root) {
+    if (root === null || root === undefined) return null;
+    if (root === this.cur()) return this.runner || null;
+    return this.ensureRunner(root);
+  }
+
+  /** 換首頁看的知識庫：this.runner、this.kbInfo 跟著換成那個庫的。 */
+  useRoot(root) {
+    if (!this.runners) this.runners = new Map();
+    if (typeof this.current === 'string' && this.runner) this.runners.set(this.current, this.runner);
+    this.current = root;
+    if (root === null) {
+      this.runner = null;
+      this.kbInfo = { ok: false, reason: 'no-root' };
+      return;
+    }
+    this.runner = this.ensureRunner(root);
+    this.kbInfo = this.infos.get(root);
+  }
+
+  /** 重新找一次知識庫；跟上次不一樣才回 true（目前看的那個不見了就換成第一個）。 */
+  rescanRoots() {
+    const found = findKbRoots({ vaultPath: this.vaultPath });
+    if (JSON.stringify(found) === JSON.stringify(this.rootsList())) return false;
+    this.roots = found;
+    this.cardIndexes = null;
+    this.syncTreeStyle();
+    if (!found.includes(this.current)) this.switchRoot(found.length ? found[0] : null, false, true);
+    return true;
+  }
+
+  /** 首頁上方選了別的知識庫（#66 乙第 10 條）：便條還沒存的字先寫回原來那個庫，再換、重讀。 */
+  async switchRoot(root, remember, gone) {
+    if (root === this.current || (root !== null && !this.rootsList().includes(root))) return;
+    if (gone) {
+      // 原來那個庫已經不在了：不寫便條（寫了會把她搬走的夾建回來）
+      if (this.noteTimer) clearTimeout(this.noteTimer);
+      this.noteTimer = null;
+    } else if (!(await this.flushNote())) {
+      this.renderAll(); // 便條沒存成就留在原來那個庫（選單選回去），字還在
+      return;
+    }
+    this.stopWatch();
+    this.useRoot(root);
+    if (remember !== false && root !== null) {
+      this.data = Object.assign({}, this.data, { current: root });
       try {
-        this.gitWatcher.close();
+        await this.saveData(this.data);
       } catch (e) {
-        // 關不掉也沒關係
+        console.error('[wiki-with-willy] 存不了選的知識庫', e);
       }
     }
-    this.flushNote();
+    const ui = this.ui;
+    ui.drawer = { open: false, stack: [], data: null, loading: false, error: null };
+    Object.assign(ui.search, { q: '', active: false, loading: false, result: null, error: null, seq: (ui.search.seq || 0) + 1 });
+    ui.note = defaultNote();
+    this.home = null;
+    this.homeError = null;
+    this.gitNotice = null;
+    for (const v of this.views()) if (v.inputEl) v.inputEl.value = '';
+    this.startWatch();
+    this.startGitWatch();
+    this.renderAll();
+    await this.refresh();
+  }
+
+  /** 前綴不空的知識庫：在 document.head 放一個 <style> 藏它的「檔案索引」夾與 CLAUDE.md（卸載時拿掉）。 */
+  syncTreeStyle() {
+    const doc = typeof document !== 'undefined' ? document : null;
+    const css = treeHideCss(this.rootsList());
+    if (!css) {
+      if (this.treeStyleEl && this.treeStyleEl.parentNode) this.treeStyleEl.parentNode.removeChild(this.treeStyleEl);
+      this.treeStyleEl = null;
+      return;
+    }
+    if (!doc || !doc.head) return;
+    if (!this.treeStyleEl) {
+      this.treeStyleEl = doc.createElement('style');
+      this.treeStyleEl.setAttribute('data-wwh', 'tree');
+      doc.head.appendChild(this.treeStyleEl);
+    }
+    this.treeStyleEl.textContent = css;
+  }
+
+  /** 從 obsidian:// 協定進來的開原檔：跟作用中那個檔所在的庫走；沒有作用中的檔、不在任何庫裡，用首頁目前看的。 */
+  protocolRoot() {
+    let file = null;
+    try {
+      const ws = this.app.workspace;
+      file = ws.getActiveFile ? ws.getActiveFile() : null;
+      if (!file && ws.getActiveViewOfType) {
+        const view = ws.getActiveViewOfType(MarkdownView);
+        file = view && view.file;
+      }
+    } catch (e) {
+      file = null;
+    }
+    const l = file ? this.loc(this.filePathOf(file)) : null;
+    return l ? l.root : this.cur();
   }
 
   basePath() {
@@ -3236,6 +3504,7 @@ class WikiWithWillyPlugin extends Plugin {
   }
 
   async activateHome() {
+    if (this.vaultPath && Array.isArray(this.roots) && this.rescanRoots()) this.refresh(); // 每次開首頁再找一次，不一樣才重畫
     const ws = this.app.workspace;
     let leaf = ws.getLeavesOfType(VIEW_TYPE)[0];
     if (!leaf) {
@@ -3246,9 +3515,11 @@ class WikiWithWillyPlugin extends Plugin {
   }
 
   // ---- 叫 kb ----
-  async kb(args) {
-    if (!this.runner) return { code: -1, stdout: '', stderr: NO_KB_TEXT };
-    return this.runner.run(args);
+  /** root 沒給就是首頁目前看的那個知識庫。 */
+  async kb(args, root) {
+    const runner = this.runnerFor(root === undefined ? this.cur() : root);
+    if (!runner) return { code: -1, stdout: '', stderr: NO_KB_TEXT };
+    return runner.run(args);
   }
 
   toast(text, opts) {
@@ -3308,8 +3579,18 @@ class WikiWithWillyPlugin extends Plugin {
     try {
       do {
         this.refreshAgain = false;
+        const root = this.cur();
+        const runner = this.runner;
+        if (!runner) { // 切到的那個庫叫不到 kb
+          this.renderAll();
+          break;
+        }
         const range = this.ui.tlRange || initialTimelineRange(this.ui.timelineDays, localIso(new Date()));
-        const res = await this.runner.run(homeArgs(openedIds(this.data), range));
+        const res = await runner.run(homeArgs(openedOf(this.data, root), range));
+        if (root !== this.cur()) { // 等的時候她切到別的知識庫：這份不畫，照新的再讀一次
+          this.refreshAgain = true;
+          continue;
+        }
         const c = classify(res);
         if (c.kind === 'ok') {
           const j = parseJson(res.stdout);
@@ -3334,8 +3615,26 @@ class WikiWithWillyPlugin extends Plugin {
     }
   }
 
+  /** 關掉 .system 與 .git 的監看（切換知識庫、卸載）。 */
+  stopWatch() {
+    for (const key of ['watcher', 'gitWatcher']) {
+      if (!this[key]) continue;
+      try {
+        this[key].close();
+      } catch (e) {
+        // 關不掉也沒關係
+      }
+      this[key] = null;
+    }
+    if (this.gitTimer) {
+      clearTimeout(this.gitTimer);
+      this.gitTimer = null;
+    }
+  }
+
   startWatch() {
-    const dir = path.join(this.vaultPath, '.system');
+    if (this.cur() === null) return;
+    const dir = path.join(this.rootDir(this.cur()), '.system');
     try {
       this.watcher = fs.watch(dir, { persistent: false }, (evt, name) => {
         if (name && !WATCH_FILES.includes(String(name))) return;
@@ -3348,8 +3647,10 @@ class WikiWithWillyPlugin extends Plugin {
   }
 
   // 看 .git 的 HEAD／ORIG_HEAD／FETCH_HEAD（多人共用 3，D-293）：變了等 2 秒叫 kb refresh，再刷新首頁。沒有 .git 就不看。
+  // 只看知識庫夾自己的 .git，上層 vault 的不看（D-546）。
   startGitWatch() {
-    const dir = path.join(this.vaultPath, '.git');
+    if (this.cur() === null) return;
+    const dir = path.join(this.rootDir(this.cur()), '.git');
     try {
       if (!fs.existsSync(dir)) return;
       this.gitWatcher = fs.watch(dir, { persistent: false }, (evt, name) => {
@@ -3367,7 +3668,9 @@ class WikiWithWillyPlugin extends Plugin {
   }
 
   async gitRefresh() {
-    const res = await this.kb(['refresh', '--json']);
+    const root = this.cur();
+    const res = await this.kb(['refresh', '--json'], root);
+    if (root !== this.cur()) return; // 她已經切到別的知識庫
     const c = classify(res);
     this.gitNotice = c.kind === 'ok' ? gitRefreshNotice(parseJson(res.stdout)) : null;
     this.scheduleRefresh();
@@ -3420,9 +3723,11 @@ class WikiWithWillyPlugin extends Plugin {
   async readNote() {
     const note = this.ui.note;
     const adapter = this.app && this.app.vault && this.app.vault.adapter;
-    if (!note || !adapter || !adapter.exists) return;
+    if (!note || !adapter || !adapter.exists || this.cur() === null) return;
+    const rel = this.vp(NOTE_REL); // 目前看的那個知識庫的 系統/隨手記.md
     try {
-      const disk = (await adapter.exists(NOTE_REL)) ? await adapter.read(NOTE_REL) : null;
+      const disk = (await adapter.exists(rel)) ? await adapter.read(rel) : null;
+      if (note !== this.ui.note) return; // 讀的時候她切到別的知識庫
       note.saved = disk;
       const next = noteIncoming(note, disk);
       if (next !== null) note.text = next;
@@ -3453,12 +3758,14 @@ class WikiWithWillyPlugin extends Plugin {
       this.noteTimer = null;
     }
     const note = this.ui.note;
-    if (!note.dirty) return true;
+    if (!note.dirty || this.cur() === null) return true;
     const text = note.text;
     const adapter = this.app && this.app.vault && this.app.vault.adapter;
+    const dir = this.vp(NOTE_DIR); // 先算好：存的途中切換知識庫也寫回原來那個
+    const rel = this.vp(NOTE_REL);
     try {
-      if (!(await adapter.exists(NOTE_DIR))) await adapter.mkdir(NOTE_DIR);
-      await adapter.write(NOTE_REL, text);
+      if (!(await adapter.exists(dir))) await adapter.mkdir(dir);
+      await adapter.write(rel, text);
       note.saved = text;
       note.dirty = note.text !== text; // 存的時候她又打了字就還沒完
       return true;
@@ -3506,9 +3813,9 @@ class WikiWithWillyPlugin extends Plugin {
     return true;
   }
 
-  async recordOpened(card) {
+  async recordOpened(card, root) {
     if (!card) return;
-    this.data = recordOpened(this.data, card, new Date().toISOString());
+    this.data = recordOpenedIn(this.data, root === undefined ? this.cur() : root, card, new Date().toISOString());
     try {
       await this.saveData(this.data);
     } catch (e) {
@@ -3526,14 +3833,15 @@ class WikiWithWillyPlugin extends Plugin {
     await openOriginal(this.openCtx(), f.open);
   }
 
-  /** 開原檔連結（D-328）：kb lookup --id 查位置；查不到就說一句、退一步開卡。 */
-  async openById(id) {
+  /** 開原檔連結（D-328）：kb lookup --id 查位置；查不到就說一句、退一步開卡。root 沒給就是首頁目前看的知識庫。 */
+  async openById(id, root) {
     const fid = String(id || '').trim();
     if (!fid) {
       this.toast('這個連結少了檔案編號');
       return false;
     }
-    const res = await this.kb(['lookup', '--id', fid, '--json']);
+    const at = root === undefined ? this.cur() : root;
+    const res = await this.kb(['lookup', '--id', fid, '--json'], at);
     const c = classify(res);
     if (c.kind !== 'ok') {
       this.toast(c.message);
@@ -3541,10 +3849,10 @@ class WikiWithWillyPlugin extends Plugin {
     }
     const j = parseJson(res.stdout);
     const f = isObject(j) ? j : {};
-    if (f.card_path) this.recordOpened(fid);
+    if (f.card_path) this.recordOpened(fid, at);
     if (isObject(f.open) && (f.open.path || f.open.url)) return openOriginal(this.openCtx(), f.open);
     this.toast('這份沒有原檔可以開');
-    if (f.card_path) this.openPathInVault(f.card_path);
+    if (f.card_path) this.openPathInVault(f.card_path, at);
     return false;
   }
 
@@ -3558,8 +3866,9 @@ class WikiWithWillyPlugin extends Plugin {
     if (c.path) this.openPathInVault(c.path);
   }
 
-  openPathInVault(rel) {
-    this.app.workspace.openLinkText(String(rel).replace(/\.md$/, ''), '', false);
+  /** kb 給的庫內路徑 → 交給 Obsidian 的 vault 路徑。root 沒給是首頁目前看的知識庫；已經是 vault 路徑的帶 ''。 */
+  openPathInVault(rel, root) {
+    this.app.workspace.openLinkText(this.vp(String(rel), root).replace(/\.md$/, ''), '', false);
   }
 
   clipCtx() {
@@ -3616,7 +3925,7 @@ class WikiWithWillyPlugin extends Plugin {
     d.loading = true;
     if (showLoading) this.renderAll();
     const res = await this.kb(['lookup', name, '--json']);
-    if (d.stack[d.stack.length - 1] !== name) return; // 她已經點去別的
+    if (d !== this.ui.drawer || d.stack[d.stack.length - 1] !== name) return; // 她已經點去別的、或切到別的知識庫
     const c = classify(res);
     d.loading = false;
     if (c.kind === 'ok') {
@@ -3632,7 +3941,6 @@ class WikiWithWillyPlugin extends Plugin {
   // ---- 點下去：日程開相關的卡、案子開綜合卡（D-266、裁定 32）----
   /** 點日程那件：kb 給的 card（origin 的檔案卡 → 掛的第一個實體的綜合卡）；都沒有才開日程.md 那一行。 */
   async openItem(it) {
-    if (isMoneyItem(it)) return this.openPageLine(it.page || MONEY_PAGE, it.match); // 帳的件開帳頁那一行（記帳 3）
     const card = it && isObject(it.card) ? it.card : null;
     if (card && card.path) {
       this.openPathInVault(card.path);
@@ -3641,8 +3949,8 @@ class WikiWithWillyPlugin extends Plugin {
     await this.openAgendaLine(it);
   }
 
-  async openAgendaLine(it) {
-    const rel = MANAGED_PAGES[0];
+  async openAgendaLine(it, root) {
+    const rel = this.vp(MANAGED_PAGES[0], root);
     let line = 0;
     try {
       line = findAgendaLine(await this.app.vault.adapter.read(rel), it);
@@ -3658,8 +3966,9 @@ class WikiWithWillyPlugin extends Plugin {
     }
   }
 
-  /** 開一頁、游標跳到 kb 給的那一行（帳頁、年頁、日程頁；卡底下那段與首頁帳的件用）。 */
-  async openPageLine(rel, match) {
+  /** 開一頁、游標跳到 kb 給的那一行（日程頁；卡底下那段用）。 */
+  async openPageLine(page, match, root) {
+    const rel = this.vp(String(page), root);
     let line = 0;
     try {
       line = findPageLine(await this.app.vault.adapter.read(rel), match);
@@ -3677,10 +3986,12 @@ class WikiWithWillyPlugin extends Plugin {
 
   /** 點案子名稱開它的綜合卡；還沒有綜合卡就開旁邊的小預覽。 */
   async openSynthesis(name) {
-    const res = await this.kb(['lookup', name, '--json']);
+    const root = this.cur();
+    const res = await this.kb(['lookup', name, '--json'], root);
+    if (root !== this.cur()) return; // 等的時候她切到別的知識庫了
     const got = classify(res).kind === 'ok' ? parseJson(res.stdout) : null;
     if (got && got.synthesis) {
-      this.openPathInVault(got.synthesis);
+      this.openPathInVault(got.synthesis, root);
       return;
     }
     this.openEntity(name);
@@ -3714,16 +4025,6 @@ class WikiWithWillyPlugin extends Plugin {
   }
 
   async editDateForm(it) {
-    if (isMoneyItem(it)) { // 帳的件只改到期日（kb money edit --due）
-      const v = await openForm(this.app, { title: `改「${it.text || ''}」的到期日`, okText: '改', fields: [{ key: 'date', label: '到期日', type: 'date', value: itemDate(it), required: true }] });
-      if (!v) return null;
-      const a = actions.edit(it, v);
-      if (!a) {
-        this.toast('沒有要改的');
-        return null;
-      }
-      return this.runAction(a);
-    }
     const isPeriod = isPeriodKind(it.kind);
     const fields = [{ key: 'date', label: isPeriod ? '結束日' : '日期', type: 'date', value: itemDate(it), required: true }];
     if (isPeriod) fields.unshift({ key: 'start', label: '開始日', type: 'date', value: it.start || '' });
@@ -3781,15 +4082,23 @@ class WikiWithWillyPlugin extends Plugin {
     const p = this.filePathOf(file);
     this.sweepPanels();
     this.switchedTo(p);
-    if (p && isGeneratedPage(p)) this.makeReadOnly(p);
-    if (p && file) this.showPanel(file);
+    const l = this.loc(p);
+    if (l && isGeneratedPage(l.rel)) this.makeReadOnly(p);
+    if (l && file) this.showPanel(file);
   }
 
-  // ---- 綜合卡底下的「日程與帳」（記帳 3，D-340）：畫面，不寫進卡檔 ----
+  /** 這個 vault 路徑是不是某個知識庫的受管頁（用庫內路徑判斷；不在任何庫裡的不算）。 */
+  managed(p) {
+    const l = this.loc(p);
+    return !!l && isManagedPage(l.rel);
+  }
+
+  // ---- 綜合卡底下的「日程」（D-340）：畫面，不寫進卡檔 ----
   /** 是綜合卡（檔頭的編號是 e-）才叫 kb entity panel；kb 叫不到時那段不畫、不報錯（記 console）。 */
   async showPanel(file) {
     const p = this.filePathOf(file);
-    if (!p || !p.endsWith('.md') || p.startsWith('系統/') || p.startsWith('檔案索引/')) return;
+    const l = this.loc(p);
+    if (!l || !l.rel.endsWith('.md') || l.rel.startsWith('系統/') || l.rel.startsWith('檔案索引/')) return;
     let id = null;
     try {
       const cache = this.app.metadataCache.getFileCache(file);
@@ -3798,18 +4107,18 @@ class WikiWithWillyPlugin extends Plugin {
     } catch (e) {
       id = null;
     }
-    if (!id || !this.runner) return;
+    if (!id || !this.runnerFor(l.root)) return;
     if (!this.panels) this.panels = new Map();
     let model = null;
     try {
-      const res = await this.kb(['entity', 'panel', id, '--json']);
+      const res = await this.kb(['entity', 'panel', id, '--json'], l.root);
       const c = classify(res);
       if (c.kind === 'ok') model = panelModel(parseJson(res.stdout));
       else console.error('[wiki-with-willy] kb entity panel 失敗', res.stderr || res.stdout || c.message);
     } catch (e) {
       console.error('[wiki-with-willy] kb entity panel 失敗', e);
     }
-    if (model) this.panels.set(p, model);
+    if (model) this.panels.set(p, Object.assign(model, { root: l.root })); // 點那段開的頁在同一個庫
     else this.panels.delete(p);
     this.drawPanels(p);
   }
@@ -3837,7 +4146,7 @@ class WikiWithWillyPlugin extends Plugin {
     }
   }
 
-  /** 分頁換了檔（點那段的一行跳到帳頁）：不是它現在這個檔的那段拿掉（記帳 3 確認 #3）。 */
+  /** 分頁換了檔（點那段的一行跳到日程頁）：不是它現在這個檔的那段拿掉（記帳 3 確認 #3）。 */
   sweepPanels() {
     for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
       const view = leaf.view;
@@ -3856,7 +4165,7 @@ class WikiWithWillyPlugin extends Plugin {
     }, PANEL_REDRAW_MS);
   }
 
-  /** 首頁資料重讀時（日程或帳變了），開著的綜合卡底下那段跟著重算。 */
+  /** 首頁資料重讀時（日程變了），開著的綜合卡底下那段跟著重算。 */
   refreshPanels() {
     if (!this.panels || !this.panels.size) return;
     const open = new Map();
@@ -3870,20 +4179,9 @@ class WikiWithWillyPlugin extends Plugin {
 
   buildPanel(model) {
     const line = (text, page, match) =>
-      h('li', { cls: 'wwh-panel-line', text, title: '開那一頁的這一行', on: { click: () => this.openPageLine(page, match) } });
+      h('li', { cls: 'wwh-panel-line', text, title: '開那一頁的這一行', on: { click: () => this.openPageLine(page, match, model.root) } });
     const box = h('div', { cls: [PANEL_CLS, 'markdown-rendered'], attrs: { contenteditable: 'false' } }, h('div', { cls: 'wwh-panel-title', text: PANEL_TITLE }));
-    if (model.agenda.length) {
-      box.appendChild(h('div', { cls: 'wwh-panel-head', text: '日程' }));
-      box.appendChild(h('ul', {}, ...model.agenda.map((a) => line(a.line || a.text || '', a.page || MANAGED_PAGES[0], a.match || a.text))));
-    }
-    const m = model.money;
-    if (m) {
-      box.appendChild(h('div', { cls: 'wwh-panel-head', text: `帳：${m.head}` }));
-      const rows = m.open.concat(m.recent).map((x) => line(x.line || '', x.page || m.page, x.match));
-      if (m.total > m.recent.length) rows.push(h('li', { cls: 'wwh-panel-more wwh-link', text: `…共 ${m.total} 筆，看帳`, on: { click: () => this.openPathInVault(m.page) } }));
-      if (rows.length) box.appendChild(h('ul', {}, ...rows));
-    }
-    if (model.stockLine) box.appendChild(h('div', { cls: 'wwh-panel-stock', text: model.stockLine }));
+    box.appendChild(h('ul', {}, ...model.agenda.map((a) => line(a.line || a.text || '', a.page || MANAGED_PAGES[0], a.match || a.text))));
     return box;
   }
 
@@ -3896,7 +4194,7 @@ class WikiWithWillyPlugin extends Plugin {
   switchedTo(now) {
     const prev = this.activePath;
     this.activePath = now || null;
-    if (prev && prev !== now && isManagedPage(prev) && this.tracker.leave(prev)) this.applyPage(prev);
+    if (prev && prev !== now && this.managed(prev) && this.tracker.leave(prev)) this.applyPage(prev);
   }
 
   makeReadOnly(p) {
@@ -3930,7 +4228,7 @@ class WikiWithWillyPlugin extends Plugin {
 
   onEditorChange(editor, info) {
     const p = this.filePathOf(info && info.file);
-    if (!p || !isManagedPage(p)) return;
+    if (!p || !this.managed(p)) return;
     const line = editor.getCursor().line;
     if (this.tracker.edited(p, line, Date.now())) this.applyPage(p);
   }
@@ -3944,7 +4242,7 @@ class WikiWithWillyPlugin extends Plugin {
     const view = this.app.workspace.getActiveViewOfType ? this.app.workspace.getActiveViewOfType(MarkdownView) : null;
     if (!view || !view.file || !view.editor) return;
     const p = this.filePathOf(view.file);
-    if (!isManagedPage(p)) return;
+    if (!this.managed(p)) return;
     if (this.tracker.cursor(p, view.editor.getCursor().line)) this.applyPage(p);
   }
 
@@ -3962,11 +4260,13 @@ class WikiWithWillyPlugin extends Plugin {
   }
 
   async applyPage(p) {
-    if (!this.runner || this.applying.has(p)) return;
+    const l = this.loc(p);
+    const runner = l ? this.runnerFor(l.root) : null; // 那一頁所在的知識庫（D-543），傳給 kb 的是庫內路徑
+    if (!runner || this.applying.has(p)) return;
     this.applying.add(p);
     try {
       await this.saveOpen(p);
-      const res = await this.runner.run(['renders', 'apply', p, '--json']);
+      const res = await runner.run(['renders', 'apply', l.rel, '--json']);
       this.tracker.applied(p);
       const c = classify(res);
       if (c.kind !== 'ok') {
@@ -3985,7 +4285,8 @@ class WikiWithWillyPlugin extends Plugin {
 
   onVaultModify(file) {
     const p = this.filePathOf(file);
-    if (!p || !(isManagedPage(p) || isGeneratedPage(p))) return;
+    const l = this.loc(p);
+    if (!l || !(isManagedPage(l.rel) || isGeneratedPage(l.rel))) return;
     const open = this.app.workspace.getLeavesOfType('markdown').some((l) => l.view && l.view.file && this.filePathOf(l.view.file) === p);
     const now = Date.now();
     const typing = this.tracker.isTyping(p, now);
@@ -3999,13 +4300,19 @@ class WikiWithWillyPlugin extends Plugin {
   }
 
   // ---- 〔f-…〕變連結 ----
-  cardPathOf(id) {
+  /** 〔f-…〕那張卡的 vault 路徑：只在同一個知識庫的 檔案索引/ 裡找，索引每個庫各一份（D-543）。root 沒給是首頁目前看的。 */
+  cardPathOf(id, root) {
+    const at = root === undefined ? this.cur() : root;
+    if (at === null) return null;
+    if (!this.cardIndexes) this.cardIndexes = new Map();
     const now = Date.now();
-    if (!this.cardIndex || (!this.cardIndex.has(id) && now - this.cardIndexAt > 10000)) {
+    let ix = this.cardIndexes.get(at);
+    if (!ix || (!ix.map.has(id) && now - ix.at > 10000)) {
       const map = new Map();
       const titles = new Map();
+      const dir = joinRoot(at, '檔案索引/');
       for (const f of this.app.vault.getMarkdownFiles()) {
-        if (!String(f.path).startsWith('檔案索引/')) continue;
+        if (!String(f.path).startsWith(dir)) continue;
         const cache = this.app.metadataCache.getFileCache(f);
         const fm = cache && cache.frontmatter;
         const cid = fm && (fm['編號'] || fm.id);
@@ -4015,22 +4322,23 @@ class WikiWithWillyPlugin extends Plugin {
           if (typeof t === 'string' && t.trim()) titles.set(cid, t.trim());
         }
       }
-      this.cardTitles = titles;
-      this.cardIndex = map;
-      this.cardIndexAt = now;
+      ix = { map, titles, at: now };
+      this.cardIndexes.set(at, ix);
     }
-    return this.cardIndex.get(id) || null;
+    return ix.map.get(id) || null;
   }
 
-  cardTitleOf(id) {
-    this.cardPathOf(id);
-    return (this.cardTitles && this.cardTitles.get(id)) || null;
+  cardTitleOf(id, root) {
+    const at = root === undefined ? this.cur() : root;
+    this.cardPathOf(id, at);
+    const ix = this.cardIndexes && this.cardIndexes.get(at);
+    return (ix && ix.titles.get(id)) || null;
   }
 
   /** 出處的小檔案圖示（裁定 41）：跟字同高、淡色，滑過去提示那張卡的標題，點了開那張卡；檔案裡存的字不變。
    *  editor 是編輯模式（裁定 43）：CodeMirror 的 mousedown 會先把游標放進那段、圖示換回原字，click 到不了，所以在 mousedown 就開卡、不讓游標動。 */
-  cardRefIcon(ref, target, editor) {
-    const title = this.cardTitleOf(ref) || String(target).replace(/^.*\//, '').replace(/\.md$/, '');
+  cardRefIcon(ref, target, editor, root) {
+    const title = this.cardTitleOf(ref, root) || String(target).replace(/^.*\//, '').replace(/\.md$/, '');
     const a = dom.doc().createElement('a');
     a.className = 'wwh-cardref';
     a.setAttribute('href', target);
@@ -4046,14 +4354,14 @@ class WikiWithWillyPlugin extends Plugin {
       a.addEventListener('mousedown', (e) => {
         stop(e);
         if (e && e.button) return; // 右鍵、中鍵不開
-        this.openPathInVault(target);
+        this.openPathInVault(target, ''); // target 已經是 vault 路徑
       });
       a.addEventListener('click', stop);
       return a;
     }
     a.addEventListener('click', (e) => {
       stop(e);
-      this.openPathInVault(target);
+      this.openPathInVault(target, '');
     });
     return a;
   }
@@ -4071,10 +4379,11 @@ class WikiWithWillyPlugin extends Plugin {
     if (!view || !state || !view.ViewPlugin || !view.Decoration || !view.WidgetType) return [];
     const plugin = this;
     class RefWidget extends view.WidgetType {
-      constructor(ref, target) {
+      constructor(ref, target, root) {
         super();
         this.ref = ref;
         this.target = target;
+        this.root = root;
       }
 
       eq(other) {
@@ -4082,7 +4391,7 @@ class WikiWithWillyPlugin extends Plugin {
       }
 
       toDOM() {
-        return plugin.cardRefIcon(this.ref, this.target, true);
+        return plugin.cardRefIcon(this.ref, this.target, true, this.root);
       }
 
       // 圖示上的滑鼠事件編輯器不管（不放游標），由圖示自己處理
@@ -4093,15 +4402,24 @@ class WikiWithWillyPlugin extends Plugin {
     const build = (v) => {
       const lp = obsidian.editorLivePreviewField;
       if (lp && v.state.field && v.state.field(lp, false) === false) return view.Decoration.none; // 原始碼模式不改
+      // 這個編輯器開的檔在哪個知識庫（讀不到就用首頁目前看的）；不在任何庫裡的不換
+      let root = plugin.cur();
+      try {
+        const info = obsidian.editorInfoField && v.state.field ? v.state.field(obsidian.editorInfoField, false) : null;
+        if (info && info.file && info.file.path) root = plugin.rootOf(String(info.file.path));
+      } catch (e) {
+        root = plugin.cur();
+      }
+      if (root === null) return view.Decoration.none;
       const sel = v.state.selection.ranges;
       const marks = [];
       for (const r of v.visibleRanges) {
         const text = v.state.doc.sliceString(r.from, r.to);
         for (const x of cardRefRanges(text, r.from)) {
           if (sel.some((q) => q.from <= x.to && q.to >= x.from)) continue; // 游標進到那段：顯示原字照常改
-          const target = plugin.cardPathOf(x.ref);
+          const target = plugin.cardPathOf(x.ref, root);
           if (!target) continue;
-          marks.push(view.Decoration.replace({ widget: new RefWidget(x.ref, target) }).range(x.from, x.to));
+          marks.push(view.Decoration.replace({ widget: new RefWidget(x.ref, target, root) }).range(x.from, x.to));
         }
       }
       return view.Decoration.set(marks, true);
@@ -4120,7 +4438,10 @@ class WikiWithWillyPlugin extends Plugin {
     );
   }
 
-  linkifyCardRefs(el) {
+  linkifyCardRefs(el, ctx) {
+    // 這一頁在哪個知識庫（後處理的 ctx.sourcePath）；沒給就用首頁目前看的；不在任何庫裡的頁不動
+    const root = ctx && ctx.sourcePath ? this.rootOf(String(ctx.sourcePath)) : this.cur();
+    if (root === null) return;
     const doc = el.ownerDocument || document;
     const walker = doc.createTreeWalker(el, 4 /* NodeFilter.SHOW_TEXT */);
     const texts = [];
@@ -4140,12 +4461,12 @@ class WikiWithWillyPlugin extends Plugin {
           frag.appendChild(doc.createTextNode(part.text));
           continue;
         }
-        const target = this.cardPathOf(part.ref);
+        const target = this.cardPathOf(part.ref, root);
         if (!target) {
           frag.appendChild(doc.createTextNode(`〔${part.ref}〕`)); // 找不到那張卡的照舊顯示原字
           continue;
         }
-        frag.appendChild(this.cardRefIcon(part.ref, target));
+        frag.appendChild(this.cardRefIcon(part.ref, target, false, root));
       }
       parent.replaceChild(frag, node);
     }
@@ -4187,6 +4508,16 @@ module.exports.lib = {
   sanitizeData,
   recordOpened,
   openedIds,
+  NO_ROOTS_TEXT,
+  findKbRoots,
+  joinRoot,
+  stripRoot,
+  rootOfPath,
+  rootLabels,
+  sanitizeStore,
+  openedOf,
+  recordOpenedIn,
+  treeHideCss,
   homeArgs,
   findKb,
   pythonCandidates,
@@ -4207,7 +4538,6 @@ module.exports.lib = {
   isGeneratedPage,
   findPageLine,
   panelModel,
-  MONEY_PAGE,
   createApplyTracker,
   shouldToastModified,
   gitRefreshNotice,

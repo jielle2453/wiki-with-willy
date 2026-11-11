@@ -96,16 +96,12 @@ READ = {"cards": [REF + "batch.md", REF + "carding.md", REF + "agenda-scan.md"],
         "synthesis": ["rules/synthesis.md", REF + "batch.md", REF + "synthesis-batch.md"],
         "adopt": [REF + "batch.md", REF + "adopt.md"]}
 BROKEN_READ = REF + "synthesis-broken.md"  # 綜合卡批次的項目有 synthesis_broken 才加
-MONEY_READ = REF + "money.md"  # 做卡、抽日程的批次：材料的帳是開的、或有數字欄才加（記帳 2；關、只記我講的又沒數字欄零成本）
 
 
-def read_list(kind, buckets=(), profile=None):
-    """批次輸出的 read：要整份讀的規則檔絕對路徑；buckets 是這批項目的 bucket（有 synthesis_broken 多一份）；
-    profile 是材料的 profile 塊（money_mode 是 on 或 fields 有欄時，做卡與日程批次多 references/money.md）。"""
+def read_list(kind, buckets=()):
+    """批次輸出的 read：要整份讀的規則檔絕對路徑；buckets 是這批項目的 bucket（有 synthesis_broken 多一份）。"""
     root = plugin_root()
     rels = READ[kind] + ([BROKEN_READ] if kind == "synthesis" and "synthesis_broken" in set(buckets) else [])
-    if kind in ("cards", "agenda") and profile and (profile.get("money_mode") == "on" or profile.get("fields")):
-        rels = rels + [MONEY_READ]
     return [(root / rel).as_posix() for rel in rels]
 
 
@@ -1089,7 +1085,7 @@ def batch_view(vault, batch_id, agent_id=None):
                 if bucket == "synthesis_new" and (base / item.get("path", "")).is_file() and item.get("path"):
                     found[k]["existing_card"] = item["path"]  # 目標已經有檔（別的批次剛寫過）：先 Read、紀事只增（A 段修）
     return {"batch": batch_id, "kind": b["kind"], "prefix": prefix(), "vault": base.as_posix(),
-            "read": read_list(b["kind"], [found[k]["bucket"] for k in want if k in found], out.get("profile")),
+            "read": read_list(b["kind"], [found[k]["bucket"] for k in want if k in found]),
             "items": [_with_abs(base, found[k]) for k in want if k in found], "profile": out.get("profile"),
             "entities": out.get("entities")}
 

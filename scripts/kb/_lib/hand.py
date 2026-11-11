@@ -1,4 +1,4 @@
-"""程式產生的頁（系統/日程.md、待處理.md、裁示.md、帳.md 與帳的年頁）被她手改：認得出的照做，認不出的留在頁面上（Obsidian 首頁，#22，D-263 修訂 D-223）。
+"""程式產生的頁（系統/日程.md、待處理.md、裁示.md）被她手改：認得出的照做，認不出的留在頁面上（Obsidian 首頁，#22，D-263 修訂 D-223）。
 
 認得出的（renders.diff）：打勾、刪掉一行、改日期；每頁能做的不一樣（日程：完成、取消、改日期；待處理：處理好了、不用管；裁示：收回），
 這頁做不了的（例如裁示打勾）算認不出。認不出的（新打的行、改了某行的字）記進 renders.json 的 carried，重新產生時放在那頁最底下
@@ -15,15 +15,12 @@ from kb._lib import ledger, renders
 KEEP_FAILED = renders.KEEP_FAILED
 UNRECOGNIZED = "unrecognized"  # 認手改時出錯：她那份存了、開了 handedit，頁面照常重寫（裁定 22）
 SIMILAR = 0.6  # 刪掉的那行跟新打的那行像到這個程度，算「改了某行的字」而不是刪一行加一行
-PAGE_NAMES = {"系統/日程.md": "日程.md", "系統/待處理.md": "待處理.md", "系統/裁示.md": "裁示.md", "系統/帳.md": "帳.md"}
-MONEY_YEAR_PREFIX = "系統/帳/"  # 帳的每年一頁（記帳 3，D-284）：照「系統/帳/ 底下」認，不一頁一頁列
+PAGE_NAMES = {"系統/日程.md": "日程.md", "系統/待處理.md": "待處理.md", "系統/裁示.md": "裁示.md"}
 
 
 def page_name(rel):
-    """工作日誌與每句開頭說的頁名：三頁加帳.md 照 PAGE_NAMES；帳的年頁說「帳/2026.md」。"""
+    """工作日誌與每句開頭說的頁名：三頁照 PAGE_NAMES。"""
     rel = str(rel)
-    if rel.startswith(MONEY_YEAR_PREFIX):
-        return rel[len("系統/"):]
     return PAGE_NAMES.get(rel, rel)
 
 

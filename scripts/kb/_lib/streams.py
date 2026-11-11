@@ -39,10 +39,9 @@ KINDS = {
     "profile": (".system/profile.json", "profile", None, {}),
     "inventory": (".system/inventory.json", "list", "entries", {"status": "deleted"}),
     "pending": (".system/pending.json", "list", "items", {"status": "done"}),
-    "money": (".system/money.json", "list", "items", {"status": "cancelled"}),  # 帳（記帳 2，D-339）
 }
 # 種類 → 只往後加的欄（D-337）：合起來時各行的清單聯集、不算撞到；退回只拿掉那次加的元素
-APPEND_ONLY = {"agenda": ("history",), "money": ("history",)}
+APPEND_ONLY = {"agenda": ("history",)}
 # 掃描看到的、只在這台算的那一半放 .system/local/<種類>.json（新定 3）；共用那一半走流水檔
 SPLIT = ("inventory", "pending", "profile")
 LOCAL_PROFILE = ("md_sha256",)  # 設定檔 md 這台渲染出的指紋：md 不進 git、每台自己畫（#42），比手改要用這台的

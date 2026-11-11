@@ -1,6 +1,6 @@
 """還原（備份還原與換電腦 要做的事 2，D-205、D-211）：AI 先演練（check，只讀）、客戶說好才動手（apply）。
 
-check：比現在與那份，會不見的（現在有、那份沒有）與會回來的分開數：口述、裁示、日程、帳（記帳 3）、推算、實體、檔案卡、綜合卡
+check：比現在與那份，會不見的（現在有、那份沒有）與會回來的分開數：口述、裁示、日程、推算、實體、檔案卡、綜合卡
 （內容不同也算會變回舊的）、AI 產出、工作日誌的回合；各舉最多 EXAMPLES_MAX 個白話標題（不印編號）。
 擋：不是我們的備份、壞了、zip slip、備份版本比現在新、背景整理還在跑、這個資料夾不是空的也不是知識庫（apply 另擋鎖被占著）。
 apply：先拍快照（現在是知識庫才拍，reason restore）→ 解到 .system/temp/restore-<時間>/ 並驗 → 現在的東西（除了保留的）移到
@@ -38,7 +38,7 @@ RESERVED_TOP = {s.casefold() for s in (".system", ".claude", "系統", HOLD_DIR,
 PRESERVED = {"vault.json", "env.json", "turns", "snapshots", "temp", "guard-status", "ledger.tsv", "hook-errors.log"}
 # 現在有就留、空資料夾還原才用備份的
 KEEP_IF_PRESENT = {"vault.json", "env.json"}
-CLASSES = (("statements", "口述", "條"), ("rulings", "裁示", "條"), ("agenda", "日程", "條"), ("money", "帳", "筆"),
+CLASSES = (("statements", "口述", "條"), ("rulings", "裁示", "條"), ("agenda", "日程", "條"),
            ("findings", "推算", "條"),
            ("entities", "實體", "個"), ("cards", "檔案卡", "張"), ("synthesis", "綜合卡", "張"),
            ("outputs", HOLD_DIR, "份"), ("journal_turns", "工作日誌", "個回合"))
@@ -122,7 +122,7 @@ def _safe(fn, *a):
 def _labels(root, names):
     """root（知識庫或解出來的資料夾）的比對材料：{類別: {鍵: 標題}}；synthesis 的值是 (標題, sha256)。
     names 是這一邊的檔名清單（AI 產出用，不必解檔）。"""
-    from kb._lib import agenda, cards, entities, findings, money, rulings, statements
+    from kb._lib import agenda, cards, entities, findings, rulings, statements
     out = {k: {} for k, *_ in CLASSES}
     root = Path(root)
     data = _safe(statements.load, root)
@@ -134,8 +134,6 @@ def _labels(root, names):
     data = _safe(agenda.load, root)
     out["agenda"] = {i["id"]: str(i.get("text", "")) for i in (data or {}).get("items", [])
                      if i.get("status") == "open" and i.get("id")}
-    data = _safe(money.load, root)  # 帳（記帳 3）：沒取消的每一筆，說法同工作日誌
-    out["money"] = {i["id"]: money.short(i) for i in (data or {}).get("items", []) if i.get("status") != "cancelled" and i.get("id")}
     data = _safe(findings.load, root)
     out["findings"] = {c["id"]: str(c.get("text", "")) for c in (data or {}).get("findings", [])
                        if c.get("status") == "active" and c.get("id")}

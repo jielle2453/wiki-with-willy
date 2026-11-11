@@ -1,4 +1,4 @@
-"""數字的讀法（從 kb tally 搬來，記帳 1b）：kb tally 與數字欄（kb entity field）共用同一支。
+"""數字的讀法（從 kb tally 搬來，記帳 1b）：kb tally 與口述加總共用同一支。
 
 收千分位逗號（要合法）、小數、負號、「萬」字尾（乘一萬），只收半形數字；整數最多 15 位、小數最多 4 位。
 數字欄不收負數，由呼叫端另擋（parse_number(text, negative=False)）。看不懂丟 NumberRefused（ValueError），訊息就是給人看的那句。

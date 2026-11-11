@@ -20,8 +20,21 @@ USER_KEYS = (
 CLIENT_REL = Path(".system") / "config.json"
 
 
+_DEFAULTS = {}  # {(路徑, mtime_ns, size): 內容}；defaults.json 變了鍵就不同，才重讀（#57）
+
+
 def defaults():
-    return read_json(plugin_root() / DEFAULTS_REL, default={}) or {}
+    """回記住的那份（呼叫的人只讀；get 對清單、字典值回複本）。"""
+    path = plugin_root() / DEFAULTS_REL
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return read_json(path, default={}) or {}
+    if key not in _DEFAULTS:
+        _DEFAULTS.clear()
+        _DEFAULTS[key] = read_json(path, default={}) or {}
+    return _DEFAULTS[key]
 
 
 def get(vault, key):
@@ -29,6 +42,9 @@ def get(vault, key):
     if key not in base or key.startswith("_why_"):
         raise KeyError(key)
     default = base[key]
+    if isinstance(default, (list, dict)):  # 記住的那份不給呼叫的人改
+        import copy
+        default = copy.deepcopy(default)
     if key == "agenda_export_dir":  # 每台的路徑不同，存這台的 env.json（多人共用 1）；舊的 config.json 值遷移前照舊讀
         from kb._lib import env
         here = env.agenda_export_dir(vault)

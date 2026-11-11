@@ -17,11 +17,8 @@ schema 7 型別表每列多選填欄 dir（型別夾編號，D-246～D-250）：
 照型別表順序；她自訂的名字（不是預設的樣子）照記、不改回去。沒有 dir 的列是升級前的：夾名就是型別名，照舊能用（補編號只走
 _lib/migrate）。型別 → 夾一律經 type_dir／dir_type／folder_of；dir_plan 算每列該用哪個夾與要做的改名，renamed_dirs 認她自己改的夾名。
 md 不顯示 dir，型別表的列序就是編號順序。
-記帳 1b（D-281、D-336、D-342、D-343；D-335 不升 schema，新節選填）：第九節數字欄（fields）[{type, field, unit, source, date}]
-照型別定要算的數字（值在實體上，entities.set_fields）；第十節記帳（money）最多一列 [{mode: on|spoken|off, places: [型別…], source, date}]；
-第五節成員的列多選填 place（平常在哪，第十節地點型別的實體名稱；多人時 md 才顯示這欄）。舊 JSON 沒有 fields、money 不補（沒有就當空，
-money_mode 讀成 MONEY_DEFAULT，#59 起是 off）；補第十節走 _lib/migrate 那列（看有沒有 money）。舊 md 少了九、十節不算錯（看節在不在，不靠版本號）；
-第十節沒有列當作沒改（fill_missing 取 JSON 的值）。
+#65 拿掉記帳：不再有第九節數字欄、第十節記帳、第五節的平常在哪。讀舊檔照略過（舊 JSON 的 fields、money、about 的 place 讀進來丟掉；
+舊 md 的九、十節與平常在哪欄讀回來不報錯、不套用），寫回時不寫；從磁碟上拿掉走 _lib/migrate 那列。節的編號不重排（九、十是最後兩節，沒有後面的）。
 """
 import copy
 import hashlib
@@ -45,19 +42,20 @@ ACTIONS = {"不整理": "no_card", "只記種類": "kind_only"}
 KINDS = {"公司": "company", "本人": "person"}
 RESERVED_TYPE_NAMES = (HOLD_DIR, OLD_OUTPUT, OLD_INBOX, "檔案索引", "系統", "CLAUDE.md")
 REQUIRED_MARKS = ("✓", "是", "v", "V", "Y")
-LISTS = ("types", "card_types", "exclusions", "synthesis_sections", "about", "preferences", "templates", "tags", "fields", "money")
-OPTIONAL_LISTS = ("fields", "money")  # 記帳 1b：選填的節（D-335），舊 JSON 沒有不補、load 不擋
+LISTS = ("types", "card_types", "exclusions", "synthesis_sections", "about", "preferences", "templates", "tags")
+GONE_LISTS = ("fields", "money")  # #65 拿掉的兩節：舊 JSON 還有就在 load 丟掉
 LISTS_V1 = LISTS[:3]
 LISTS_V2 = LISTS[:5]
 LISTS_V3 = LISTS[:6]
 LISTS_V4 = LISTS[:7]
-NEW_LISTS = LISTS[3:]  # schema 2～5 多的節與記帳 1b 的兩節；legacy 解析缺節時取 JSON 遷移補的值
+NEW_LISTS = LISTS[3:]  # schema 2～5 多的節；legacy 解析缺節時取 JSON 遷移補的值
 SECTIONS_OF = {1: 3, 2: 5, 3: 6, 4: 7}  # 磁碟上的 schema → 那版 md 有幾節（legacy 解析缺後面的節不算錯）
-SECTION_NAMES = ("型別", "卡型", "不整理與敏感", "每類段落", "關於你", "偏好", "範本", "標籤", "數字欄", "記帳")  # diff 摘要與 kb profile add 的節名，順序同 LISTS
-NUMERALS = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
-REQUIRED_SECTIONS = 8  # 九、十節選填（D-335）：舊 md 少了不算錯
+SECTION_NAMES = ("型別", "卡型", "不整理與敏感", "每類段落", "關於你", "偏好", "範本", "標籤")  # diff 摘要與 kb profile add 的節名，順序同 LISTS
+NUMERALS = ("一", "二", "三", "四", "五", "六", "七", "八")
+GONE_NUMERALS = ("九", "十")  # #65 拿掉：舊 md 還有這兩節，認得標題才不會併進第八節，內容不讀
+REQUIRED_SECTIONS = 8
 # 每節的基本欄數；後面可再加來源、日期兩欄
-BASE_COLUMNS = (3, 4, 2, 4, 3, 1, 2, 4, 3, 2)
+BASE_COLUMNS = (3, 4, 2, 4, 3, 1, 2, 4)
 PREFERENCE_MAX = 20  # config 的預設；parse_md 由呼叫端傳 config 的值（開場那組：整理成卡以外，D-504）
 PREFERENCE_MAX_CHARS = 1000
 PREFERENCE_CARD_MAX = 5  # 整理成卡那組另算
@@ -103,11 +101,8 @@ PROMPTS = (
     "整理成卡的另算最多 {preference_card_max} 條、合計 {preference_card_max_chars} 字。",
     "做哪種文件時以哪一份為底：例如報價單照報價單範本做。「以哪份為底」寫檔案卡的標題；只有一份範本時我直接用，多份才問你。",
     "想照什麼條件找人或找案子？一列一個欄，詞用頓號分開；只能從這些詞挑，字典外的我會先問你。不用的型別不用填。",
-    "哪一類東西有要算的數字？一列一個欄，例：產品 售價 元、產品 每箱 瓶、產品 安全庫存 瓶、案子 合約總價 元。"
-    "值我從檔案讀或聽你說，記在每張卡的屬性欄。",
-    "記帳這版還沒開放，先保持關；你講的錢我照樣記得、可以加總。",  # #59（D-534）；原本講開、只記我講的、關三種與地點的型別
 )
-TITLES = ("型別", "卡型與段落", "不整理與敏感", "每類最想知道什麼", "關於你", "偏好", "做文件用的範本", "標籤", "數字欄", "記帳")
+TITLES = ("型別", "卡型與段落", "不整理與敏感", "每類最想知道什麼", "關於你", "偏好", "做文件用的範本", "標籤")
 TABLE_HEADS = (("名稱", "大類", "一句說明", "來源", "日期"),
                ("卡型", "段落", "必出現", "提示", "來源", "日期"),
                ("種類", "處理", "來源", "日期"),
@@ -115,18 +110,7 @@ TABLE_HEADS = (("名稱", "大類", "一句說明", "來源", "日期"),
                ("名稱", "是什麼", "別名", "來源", "日期"),
                ("偏好", "用在哪", "來源", "日期"),
                ("文件", "以哪份為底", "來源", "日期"),
-               ("型別", "欄名", "可選的詞", "可多選", "來源", "日期"),
-               ("型別", "欄名", "單位", "來源", "日期"),
-               ("狀態", "地點的型別", "來源", "日期"))
-PLACE_HEAD = "平常在哪"  # 第五節多人時多這一欄（D-342 (3)），插在別名後面
-MONEY_MODES = {"開": "on", "只記我講的": "spoken", "關": "off"}
-_MONEY_REVERSED = {v: k for k, v in MONEY_MODES.items()}
-MONEY_DEFAULT = "off"  # 沒有第十節（舊庫還沒遷）讀成關（#59：記帳先不開放，2026-11-09；原本是只記我講的）
-FIELD_RESERVED = ("庫存", "累計收", "累計付", "未收", "未付")  # 程式算的，不是欄（D-272 (3)、記帳 1b 新定 3）
-FIELD_NAME_MAX = 20
-FIELD_UNIT_MAX = 10
-FIELD_PREFIX = "欄:"  # 實體上一個數字一欄（D-336）
-
+               ("型別", "欄名", "可選的詞", "可多選", "來源", "日期"))
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 # 名字會被貼進雙引號的指令：" 與 \ 上面已擋，這兩個另擋（型別名、第五節名稱與別名、實體名稱同一套，測試後修正裁定 16）
 SHELL_CHARS = "$`"
@@ -190,8 +174,6 @@ def defaults(today=None):
         "preferences": [],
         "templates": [],
         "tags": [],
-        "fields": [],
-        "money": [{"mode": "off", "places": [], "source": "inferred", "date": today}],  # 新庫是關（#59：記帳先不開放，2026-11-09）
     }
 
 
@@ -233,10 +215,12 @@ def load(vault):
         raise ValueError(f"設定檔版本 {version!r} 比這版 plugin 新")
     for key in (LISTS if version >= 5 else LISTS_V4 if version == 4 else LISTS_V3 if version == 3
                 else LISTS_V2 if version == 2 else LISTS_V1):
-        if key in OPTIONAL_LISTS and key not in data:  # 記帳 1b 的兩節選填：沒有就當空（D-335）
-            continue
         if not isinstance(data.get(key), list) or any(not isinstance(x, dict) for x in data[key]):
             raise ValueError(f"設定檔沒有 {key} 清單")
+    for key in GONE_LISTS:  # #65：舊檔的數字欄、記帳、平常在哪讀進來就丟（寫回時不寫）
+        data.pop(key, None)
+    if any("place" in a for a in data.get("about") or []):
+        data["about"] = [{k: v for k, v in a.items() if k != "place"} for a in data["about"]]
     if version < 2:
         data = dict(data, synthesis_sections=default_sections(data["types"]), about=[])
     if version < 3:
@@ -260,7 +244,7 @@ def _sections(lines):
     for line in lines:
         if line.startswith("## "):
             current = None
-            for i, num in enumerate(NUMERALS, 1):
+            for i, num in enumerate(NUMERALS + GONE_NUMERALS, 1):
                 if line.startswith(f"## {num}、") and i not in found:
                     found[i] = []
                     current = i
@@ -436,16 +420,14 @@ def split_aliases(raw):
     return [a.strip() for a in _ALIAS_SPLIT.split(str(raw or "")) if a.strip()]
 
 
-def _parse_about(rows, types, max_chars, with_place=False):
+def _parse_about(rows, types, max_chars, with_place=False):  # with_place：舊 md 的表頭還有「平常在哪」，讀了丟掉
     """第五節：名稱照型別名的規則、也不能跟第一節的型別名一樣；是什麼 公司｜本人；名稱與別名在各列之間不能重複。
-    with_place（表頭有「平常在哪」，多人時才畫）：別名後面多一欄平常在哪，只有成員能填（D-342 (3)）；值是不是地點的實體由
-    _check_places 驗。沒有這欄的表讀出來的列不帶 place（fill_missing 照 JSON 同名那列帶過去）。"""
+    with_place（舊 md 的表頭有「平常在哪」，#65 起不再有這欄）：別名後面那一格讀了丟掉。"""
     type_keys = {_key(t["name"]) for t in types}
     out, seen = [], {}
     for m, cells in enumerate(rows, 1):
-        place = None
         if with_place:
-            (name, kind, aliases, place), extra = _columns(5, m, cells, base=4)
+            (name, kind, aliases, _place), extra = _columns(5, m, cells, base=4)
         else:
             (name, kind, aliases), extra = _columns(5, m, cells)
         why = type_name_problem(name)
@@ -473,46 +455,8 @@ def _parse_about(rows, types, max_chars, with_place=False):
         for word in [name] + alias_list:
             seen[_key(word)] = m
         row = {"name": name, "kind": KINDS[kind], "aliases": alias_list, "source": source, "date": when}
-        if with_place:
-            if place and KINDS[kind] != "person":
-                _err(5, m, f"的平常在哪只有{MEMBER}能填")
-            row["place"] = place or None
         out.append(row)
     return out
-
-
-def place_names(vault):
-    """平常在哪能填的：active 實體 {_key(名稱或別名): (名稱, 型別)}（_check_places 用）；讀不到回 None（不驗）。"""
-    from kb._lib import entities
-    try:
-        data = entities.load(vault)
-    except ValueError:
-        return None
-    out = {}
-    for e in data["entities"]:
-        if e.get("status") != "active" or not e.get("type"):
-            continue
-        for w in [e.get("name")] + list(e.get("aliases") or []):
-            if w:
-                out.setdefault(_key(w), (e["name"], e["type"]))
-    return out
-
-
-def _check_places(about, money, places, before=None):
-    """第五節的平常在哪要是第十節地點型別的實體（D-342 (3)）；places 是 place_names 的結果，None 不驗。值換成登記的名稱。
-    before 是 JSON 原本的第五節：平常在哪沒改的列不再驗（地點後來改名、拿掉，不擋整份設定檔）。"""
-    if places is None:
-        return
-    kinds = {_key(t) for row in money or [] for t in row.get("places") or []}
-    was = {_key(a["name"]): a.get("place") for a in before or []}
-    for m, a in enumerate(about or [], 1):
-        if not a.get("place") or (_key(a["name"]) in was and was[_key(a["name"])] == a["place"]):
-            continue
-        hit = places.get(_key(a["place"]))
-        if hit is None or _key(hit[1]) not in kinds:
-            what = "、".join(t for row in money or [] for t in row.get("places") or []) or "第十節還沒寫"
-            _err(5, m, f"的平常在哪「{a['place']}」不是地點的實體（地點的型別：{what}）")
-        a["place"] = hit[0]
 
 
 def preference_problem(text):
@@ -764,105 +708,6 @@ def tags_for(data, type_name):
     return [t for t in (data or {}).get("tags") or [] if _key(t.get("type")) == _key(type_name)]
 
 
-def field_name_problem(field):
-    """數字欄名不能用的原因，能用回 None：照標籤欄名的字元規則（不准是檔頭原有的鍵與「標籤」），另擋程式算的名字與太長（新定 3）。"""
-    why = tag_field_problem(field)
-    if why:
-        return why
-    if _key(field) in {_key(k) for k in FIELD_RESERVED}:
-        return "是程式算的，不能當欄"
-    if len(field) > FIELD_NAME_MAX:
-        return f"太長，最多 {FIELD_NAME_MAX} 字"
-    return None
-
-
-FIELD_UNIT_RULE = f"單位要 {FIELD_UNIT_MAX} 字內，不含 | \" $ ` \\ 這幾種字元"
-
-
-def _parse_fields(rows, types, tags, known_types=()):
-    """第九節（D-281）：型別要在第一節（第一節這次拿掉的型別整批丟掉，同第八節）；欄名照 field_name_problem、
-    不能跟同型別第八節的標籤欄同名、同型別同欄名不能兩列；單位可空、FIELD_UNIT_MAX 字內。"""
-    names = {_key(t["name"]): t["name"] for t in types}
-    dropped = {_key(n) for n in known_types} - set(names)
-    tag_keys = {(_key(t["type"]), _key(t["field"])) for t in tags or []}
-    out, seen = [], {}
-    for m, cells in enumerate(rows, 1):
-        (tname, field, unit), extra = _columns(9, m, cells)
-        if _key(tname) in dropped:
-            continue
-        if _key(tname) not in names:
-            _err(9, m, f"的型別「{tname}」不在第 1 節")
-        why = field_name_problem(field)
-        if why:
-            _err(9, m, f"的欄名「{field[:FIELD_NAME_MAX]}」不能用（{why}）")
-        key = (_key(tname), _key(field))
-        if key in tag_keys:
-            _err(9, m, f"的欄名「{field}」跟第 8 節{names[_key(tname)]}的標籤欄同名")
-        if key in seen:
-            _err(9, m, f"跟第 {seen[key]} 列重複（型別 {tname} 的欄 {field}）")
-        seen[key] = m
-        if len(unit) > FIELD_UNIT_MAX or any(c in unit for c in FREE_TEXT_CHARS):
-            _err(9, m, f"的{FIELD_UNIT_RULE}")
-        source, when = _source_date(9, m, extra)
-        out.append({"type": names[_key(tname)], "field": field, "unit": unit, "source": source, "date": when})
-    return out
-
-
-def _parse_money(rows, types):
-    """第十節（D-343、D-342 (1)）：最多一列；狀態三選一；地點的型別可空、可多個用「、」分、每個要在第一節。
-    沒有列回 None（當作沒改，新定 1）。"""
-    if not rows:
-        return None
-    if len(rows) > 1:
-        _err(10, 2, "多了：記帳只能有一列")
-    (mode, raw_places), extra = _columns(10, 1, rows[0])
-    if mode not in MONEY_MODES:
-        _err(10, 1, f"的狀態要是 {'、'.join(MONEY_MODES)} 之一")
-    names = {_key(t["name"]): t["name"] for t in types}
-    places = []
-    for p in split_words(raw_places):
-        if _key(p) not in names:
-            _err(10, 1, f"的地點的型別「{p}」不在第 1 節")
-        if names[_key(p)] not in places:
-            places.append(names[_key(p)])
-    source, when = _source_date(10, 1, extra)
-    return [{"mode": MONEY_MODES[mode], "places": places, "source": source, "date": when}]
-
-
-def fields_for(data, type_name):
-    """第九節這個型別的欄（照第九節的順序）。"""
-    return [f for f in (data or {}).get("fields") or [] if _key(f.get("type")) == _key(type_name)]
-
-
-def field_groups(data):
-    """第九節照型別分組：{型別: [{"field","unit"}]}（cards todo 的 profile 塊）。"""
-    out = {}
-    for f in (data or {}).get("fields") or []:
-        out.setdefault(f["type"], []).append({"field": f["field"], "unit": f.get("unit") or ""})
-    return out
-
-
-def money_mode(data):
-    """第十節的狀態 on｜spoken｜off；沒有第十節（舊庫還沒遷）讀成 MONEY_DEFAULT（#59 起是 off）。"""
-    rows = (data or {}).get("money") or []
-    mode = rows[0].get("mode") if rows else None
-    return mode if mode in _MONEY_REVERSED else MONEY_DEFAULT
-
-
-def place_types(data):
-    """第十節的地點的型別（D-342 (1)）；沒有是 []。"""
-    rows = (data or {}).get("money") or []
-    return list(rows[0].get("places") or []) if rows else []
-
-
-def usual_place(data, member):
-    """第五節這個成員的平常在哪（D-342 (3)）；沒記、不是成員回 None。名稱與別名都認。"""
-    for a in (data or {}).get("about") or []:
-        if a.get("kind") == "person" and _key(member) in {_key(w) for w in [a["name"]] + list(a.get("aliases") or [])}:
-            return a.get("place") or None
-    return None
-
-
 def template_resolver(vault, old=None):
     """第七節「以哪份為底」→ 卡編號（D-167）。寫卡編號：要是清冊 active 的卡，或是這列原本記的那張（卡後來不在了，md 顯示編號）；
     寫卡標題：清冊 active 的卡裡標題相同的那張，同名多張時先取這列原本記的，否則要改寫卡編號。找不到丟 ProfileError。"""
@@ -903,8 +748,7 @@ def parse_md(text, max_type_chars=TYPE_NAME_MAX, legacy=False, known_types=(), r
     known_types：舊 JSON 第一節的型別名，第一節拿掉的型別在第四節的列丟掉不報錯（status 傳）。
     resolve：第七節「以哪份為底」換成卡編號的函式（template_resolver(vault, 舊 JSON)）；沒給只收卡編號。
     uses：第六節用在哪能填的值（known_uses）；沒給不驗。limits：偏好兩組上限（preference_limits），沒給用預設。
-    第九、十節選填（D-335，看節在不在、不靠版本號）：缺了回 None；第十節沒有列也回 None（當作沒改）。
-    回來的 None 由呼叫端用 fill_missing 換成 JSON 的值；第五節的平常在哪也在 fill_missing 驗（要讀實體清單）。"""
+    舊 md 的第九、十節（#65 拿掉）認得標題、內容不讀；回來的 None 由呼叫端用 fill_missing 換成 JSON 的值。"""
     lines = str(text).lstrip("﻿").splitlines()
     found = _sections(lines)
     have = SECTIONS_OF.get(int(legacy), REQUIRED_SECTIONS)
@@ -918,33 +762,23 @@ def parse_md(text, max_type_chars=TYPE_NAME_MAX, legacy=False, known_types=(), r
            "card_types": _parse_card_types(_table_rows(2, found[2])),
            "exclusions": _parse_exclusions(_table_rows(3, found[3])),
            "synthesis_sections": _parse_synthesis(_table_rows(4, found[4]), types, known_types) if 4 in found else None,
-           "about": (_parse_about(_table_rows(5, found[5]), types, max_type_chars, PLACE_HEAD in _table_head(found[5]))
+           "about": (_parse_about(_table_rows(5, found[5]), types, max_type_chars, "平常在哪" in _table_head(found[5]))
                      if 5 in found else None),
            "preferences": (_parse_preferences(_table_rows(6, found[6]), dict(_DEFAULT_LIMITS, **limits), uses,
                                               "用在哪" in _table_head(found[6])) if 6 in found else None),
            "templates": _parse_templates(_table_rows(7, found[7]), resolve) if 7 in found else None,
            "tags": _parse_tags(_table_rows(8, found[8]), types, known_types, max_type_chars) if 8 in found else None}
-    out["fields"] = _parse_fields(_table_rows(9, found[9]), types, out["tags"], known_types) if 9 in found else None
-    out["money"] = _parse_money(_table_rows(10, found[10]), types) if 10 in found else None
     return out
 
 
-def fill_missing(new, data, places=None, before=None):
-    """parse_md 回 None 的節（舊 md 沒有那節、第十節沒有列）換成 JSON 的值；JSON 也沒有的選填節（舊庫的九、十節）拿掉鍵。
-    第五節的平常在哪：讀出來的列沒有 place 鍵（單人 md 不顯示這欄）照 JSON 同名那列帶過去；改了的照最後的第十節驗
-    （places 是 place_names，None 不驗；before 是拿來比「改了沒」的第五節，沒給用 data 的；錯了丟 ProfileError 指第五節第幾列）。回 new。"""
+def fill_missing(new, data):
+    """parse_md 回 None 的節（舊 md 沒有那節）換成 JSON 的值；JSON 也沒有就拿掉鍵。回 new。"""
     for key in NEW_LISTS:
         if new.get(key) is None:
             if key in data:
                 new[key] = copy.deepcopy(data[key])
             else:
                 new.pop(key, None)
-    old_about = {_key(a["name"]): a for a in data.get("about") or []}
-    for a in new.get("about") or []:
-        if "place" not in a and (old_about.get(_key(a["name"])) or {}).get("place"):
-            a["place"] = old_about[_key(a["name"])]["place"]
-    if new.get("about"):
-        _check_places(new["about"], new.get("money") or [], places, data.get("about") if before is None else before)
     return new
 
 
@@ -982,19 +816,6 @@ def _tag_rows(data):
     return {(t["type"], t["field"]): t for t in data.get("tags") or []}
 
 
-def _field_rows(data):
-    return {(f["type"], f["field"]): f for f in data.get("fields") or []}
-
-
-MONEY_KEY = "記帳"
-
-
-def _money_rows(data):
-    """第十節只有一列：鍵固定是「記帳」；沒有第十節是空的。"""
-    rows = data.get("money") or []
-    return {MONEY_KEY: rows[0]} if rows else {}
-
-
 def _compare(old, new, fields):
     added = [k for k in new if k not in old]
     removed = [k for k in old if k not in new]
@@ -1005,24 +826,18 @@ def _compare(old, new, fields):
 def diff(old, new):
     """以鍵比：型別＝名稱、卡型＝[卡型名, 段落名]、排除＝種類、每類段落＝[型別, 段落名]、關於你＝名稱、偏好＝那句話；
     changed 是同鍵其他欄不同（來源與日期不算；偏好的 changed 是改了用在哪）；範本＝文件，changed 是換了底；
-    標籤＝[型別, 欄名]，changed 是詞或可多選不同；數字欄＝[型別, 欄名]，changed 是單位不同；記帳＝固定的「記帳」一列，
-    changed 是狀態或地點的型別不同；關於你的 changed 也看平常在哪。"""
+    標籤＝[型別, 欄名]，changed 是詞或可多選不同。"""
     tags = _compare(_tag_rows(old), _tag_rows(new), ("words", "multi"))
-    # 九、十節選填：new 沒有那節（舊 md、第十節沒有列）當作沒改，不算拿掉（記帳 1b）
-    fields = _compare(_field_rows(old), _field_rows(new if new.get("fields") is not None else old), ("unit",))
-    money_new = new if new.get("money") is not None else old
     cards = _compare(_section_rows(old), _section_rows(new), ("required", "hint"))
     synthesis = _compare(_synthesis_rows(old), _synthesis_rows(new), ("required", "hint"))
     return {"types": _compare(_type_rows(old), _type_rows(new), ("category", "note")),
             "card_types": {k: [list(x) for x in v] for k, v in cards.items()},
             "exclusions": _compare(_exclusion_rows(old), _exclusion_rows(new), ("action",)),
             "synthesis_sections": {k: [list(x) for x in v] for k, v in synthesis.items()},
-            "about": _compare(_about_rows(old), _about_rows(new), ("kind", "aliases", "place")),
+            "about": _compare(_about_rows(old), _about_rows(new), ("kind", "aliases")),
             "preferences": _compare(_preference_rows(old), _preference_rows(new), ("use",)),
             "templates": _compare(_template_rows(old), _template_rows(new), ("card",)),
-            "tags": {k: [list(x) for x in v] for k, v in tags.items()},
-            "fields": {k: [list(x) for x in v] for k, v in fields.items()},
-            "money": _compare(_money_rows(old), _money_rows(money_new), ("mode", "places"))}
+            "tags": {k: [list(x) for x in v] for k, v in tags.items()}}
 
 
 def has_diff(d):
@@ -1102,9 +917,6 @@ def merge(old, new, today=None, first=False):
     for a in new.get("about") or []:
         source, when = _stamp(a, old_about.get(a["name"]), a["name"] in d["about"]["changed"], today, first)
         row = {"name": a["name"], "kind": a["kind"], "aliases": list(a["aliases"]), "source": source, "date": when}
-        place = a.get("place") if "place" in a else (old_about.get(a["name"]) or {}).get("place")  # 單人 md 不顯示這欄
-        if place:
-            row["place"] = place
         about.append(row)
     old_prefs = _preference_rows(old)
     preferences = []
@@ -1130,22 +942,6 @@ def merge(old, new, today=None, first=False):
                      "source": source, "date": when})
     out = {"types": types, "card_types": card_types, "exclusions": exclusions, "synthesis_sections": synthesis,
            "about": about, "preferences": preferences, "templates": templates, "tags": tags}
-    if "fields" in new or "fields" in old:  # 記帳 1b 的兩節選填：兩邊都沒有就不寫進去（舊庫等遷移補）
-        old_fields = _field_rows(old)
-        changed_fields = {tuple(k) for k in d["fields"]["changed"]}
-        out["fields"] = []
-        for f in new.get("fields") or []:
-            k = (f["type"], f["field"])
-            source, when = _stamp(f, old_fields.get(k), k in changed_fields, today, first)
-            out["fields"].append(dict(old_fields.get(k) or {}, type=f["type"], field=f["field"], unit=f.get("unit") or "",
-                                      source=source, date=when))
-    if new.get("money"):
-        m = new["money"][0]
-        source, when = _stamp(m, _money_rows(old).get(MONEY_KEY), bool(d["money"]["changed"]), today, first)
-        out["money"] = [dict(_money_rows(old).get(MONEY_KEY) or {}, mode=m["mode"], places=list(m.get("places") or []),
-                             source=source, date=when)]
-    elif "money" in old:
-        out["money"] = copy.deepcopy(old["money"])
     return out
 
 
@@ -1543,7 +1339,6 @@ def render_text(data, titles=None, limits=None):
     limits 是偏好兩組上限（第六節提示句照它寫，沒給用預設）。"""
     titles = titles or {}
     cats, srcs, acts = _REVERSED
-    team = _people_n(data) >= 2  # 多人時第五節多一欄平常在哪（D-342 (3)）；單人不顯示
     tables = (
         [[t["name"], cats.get(t.get("category"), ""), t.get("note"), srcs.get(t.get("source"), ""), t.get("date")]
          for t in data.get("types") or [] if not t.get("pending_remove")],
@@ -1553,19 +1348,14 @@ def render_text(data, titles=None, limits=None):
          for e in data.get("exclusions") or []],
         [[s["type"], x["name"], "✓" if x.get("required") else "", x.get("hint"), srcs.get(s.get("source"), ""),
           s.get("date")] for s in data.get("synthesis_sections") or [] for x in s.get("sections") or []],
-        [[a["name"], _kind_label(data, a.get("kind")), "、".join(a.get("aliases") or [])]
-         + ([a.get("place") or ""] if team else []) + [srcs.get(a.get("source"), ""), a.get("date")]
-         for a in data.get("about") or []],
+        [[a["name"], _kind_label(data, a.get("kind")), "、".join(a.get("aliases") or []), srcs.get(a.get("source"), ""),
+          a.get("date")] for a in data.get("about") or []],
         [[p["text"], p.get("use") or USE_ALL, srcs.get(p.get("source"), ""), p.get("date")]
          for p in data.get("preferences") or []],
         [[t["doc"], titles.get(t.get("card")) or t.get("card"), srcs.get(t.get("source"), ""), t.get("date")]
          for t in data.get("templates") or []],
         [[t["type"], t["field"], "、".join(t.get("words") or []), "✓" if t.get("multi") else "",
           srcs.get(t.get("source"), ""), t.get("date")] for t in data.get("tags") or []],
-        [[f["type"], f["field"], f.get("unit") or "", srcs.get(f.get("source"), ""), f.get("date")]
-         for f in data.get("fields") or []],
-        [[_MONEY_REVERSED.get(m.get("mode"), ""), "、".join(m.get("places") or []), srcs.get(m.get("source"), ""),
-          m.get("date")] for m in (data.get("money") or [])[:1]],
     )
     parts = [HEADER]
     prompts = PROMPTS[:5] + (PROMPTS[5].format(**dict(_DEFAULT_LIMITS, **(limits or {}))),) + PROMPTS[6:]
@@ -1574,8 +1364,6 @@ def render_text(data, titles=None, limits=None):
             if _people_n(data) >= 2:
                 title = TITLE_TEAM
             prompt = f"{prompt}\n{PEOPLE_LABEL}{_people_n(data)}"
-        if num == "五" and team:
-            head = head[:3] + (PLACE_HEAD,) + head[3:]
         lines = [f"## {num}、{title}", prompt, "", _row(head), "|" + "---|" * len(head)]
         lines += [_row(r) for r in rows]
         parts.append("\n" + "\n".join(lines) + "\n")
@@ -1671,12 +1459,10 @@ SECTION_SPECS = (
     ("卡型", ("卡型", "段落", "必出現", "提示"), ("卡型", "段落")),
     ("不整理與敏感", ("種類", "處理"), ("種類",)),
     ("每類段落", ("型別", "段落", "必出現", "提示"), ("型別", "段落")),
-    ("關於你", ("名稱", "是什麼", "別名", "平常在哪"), ("名稱",)),
+    ("關於你", ("名稱", "是什麼", "別名"), ("名稱",)),
     ("偏好", ("偏好", "用在哪"), ("序號",)),
     ("範本", ("文件", "底"), ("文件",)),
     ("標籤", ("型別", "欄名", "詞", "可多選"), ("型別", "欄名")),
-    ("數字欄", ("型別", "欄名", "單位"), ("型別", "欄名")),
-    ("記帳", ("狀態", "地點的型別"), ()),
 )
 FREE_TEXT_RULE = "一句白話，不含 \" $ ` \\ 這四種字元"  # 值會被貼進雙引號的指令（同 plan.FREE_TEXT_RULE）
 _HINT_RULE = {"rule": "一句白話告訴製卡者這段寫什麼，可以空"}
@@ -1697,7 +1483,6 @@ COLUMN_RULES = {
     (5, "名稱"): {"rule": "公司或你本人的名字"},
     (5, "是什麼"): {"choices": list(KINDS)},
     (5, "別名"): {"rule": "其他叫法，頓號分開，可以空"},
-    (5, "平常在哪"): {"rule": "只有成員（多人共用）能填：這個人平常在哪個分店或倉庫（第十節地點型別的實體名稱），可以空"},
     (6, "偏好"): {"rule": FREE_TEXT_RULE},
     (6, "用在哪"): {"choices": list(USES), "rule": "留空就是全部（每次都照做）；整理成卡只在寫卡時照做，不進開場"},
     (7, "文件"): {"rule": "文件的種類，例：報價單；" + FREE_TEXT_RULE},
@@ -1706,12 +1491,6 @@ COLUMN_RULES = {
     (8, "欄名"): {"rule": "要拿來篩的條件，例：在意、階段；不能用綜合卡檔頭原有的鍵與「標籤」"},
     (8, "詞"): {"rule": "這一欄只能從這些詞挑，頓號分開，最多 30 個；已有這一欄就把詞加進去"},
     (8, "可多選"): {"choices": ["✓", ""]},
-    (9, "型別"): {"rule": "第一節有的型別名"},
-    (9, "欄名"): {"rule": f"程式要算的數字，例：售價、進價、每箱、安全庫存；{FIELD_NAME_MAX} 字內，不能用庫存、累計收、累計付、未收、未付、"
-                        "綜合卡檔頭原有的鍵、同型別的標籤欄名"},
-    (9, "單位"): {"rule": f"例：元、瓶；可以空，{FIELD_UNIT_MAX} 字內"},
-    (10, "狀態"): {"choices": list(MONEY_MODES)},
-    (10, "地點的型別"): {"rule": "分店、倉庫這類地點是哪個型別（第一節有的），多個用頓號分開，可以空"},
 }
 
 
@@ -1743,20 +1522,14 @@ def flat_rows(data, number, titles=None):
     if number == 3:
         return [dict({"種類": e["kind"], "處理": acts.get(e.get("action"), "")}, **tail(e)) for e in data.get("exclusions") or []]
     if number == 5:
-        return [dict({"名稱": a["name"], "是什麼": _KINDS_REVERSED.get(a.get("kind"), ""), "別名": "、".join(a.get("aliases") or []),
-                      PLACE_HEAD: a.get("place") or ""}, **tail(a)) for a in data.get("about") or []]
+        return [dict({"名稱": a["name"], "是什麼": _KINDS_REVERSED.get(a.get("kind"), ""), "別名": "、".join(a.get("aliases") or [])},
+                     **tail(a)) for a in data.get("about") or []]
     if number == 6:
         return [dict({"序號": i, "偏好": p["text"], "用在哪": p.get("use") or USE_ALL}, **tail(p))
                 for i, p in enumerate(data.get("preferences") or [], 1)]
     if number == 8:
         return [dict({"型別": t["type"], "欄名": t["field"], "可選的詞": "、".join(t.get("words") or []),
                       "可多選": "✓" if t.get("multi") else ""}, **tail(t)) for t in data.get("tags") or []]
-    if number == 9:
-        return [dict({"型別": f["type"], "欄名": f["field"], "單位": f.get("unit") or ""}, **tail(f))
-                for f in data.get("fields") or []]
-    if number == 10:
-        return [dict({"狀態": _MONEY_REVERSED.get(m.get("mode"), ""), "地點的型別": "、".join(m.get("places") or [])}, **tail(m))
-                for m in (data.get("money") or [])[:1]]
     titles = titles or {}
     return [dict({"文件": t["doc"], "以哪份為底": titles.get(t.get("card")) or t.get("card"), "底": t.get("card")}, **tail(t))
             for t in data.get("templates") or []]
@@ -1780,7 +1553,7 @@ def sections_schema(data, titles=None, uses=None, **limits):
                                                         else {}))) for c in columns],
                 "rows": flat_rows(data, number, titles),
                 "add": f"kb profile add {name} " + " ".join(f"{c}={{{c}}}" for c in columns),
-                "remove": None if number in (1, 8, 10) else f"kb profile remove {name} " + " ".join(f"{c}={{{c}}}" for c in key)}
+                "remove": None if number in (1, 8) else f"kb profile remove {name} " + " ".join(f"{c}={{{c}}}" for c in key)}
         if number == 6:
             item["limits"] = {}
             for group in ("opening", "card"):
@@ -1809,8 +1582,6 @@ def edited(data, section, op, fields, today=None, uses=None, **limits):
         raise ProfileError(1, None, "拿掉型別用 kb profile type remove")
     if number == 8 and op == "remove":
         raise ProfileError(8, None, TAG_REMOVE_REFUSAL)
-    if number == 10 and op == "remove":
-        raise ProfileError(10, None, MONEY_REMOVE_REFUSAL)
     need = {("add", 6): ("偏好",), ("add", 7): ("文件", "底"), ("add", 8): ("型別", "欄名", "詞"), ("remove", 2): ("卡型",),
             ("remove", 4): ("型別",)}.get((op, number), key)
     if (op, number) == ("add", 6) and "序號" in fields:
@@ -1819,10 +1590,10 @@ def edited(data, section, op, fields, today=None, uses=None, **limits):
     if missing:
         raise ProfileError(number, None, f"少了「{missing[0]}」；這一節要給 {'、'.join(need)}")
     f = {k: str(v).strip() for k, v in fields.items()}
-    out = {k: copy.deepcopy(data.get(k) or []) for k in LISTS if k in data or k not in OPTIONAL_LISTS}
+    out = {k: copy.deepcopy(data.get(k) or []) for k in LISTS}
     absent = "沒有這一列：" + "、".join(f"{k}={f[k]}" for k in key if k in f)
     handler = (_edit_types, _edit_cards, _edit_exclusions, _edit_synthesis, _edit_about, _edit_preferences,
-               _edit_templates, _edit_tags, _edit_fields, _edit_money)[number - 1]
+               _edit_templates, _edit_tags)[number - 1]
     message, changed = handler(out, op, f, today, absent, dict(_DEFAULT_LIMITS, **limits, uses=uses))
     return out, {"message": message, "changed": changed, "row": f}
 
@@ -1975,24 +1746,16 @@ def _edit_about(out, op, f, today, absent, *_limits):
     if kind not in KINDS:
         _err(5, rows.index(row) + 1 if row is not None else len(rows) + 1, "的是什麼要是 公司 或 本人")
     aliases = split_aliases(f["別名"]) if "別名" in f else None
-    if f.get(PLACE_HEAD) and KINDS[kind] != "person":
-        _err(5, rows.index(row) + 1 if row is not None else len(rows) + 1, f"的平常在哪只有{MEMBER}能填")
     if row is not None:
         new = dict(row, kind=KINDS[kind])
         if aliases is not None:
             new["aliases"] = aliases
-        if PLACE_HEAD in f:  # 值是不是地點的實體由呼叫端 parse_md（places=）驗；空的是拿掉（她說「我調到南店了」，D-342 (3)）
-            new["place"] = f[PLACE_HEAD] or None
-        changed = [c for c, k in (("是什麼", "kind"), ("別名", "aliases"), (PLACE_HEAD, "place")) if new.get(k) != row.get(k)]
+        changed = [c for c, k in (("是什麼", "kind"), ("別名", "aliases")) if new.get(k) != row.get(k)]
         if not changed:
             return _same("關於你", row["name"])
-        if not new.get("place"):
-            new.pop("place", None)
         rows[rows.index(row)] = _stamped(new, today)
         return f"已改關於你「{row['name']}」：{'、'.join(changed)}", True
     new = {"name": name, "kind": KINDS[kind], "aliases": aliases or [], "source": "corrected", "date": today}
-    if f.get(PLACE_HEAD):
-        new["place"] = f[PLACE_HEAD]
     rows.append(new)
     return f"已加關於你：{name}（{kind}）", True
 
@@ -2098,46 +1861,6 @@ def _edit_tags(out, op, f, today, absent, *_limits):
     return f"已加標籤的詞：{row['type']}的{row['field']}多了{'、'.join(more)}", True
 
 
-MONEY_REMOVE_REFUSAL = "記帳不能拿掉；不要記錢就改狀態（kb profile add 記帳 狀態=關）"
-
-
-def _edit_fields(out, op, f, today, absent, *_limits):
-    """第九節（D-281）：add 那個型別沒有這欄就加、有就改單位；remove 拿掉那一欄（實體上的值由呼叫端 entities.drop_field 清，
-    新定 4）。欄名規則、型別在第一節、跟標籤欄同名由呼叫端 render_text 後 parse_md 驗。"""
-    rows = out.setdefault("fields", [])
-    tname, field = f["型別"], f["欄名"]
-    row = next((x for x in rows if _key(x["type"]) == _key(tname) and _key(x["field"]) == _key(field)), None)
-    if op == "remove":
-        if row is None:
-            raise ProfileError(9, None, absent)
-        rows.remove(row)
-        return f"已拿掉數字欄：{row['type']}的{row['field']}", True
-    unit = f.get("單位", row.get("unit") if row is not None else "") or ""
-    if row is not None:
-        if (row.get("unit") or "") == unit:
-            return _same("數字欄", f"{row['type']}／{row['field']}")
-        rows[rows.index(row)] = _stamped(dict(row, unit=unit), today)
-        return f"已改數字欄：{row['type']}的{row['field']}（單位 {unit or '沒有'}）", True
-    rows.append({"type": tname, "field": field, "unit": unit, "source": "corrected", "date": today})
-    return f"已加數字欄：{tname}的{field}" + (f"（{unit}）" if unit else ""), True
-
-
-def _edit_money(out, op, f, today, absent, *_limits):
-    """第十節（D-343、D-342 (1)）：只有一列；add 改狀態或地點的型別（沒給的照舊；沒有第十節時狀態照 money_mode 讀到的）。
-    地點的型別要在第一節由呼叫端 parse_md 驗。"""
-    rows = out.get("money") or []
-    row = rows[0] if rows else None
-    mode = f.get("狀態") or _MONEY_REVERSED[money_mode({"money": rows})]
-    if mode not in MONEY_MODES:
-        _err(10, 1, f"的狀態要是 {'、'.join(MONEY_MODES)} 之一")
-    places = split_words(f["地點的型別"]) if "地點的型別" in f else list((row or {}).get("places") or [])
-    new = {"mode": MONEY_MODES[mode], "places": places}
-    if row is not None and (row.get("mode"), list(row.get("places") or [])) == (new["mode"], places):
-        return _same("記帳", mode)
-    out["money"] = [_stamped(dict(row or {}, **new), today)]
-    return f"已改記帳：{mode}" + (f"，地點的型別 {'、'.join(places)}" if places else ""), True
-
-
 # ---------- 狀態 ----------
 
 def status(vault):
@@ -2163,7 +1886,7 @@ def status(vault):
                            legacy=stored if stored in SECTIONS_OF else False,
                            known_types=[t["name"] for t in data["types"]], **preference_limits(vault),
                            resolve=template_resolver(vault, data), uses=known_uses(vault, data))
-            fill_missing(new, data, place_names(vault))  # 舊 md 沒有第四～十節、第十節沒有列：取 JSON 的值
+            fill_missing(new, data)  # 舊 md 沒有第四～八節：取 JSON 的值
         except ProfileError as e:
             out["state"], out["error"] = "error", e.message
         except UnicodeDecodeError:
@@ -2192,8 +1915,7 @@ def _plain_sections(sections):
 
 def card_types_for_todo(data):
     """給 cards todo --json 的 profile 塊：去掉 source、date；多型別、每類段落、關於你（實體與綜合卡第 10 點）、
-    標籤字典（tags，照型別分組）、偏好（preferences，第六節用在哪是全部或整理成卡的那句、順序照表，製卡者照寫卡有關的做，D-503、D-504）、
-    數字欄（fields，照型別分組）與記帳開關（money_mode，記帳 1b）。"""
+    標籤字典（tags，照型別分組）、偏好（preferences，第六節用在哪是全部或整理成卡的那句、順序照表，製卡者照寫卡有關的做，D-503、D-504）。"""
     return {"card_types": [{"name": c["name"], "sections": _plain_sections(c.get("sections"))}
                            for c in data.get("card_types") or []],
             "exclusions": [{"kind": e["kind"], "action": e["action"]} for e in data.get("exclusions") or []],
@@ -2203,8 +1925,6 @@ def card_types_for_todo(data):
             "about": [{"name": a["name"], "kind": a.get("kind"), "aliases": list(a.get("aliases") or [])}
                       for a in data.get("about") or []],
             "tags": tag_groups(data),
-            "fields": field_groups(data),
-            "money_mode": money_mode(data),
             "preferences": [p["text"] for p in data.get("preferences") or []
                             if (p.get("use") or USE_ALL) in (USE_ALL, USE_CARD)]}
 

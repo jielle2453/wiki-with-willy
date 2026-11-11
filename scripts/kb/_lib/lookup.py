@@ -8,14 +8,12 @@ mentions_total 是全部份數；比對用 entities.key，第一版的卡也找�
 狀態檔不在當空的；壞了丟 ValueError（帶檔名）。不寫任何檔。
 放寬丙：cards 每張多 archived（清冊封存的排後面）、卡上有口述為準裁示的多 rulings；實體封存了頂層 archived 是 true。
 tags（標籤字典第四節第 6 點）：實體清單的標籤正本 [{"field","words"}]，照第八節的順序（D-505：沒有綜合卡的也有）；沒標過是空的。
-fields（記帳 1b 第 7 點）：實體的數字欄 {欄: {"value","unit","said"}}，第九節這個型別、有值的，照第九節的順序；said 是她說的或她在屬性欄改的。
-money（記帳 2 第 7 點）：money.for_entity（合計、未收付全部、最近幾筆、庫存；地點型別的實體是那裡的各商品庫存）；帳關著而且
-這個實體沒有任何一筆時不給這鍵。owed_to：問的是成員名字（多人）時，墊了還沒還的（D-338）。
+#65 拿掉記帳：不再回 fields、money、owed_to（數字欄與帳都拿掉了；她講到的錢在口述裡）。
 推算 stale 的那筆 text 是 null、多 redo「依據變了，要用就重算：<how>」（B-100）；findings.brief 不動，綜合卡待辦要原文。
 """
 from pathlib import Path
 
-from kb._lib import config, entities, profile
+from kb._lib import card_index, config, entities, profile
 
 NOTHING = "沒有登記這個名稱，也沒有卡提到它"
 REDO = "依據變了，要用就重算："
@@ -60,11 +58,17 @@ def mentions(vault, word):
     if not k:
         return []
     by_title, by_body = [], []
-    for entry, card in cards.active_cards(vault):
+    active = cards.active_cards(vault)  # 先讀卡（卡片索引在這裡跟上，#57），再問內文
+    hits = card_index.body_hits(vault, [k])
+    for entry, card in active:
         title = cards._title(card)
         row = {"id": entry["id"], "title": title, "path": card["path"]}
         if k in entities.key(title):
             by_title.append(dict(row, where="標題"))
+            continue
+        if hits is not None:
+            if card["path"] in hits[k]:
+                by_body.append(dict(row, where="正文"))
             continue
         try:
             text = (Path(vault) / card["path"]).read_text(encoding="utf-8")
@@ -78,16 +82,6 @@ def mentions(vault, word):
 def _tags(entry, prof):
     return [{"field": t["field"], "words": entities.tag_words(entities.tag_value(entry.get("tags"), t["field"]))}
             for t in profile.tags_for(prof, entry.get("type")) if entities.tag_value(entry.get("tags"), t["field"]) is not None]
-
-
-def _fields(entry, prof):
-    out = {}
-    for f in profile.fields_for(prof, entry.get("type")):
-        k = entities._field_key(entry, f["field"])
-        cur = entry.get(k) if k else None
-        if cur and cur.get("value") is not None:
-            out[f["field"]] = {"value": cur["value"], "unit": f.get("unit") or "", "said": cur.get("from") in ("said", "hand")}
-    return out
 
 
 def _read_ranges(vault, rel):
@@ -113,14 +107,13 @@ def lookup(vault, query):
     e, _hit = entities.find(ent, query)
     out = {"query": query, "entity": None, "synthesis": None, "read_ranges": None, "cards": [], "statements": [], "rulings": [], "findings": [],
            "agenda": [], "unsorted": unsorted, "mentions": [], "verify_max": config.get(vault, "answer_verify_max"),
-           "tags": [], "fields": {}, "in_progress": []}
+           "tags": [], "in_progress": []}
     if e is None or e.get("status") != "active":
         found = mentions(vault, query)
         limit = config.get(vault, "lookup_mentions_max")
         out.update(mentions=found[:limit], mentions_total=len(found))
         if not found:  # 還沒整理的檔沒有卡，可能就在裡面（#37）
             out["in_progress"], out["in_progress_total"] = wip_hint(vault, [query], sorted_=sorted_)
-        _owed(vault, query, out)
         return out
     prof = entities._profile(vault)
     name = e["name"]
@@ -136,7 +129,6 @@ def lookup(vault, query):
         out["synthesis"] = entities.locate(vault, e, ent)
         out["read_ranges"] = _read_ranges(vault, out["synthesis"])
         out["tags"] = _tags(e, prof)
-        out["fields"] = _fields(e, prof)
     out["cards"] = cards.newest_first([cards.card_brief(vault, by_id[m["id"]], groups[m["id"]][0], ruled_out)
                                        for m in ms if m["id"] in by_id and m["id"] in groups])
     out["statements"] = [synthesis.statement_brief(s, vault) for s in statements.active_for(statements.load(vault), name)]
@@ -153,29 +145,7 @@ def lookup(vault, query):
         out["findings"] = [_finding(findings.brief(vault, c, titles, ctx)) for c in finds]
     out["agenda"] = _agenda(vault, name)
     out["in_progress"] = [r for r in cards.wip(vault, sorted_=sorted_) if name in r["entities"]]  # 製作中（D-525）
-    _money(vault, name, out)
-    _owed(vault, query, out)
     return out
-
-
-def _money(vault, name, out):
-    """帳（記帳 2）：帳關著而且這個實體一筆都沒有就不給。"""
-    from kb._lib import money
-    if not money.exists(vault) and money.mode(vault) == "off":
-        return
-    got = money.for_entity(vault, name)
-    if got["items"] or got["stock"] or money.mode(vault) != "off":
-        out["money"] = got
-
-
-def _owed(vault, query, out):
-    """問的是成員（多人）：墊了還沒還的（D-338）。"""
-    from kb._lib import money, people
-    if not people.multi(vault):
-        return
-    member = next((m for m in people.members(vault) if entities.key(m) == entities.key(query)), None)
-    if member is not None and money.exists(vault):
-        out["owed_to"] = money.owed_to(vault, member)
 
 
 def wip_hint(vault, words, names=(), sorted_=None):

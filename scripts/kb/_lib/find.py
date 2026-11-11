@@ -12,7 +12,7 @@ import re
 import unicodedata
 from pathlib import Path
 
-from kb._lib import agenda, cards, config, entities, home, inventory, lookup, rulings
+from kb._lib import agenda, card_index, cards, config, entities, home, inventory, lookup, rulings
 from kb._lib import sources as sources_lib
 
 KIND_RANK = {"entity": 0, "type": 1, "tag": 2, "time": 3}
@@ -272,9 +272,10 @@ def _search(vault, q, parsed, cond, ent_data):
     words = cond["word"]
     rul = rulings.load(vault)
     ruled = cards.ruled_out_ids(rul)
-    rows = _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, all)
+    shared = {}  # all、any 兩輪共用同一次 body_hits（#57）
+    rows = _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, all, shared)
     if not rows and len(words) > 1:  # 每個字都中的沒有，才放寬成中一個就算（jacky 2026-11-09）
-        rows = _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, any)
+        rows = _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, any, shared)
         if rows:
             out["some_words"] = True
     ordered = cards.newest_first([r[1] for r in rows])
@@ -297,10 +298,16 @@ def _search(vault, q, parsed, cond, ent_data):
     return out
 
 
-def _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, need):
-    """照條件篩卡；字用 need（all＝每個字都要在標題或內文、any＝中一個就算）。回 [(hit, brief, entry)]。"""
+def _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, need, shared=None):
+    """照條件篩卡；字用 need（all＝每個字都要在標題或內文、any＝中一個就算）。回 [(hit, brief, entry)]。
+    內文有沒有字問卡片索引（card_index.body_hits，#57）；索引不能用（None）才逐張 _body 讀檔。shared 讓兩輪共用同一次查。"""
     rows = []
-    for entry, card in cards.active_cards(vault):
+    active = cards.active_cards(vault)  # 先讀卡（索引在這裡跟上），再問內文
+    shared = {} if shared is None else shared
+    if words and "hits" not in shared:
+        shared["hits"] = card_index.body_hits(vault, words)
+    hits = shared.get("hits")
+    for entry, card in active:
         brief = cards.card_brief(vault, entry, card, ruled)
         front = card["front"]
         if cond["entity"] or cond["tag"]:
@@ -322,8 +329,12 @@ def _scan(vault, cond, ent_data, ent_ids, tag_ids, types, words, ruled, need):
             if need(in_title):
                 hit = "title"
             else:
-                body = _body(vault, brief["path"])
-                if not need(t or w in body for t, w in zip(in_title, words)):
+                if hits is not None:
+                    found = (t or brief["path"] in hits[w] for t, w in zip(in_title, words))
+                else:
+                    body = _body(vault, brief["path"])
+                    found = (t or w in body for t, w in zip(in_title, words))
+                if not need(found):
                     continue
                 hit = "title" if any(in_title) else "body"
         rows.append((hit, brief, entry))

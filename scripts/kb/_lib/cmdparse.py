@@ -7,6 +7,7 @@ token 裡夾的絕對路徑（python -c、P=…）抽出來；萬用字元 token
 第一輪修正：直譯器只接受裸字或不在知識庫／來源底下的絕對路徑（S1）；引號外的 ( ) 也算串接（S2）；
 寫入動詞前一個字元不能是 . 字母 數字 / \\（B1，.md 不是 md）；相對 token 要解析得到才算路徑（B3）。
 """
+import base64
 import os
 import re
 
@@ -19,11 +20,15 @@ DISCARD_OUTPUT = re.compile(r"\d?>\s*&\s*(?:\d+|-)(?![\w.\\/-])|\d?>\s*/dev/null
 # 寫入動詞只在 token 開頭：前一個字元不能是 . 字母 數字 _ -（B1：.md、--rm 不算）；
 # 前面是 \ 或 / 也算動詞（N-b：\rm、/bin/rm、Microsoft.PowerShell.Management\Remove-Item）
 _W = r"(?<![.\w-])"
+# 守門補洞 #25（D-348）：PowerShell 別名 clc（Clear-Content）、epcsv（Export-Csv）、sp（Set-ItemProperty）；
+# iwr、irm、Invoke-WebRequest、Invoke-RestMethod、PowerShell 的 curl、wget 帶 -OutFile 是寫（目標是 -OutFile 的值），沒帶是讀
 WRITE_WORDS = re.compile(
     _W + r"(?:rm|mv|cp|tee|touch|mkdir|rmdir|del|erase|move|copy|ren|rename|truncate|dd|rsync|wget|tar|unzip|install|ln|"
-    r"chmod|chown|ri|rd|md|sc|ac|ni|cpi|mi|rni|iex|robocopy|xcopy|zip|7z|compress-archive|expand-archive|shred|unlink|tee-object)\b|"
+    r"chmod|chown|ri|rd|md|sc|ac|ni|cpi|mi|rni|iex|robocopy|xcopy|zip|7z|compress-archive|expand-archive|shred|unlink|tee-object|"
+    r"clc|epcsv|sp)\b|"
     + _W + r"sed(?:\s+-[a-zA-Z]+)*\s+(?:-[a-zA-Z]*i|--in-place)|" + _W + r"perl(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*i|"
     + _W + r"curl\b[^|;&]*\s(?:-[a-zA-Z]*o|-O|--output)\b|-delete\b|"
+    + _W + r"(?:iwr|irm|invoke-webrequest|invoke-restmethod|curl|wget)\b[^|;&]*\s-outf\w*|"
     + _W + r"git\s+(?:clean|checkout|restore|reset|stash|rm|mv)\b|"
     + _W + r"(?:remove-item|move-item|copy-item|rename-item|new-item|set-content|add-content|out-file|clear-content|"
     r"set-itemproperty|export-csv|export-clixml|invoke-expression)\b",
@@ -31,13 +36,28 @@ WRITE_WORDS = re.compile(
 )
 # 包在殼字串裡的開檔（powershell -Command "Start-Process …"）不拆（D-514 不做），照拿掉之前一樣算寫
 WRAPPED_OPEN = re.compile(_W + r"(?:start-process|saps)\b", re.IGNORECASE)
+# 守門補洞 #25（D-348）：.NET 的檔案型別（[IO.File]、[System.IO.Directory]、[IO.FileInfo]、([type]'System.IO.File')）。
+# 型別名一定要對到：[regex]::Replace、[Array]::Copy、[string]::Copy 不算
+_NET_NAME = r"(?:system\.)?io\.(?:file|directory|fileinfo|directoryinfo)"
+_NET_TYPE = r"(?:\[\s*" + _NET_NAME + r"\s*\]|\(\s*\[type\]\s*['\"]" + _NET_NAME + r"['\"]\s*\))"
+_PAREN_ARGS = r"\((?:[^()'\"]|'[^']*'|\"[^\"]*\")*\)"  # 一層括號，引號裡的括號不算
+# 有字面路徑的實例刪除：[IO.FileInfo]::new('<p>').Delete()、(Get-Item '<p>').Delete()（$f.Delete() 沒有字面路徑，不算，決策 6）
+_INSTANCE_DELETE = (r"(?:\[\s*(?:system\.)?io\.(?:fileinfo|directoryinfo)\s*\]\s*::\s*new\s*" + _PAREN_ARGS
+                    + r"|\(\s*(?:get-item|gi)\s(?:[^()'\"]|'[^']*'|\"[^\"]*\")*\))\s*\.\s*delete\s*\(")
+PS_INSTANCE_DELETE = re.compile(_INSTANCE_DELETE, re.IGNORECASE)
+# Office 帶路徑的另存（PowerShell 與 python 附著後）：第一個參數是寫入目標。實例刪除與另存不放進 WRITE_CODE（引號裡提到的
+# git grep '.SaveAs(' 不算寫）：PowerShell 在 stage_kind 看引號外，直譯器與殼看程式碼
+OFFICE_SAVE_METHODS = r"(?:saveas2?|savecopyas|exportasfixedformat)"
+_OFFICE_SAVE = r"\." + OFFICE_SAVE_METHODS + r"\s*\("
+OFFICE_SAVE = re.compile(_OFFICE_SAVE, re.IGNORECASE)
 # 程式碼裡的寫入（python -c、heredoc 餵給直譯器、inline script）：引號內也算。
 # 密碼與守門（D-186 (c)）：直譯器的程式碼只看這個，不再看裡面的 > 與寫入動詞，所以這裡要收齊開檔寫、刪、搬、建、開子行程
 WRITE_CODE = re.compile(
     r"(open\([^)]*['\"][wax+]|\.open\(\s*['\"][wax+]|\bmode\s*=\s*['\"][wax+]|"
     r"(?:zipfile|tarfile|io|codecs|gzip|bz2|lzma)\.\w*\(?[^)]*['\"][wax]|\bZipFile\([^)]*['\"][wax]|"
     r"\.write_text|\.write_bytes|\.(?:unlink|rmdir|mkdir|touch|rename|replace|symlink_to|hardlink_to|chmod)\(|"
-    r"writealltext|writeallbytes|appendalltext|writealllines|appendalllines|\[io\.file\]::(?:delete|move|copy|create|open)|"
+    r"writealltext|writeallbytes|appendalltext|writealllines|appendalllines|"
+    + _NET_TYPE + r"\s*::\s*(?:delete|move|copy|create|open|replace|createtext|openwrite|appendtext)\b|"
     r"shutil\.|os\.(?:remove|rename|replace|unlink|makedirs|mkdir|rmdir|removedirs|truncate|link|symlink|chmod|system|popen|startfile)|"
     r"\bunlink\(|subprocess|\bpopen\b|"
     r"writefile|appendfile|unlinksync|renamesync|mkdirsync|rmsync|rmdirsync|copyfile|createwritestream|truncatesync|"
@@ -48,13 +68,19 @@ WRITE_CODE = re.compile(
 )
 # open( 的第二個位置參數是寫入模式才算（open('x.md') 的檔名第一個字母不是模式）；第一個參數允許一層括號與引號字串
 _OPEN_ARGS = r"\((?:[^,()'\"]|'[^']*'|\"[^\"]*\"|\([^()]*\))*,\s*['\"][rb]*[wax+]"
+# 整個字串是開檔模式（裁定 3）：r+b、rb+、w、wt…，後面可接 tarfile 的 :gz、|gz 或 ruby 的 :UTF-8；.open('raw/…')、.Open('a.docx') 不算
+_MODE_STR = r"['\"][rb]*[wax+][bt+]*(?:[:|][\w.-]*)?['\"]"
 # 放寬甲 U6：直譯器程式碼只看刪檔與覆蓋寫法；搬、改名、建夾、touch、開子行程不算（搬檔改名可以照跑）。
 # 跑別的指令的（subprocess、os.system…）另外抽字串常數照指令判（guard._code_commands），不是常數的照 U5
+# 守門補洞 #25：mode= 與 .open( 收 r+b、rb+（[rb]* 開頭），整個字串都是模式才算（_MODE_STR，可帶 :gz、:UTF-8 這類後綴，裁定 3：
+# .open('raw/…')、.Open('a.docx') 的路徑不是模式）；os.open 帶 O_WRONLY／O_RDWR／O_TRUNC。
+# WRITE_CODE 的開檔模式照原本的 [wax+] 開頭（只決定這段算不算寫；改成整串會讓 git grep "mode='rb+'" 這類讀變成寫）
 DESTRUCTIVE_CODE = re.compile(
-    r"(open" + _OPEN_ARGS + r"|\.open\(\s*['\"][wax+]|\bmode\s*=\s*['\"][wax+]|"
+    r"(open" + _OPEN_ARGS + r"|\.open\(\s*" + _MODE_STR + r"|\bmode\s*=\s*" + _MODE_STR + r"|"
+    r"os\.open\((?:[^()'\"]|'[^']*'|\"[^\"]*\"|\([^()]*\))*?\bO_(?:WRONLY|RDWR|TRUNC)\b|"
     r"(?:zipfile|tarfile|io|codecs|gzip|bz2|lzma)\.\w*\(?[^)]*['\"][wax]|\bZipFile\([^)]*['\"][wax]|"
     r"\.write_text|\.write_bytes|\.(?:unlink|rmdir|replace)\(|"
-    r"writealltext|writeallbytes|appendalltext|writealllines|appendalllines|\[io\.file\]::delete|"
+    r"writealltext|writeallbytes|appendalltext|writealllines|appendalllines|" + _NET_TYPE + r"\s*::\s*delete\b|"
     r"shutil\.(?:rmtree|copy\w*)|os\.(?:remove|replace|unlink|rmdir|removedirs|truncate)|"
     r"\bunlink\(|\bremove_tree\b|\brmtree\b|"
     r"writefile|appendfile|unlinksync|rmsync|rmdirsync|copyfile|createwritestream|truncatesync|"
@@ -115,7 +141,8 @@ LIST_ONLY_VERBS = {"ls", "dir", "tree", "find", "gci", "get-childitem"}
 # 寫入那段的參數從管線前面來（xargs、ForEach-Object；PowerShell 的 cmdlet 會把前面的物件綁成 -Path）：管線前面的路徑都算目標
 PIPE_ARG_VERBS = {"xargs", "parallel", "foreach-object", "%", "foreach"}
 # 管線後面寫的是前一段的內容、目標是自己點名的檔（Get-Content a | Set-Content b）：不是拿前一段的輸出當路徑
-CONTENT_SINKS = {"set-content", "sc", "add-content", "ac", "out-file", "tee-object", "tee", "export-csv", "export-clixml"}
+CONTENT_SINKS = {"set-content", "sc", "add-content", "ac", "out-file", "tee-object", "tee", "export-csv", "export-clixml",
+                 "epcsv"}
 CD_ONLY_VERBS = {"cd", "pushd", "popd", "set-location", "sl", "chdir", "push-location", "pop-location", "pwd", "get-location", "gl"}
 # 指令前綴：後面那個字才是動詞
 VERB_PREFIXES = {"sudo", "time", "nohup", "env", "nice", "command", "builtin", "exec", "timeout", "stdbuf", "ionice", "&", "!",
@@ -479,19 +506,229 @@ def stage_kind(verb, text, code="", args=None, powershell=False):
         return "write" if opened["writes"] else "read"
     bare = outside_quotes(text, powershell)
     unquoted = bare if bare is not None else text
+    if powershell and (PS_INSTANCE_DELETE.search(unquoted) or OFFICE_SAVE.search(unquoted)):
+        return "write"  # (Get-Item '<p>').Delete()、$d.SaveAs2('<p>')：看引號外；Get-Item 是只讀動詞，整段是刪（守門補洞 #25）
     if verb in READONLY_VERBS and not (verb == "find" and FIND_ACTIONS.search(unquoted)):
         return "write" if readonly_writes(verb, args or []) else "read"
     if verb in SHELL_WRAPPERS:
         scope = text + "\n" + code
         return "write" if (REDIRECT.search(scope) or WRITE_WORDS.search(scope) or WRITE_CODE.search(scope)
-                           or WRAPPED_OPEN.search(scope)) else "read"
+                           or WRAPPED_OPEN.search(scope) or OFFICE_SAVE.search(scope) or PS_INSTANCE_DELETE.search(scope)) \
+            else "read"
     if verb in INTERPRETERS:
         if verb in SCRIPT_BUILTIN_VERBS and (SCRIPT_BUILTIN_WRITE.search(text) or SCRIPT_BUILTIN_WRITE.search(code)):
             return "write"  # perl -e 'unlink q(…)'（F2-4）：perl、ruby、php 的內建刪改檔與跑指令
-        return "write" if (WRITE_CODE.search(text) or WRITE_CODE.search(code) or WRITE_WORDS.search(unquoted)) else "read"
+        return "write" if (WRITE_CODE.search(text) or WRITE_CODE.search(code) or WRITE_WORDS.search(unquoted)
+                           or OFFICE_SAVE.search(text) or OFFICE_SAVE.search(code)) else "read"
     if WRITE_WORDS.search(unquoted) or WRITE_CODE.search(text) or WRITE_CODE.search(code):
         return "write"
     return "read"
+
+
+# 守門補洞 #25（D-348）：-EncodedCommand（-e、-ec、-en… 到 -encodedcommand，-、-- 或 / 開頭，值可用冒號接）解開當 -Command 的內容判
+_PS_HOSTS = ("powershell", "pwsh")
+
+
+def encoded_command(words):
+    """powershell／pwsh 的 -EncodedCommand：回解開的指令；沒帶這個旗標回 None；值沒給或解不開（不是 base64、不是 UTF-16LE）
+    丟 Unbalanced（呼叫端照 unparsed 擋）。-Command、-File（含縮寫 -co、-fi…）與 .ps1 腳本之後的字是指令或腳本的參數，不再找。"""
+    i = next((k for k, w in enumerate(words) if _base(w) in _PS_HOSTS), None)
+    if i is None:
+        return None
+    rest = words[i + 1:]
+    for k, w in enumerate(rest):
+        if w.lower().endswith(".ps1"):
+            return None  # pwsh ./x.ps1 -e prod、pwsh /c/x.ps1 -e prod：後面是腳本的參數
+        if len(w) < 2 or w[0] not in "-/":
+            continue
+        name, colon, value = w[2 if w.startswith("--") else 1:].partition(":")
+        name = name.lower()
+        if name and not colon and ("command".startswith(name) or "file".startswith(name)):
+            return None
+        if name in ("e", "ec") or (len(name) >= 2 and "encodedcommand".startswith(name)):
+            if not value:  # -EncodedCommand <b64>、-e: <b64>；-EncodedCommand:<b64> 冒號寫法的值在同一個字（裁定 5）
+                if k + 1 >= len(rest):
+                    raise Unbalanced(w)
+                value = rest[k + 1]
+            try:
+                return base64.b64decode(value, validate=True).decode("utf-16-le")
+            except (ValueError, UnicodeDecodeError) as exc:  # binascii.Error 是 ValueError
+                raise Unbalanced(value[:40]) from exc
+    return None
+
+
+# .NET 檔案靜態呼叫的方法對到動作；Open 只有寫入或截斷模式才算寫
+_NET_CALL = re.compile(_NET_TYPE + r"\s*::\s*(\w+)\s*\(", re.IGNORECASE)
+_NET_METHODS = {"delete": "delete", "writealltext": "write", "writeallbytes": "write", "writealllines": "write",
+                "appendalltext": "write", "appendalllines": "write", "create": "write", "replace": "replace", "open": "open",
+                "move": "move", "copy": "copy", "createtext": "write", "openwrite": "write", "appendtext": "write"}
+_OPEN_WRITE_MODE = re.compile(r"truncate|append|create|write", re.IGNORECASE)
+_OPEN_WRITE_NUM = ({"2", "4", "5", "6"}, {"2", "3"})  # 寫成數字時：第二個參數 FileMode（Create、OpenOrCreate、Truncate、Append）、第三個 FileAccess（Write、ReadWrite）
+_NET_NEW = re.compile(r"\[\s*(?:system\.)?io\.(?:fileinfo|directoryinfo)\s*\]\s*::\s*new\s*\(", re.IGNORECASE)
+_GET_ITEM_GROUP = re.compile(r"\(\s*(?:get-item|gi)\s", re.IGNORECASE)
+_DELETE_AFTER = re.compile(r"\s*\.\s*delete\s*\(", re.IGNORECASE)
+# 第一個參數是字面路徑；Excel 的 ExportAsFixedFormat(<型別>, <路徑>) 路徑在第二個；python 的 FileName=、OutputFileName= 具名參數（裁定 5）
+_OFFICE_TARGET = re.compile(
+    r"\.(?:(?:saveas2?|savecopyas|exportasfixedformat)\s*\(\s*(?:\[ref\]\s*)?"
+    r"|exportasfixedformat\s*\(\s*[^,()'\"]+,\s*(?:\[ref\]\s*)?"
+    r"|(?:saveas2?|savecopyas|exportasfixedformat)\s*\([^()]*?\b(?:output)?filename\s*=\s*)"
+    r"[rRuU]?(?:'([^'\n]+)'|\"([^\"\n]+)\")", re.IGNORECASE)
+
+
+def _split_args(inner):
+    """括號裡的參數照頂層逗號拆（引號與括號裡的逗號不算），去頭尾空白。"""
+    parts, buf, quote, depth = [], [], None, 0
+    for ch in inner:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append("".join(buf).strip())
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf).strip())
+    return [p for p in parts if p]
+
+
+def _call_args(text, start):
+    """text[start] 是開括號之後：回 (參數清單, 收尾之後的位置)；括號沒收尾回 (None, start)。"""
+    try:
+        inner, end = _group(text, start, ")", True)
+    except Unbalanced:
+        return None, start
+    return _split_args(inner), end
+
+
+def file_calls(text):
+    """PowerShell 一段裡的 .NET 檔案呼叫：回 [(動作, [參數原樣])]，動作是 delete｜write｜replace｜move｜copy。
+    [IO.FileInfo]::new('<p>').Delete()、(Get-Item '<p>').Delete() 回 ("delete", [路徑參數])。"""
+    out = []
+    for m in _NET_CALL.finditer(text):
+        action = _NET_METHODS.get(m.group(1).lower())
+        args, _end = _call_args(text, m.end())
+        if action is None or args is None:
+            continue
+        if action == "open":
+            nums = any(a.strip().strip("'\"") in allowed for a, allowed in zip(args[1:3], _OPEN_WRITE_NUM))
+            if not nums and not any(_OPEN_WRITE_MODE.search(a) for a in args[1:]):
+                continue
+            action = "write"
+        out.append((action, args))
+    for m in _NET_NEW.finditer(text):
+        args, end = _call_args(text, m.end())
+        if args is not None and _DELETE_AFTER.match(text, end):
+            out.append(("delete", args))
+    for m in _GET_ITEM_GROUP.finditer(text):
+        try:
+            inner, end = _group(text, m.start() + 1, ")", True)
+        except Unbalanced:
+            continue
+        if _DELETE_AFTER.match(text, end):
+            out.append(("delete", _get_item_path(raw_words(inner, True)[1:])))
+    return out
+
+
+def _get_item_path(words):
+    """Get-Item 的路徑參數：第一個位置參數，或 -Path:<p>、-LiteralPath:<p> 冒號後的值（-Path <p> 的值就是下一個位置參數）。"""
+    for w in words:
+        if w.startswith("-"):
+            name, colon, value = w.partition(":")
+            if colon and value and name.lower() in ("-path", "-literalpath", "-lp", "-pspath"):
+                return [_bare_literal(value)]
+            continue
+        return [_bare_literal(w)]
+    return []
+
+
+_PS_NOT_LITERAL = frozenset("$@,{}()`")  # 裸字有這些就不是一個字面路徑（變數、陣列逗號、運算式、反引號）
+
+
+def _bare_literal(word):
+    """PowerShell 指令參數的裸字（Get-Item C:/x/a.txt）也是字面路徑：包成單引號；有引號、變數、陣列逗號、括號、反引號的照原樣。"""
+    if word[:1] in "'\"" or any(c in _PS_NOT_LITERAL for c in word):
+        return word
+    return "'" + word.replace("'", "''") + "'"
+
+
+def office_save_targets(text):
+    """Office 附著後帶路徑的另存（.SaveAs、.SaveAs2、.SaveCopyAs、.ExportAsFixedFormat）的目標是字面路徑時，回那些路徑：
+    第一個參數、Excel ExportAsFixedFormat(<型別>, <路徑>) 的第二個、python 的 FileName=／OutputFileName=。
+    PowerShell 雙引號裡有 $ 或反引號的會展開，不算字面。"""
+    out = []
+    for m in _OFFICE_TARGET.finditer(text):
+        value = m.group(1) if m.group(1) is not None else m.group(2)
+        if m.group(2) is not None and ("$" in value or "`" in value):
+            continue
+        out.append(value)
+    return out
+
+
+def strip_file_calls(text):
+    """把 .NET 檔案靜態呼叫、[IO.FileInfo]::new(…)、Office 另存連同括號裡的參數換成空白：同一段的全名寫入動詞從剩下的字抽目標
+    （測試第 1 輪後裁定 13；.NET 呼叫另外由 file_calls 判）。回 (拿掉之後的字, 拿掉的那些字)。"""
+    spans = []
+    for rx in (_NET_CALL, _NET_NEW, OFFICE_SAVE):
+        for m in rx.finditer(text):
+            args, end = _call_args(text, m.end())
+            if args is not None:
+                spans.append((m.start(), end))
+    for m in _GET_ITEM_GROUP.finditer(text):  # (Get-Item '<p>').Delete()
+        try:
+            _inner, end = _group(text, m.start() + 1, ")", True)
+        except Unbalanced:
+            continue
+        after = _DELETE_AFTER.match(text, end)
+        if after:
+            _args, end2 = _call_args(text, after.end())
+            spans.append((m.start(), end2 if _args is not None else after.end()))
+    out, removed, last = [], [], 0
+    for a, b in sorted(spans):
+        if a < last:
+            continue
+        out.append(text[last:a] + " ")
+        removed.append(text[a:b])
+        last = b
+    out.append(text[last:])
+    return "".join(out), "\n".join(removed)
+
+
+DOWNLOAD_VERBS = {"iwr", "irm", "invoke-webrequest", "invoke-restmethod", "curl", "wget"}
+
+
+def outfile_targets(text, powershell=True):
+    """iwr、irm、Invoke-WebRequest、Invoke-RestMethod、PowerShell 的 curl、wget 帶 -OutFile（含縮寫與 -OutFile:值）的字面目標；
+    變數或運算式不算。不是這些動詞、或不是 PowerShell（Bash 的 curl、wget 沒有 -OutFile）回 []（測試第 1 輪後裁定 11）。"""
+    if not powershell:
+        return []
+    words = raw_words(text, powershell)
+    if verb_of(words) not in DOWNLOAD_VERBS:
+        return []
+    out = []
+    for k, w in enumerate(words):
+        name, colon, value = w.partition(":")
+        if not name.lower().startswith("-outf"):
+            continue
+        raw = value if colon and value else (words[k + 1] if k + 1 < len(words) else "")
+        v, _quoted, dyn = _unquote(raw, powershell)
+        if v and not dyn:
+            out.append(v)
+    return out
+
+
+def literal_arg(arg):
+    """一個參數是字面字串時回裡面的字（PowerShell 單引號的 '' 是一個 '）；變數、運算式、雙引號裡有 $ 或反引號回 None。"""
+    if len(arg) >= 2 and arg[0] == arg[-1] == "'" and "'" not in arg[1:-1].replace("''", ""):
+        return arg[1:-1].replace("''", "'")
+    if len(arg) >= 2 and arg[0] == arg[-1] == '"' and not any(c in arg[1:-1] for c in '"$`'):
+        return arg[1:-1]
+    return None
 
 
 def list_only(verb, words):
@@ -1206,7 +1443,9 @@ def is_write(command, powershell=False):
     wrapped = bare is None or WRAPPER.search(bare)
     scope = cleaned if wrapped else bare
     return bool(REDIRECT.search(scope) or WRITE_WORDS.search(scope) or WRITE_CODE.search(cleaned)
-                or (wrapped and WRAPPED_OPEN.search(scope)))
+                or (wrapped and WRAPPED_OPEN.search(scope))
+                or ((wrapped or powershell) and OFFICE_SAVE.search(scope))  # 守門補洞 #25：Office 另存、實例刪除
+                or (powershell and PS_INSTANCE_DELETE.search(scope)))
 
 
 def _interpreter_ok(token):

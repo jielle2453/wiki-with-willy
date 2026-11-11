@@ -30,11 +30,10 @@ PENDING_POSIX = ".system/pending.json"
 MD_POSIX = "系統/待處理.md"
 SCHEMA_VERSION = 2
 EMPTY = {"schema_version": SCHEMA_VERSION, "items": []}
-KINDS = ("missing_file", "unreadable", "close", "conflict", "script_touched", "lint", "report", "handedit", "tag_edit", "money_dupe",
-         "money_unsure")
+KINDS = ("missing_file", "unreadable", "close", "conflict", "script_touched", "lint", "report", "handedit", "tag_edit")
 SECTIONS = (("missing_file", "原檔不見"), ("unreadable", "讀不到"), ("close", "要確認結案的"), ("conflict", "兩份寫法不同的"),
             ("script_touched", "程式動到的檔"), ("lint", "健檢查到的"), ("handedit", "你手改過的"), ("tag_edit", "卡上改了標籤的"),
-            ("money_dupe", "可能同一筆的帳"), ("money_unsure", "看不出是不是你的錢"), ("report", "健檢報告"))
+            ("report", "健檢報告"))
 ASKS_TITLE = "整理時要問你的"
 ASIDE_TITLE = "先放著的"
 NOT_FOUND = "沒有這件待處理"
@@ -249,56 +248,6 @@ def add_conflict(vault, file_ids, text, turn_id, entity_ids=None, titles=None):
     return found["item"], bool(created)
 
 
-MONEY_DUPE_ASK = "是同一筆的話我併成一筆，不是就兩筆都留著。"
-MONEY_UNSURE_ASK = "這是你收的、你付的，還是不是你的錢？"
-
-
-def add_money(vault, kind, text, turn_id, data, file_ids=(), entity_ids=None):
-    """記帳的兩種待處理（記帳 2）：money_dupe（D-276 看不出是不是同一筆，data {"keep","other"}）、money_unsure（D-274 看不出流向，
-    data {"card"}）。同種同 data 已有 open 的不重複。回 (條目, 新建了嗎)。"""
-    found = {}
-
-    def change(items):
-        old = next((i for i in items if i.get("status") == "open" and i.get("kind") == kind
-                    and _same_money(kind, i.get("data"), data)), None)
-        if old is not None:
-            found["item"] = dict(old)
-            return False
-        item = _new_item(items, kind, file_ids, text, None, turn_id, entity_ids)
-        item["data"] = dict(data)
-        items.append(item)
-        found["item"] = dict(item)
-        return True
-    created = _edit(vault, turn_id, change)
-    return found["item"], bool(created)
-
-
-def _same_money(kind, a, b):
-    """money_dupe 的兩筆不論順序算同一件；其他照整份比。"""
-    if kind == "money_dupe":
-        return {(a or {}).get("keep"), (a or {}).get("other")} == {(b or {}).get("keep"), (b or {}).get("other")}
-    return a == b
-
-
-def resolve_money_dupe(vault, ids, turn_id, how="併成一筆"):
-    """kb money merge 之後：問這兩筆的 money_dupe 自動 done。回關了幾件。"""
-    ids = set(ids)
-
-    def change(items):
-        n = 0
-        for i in items:
-            d = i.get("data") or {}
-            if i.get("status") == "open" and i.get("kind") == "money_dupe" and {d.get("keep"), d.get("other")} == ids:
-                _close(i, "done", how)
-                n += 1
-        return n
-    try:
-        load(vault)
-    except ValueError:
-        return 0
-    return _edit(vault, turn_id, change) or 0
-
-
 def _close(item, status, how):
     item["status"], item["resolved"], item["how"] = status, _now(), how
 
@@ -441,10 +390,6 @@ def ask_of(item):
         return ""
     if item.get("kind") == "script_touched":
         return SCRIPT_TOUCHED_ASK
-    if item.get("kind") == "money_dupe":
-        return MONEY_DUPE_ASK
-    if item.get("kind") == "money_unsure":
-        return MONEY_UNSURE_ASK
     reason = item.get("reason") or ""
     return next((ask for head, ask in UNREADABLE_ASKS if reason.startswith(head)), UNREADABLE_OTHER)
 
@@ -651,6 +596,20 @@ def set_aside(vault, pid, by, turn_id):
         return True
     _edit(vault, turn_id, change)
     return dict(got["item"])
+
+
+def close_kinds(vault, kinds, how, turn_id):
+    """某幾種 kind 還開著的條目全部關掉（status closed、how 照給的）；升級遷移用（#65 拿掉帳的兩種待處理）。回關了幾件。"""
+    kinds = set(kinds)
+
+    def change(items):
+        n = 0
+        for i in items:
+            if i.get("status") == "open" and i.get("kind") in kinds:
+                _close(i, "closed", how)
+                n += 1
+        return n
+    return _edit(vault, turn_id, change) or 0
 
 
 EXPIRED_REASON = "沒回，照推測"

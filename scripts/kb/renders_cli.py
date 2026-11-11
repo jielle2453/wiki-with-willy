@@ -1,6 +1,6 @@
 """kb renders apply <頁> [--json]／drop <c-…> [--json]（Obsidian 首頁，#22，D-263）。
 
-apply：她在程式產生的頁（系統/日程.md、待處理.md、裁示.md、帳.md 與帳的年頁 系統/帳/<YYYY>.md）上直接改了（打勾、刪一行、改日期、新打一行），照意思做：認得出的在那份狀態檔的鎖裡
+apply：她在程式產生的頁（系統/日程.md、待處理.md、裁示.md）上直接改了（打勾、刪一行、改日期、新打一行），照意思做：認得出的在那份狀態檔的鎖裡
 直接做（歷程 by hand），認不出的放進頁面最底下「你加的（還沒處理）」，做完重新產生那頁；她那份照舊存進 .system/handedits/。
 人讀一行一件，沒改什麼印「這頁沒有要照做的」。外掛在她離開被改的那一行、或切到別頁時叫它。
 drop：「你加的」裡的一筆不用了（renders.json 的 carried 拿掉，那頁重寫）。renders.json 不備進回合，不用了的沒有退回。
@@ -9,12 +9,12 @@ import argparse
 import json
 
 from kb import journal_cli
-from kb._lib import agenda, hand, money, pending, renders, rulings, turn
+from kb._lib import agenda, hand, pending, renders, rulings, turn
 from kb._lib import io as kio
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
 NOTHING = "這頁沒有要照做的"
-BAD_PAGE = "頁只收 系統/日程.md、系統/待處理.md、系統/裁示.md、系統/帳.md、系統/帳/<年>.md"
+BAD_PAGE = "頁只收 系統/日程.md、系統/待處理.md、系統/裁示.md"
 NO_SUCH = "沒有這一筆「你加的」"
 KEEP_FAILED = "她那份沒存成，這次先不動；再說一次"
 UNRECOGNIZED = "這頁你改的我沒認出來，記在待處理了"
@@ -23,14 +23,13 @@ PAGES = {
     "系統/日程.md": (agenda.apply_hand, [agenda.AGENDA_POSIX, agenda.MD_POSIX]),
     "系統/待處理.md": (pending.apply_hand, [pending.PENDING_POSIX, pending.MD_POSIX]),
     "系統/裁示.md": (rulings.apply_hand, [rulings.RULINGS_POSIX, rulings.MD_POSIX]),
-    money.MD_POSIX: (money.apply_hand, [money.MONEY_POSIX, money.MD_POSIX]),  # 帳的年頁照「系統/帳/ 底下」認（_entry）
 }
 
 
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="renders_command", metavar="<子子命令>", required=True)
     ap = subs.add_parser("apply", help="照她在程式產生的頁上直接改的做", description="照她在日程.md、待處理.md、裁示.md 上直接改的做。")
-    ap.add_argument("page", help="頁：系統/日程.md、系統/待處理.md、系統/裁示.md、系統/帳.md、系統/帳/<年>.md")
+    ap.add_argument("page", help="頁：系統/日程.md、系統/待處理.md、系統/裁示.md")
     dr = subs.add_parser("drop", help="「你加的（還沒處理）」裡的一筆不用了", description="拿掉「你加的」裡的一筆。")
     dr.add_argument("id", help="c-… 編號（kb asks --json 每題的 key）")
     for p in (ap, dr):
@@ -40,14 +39,12 @@ def add_arguments(sub):
 
 def _page(text):
     page = str(text or "").strip().replace("\\", "/")
-    return page if page in PAGES or money.is_page(page) else None
+    return page if page in PAGES else None
 
 
 def _entry(rel):
-    """(套用的函式, 寫到的檔)：帳的年頁跟總覽同一支（帳頁一起處理）。"""
-    if rel in PAGES:
-        return PAGES[rel]
-    return money.apply_hand, [money.MONEY_POSIX, rel]
+    """(套用的函式, 寫到的檔)。"""
+    return PAGES[rel]
 
 
 def _refresh(vault, rel, turn_id):
@@ -58,8 +55,6 @@ def _refresh(vault, rel, turn_id):
         elif rel == pending.MD_POSIX:
             turn.backup(vault, pending.MD_POSIX, turn_id)
             pending.render(vault, turn_id=turn_id)
-        elif money.is_page(rel):
-            money.render(vault, turn_id, hand={})
         else:
             rulings.render(vault, turn_id, hand={})
 
@@ -139,7 +134,7 @@ def run(args):
         if args.renders_command == "apply":
             return _apply(vault, args, as_json, conversation)
         return _drop(vault, args, as_json, conversation)
-    except (agenda.AgendaRefused, money.MoneyRefused) as e:
+    except agenda.AgendaRefused as e:
         print(e)
         return 3
     except ValueError as e:

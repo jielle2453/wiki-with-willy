@@ -303,6 +303,11 @@ def check_from(vault, sources, path):
     name = path.name
     zone = _zone(vault, sources, path)
     vn, pn = normalize(str(vault), None), normalize(str(path), None)
+    if zone in ("Z9", "Z11") and guard.above_willy(pn, vn):
+        # 要動的是知識庫（或上層 vault 那份外掛夾）的上層夾：整夾丟掉、改名、搬走，裡面 willy 的檔跟著走（#66 丙裁定 10、11）。
+        # Z9：登記的來源包住知識庫時，那個上層夾在來源裡（或就是來源根）。
+        # 不用 _ancestor_zone 的回傳判：那個夾同時是某個來源根的上層時它先回 Z9。只擋來源端；把檔搬「進」上層夾照舊（check_to 不看這條）。
+        zone = "Z7"
     if zone in ("Z5", "Z6", "Z7") or guard.is_willy_file(zone, pn, vn):
         raise Refused(guard.willy_reason(zone, pn, vn, name or inventory.KNOWLEDGE))
     if zone == "Z10":

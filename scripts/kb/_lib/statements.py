@@ -150,15 +150,19 @@ def _need_active(data, sid):
 MONEY_MSG = "--money 要寫 收 或 付 加金額，例：--money 收 5000"
 
 
+MONEY_DIRS = {"收": "in", "付": "out", "in": "in", "out": "out"}
+
+
 def money_mark(direction, amount):
-    """帳關著時錢的話的內部記號（D-343）：{"dir","amount","ledger": None}；方向與金額照 kb money 同一支讀，看不懂丟 StatementRefused。"""
-    from kb._lib import money
-    try:
-        d, value = money._dir(direction), money._amount(amount)
-    except money.MoneyRefused as e:
-        raise StatementRefused(MONEY_MSG if str(e) == money.DIR_MSG else str(e)) from None
-    if d not in ("in", "out") or value is None:
+    """錢的話的內部記號（D-343）：{"dir","amount","ledger": None}；方向要收或付、金額看得懂，不然丟 StatementRefused。"""
+    from kb._lib import numbers
+    d = MONEY_DIRS.get(str(direction or "").strip())
+    if d is None:
         raise StatementRefused(MONEY_MSG)
+    try:
+        value = numbers.plain(numbers.parse_number(str(amount).strip(), negative=False))
+    except numbers.NumberRefused as e:
+        raise StatementRefused(str(e)) from None
     return {"dir": d, "amount": value, "ledger": None}
 
 
@@ -373,3 +377,63 @@ def _rename_archive(vault, mapping, turn_id, undo):
             from kb._lib import turn
             turn.backup(vault, ARCHIVE_POSIX, turn_id)
             write_json_atomic(p, arch)
+
+
+# ---------- 加總（#65：原記帳的 sum 帳關著那條，D-343） ----------
+
+def _in_range(day, frm, to):
+    return bool(day) and (frm is None or day >= frm) and (to is None or day <= to)
+
+
+def marked_statements(vault, frm=None, to=None, entity=None):
+    """標過錢的口述（D-343）：active、money 是物件；照口述的日期篩，entity 只留掛了它的。"""
+    from kb._lib import entities
+    k = None
+    if entity:
+        e, _hit = entities.find(entities.load(vault), str(entity).strip())
+        if e is None or e.get("status") != "active":
+            raise StatementRefused(NO_ENTITY.format(str(entity).strip()))
+        k = entities.key(e["name"])
+    out = []
+    for s in load(vault)["statements"]:
+        if s.get("status") != "active" or not isinstance(s.get("money"), dict) or not _in_range(s.get("date"), frm, to):
+            continue
+        if k and not any(entities.key(n) == k for n in s.get("entities") or []):
+            continue
+        out.append(s)
+    return out
+
+
+def _diff(a, b):
+    from decimal import Decimal
+    from kb._lib import numbers
+    out = {}
+    for k in ("in", "out", "net"):
+        x, y = Decimal(str(a[k])), Decimal(str(b[k]))
+        out[k] = {"diff": numbers.plain(x - y), "pct": None if y == 0 else round(float((x - y) / abs(y) * 100), 1)}
+    return out
+
+
+def statements_summary(vault, frm, to, entity=None, vs=None):
+    """kb statement sum：區間內標過錢的口述，收、付、淨與逐筆；vs=(frm, to) 另算一段給差與百分比。"""
+    from decimal import Decimal
+    from kb._lib import numbers
+
+    def sums(a, b):
+        tot = {"in": Decimal(0), "out": Decimal(0)}
+        rows = []
+        for s in marked_statements(vault, a, b, entity):
+            d = s["money"].get("dir")
+            if d in tot:
+                tot[d] += Decimal(str(s["money"].get("amount") or 0))
+                rows.append({"id": s["id"], "text": s.get("text"), "date": s.get("date"), "dir": d,
+                             "amount": s["money"].get("amount"), "entities": list(s.get("entities") or [])})
+        return {"in": numbers.plain(tot["in"]), "out": numbers.plain(tot["out"]),
+                "net": numbers.plain(tot["in"] - tot["out"])}, rows
+    got, rows = sums(frm, to)
+    out = {"from": frm, "to": to, **got, "vs": None, "diff": None, "items": rows}
+    if vs:
+        other, _rows = sums(vs[0], vs[1])
+        out["vs"] = {"from": vs[0], "to": vs[1], **other}
+        out["diff"] = _diff(got, other)
+    return out

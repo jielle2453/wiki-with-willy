@@ -26,7 +26,7 @@ from datetime import date
 from pathlib import Path
 
 from kb import journal_cli
-from kb._lib import agenda, batches, card_base, cards, config, credentials, inventory, pending, statements, turn
+from kb._lib import agenda, batches, card_base, card_index, cards, config, credentials, inventory, pending, statements, turn
 from kb._lib import io as kio
 from kb._lib import sources as sources_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault, name_of
@@ -790,7 +790,8 @@ def run(args):
         if command == "todo":
             return _todo(vault, args, as_json)
         if command == "list":
-            return _list(vault, args, as_json)
+            with card_index.once(vault):  # 只讀：卡只走一遍（#57）
+                return _list(vault, args, as_json)
         if command == "wip":
             return _wip(vault, as_json)
         if command == "edits":

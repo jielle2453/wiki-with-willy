@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 from kb import guard, journal_cli
-from kb._lib import agenda, money, obsidian, profile, skeleton, upgrade
+from kb._lib import agenda, obsidian, profile, skeleton, upgrade
 from kb._lib import vault as vault_lib
 from kb._lib import sources as sources_lib
 from kb._lib.io import read_text, write_json_atomic, write_text_atomic
@@ -25,7 +25,7 @@ from kb._lib.paths import plugin_root
 
 SKELETON_REL = "skeleton"
 PROFILE_FILES = (profile.PROFILE_POSIX, profile.MD_POSIX)  # 不住 skeleton：由 profile 的預設值與渲染寫（D-067）
-GENERATED_FILES = PROFILE_FILES + (agenda.MD_POSIX, money.MD_POSIX)  # 日程.md、帳.md 也由程式渲染，缺的才補
+GENERATED_FILES = PROFILE_FILES + (agenda.MD_POSIX,)  # 日程.md 也由程式渲染，缺的才補
 GITKEEP = ".gitkeep"
 HIDDEN_ITEMS = ("CLAUDE.md", "AGENTS.md", ".claude", ".system")
 EMPTY_SOURCES = {"schema_version": 1, "sources": []}
@@ -158,13 +158,17 @@ def run(args):
         if as_json:  # L8
             print(json.dumps({"vault": str(p), "would_create": [rel for rel, _k, have in status if not have],
                               "existing": [rel for rel, _k, have in status if have], "profile_upgrade": profile_state,
-                              "obsidian": obsidian.plan(p)}, ensure_ascii=False))
+                              "obsidian": obsidian.plan(p), "obsidian_outer": obsidian.plan_outer(p)}, ensure_ascii=False))
             return 0
         for rel, kind, have in status:
             print(f"{'已有' if have else '會建'} {_label(rel, kind)}")
         for rel in obsidian.plan(p):  # Obsidian 外掛（#22，D-260）：每次都換成目前版本，不算骨架項目；不在是「會建」，內容不同是「會換」
             exists = (p / rel).exists()
             print(f"{'會補' if exists and rel == obsidian.COMMUNITY_REL else ('會換' if exists else '會建')} {rel}")
+        outer = obsidian.outer_vault(p) if obsidian.plan_outer(p) else None  # 上層 vault 那份（#66 丙，D-542）
+        if outer:
+            fresh = not (outer[0] / obsidian.PLUGIN_REL).exists()
+            print(f"{'會建' if fresh else '會換'} 上層 {outer[0].name} 的首頁外掛")
         if upgrade_line:
             print(upgrade_line)
         return 0
@@ -198,18 +202,15 @@ def run(args):
             created.append(agenda.MD_POSIX)
         except ValueError as e:  # agenda.json 壞了：骨架照建，日程.md 之後 kb agenda render 補
             notes.append(f"{agenda.MD_POSIX} 沒補：{e}")
-    if not have.get(money.MD_POSIX, True):  # 帳.md（記帳 3）：空白的總覽
-        try:
-            money.render(p, hand={})
-            created.append(money.MD_POSIX)
-        except ValueError as e:  # money.json 壞了：骨架照建，帳.md 之後記帳時補
-            notes.append(f"{money.MD_POSIX} 沒補：{e}")
     placed = []
     try:  # Obsidian 外掛（#22，D-258、D-260）：每次都換成目前版本、community-plugins.json 補一項；不算骨架項目、不進「建了 N 項」
         placed, obs_notes = obsidian.place(p)
         notes += obs_notes
     except OSError as e:
         notes.append(f"Obsidian 外掛沒放成：{e}")
+    # 上層 vault 也放一份（#66 丙，D-542）：庫外的檔，不進回合備份、不算進「建了 N 項」；放不成只是一句備註
+    placed_outer, outer_notes = obsidian.place_outer(p)
+    notes += outer_notes
     try:  # 知識庫編號（密碼與守門）：缺的才補、不算骨架項目、不備進回合；壞檔不覆寫
         vault_lib.ensure_vault_id(p)
     except (ValueError, OSError) as e:
@@ -252,6 +253,8 @@ def run(args):
         print(upgrade_line)
     if placed and not as_json:
         print(f"Obsidian 首頁外掛放好了（{len(placed)} 項）")
+    if placed_outer and not as_json:
+        print(f"上層的 Obsidian 資料夾（{obsidian.outer_vault(p)[0].name}）的首頁外掛也換成這一版")
     for note in notes:
         print(note)
     return 0

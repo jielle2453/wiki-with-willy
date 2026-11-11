@@ -2,7 +2,6 @@
 
 日程只准這裡寫（經 _lib/agenda）：每次在 agenda.json 的鎖裡讀改寫（CLI 等 30 秒，等不到「等不到鎖，沒有寫入」exit 3），
 寫前備進回合，寫完重渲染 系統/日程.md。拒絕的第一行就是原因、exit 3；成功句與拒絕句一字不差（驗收 1～3）。
-edit 改了日期：輸出多 related_money（同實體、到期是原本那天、還沒收付的帳，D-273 (3)，記帳 2），人讀版每筆一行。
 終端機跑的記一段工作日誌程式段（D-085），對話裡叫的併進回合；歷程的 by 在對話裡是 ai、終端機是 program。
 人讀輸出不印內部編號（a-…、f-…，確認後裁定 6）：客戶聽不懂，AI 還會唸出來；要編號的取 --json。
 list 可篩（answer 第 8 點）：--from／--to 照 parse_date（YYYY-MM-DD），期間條目跟那段有重疊就列；--entity 可重複，別名與合併過的
@@ -18,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 from kb import journal_cli
-from kb._lib import agenda, config, inventory, money, paths, streams, turn
+from kb._lib import agenda, config, inventory, paths, streams, turn
 from kb._lib import io as kio
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
@@ -161,22 +160,8 @@ def _edit(vault, args, as_json, conversation, turn_id):
         note = f"改日程：{after['text']}（{'、'.join(labels)}）"
     journal_cli.record_program_or_warn(vault, note, CHANGED, "agenda edit", conversation)
     lines, payload = ["已改：" + "；".join(parts)], {"item": after, "changed": True}
-    if before.get("date") != after.get("date"):  # D-273 (3)：同實體同一天的帳列出來，AI 問要不要一起改
-        rel = _related_money(vault, after.get("entities"), before["date"])
-        payload["related_money"] = rel
-        lines += [money.related_line(m) for m in rel]
     _out(as_json, lines, payload)
     return 0
-
-
-def _related_money(vault, names, day):
-    """帳讀不到不擋改日程：給空的、記 log。"""
-    try:
-        return money.related_by_date(vault, names, day)
-    except ValueError as e:
-        from kb._lib import ledger
-        ledger.log_error(vault, f"改日程時讀不到帳：{e}", source="agenda")
-        return []
 
 
 def _status(vault, args, as_json, conversation, turn_id):

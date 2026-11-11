@@ -27,7 +27,7 @@ def add_arguments(sub):
     ad.add_argument("--text", required=True, help="一句話，最多 200 字")
     ad.add_argument("--replaces", help="改的是哪一條舊口述（s-…）：舊的記成被這條取代")
     ad.add_argument("--money", nargs=2, metavar=("收或付", "金額"),
-                    help="帳關著時錢的話加這個記號（例 --money 收 5000）：問加總時 kb money sum 照它算（D-343）")
+                    help="錢的話加這個記號（例 --money 收 5000）：問加總時 kb statement sum 照它算（D-343）")
     wd = subs.add_parser("withdraw", help="收回一條口述", description="客戶說沒這回事：這條記成已收回（紀錄留著）。")
     wd.add_argument("id", help="口述編號（s-…）")
     rs = subs.add_parser("restore", help="恢復被取代的那條", description="取代它的那條已經收回：原本那條改回有效。")
@@ -35,8 +35,14 @@ def add_arguments(sub):
     ls = subs.add_parser("list", help="列出口述", description="預設列有效的；--all 含被取代與收回的。")
     ls.add_argument("--entity", help="只列掛在這個實體上的")
     ls.add_argument("--all", action="store_true", help="全部列出")
-    ls.add_argument("--money", action="store_true", help="只列標過錢的（帳關著時記的，D-343）")
-    for p in (ad, wd, rs, ls):
+    ls.add_argument("--money", action="store_true", help="只列標過錢的（D-343）")
+    sm = subs.add_parser("sum", help="區間內口述的錢加總", description="照標過錢（--money）的口述算區間內的收、付、淨與逐筆。")
+    sm.add_argument("--from", dest="date_from", required=True, metavar="YYYY-MM-DD", help="起日")
+    sm.add_argument("--to", dest="date_to", required=True, metavar="YYYY-MM-DD", help="迄日")
+    sm.add_argument("--entity", help="只算掛了這個實體的")
+    sm.add_argument("--vs-from", metavar="YYYY-MM-DD", help="比較的起日（要跟 --vs-to 一起給）")
+    sm.add_argument("--vs-to", metavar="YYYY-MM-DD", help="比較的迄日")
+    for p in (ad, wd, rs, ls, sm):
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
@@ -119,6 +125,27 @@ def _list(vault, args, as_json):
     return 0
 
 
+def _date(text):
+    from kb._lib import agenda
+    try:
+        return agenda.parse_date(text).isoformat()
+    except agenda.AgendaRefused as e:
+        raise statements.StatementRefused(str(e)) from None
+
+
+def _sum(vault, args, as_json):
+    from kb._lib import numbers
+    vs = (_date(args.vs_from), _date(args.vs_to)) if args.vs_from and args.vs_to else None
+    got = statements.statements_summary(vault, _date(args.date_from), _date(args.date_to), entity=args.entity, vs=vs)
+    lines = [f"{args.date_from}～{args.date_to}：收 {numbers.show(got['in'])}、付 {numbers.show(got['out'])}、淨 {numbers.show(got['net'])}（照你說過的加）"]
+    if got["diff"]:
+        d = got["diff"]["in"]
+        lines.append(f"比 {args.vs_from}～{args.vs_to}：收 {numbers.show(got['vs']['in'])}，差 {numbers.show(d['diff'])}"
+                     + (f"（{d['pct']}%）" if d["pct"] is not None else ""))
+    _out(as_json, lines, got)
+    return 0
+
+
 WRITERS = {"add": _add, "withdraw": _withdraw, "restore": _restore}
 
 
@@ -133,6 +160,8 @@ def run(args):
     try:
         if command == "list":
             return _list(vault, args, as_json)
+        if command == "sum":
+            return _sum(vault, args, as_json)
         conversation = journal_cli.in_conversation(vault)
         turn_id = turn.current(vault)["turn"]
         return WRITERS[command](vault, args, as_json, conversation, turn_id)

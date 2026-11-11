@@ -4,7 +4,7 @@
 import argparse
 import json
 
-from kb._lib import find
+from kb._lib import card_index, find
 from kb.lookup_cli import wip_lines
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
@@ -31,7 +31,8 @@ def run(args):
         print(NOT_IN_VAULT)
         return 3
     try:
-        out = find.find(vault, args.query)
+        with card_index.once(vault):  # 只讀：卡只走一遍（#57）
+            out = find.find(vault, args.query)
     except ValueError as e:
         print(f"狀態檔讀不到：{e}")
         return 3

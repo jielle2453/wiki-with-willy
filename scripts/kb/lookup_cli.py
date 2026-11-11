@@ -8,7 +8,7 @@
 import argparse
 import json
 
-from kb._lib import agenda, cards, entities, rulings
+from kb._lib import agenda, card_index, cards, entities, rulings
 from kb._lib import lookup as lookup_lib
 from kb.inventory_cli import NOT_IN_VAULT, find_vault
 
@@ -70,31 +70,8 @@ def wip_lines(got):
             + "、".join(cards.wip_label(r) for r in wip) + more]
 
 
-def _money_line(m):
-    """「帳：累計收 48,600｜未收 1,800；庫存 17 瓶（北店 12、南店 5）」（記帳 2 第 7 點）；什麼都沒有回 None。"""
-    from kb._lib import money, numbers
-    sums = [f"{label} {numbers.show(m[k])}" for k, label in (("in", "累計收"), ("out", "累計付"), ("open_in", "未收"),
-                                                               ("open_out", "未付")) if m.get(k)]
-    parts = ["｜".join(sums)] if sums else []
-    st = m.get("stock")
-    if isinstance(st, dict):
-        where = money.places_line(st)
-        parts.append(f"庫存 {st['text']}" + (f"（{where}）" if where else ""))
-    elif st:
-        parts.append("庫存：" + "、".join(f"{p['name']} {next(iter(p['places_text'].values()), p['text'])}" for p in st))
-    return "帳：" + "；".join(parts) if parts else None
-
-
-def _owed_line(o):
-    from kb._lib import numbers
-    return f"公司還欠{o['member']} {numbers.show(o['total'])}（{len(o['items'])} 筆）" if o["items"] else None
-
-
 def _lines(got):
-    owed = _owed_line(got["owed_to"]) if got.get("owed_to") else None
     if got["entity"] is None:
-        if owed:
-            return [owed]
         if not got["mentions"]:
             return [lookup_lib.NOTHING] + wip_lines(got)
         out = [f"沒有登記「{got['query']}」；有 {got['mentions_total']} 張卡提到它"]
@@ -103,7 +80,7 @@ def _lines(got):
             out.append(f"……還有 {got['mentions_total'] - len(got['mentions'])} 張")
         return out
     e = got["entity"]
-    out = [_summary(got)] + ([owed] if owed else [])
+    out = [_summary(got)]
     if e["aliases"]:
         out.append("別名：" + "、".join(e["aliases"]))
     if got["synthesis"]:
@@ -112,14 +89,6 @@ def _lines(got):
     tags = [f"{t['field']} {'、'.join(t['words'])}" for t in got.get("tags") or [] if t["words"]]
     if tags:
         out.append("標籤：" + "；".join(tags))
-    if got.get("fields"):  # 數字欄（記帳 1b 第 7 點）：「數字：售價 1,800 元、進價 1,200 元（你說的）」
-        from kb._lib import numbers
-        out.append("數字：" + "、".join(f"{f} {numbers.show(v['value'])}" + (f" {v['unit']}" if v["unit"] else "")
-                                        + ("（你說的）" if v["said"] else "") for f, v in got["fields"].items()))
-    if got.get("money"):
-        line = _money_line(got["money"])
-        if line:
-            out.append(line)
     if got["cards"]:
         out += ["檔案卡："] + [_card_line(c) for c in got["cards"]]
     if got["statements"]:
@@ -169,6 +138,11 @@ def run(args):
     if vault is None:
         print(NOT_IN_VAULT)
         return 3
+    with card_index.once(vault):  # 只讀：卡只走一遍（#57）
+        return _run(vault, args)
+
+
+def _run(vault, args):
     if getattr(args, "id", None):
         try:
             return _by_id(vault, args)

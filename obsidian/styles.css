@@ -228,6 +228,12 @@
   gap: 16px 32px;
 }
 
+/* 同一個 vault 有好幾個知識庫時的下拉選單（#66 乙）；用 Obsidian 自己的 select 樣子 */
+.wwh-root-select {
+  align-self: flex-start;
+  max-width: 16em;
+}
+
 .wwh-greet {
   display: flex;
   flex-direction: column;
@@ -1893,29 +1899,7 @@
   color: var(--text-accent);
 }
 
-/* ---- 記帳 3：首頁的帳（「帳」連結、庫存不足、公司還欠你、金額未知的件） ---- */
-.wwh-top-links {
-  margin: 4px 0 0;
-  font-size: var(--font-ui-small);
-}
-
-.wwh-check-none {
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-  margin: 2px 0 0;
-}
-
-.wwh-group-head.is-stock {
-  color: var(--wwh-orange);
-}
-
-.wwh-todo.is-stock .wwh-todo-body,
-.wwh-todo.is-owed .wwh-todo-body {
-  padding-left: 30px;
-}
-
-/* ---- 記帳 3：綜合卡底下外掛畫的「日程與帳」（D-340，不在卡檔裡） ---- */
+/* ---- 綜合卡底下外掛畫的「日程」（D-340，不在卡檔裡） ---- */
 .wwh-panel {
   margin: 24px 0 12px;
   padding: 8px 12px;
@@ -1944,11 +1928,6 @@
   font-weight: 600;
 }
 
-.wwh-panel-head {
-  margin-top: 6px;
-  font-weight: 600;
-}
-
 .wwh-panel ul {
   margin: 2px 0;
   padding-left: 1.2em;
@@ -1961,9 +1940,4 @@
 .wwh-panel-line:hover {
   color: var(--text-accent);
   text-decoration: underline;
-}
-
-.wwh-panel-stock {
-  margin-top: 6px;
-  color: var(--text-muted);
 }

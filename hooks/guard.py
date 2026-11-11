@@ -6,7 +6,7 @@
 子代理（card-maker，D-195）：payload 帶 agent_id、batches.json 的 agents 有它 → 檔案工具寫入的備份與大改動計數算它記的回合；
 放行的單一 kb 呼叫回 allow 加 updatedInput（整個 tool_input 照抄、只換 command：kb.py 路徑後面插 --turn <回合> --agent <id>）。
 主對話、沒記過的子代理照舊；kb.guard 的判斷不改，插的值照 plan.shell_arg 加引號，給不出就不改寫。
-card-maker 第一輪修：記過的子代理只准白名單裡的 kb 子命令（AGENT_ALLOW；money add／settle／attach 沒帶 --card、帶 --from-statement 擋，記帳 2；convert 不收 --password／--saved／--explicit，entity tag 與 entity field 不收 --said／--from-card，記帳 1b），
+card-maker 第一輪修：記過的子代理只准白名單裡的 kb 子命令（AGENT_ALLOW；convert 不收 --password／--saved／--explicit，entity tag 不收 --said／--from-card），
 也不准讀 .system/unlock.json 與 .system/temp 的密碼檔暫存，其餘 deny「製卡助手不能做這件事」（S3）；指令自己帶了
 --turn／--agent／--session 的（子代理在哪都算，主對話看子命令前的）deny，不改寫（S4）；主對話（沒有 agent_id）的每個單一 kb 呼叫
 插 --session <sid>（D-506：寫入記在這個對話的回合、退回只退這個對話的；兩個視窗開同一個知識庫不串），已經帶 --turn 的與 selftest 不插
@@ -47,16 +47,11 @@ GLOBAL_VALUE_FLAGS = ("--turn", "--agent", "--session", "--via")  # --via 只有
 AGENT_ALLOW = {("cards", "batch"), ("cards", "list"), ("cards", "todo"), ("cards", "wip"), ("cards", "skip"), ("convert", ""), ("version", ""),
                ("agenda", "add"), ("agenda", "edit"), ("agenda", "recheck"), ("agenda", "scanned"), ("agenda", "cancel"),
                ("agenda", "list"), ("entity", "add"), ("entity", "suggest-close"), ("entity", "clean"), ("entity", "list"),
-               ("entity", "tag"), ("entity", "render"), ("entity", "log"), ("entity", "field"),
-               ("money", "add"), ("money", "attach"), ("money", "settle"), ("money", "unsure"), ("money", "scanned"),
-               ("money", "list"), ("money", "candidates")}  # 製卡抽錢（記帳 2）；cancel、merge、edit 這些只在主對話
+               ("entity", "tag"), ("entity", "render"), ("entity", "log")}
 NO_SUB = ("convert", "version")
 CONVERT_DENY = ("--password", "--saved", "--explicit")
 SECRET_FLAGS = ("--password", "--value")  # 值是密碼的旗標：改寫會把值印進 hook 的輸出（#20 裁定 5 實作疑義）
-TAG_DENY = ("--said", "--from-card")  # 代表她的意思（她親口說的、她在卡上改的），只在主對話用（標籤記在實體上裁定 10；數字欄同，記帳 1b）
-MONEY_NEED_CARD = (("money", "add"), ("money", "settle"), ("money", "attach"))  # 製卡寫帳一定是從卡讀到的（記帳 2 測試報告中 #1）
-MONEY_DENY = ("--from-statement",)  # 補她口述的錢：主對話的事
-MONEY_CARD_REASON = "製卡助手寫帳要帶 --card <這張卡的編號>；她口述的錢由主對話記"
+TAG_DENY = ("--said", "--from-card")  # 代表她的意思（她親口說的、她在卡上改的），只在主對話用（標籤記在實體上裁定 10）
 QUOTES = "\"'"
 
 
@@ -267,12 +262,8 @@ def scope(payload, tool, d, agent_turn):
             return AGENT_DENY, None
         if cmd == "convert" and _has_flag(tokens, CONVERT_DENY):
             return AGENT_DENY, None
-        if (cmd, sub) in (("entity", "tag"), ("entity", "field")) and _has_flag(tokens, TAG_DENY):
+        if (cmd, sub) == ("entity", "tag") and _has_flag(tokens, TAG_DENY):
             return AGENT_DENY, None
-        if cmd == "money" and _has_flag(tokens, MONEY_DENY):
-            return AGENT_DENY, None
-        if (cmd, sub) in MONEY_NEED_CARD and not _has_flag(tokens, ("--card",)):
-            return MONEY_CARD_REASON, None
         if (cmd, sub) == ("entity", "render") and not _positionals(tokens, sub):
             return AGENT_DENY, None  # 不帶名稱是重寫全部綜合卡，製卡助手用不到（D-521 裁定 18）
         return None, with_turn(ti, agent_turn, payload.get("agent_id"))

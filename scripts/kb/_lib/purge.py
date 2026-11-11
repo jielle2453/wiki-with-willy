@@ -13,7 +13,7 @@
 5. 目前的 pending.json 那些條目刪掉、agenda.json 從那些卡抽的推測條目刪掉（確認過的留著、拿掉出處卡）、
    rulings.json 掛那些卡的拿掉卡編號（只掛那些卡的標已收回）、findings.json 依據含那些卡的推算整條刪掉、
    entities.json 數字欄出處是那些卡的值清掉、old 裡那幾筆拿掉（記帳 1b；回合夾的 entities.json 舊版同一支）；
-   money.json 出處是那些卡的帳：推測的整筆拿掉、她說過的留著出處清掉（記帳 2；回合夾的舊版同一支）；
+   （#65 起 money.json 與帳頁不碰：willy 不再讀；舊庫留著的帳不在清除範圍）
 6. 工作日誌：changed 與 note 裡指到那夾的路徑換「（已排除）」，有指到的回合 result 整欄換掉，prompt 不動（journal.scrub）；
 7. ledger.tsv 與 hook-errors.log 裡指到那夾的路徑換「（已排除）」。
 先改目前的狀態（備進這一回合），再清全部回合（含這一回合剛備的），最後是暫存、日誌與留痕。
@@ -31,7 +31,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from kb._lib import agenda, card_base, cards, entities, findings, inventory, journal, ledger, money, pending, rulings, synthesis, turn
+from kb._lib import agenda, card_base, cards, entities, findings, inventory, journal, ledger, pending, rulings, synthesis, turn
 from kb._lib import sources as sources_lib
 from kb._lib.io import FileLock, read_json, write_json_atomic, write_text_atomic
 from kb._lib.paths import decode_uri, long_path, normalize
@@ -366,14 +366,9 @@ def _entity_fields(vault, ids, turn_id):
     """目前的實體清單：數字欄的出處卡在那夾的清掉（entities 的鎖、先備進這一回合）。"""
     with entities.lock(vault):
         data = entities.load(vault)
-        before = {e.get("id"): {k: (v or {}).get("value") for k, v in entities.fields_of(e).items()} for e in data["entities"]}
         if not drop_entity_fields(data, ids):
             return
         entities._save(vault, data, turn_id)
-    for e in data["entities"]:  # 卡上那幾行跟著拿掉，不然下一句會當成她在屬性欄寫的
-        now = {k: (v or {}).get("value") for k, v in entities.fields_of(e).items()}
-        if now != before.get(e.get("id")):
-            synthesis.rewrite_field_lines(vault, e, turn_id)
 
 
 def _pending_md(data):
@@ -401,8 +396,7 @@ def _current_state(vault, ids, turn_id, counts):
              (rulings.RULINGS_POSIX, lambda: rulings._mutate(vault, turn_id, lambda data: (None, drop_rulings(data, ids)))),
              (findings.FINDINGS_POSIX, lambda: counts.__setitem__(
                  "findings", counts["findings"] + findings._mutate(vault, turn_id, f_change))),
-             (entities.ENTITIES_POSIX, lambda: _entity_fields(vault, ids, turn_id)),
-             (money.MONEY_POSIX, lambda: money.purge_cards(vault, ids, turn_id)))  # 帳：推測的整筆拿掉、她說過的清出處（記帳 2）
+             (entities.ENTITIES_POSIX, lambda: _entity_fields(vault, ids, turn_id)))
     for rel, act in parts:
         if (Path(vault) / rel).exists():
             try:
@@ -560,8 +554,6 @@ def _lint_files(vault, ids, words, turn_id, counts, plain=None, derived=(), gone
                     agenda.render(vault, turn_id, hand={})
                 elif rel == rulings.MD_POSIX:
                     rulings.render(vault, turn_id, hand={})
-                elif money.is_page(rel):  # 帳頁（記帳 3）
-                    money.render(vault, turn_id, hand={})
 
     def obsidian():
         _obsidian_traces(vault, ids, folder, counts)
@@ -583,9 +575,15 @@ OBSIDIAN_DATA = ".obsidian/plugins/wiki-with-willy/data.json"
 OBSIDIAN_BOOKMARKS = ".obsidian/bookmarks.json"
 
 
-def _obsidian_match(path, ids, folder):
-    """workspace.json 裡記的檔案路徑是不是那些卡或那夾（檔案索引/<別名>/<夾>/ 底下）。"""
+def _obsidian_match(path, ids, folder, prefix=""):
+    """workspace.json 裡記的檔案路徑是不是那些卡或那夾（檔案索引/<別名>/<夾>/ 底下）。
+    prefix（#66 丙）：上層 vault 記的路徑是「<前綴>/<庫內路徑>」，只認這個前綴開頭的，去掉前綴再照庫內的判；別的一律不是。"""
     p = str(path or "").replace("\\", "/").casefold()
+    if prefix:
+        head = prefix.strip("/").casefold() + "/"
+        if not p.startswith(head):
+            return False
+        p = p[len(head):]
     if folder is not None:
         base = f"檔案索引/{folder[0]}/{folder[1]}".replace("\\", "/").strip("/").casefold()
         if p == base or p.startswith(base + "/"):
@@ -593,12 +591,12 @@ def _obsidian_match(path, ids, folder):
     return any(p.endswith(f"-{str(i)[2:]}.md".casefold()) for i in ids if str(i).startswith("f-"))
 
 
-def _prune_workspace(node, ids, folder):
+def _prune_workspace(node, ids, folder, prefix=""):
     """分頁樹裡指到那些卡或那夾的葉子拿掉（state.file 或 state.state.file）；回 (新的節點或 None, 拿掉幾個)。"""
     if isinstance(node, list):
         out, n = [], 0
         for x in node:
-            got, k = _prune_workspace(x, ids, folder)
+            got, k = _prune_workspace(x, ids, folder, prefix)
             n += k
             if got is not None:
                 out.append(got)
@@ -607,36 +605,57 @@ def _prune_workspace(node, ids, folder):
         return node, 0
     state = node.get("state") if isinstance(node.get("state"), dict) else {}
     inner = state.get("state") if isinstance(state.get("state"), dict) else {}
-    if node.get("type") == "leaf" and any(_obsidian_match(f, ids, folder) for f in (state.get("file"), inner.get("file"))):
+    if node.get("type") == "leaf" and any(_obsidian_match(f, ids, folder, prefix) for f in (state.get("file"), inner.get("file"))):
         return None, 1
     n, out = 0, dict(node)
     if isinstance(node.get("children"), list):
-        out["children"], n = _prune_workspace(node["children"], ids, folder)
+        out["children"], n = _prune_workspace(node["children"], ids, folder, prefix)
     return out, n
 
 
-def _prune_bookmarks(items, ids, folder):
+def _prune_bookmarks(items, ids, folder, prefix=""):
     """書籤清單：type 是 file／folder、path 指到那些卡或那夾的拿掉，群組（group）裡的也算；回 (新清單, 拿掉幾個)。"""
     out, n = [], 0
     for b in items:
-        if isinstance(b, dict) and b.get("type") in ("file", "folder") and _obsidian_match(b.get("path"), ids, folder):
+        if isinstance(b, dict) and b.get("type") in ("file", "folder") and _obsidian_match(b.get("path"), ids, folder, prefix):
             n += 1
             continue
         if isinstance(b, dict) and isinstance(b.get("items"), list):
-            inner, k = _prune_bookmarks(b["items"], ids, folder)
+            inner, k = _prune_bookmarks(b["items"], ids, folder, prefix)
             n += k
             b = dict(b, items=inner) if k else b
         out.append(b)
     return out, n
 
 
+def _drop_opened(holder, ids):
+    """{"opened": [...]} 裡那些卡編號拿掉：回 (新的或原來那個, 拿掉幾筆)。形狀不對的不動。"""
+    if not isinstance(holder, dict) or not isinstance(holder.get("opened"), list):
+        return holder, 0
+    kept = [o for o in holder["opened"] if not (isinstance(o, dict) and o.get("card") in ids)]
+    n = len(holder["opened"]) - len(kept)
+    return (dict(holder, opened=kept), n) if n else (holder, 0)
+
+
 def _obsidian_traces(vault, ids, folder, counts):
     """Obsidian 的痕跡（Obsidian 首頁，#22，D-262、裁定 15）：.obsidian/workspace.json 的 lastOpenFiles 與 main／left／right 樹裡指到那些卡或那夾的
     項目拿掉；bookmarks.json（核心外掛「書籤」）指到那些卡或那夾的拿掉；外掛 data.json 的「最近」拿掉那些卡編號。
-    讀不懂的整份不動、算沒清完（state）。沒有這些檔就略過。清了幾個記在 counts["obsidian"]，給成功句照實說。"""
+    讀不懂的整份不動、算沒清完（state）。沒有這些檔就略過。清了幾個記在 counts["obsidian"]，給成功句照實說。
+    #66 丙（D-545）：知識庫在上層 vault 裡時，上層那三個檔再做一次——路徑只認「<前綴>/」開頭的，data.json 只動 roots[<前綴>]。"""
+    from kb._lib import obsidian
     ids = set(ids)
-    got = counts.setdefault("obsidian", {"workspace": 0, "bookmarks": 0, "recent": 0})
-    ws = Path(vault) / OBSIDIAN_WORKSPACE
+    counts.setdefault("obsidian", {"workspace": 0, "bookmarks": 0, "recent": 0})
+    _obsidian_traces_at(Path(vault), "", ids, folder, counts)
+    outer = obsidian.outer_vault(vault)
+    if outer is not None:
+        _obsidian_traces_at(outer[0], outer[1], ids, folder, counts)
+
+
+def _obsidian_traces_at(base, prefix, ids, folder, counts):
+    """base 的 .obsidian/ 那三個檔清一次。prefix 空的是知識庫自己（data.json 清舊格式最上層的 opened 與新格式的 roots[""]）；
+    不空的是上層 vault（路徑只認這個前綴開頭的、data.json 只清 roots[prefix]，別的知識庫與她自己的一律不動）。"""
+    got = counts["obsidian"]
+    ws = base / OBSIDIAN_WORKSPACE
     if ws.is_file():
         try:
             data = json.loads(ws.read_text(encoding="utf-8"))
@@ -645,41 +664,46 @@ def _obsidian_traces(vault, ids, folder, counts):
             new = dict(data)
             n = 0
             if isinstance(data.get("lastOpenFiles"), list):
-                new["lastOpenFiles"] = [f for f in data["lastOpenFiles"] if not _obsidian_match(f, ids, folder)]
+                new["lastOpenFiles"] = [f for f in data["lastOpenFiles"] if not _obsidian_match(f, ids, folder, prefix)]
                 n += len(data["lastOpenFiles"]) - len(new["lastOpenFiles"])
             for part in ("main", "left", "right"):
                 if part in data:
-                    new[part], k = _prune_workspace(data[part], ids, folder)
+                    new[part], k = _prune_workspace(data[part], ids, folder, prefix)
                     n += k
             if new != data:
                 write_text_atomic(ws, json.dumps(new, ensure_ascii=False, indent=2) + "\n")
                 got["workspace"] += n
         except (ValueError, OSError, UnicodeDecodeError):
             counts["left"]["state"] += 1
-    bm = Path(vault) / OBSIDIAN_BOOKMARKS
+    bm = base / OBSIDIAN_BOOKMARKS
     if bm.is_file():
         try:
             data = json.loads(bm.read_text(encoding="utf-8"))
             if not isinstance(data, dict) or (data.get("items") is not None and not isinstance(data["items"], list)):
                 raise ValueError("bookmarks.json 格式不對")
             if isinstance(data.get("items"), list):
-                items, n = _prune_bookmarks(data["items"], ids, folder)
+                items, n = _prune_bookmarks(data["items"], ids, folder, prefix)
                 if n:
                     write_text_atomic(bm, json.dumps(dict(data, items=items), ensure_ascii=False, indent=2) + "\n")
                     got["bookmarks"] += n
         except (ValueError, OSError, UnicodeDecodeError):
             counts["left"]["state"] += 1
-    dj = Path(vault) / OBSIDIAN_DATA
+    dj = base / OBSIDIAN_DATA
     if dj.is_file():
         try:
             data = json.loads(dj.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("data.json 不是物件")
-            if isinstance(data.get("opened"), list):
-                kept = [o for o in data["opened"] if not (isinstance(o, dict) and o.get("card") in ids)]
-                if len(kept) != len(data["opened"]):
-                    write_text_atomic(dj, json.dumps(dict(data, opened=kept), ensure_ascii=False, indent=2) + "\n")
-                    got["recent"] += len(data["opened"]) - len(kept)
+            new, n = (data, 0) if prefix else _drop_opened(data, ids)  # 舊格式：最上層的 opened（只有知識庫自己那份）
+            roots = new.get("roots")
+            if isinstance(roots, dict) and prefix in roots:  # 新格式（#66 乙）：roots[前綴]，知識庫自己那份的前綴是 ""
+                one, k = _drop_opened(roots[prefix], ids)
+                if k:
+                    new = dict(new, roots=dict(roots, **{prefix: one}))
+                    n += k
+            if n:
+                write_text_atomic(dj, json.dumps(new, ensure_ascii=False, indent=2) + "\n")
+                got["recent"] += n
         except (ValueError, OSError, UnicodeDecodeError):
             counts["left"]["state"] += 1
 
@@ -691,14 +715,6 @@ def _derived(vault, ids, names=()):
     words, gone = set(names or ()), set()
     try:
         for i in agenda.load(vault)["items"]:
-            if isinstance(i, dict) and (i.get("origin") or {}).get("card") in ids and i.get("source") == "inferred":
-                gone.add(i.get("id"))
-                if i.get("text"):
-                    words.add(str(i["text"]))
-    except (OSError, ValueError):
-        pass
-    try:  # 帳：從那些卡推測記的（記帳 2）
-        for i in money.load(vault)["items"]:
             if isinstance(i, dict) and (i.get("origin") or {}).get("card") in ids and i.get("source") == "inferred":
                 gone.add(i.get("id"))
                 if i.get("text"):
@@ -824,7 +840,6 @@ JSON_DROPS = {
     findings.FINDINGS_POSIX: lambda data, ids, prefix: bool(drop_findings(data, ids)),
     findings.ARCHIVE_POSIX: lambda data, ids, prefix: bool(drop_findings(data, ids)),  # lint 題：推算封存檔（T-8）
     entities.ENTITIES_POSIX: lambda data, ids, prefix: drop_entity_fields(data, ids),  # 數字欄的出處卡（記帳 1b）
-    money.MONEY_POSIX: lambda data, ids, prefix: bool(money.drop_cards(data, ids)),  # 帳的出處卡（記帳 2）
 }
 
 
@@ -1079,7 +1094,7 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state, mask=None
             write_text_atomic(f, "".join(kept))
             counts["backups"] += 1
     elif mask is not None and rel != sources_lib.SOURCES_REL and f.suffix.casefold() in TEXT_SUFFIXES \
-            and not any(rel == md for _j, md, _r in MD_RENDERS) and not money.is_page(rel):
+            and not any(rel == md for _j, md, _r in MD_RENDERS):
         # 別的檔的舊版（其他文字檔）：文字裡那夾的路徑換掉；字詞（編號、標題）只套工作日誌（第六輪）
         _mask_file(f, mask, counts)
     if gone:
@@ -1092,18 +1107,12 @@ def _scrub_row(row, rel, f, ids, prefix, counts, shorts, datas, state, mask=None
 MD_RENDERS = ((pending.PENDING_POSIX, pending.MD_POSIX, lambda vault, data: _pending_md(data)),
               (agenda.AGENDA_POSIX, agenda.MD_POSIX, lambda vault, data: agenda.render_text(vault, data)),
               (rulings.RULINGS_POSIX, rulings.MD_POSIX,
-               lambda vault, data: rulings.render_text(data, agenda.card_titles(vault))),
-              (money.MONEY_POSIX, money.MD_POSIX, lambda vault, data: money.render_text(vault, data)))  # 帳頁（記帳 3）
+               lambda vault, data: rulings.render_text(data, agenda.card_titles(vault))))
 
 
 def _scrub_md(vault, files, rows, mask, counts, datas, state):
     """待處理.md、日程.md、裁示.md 的舊版：同一回合有 JSON 舊版就照改過的重渲染，沒有而內容指到那夾就刪掉、標 purged。"""
-    year_dir = files / money.YEAR_DIR  # 帳的年頁：照「系統/帳/ 底下」認，跟總覽同一份帳（記帳 3）
-    years = [(money.MONEY_POSIX, f"{money.YEAR_DIR}/{f.name}",
-              lambda vault, data, rel=f"{money.YEAR_DIR}/{f.name}": money.render_pages(vault, data)[rel][0])
-             for f in sorted(year_dir.glob("*.md")) if money.is_page(f"{money.YEAR_DIR}/{f.name}")] \
-        if _under_files(files, year_dir) and year_dir.is_dir() else []
-    for json_rel, md_rel, render in tuple(MD_RENDERS) + tuple(years):
+    for json_rel, md_rel, render in MD_RENDERS:
         md = files / md_rel
         if not _under_files(files, md) or not md.is_file():
             continue  # files/ 底下巢狀的 junction 不跟（第三輪修）

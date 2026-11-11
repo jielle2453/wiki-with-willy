@@ -3,6 +3,9 @@
 外掛三個檔（manifest.json、main.js、styles.css）住在 plugin 的 obsidian/；kb init 每次都把它們換成目前版本放進
 <知識庫>/.obsidian/plugins/wiki-with-willy/（內容相同不寫），community-plugins.json 沒有這個 id 就補（檔不在就建，壞檔不動並記 log）；
 .obsidian/ 底下其他檔一律不碰。外部（Windows 登錄、%LOCALAPPDATA%、%APPDATA%、os.startfile、行程）都經 _ 開頭的函式，測試換替身。
+
+上層 vault（#66 丙，D-542）：知識庫是她原本那個 Obsidian 資料夾裡的子夾時，上層的 .obsidian/ 也放一份同版的外掛（plan_outer／place_outer），
+Obsidian 已登記上層就從上層打開。上層＝從知識庫根往上最多兩層、最近一個有 .obsidian/ 資料夾的夾；每次現找，不記在任何狀態檔（D-019）。
 """
 import json
 import os
@@ -21,6 +24,7 @@ FILES = ("manifest.json", "main.js", "styles.css")
 PLUGIN_REL = f".obsidian/plugins/{PLUGIN_ID}"
 COMMUNITY_REL = ".obsidian/community-plugins.json"
 CONFIG_ENV = "OBSIDIAN_CONFIG"  # 測試與少見的裝法可以指到別的 obsidian.json
+OUTER_DEPTH = 2  # 上層 vault 往上找幾層（配合外掛只往下找兩層，#66 乙）
 
 
 def source_dir():
@@ -50,47 +54,110 @@ def _community(vault):
     return ("ok", data) if isinstance(data, list) and all(isinstance(x, str) for x in data) else ("bad", None)
 
 
-def plan(vault):
-    """會寫的項目 [相對路徑]（外掛三個檔內容不同或不在、community-plugins.json 沒有這個 id）；plugin 沒帶外掛回 []。"""
+def _plan(base):
+    """base（知識庫或上層 vault）底下會寫的項目 [相對路徑]；plugin 沒帶外掛回 []。"""
     src = source_files()
     if src is None:
         return []
     todo = []
     for name, data in src.items():
-        target = Path(vault) / PLUGIN_REL / name
+        target = Path(base) / PLUGIN_REL / name
         if not target.is_file() or target.read_bytes() != data:
             todo.append(f"{PLUGIN_REL}/{name}")
-    state, got = _community(vault)
+    state, got = _community(base)
     if state == "missing" or (state == "ok" and PLUGIN_ID not in got):
         todo.append(COMMUNITY_REL)
     return todo
 
 
-def place(vault):
-    """放外掛：回 (寫了哪些相對路徑, 要印的備註)。community-plugins.json 讀不懂就不動、記 log、備註一句。"""
+def _put(target, data):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, target)
+
+
+def _place(base):
+    """放進 base 的 .obsidian/：回 (寫了哪些相對路徑, community-plugins.json 是不是讀不懂)。讀不懂的不動。"""
     src = source_files()
     if src is None:
-        return [], []
-    wrote, notes = [], []
+        return [], False
+    wrote = []
     for name, data in src.items():
-        target = Path(vault) / PLUGIN_REL / name
+        target = Path(base) / PLUGIN_REL / name
         if target.is_file() and target.read_bytes() == data:
             continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + ".tmp")
-        tmp.write_bytes(data)
-        os.replace(tmp, target)
+        _put(target, data)
         wrote.append(f"{PLUGIN_REL}/{name}")
-    state, got = _community(vault)
-    path = Path(vault) / COMMUNITY_REL
+    state, got = _community(base)
     if state == "bad":
-        ledger.log_error(vault, f"{COMMUNITY_REL} 讀不懂，Obsidian 外掛那一項沒補", source="obsidian")
-        notes.append(f"{COMMUNITY_REL} 讀不懂，沒動；Obsidian 的外掛要自己在設定裡打開")
-    elif state == "missing" or PLUGIN_ID not in got:
+        return wrote, True
+    if state == "missing" or PLUGIN_ID not in got:
+        path = Path(base) / COMMUNITY_REL
         path.parent.mkdir(parents=True, exist_ok=True)
         write_text_atomic(path, json.dumps((got or []) + [PLUGIN_ID], ensure_ascii=False) + "\n")
         wrote.append(COMMUNITY_REL)
+    return wrote, False
+
+
+def plan(vault):
+    """會寫的項目 [相對路徑]（外掛三個檔內容不同或不在、community-plugins.json 沒有這個 id）；plugin 沒帶外掛回 []。"""
+    return _plan(vault)
+
+
+def place(vault):
+    """放外掛：回 (寫了哪些相對路徑, 要印的備註)。community-plugins.json 讀不懂就不動、記 log、備註一句。"""
+    wrote, bad = _place(vault)
+    notes = []
+    if bad:
+        ledger.log_error(vault, f"{COMMUNITY_REL} 讀不懂，Obsidian 外掛那一項沒補", source="obsidian")
+        notes.append(f"{COMMUNITY_REL} 讀不懂，沒動；Obsidian 的外掛要自己在設定裡打開")
     return wrote, notes
+
+
+# ---------- 上層 vault（#66 丙，D-542）----------
+
+def outer_vault(vault):
+    """知識庫在她原本的 Obsidian 資料夾裡：回 (上層夾的 Path, 前綴)，沒有回 None。只看往上一、二層，先近後遠，
+    第一個 .obsidian 是資料夾的就是（知識庫自己不算）；路徑先 realpath。前綴＝知識庫根相對上層的路徑，/ 分隔。"""
+    cur = Path(os.path.realpath(str(vault)))
+    parts = []
+    for _ in range(OUTER_DEPTH):
+        if cur.parent == cur:
+            return None
+        parts.insert(0, cur.name)
+        cur = cur.parent
+        if (cur / ".obsidian").is_dir():
+            return cur, "/".join(parts)
+    return None
+
+
+def _names(rels):
+    return [rel.rsplit("/", 1)[-1] for rel in rels]
+
+
+def plan_outer(vault):
+    """上層 vault 那份會寫哪幾項 [檔名]（三個外掛檔、community-plugins.json）；沒有上層、都一樣回 []。"""
+    outer = outer_vault(vault)
+    return _names(_plan(outer[0])) if outer else []
+
+
+def place_outer(vault):
+    """上層 vault 也放一份：回 (寫了哪些檔名, 備註)。沒有上層回 ([], [])。上層寫不進去不丟出來，回一句備註；
+    上層的 community-plugins.json 讀不懂就不動、記進知識庫的 log、備註一句。"""
+    outer = outer_vault(vault)
+    if outer is None:
+        return [], []
+    name = outer[0].name
+    try:
+        wrote, bad = _place(outer[0])
+    except OSError as e:
+        return [], [f"上層的 Obsidian 資料夾（{name}）外掛沒放成：{e}"]
+    notes = []
+    if bad:
+        ledger.log_error(vault, f"上層（{name}）的 community-plugins.json 讀不懂，Obsidian 外掛那一項沒補", source="obsidian")
+        notes.append(f"上層的 Obsidian 資料夾（{name}）的 community-plugins.json 讀不懂，沒動；Obsidian 的外掛要自己在設定裡打開")
+    return _names(wrote), notes
 
 
 # ---------- Obsidian 裝了沒、知識庫登記了沒 ----------
@@ -139,8 +206,8 @@ def read_config():
     return data
 
 
-def vault_registered(vault):
-    """obsidian.json 的 vaults 裡有沒有 path 等於這個知識庫（讀不懂當沒有）。"""
+def own_registered(vault):
+    """obsidian.json 的 vaults 裡有沒有 path 等於這個夾（讀不懂當沒有）。"""
     try:
         vaults = read_config().get("vaults")
     except (ValueError, OSError):
@@ -149,12 +216,28 @@ def vault_registered(vault):
                                             for v in vaults.values())
 
 
+def outer_registered(vault):
+    """要從上層 vault 打開：知識庫自己沒登記、有上層 vault 而且 Obsidian 已登記它 → (上層夾的 Path, 前綴)；其他回 None。"""
+    if own_registered(vault):
+        return None
+    outer = outer_vault(vault)
+    return outer if outer and own_registered(outer[0]) else None
+
+
+def vault_registered(vault):
+    """Obsidian 打得開這個知識庫：自己已登記，或它所在的上層 vault 已登記（#66 丙）。"""
+    return own_registered(vault) or outer_registered(vault) is not None
+
+
 def plugin_placed(vault):
     return source_files() is not None and not plan(vault)
 
 
 def status(vault):
-    return {"installed": installed(), "registered": vault_registered(vault), "plugin": plugin_placed(vault)}
+    outer = outer_registered(vault)
+    return {"installed": installed(), "registered": own_registered(vault) or outer is not None, "plugin": plugin_placed(vault),
+            "outer": None if outer is None else {"name": outer[0].name, "prefix": outer[1],
+                                                 "plugin": source_files() is not None and not _plan(outer[0])}}
 
 
 def _running():

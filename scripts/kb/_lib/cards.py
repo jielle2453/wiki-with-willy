@@ -318,6 +318,13 @@ def _read(vault, rel):
 
 
 def _scan_groups(vault, deadline=None):
+    """回 (groups, broken)，格式見 _scan_groups_files。先走卡片索引（#57，D-345：只重讀變了的卡）；索引這次不能用就逐卡讀。"""
+    from kb._lib import card_index
+    got = card_index.groups(vault, deadline)
+    return got if got is not None else _scan_groups_files(vault, deadline)
+
+
+def _scan_groups_files(vault, deadline=None):
     """回 (groups, broken)：groups {編號: [{"path", "front"}, …]}（照路徑排）；解析不了、沒有編號的進 broken。
     deadline（time.monotonic 的時刻）給開場 hook：讀每張卡之前看一次，過了丟 TimeoutError（answer 裁定 17）。"""
     import time
@@ -943,35 +950,8 @@ def collect(vault, sources, restored=0):
         ledger.log_error(vault, f"日程讀不到，agenda_recheck 與 agenda_unscanned 先給空的：{e}", source="cards")
         out["agenda_recheck"], out["agenda_unscanned"] = [], []
         out["agenda_counts"] = {"overdue": 0, "today": 0, "upcoming": 0}
-    _money_unscanned(vault, out, groups, entries)
     out[plan.UNLOCK_STEP], out["unlock_kinds"] = plan.locked_same_kind(vault, out)  # 密碼與守門 D-181 第 2 點
     return out
-
-
-def _money_unscanned(vault, out, groups, entries):
-    """記帳 2：money_unscanned（還沒抽錢與數字欄的卡）；跟日程的待抽同一批做——日程已經抽過的那張也併進 agenda_unscanned
-    （existing 照日程的給，製卡者照 agenda-scan.md 與 money.md 一起做）。帳讀不到給空的、記 log，不擋整理。"""
-    from kb._lib import agenda, ledger, money
-    try:
-        got = money.unscanned(vault, None, groups, entries, skip={b["id"] for b in out["broken"] if b.get("id")})
-    except ValueError as e:
-        ledger.log_error(vault, f"帳讀不到，money_unscanned 先給空的：{e}", source="cards")
-        got = {"money_unscanned": []}
-    out.update(got)
-    have = {i["id"] for i in out.get("agenda_unscanned") or []}
-    extra = [m for m in got["money_unscanned"] if m["id"] not in have]
-    if not extra:
-        return
-    try:
-        items = agenda.load(vault)["items"]
-    except ValueError:
-        items = []
-    for m in extra:
-        existing = [{"id": i["id"], "kind": agenda.KIND_TEXT.get(i.get("kind"), i.get("kind")), "date": i.get("date"),
-                     "text": i.get("text")} for i in items
-                    if i.get("status") == "open" and (i.get("origin") or {}).get("card") == m["id"]]
-        out.setdefault("agenda_unscanned", []).append({"id": m["id"], "card_path": m["card_path"], "title": m["title"],
-                                                        "existing": existing})
 
 
 def _purge_pending(vault, sources):
@@ -1610,6 +1590,12 @@ def _link_target(rel):
     return rel
 
 
+def _index_link(rel):
+    """總目錄上的連結目標（D-541）：從總目錄所在的夾算起的相對寫法（./…）再跳脫。"""
+    from kb._lib.paths import rel_link  # 這個模組裡有函式拿 paths 當區域變數名
+    return _link_target(rel_link(INDEX_POSIX, rel))
+
+
 def _link_text(text):
     text = str(text)
     for a, b in _TEXT_ESC:
@@ -1663,9 +1649,9 @@ def _summary_lines(vault):
             if not loc:
                 continue
             if e.get("archived"):  # 封存的實體收進最後的摺疊框「已封存」（放寬丙 12，D-332）
-                old.append(f"> - [{_link_text(e['name'])}]({_link_target(loc)})")
+                old.append(f"> - [{_link_text(e['name'])}]({_index_link(loc)})")
             else:
-                rows.append(f"  - [{_link_text(e['name'])}]({_link_target(loc)})")
+                rows.append(f"  - [{_link_text(e['name'])}]({_index_link(loc)})")
         if rows:
             out += [f"- {_link_text(t['name'])}"] + rows
     if old:
@@ -1673,25 +1659,42 @@ def _summary_lines(vault):
     return out
 
 
+def _broken_front(vault, b):
+    """總目錄用：檔頭解析不了的卡回 None；解析得了只是沒有編號、編號格式不對的，標題與圖示照樣用它的檔頭（少數，讀一下檔）。"""
+    if b["reason"].startswith("檔頭解析不了"):
+        return None
+    try:
+        return parse_front(_read(vault, b["path"]))
+    except (ValueError, OSError, UnicodeDecodeError):
+        return None
+
+
 def _render_index(vault, turn_id):
     tree = {}
     count = 0
     icons = config.get(vault, "index_icons")
-    for rel in _walk_cards(vault):
+    groups, broken = _scan_groups(vault)  # 讀的是卡片索引（#57）；每張卡只有這一處讀檔頭
+    shown = {}
+    for group in groups.values():
+        for c in group:
+            shown[c["path"]] = c["front"]
+    for b in broken:
+        shown[b["path"]] = _broken_front(vault, b)
+    for rel in sorted(shown):
         parts = rel.split("/")[1:]
         node = tree
         for folder in parts[:-1]:
             node = node.setdefault(("d", folder), {})
         mark = ""
-        try:
-            front = parse_front(_read(vault, rel))
+        front = shown[rel]
+        if front is None:
+            title = None
+            mark = (DEFAULT_ICON + " ") if icons else ""
+        else:
             title = front.get("標題")
             first = (front.get("原檔") or [""])[0] if isinstance(front.get("原檔"), list) else ""
             if icons:
                 mark = icon_of(first) + " "
-        except (ValueError, OSError, UnicodeDecodeError):
-            title = None
-            mark = (DEFAULT_ICON + " ") if icons else ""
         if not _filled(title):
             title = parts[-1][:-3]
         node[("c", parts[-1])] = (title, rel, mark)
@@ -1706,7 +1709,7 @@ def _render_index(vault, turn_id):
                 emit(node[key], depth + 1)
             else:
                 title, rel, mark = node[key]
-                lines.append(f"{pad}- {mark}[{_link_text(title)}]({_link_target(rel)})")
+                lines.append(f"{pad}- {mark}[{_link_text(title)}]({_index_link(rel)})")
     emit(tree, 0)
     summary = "\n".join(_summary_lines(vault)) or INDEX_NO_SUMMARY
     files = "\n".join(lines) if lines else INDEX_EMPTY

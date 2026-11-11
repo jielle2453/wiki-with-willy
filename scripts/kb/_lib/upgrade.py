@@ -813,6 +813,31 @@ def _run_init(vault):
         init.run(argparse.Namespace(path=str(vault), check=False, json=False))
 
 
+_INDEX_TARGET = re.compile(r"\]\(([^)]*)")
+
+
+def _index_stale(vault):
+    """總目錄.md 要不要重寫（#66 甲裁定 2）：不在、壞了，或有連結目標不是 ./ 開頭（舊寫法）。"""
+    from kb._lib import cards
+    if cards.index_broken(vault):
+        return True
+    text = (Path(vault) / cards.INDEX_POSIX).read_text(encoding="utf-8")
+    return any(not m.startswith("./") for m in _INDEX_TARGET.findall(text))
+
+
+def _relink(vault, turn_id):
+    """程式頁重產一次（D-541）：日程頁、總目錄、綜合卡「相關檔」的連結換成這一版的寫法。日程與綜合卡內容沒變不寫；
+    總目錄每次叫都會重寫，所以只在需要時叫（_index_stale）。寫前都備進回合。哪一支出錯記 hook-errors.log 後繼續，不擋升級。"""
+    from kb._lib import agenda, cards, ledger, synthesis
+    for what, run in (("日程.md", lambda: agenda.render(vault, turn_id)),
+                      ("總目錄.md", lambda: _index_stale(vault) and cards.render_index(vault, turn_id)),
+                      ("綜合卡的相關檔", lambda: synthesis.render_cache(vault, None, turn_id))):
+        try:
+            run()
+        except Exception as e:  # noqa: BLE001
+            ledger.log_error(vault, f"升級後重寫{what}的連結沒成：{type(e).__name__}: {e}", source="upgrade")
+
+
 def _snapshot_file(vault, name):
     """pending 記的快照名 → 快照夾裡那個 .zip（只收單純的檔名，../ 這類一律不認）；不在回 None。"""
     if not isinstance(name, str) or not name.endswith(".zip") or Path(name).name != name or name in (".", ".."):
@@ -913,6 +938,7 @@ def finish(vault, turn_id):
             mig = migrate.apply(vault, turn_id)  # 先於 kb init：init 自己也會升設定檔 schema，但不備進回合（驗收 8 要退得回）
             had = {rel for rel in skeleton.files() if (Path(vault) / rel).exists()}
             _run_init(vault)
+            _relink(vault, turn_id)
             sk = skeleton.reconcile(vault, turn_id, from_version=cur)
             old_area = _old_area(vault, cur)  # init 之後：系統/ 已在
             created = sorted({rel for rel in skeleton.files() if rel not in had and (Path(vault) / rel).exists()}

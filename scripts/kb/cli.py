@@ -46,8 +46,6 @@ COMMANDS = {
                                "decline 檔名像密碼的這份不要讀，list 列出"),
     "unlock": ("kb.unlock", "密碼：save 存進這台電腦的憑證管理員，get 取出，forget 忘掉，list 列名字，"
                             "authorize 這一種的 PDF 用這組開，revoke 不再自動開"),
-    "money": ("kb.money_cli", "帳：add 記一筆，settle 收付了，edit 改，cancel／reopen，attach 補出處，merge 兩筆是同一筆，count 盤點，"
-              "unsure 看不出是不是她的錢，scanned 卡的錢抽過了，list、candidates、sum、stock、backfill 只讀"),
     "agenda": ("kb.agenda_cli", "日程：add 加一條，edit 改，done／cancel／reopen 改狀態，recheck 原檔新版看過了，list 列出，render 重寫日程.md，export 把日程放到指定資料夾"),
     "asks": ("kb.asks_cli", "要問客戶的事：列出跟這一句有關的與有時間性的（--about 名稱、--all 全部），其餘報件數；set-aside 先放著"),
     "lookup": ("kb.lookup_cli", "查一個實體：只讀，一次給齊綜合卡、檔案卡、口述、裁示、推算、日程與還沒整理的份數"),
@@ -72,6 +70,7 @@ COMMANDS = {
     "home": ("kb.home_cli", "Obsidian 首頁：--json 一次給齊首頁要的（時間軸、待辦、要你確認的、最近），只讀，給外掛用"),
     "renders": ("kb.renders_cli", "程式產生的頁（日程、待處理、裁示）：apply 照你在頁面上直接改的做，drop 把「你加的」裡的一筆拿掉"),
     "obsidian": ("kb.obsidian_cli", "Obsidian：status 裝了沒、登記了沒、外掛放了沒，open 替她把知識庫加進 Obsidian 並打開"),
+    "index": ("kb.index_cli", "卡片索引：rebuild 重建（找的結果跟卡對不上時用；平常索引自己會跟上）"),
     "find": ("kb.find_cli", "找檔：把一串字拆成實體、卡型、標籤、時間詞和字，找卡與綜合卡；只讀，不讀原檔"),
     "selftest": ("kb.selftest_cli", "自我檢查：這份外掛在這台電腦跑不跑得起來（模組、版本、每個 hook、背景升級），用暫存的小知識庫，不碰你的"),
 }

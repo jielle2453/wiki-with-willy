@@ -44,9 +44,10 @@ function isGitWatchFile(name) {
 const OPENED_MAX = 30;
 const KB_TIMEOUT_MS = 120000;
 const LANE_HEIGHT = 26;
-const KIND_LABEL = { deadline: '到期', meeting: '會議', promise: '承諾', reminder: '提醒', period: '期間' };
+const KIND_LABEL = { deadline: '到期', meeting: '會議', promise: '到期', reminder: '提醒', period: '期間' }; // promise：#68 前的舊值，照到期顯示
+const LEGACY_KIND = { promise: 'deadline' }; // #68 拿掉的種類 → 現在的（圖示照它）
 const KNOWN_KINDS = Object.keys(KIND_LABEL);
-const KIND_BY_LABEL = { 到期: 'deadline', 會議: 'meeting', 承諾: 'promise', 提醒: 'reminder', 期間: 'period' };
+const KIND_BY_LABEL = { 到期: 'deadline', 會議: 'meeting', 提醒: 'reminder', 期間: 'period' };
 const KNOWN_SHAPES = ['bar', 'point'];
 const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六'];
 const MANAGED_PAGES = ['系統/日程.md', '系統/待處理.md', '系統/裁示.md'];
@@ -1721,10 +1722,6 @@ const ICON_SHAPES = {
     ['circle', { cx: 11.6, cy: 6.2, r: 1.9 }],
     ['path', { d: 'M1.6 13.5c.4-2.4 2.2-4 4.4-4s4 1.6 4.4 4M10.6 9.4c1.9-.3 3.5.9 3.9 3.4' }],
   ],
-  promise: [
-    ['circle', { cx: 8, cy: 8, r: 6 }],
-    ['path', { d: 'm5.3 8.2 2 2 3.5-4' }],
-  ],
   deadline: [['path', { d: 'M3.5 14.5V2M3.5 2.5h8.5l-2.2 3 2.2 3H3.5' }]],
   'message-circle': [['path', { d: 'M5.27 13.33A6 6 0 1 0 2.67 10.73L1.33 14.67Z' }]], // Obsidian（lucide）的 message-circle，縮到 16 格
   reminder: [
@@ -2513,7 +2510,6 @@ class HomeView extends ItemView {
       'div',
       { cls: 'wwh-legend' },
       kind('meeting', '會議'),
-      kind('promise', '承諾'),
       kind('deadline', '到期'),
       kind('reminder', '提醒'),
       swatch('is-bar', '期間'),
@@ -2663,7 +2659,8 @@ class HomeView extends ItemView {
   markLine(m, todayN, row) {
     const state = [m.late ? 'is-late' : '', isDueToday(m, todayN) ? 'is-today' : '', m.inferred ? 'is-inferred' : '', m.critical ? 'is-critical' : ''];
     const onClick = (anchor) => this.markClick(m.raw, anchor);
-    const kind = m.kind && ICON_SHAPES[m.kind] ? m.kind : m.shape === 'bar' ? 'period' : null;
+    const known = LEGACY_KIND[m.kind] || m.kind;
+    const kind = known && ICON_SHAPES[known] ? known : m.shape === 'bar' ? 'period' : null;
     const leftCls = ['wwh-cell-left', 'wwh-mark-label', m.depth ? 'is-child' : '', ...state];
     const left = h(
       'div',
@@ -4009,7 +4006,7 @@ class WikiWithWillyPlugin extends Plugin {
       title: '新增日程',
       okText: '加進日程',
       fields: [
-        { key: 'kind', label: '種類', type: 'select', options: ['到期', '會議', '承諾', '提醒', '期間'], value: p.kind || '到期' },
+        { key: 'kind', label: '種類', type: 'select', options: ['到期', '會議', '提醒', '期間'], value: p.kind || '到期' },
         { key: 'date', label: '日期（期間是結束日）', type: 'date', value: p.date || today, required: true },
         { key: 'start', label: '開始日（期間才填）', type: 'date', value: p.start || '' },
         { key: 'time', label: '時間（可不填）', type: 'time', value: p.time || '' },

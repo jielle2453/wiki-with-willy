@@ -30,8 +30,8 @@ FIELD_LABEL = (("start", "開始"), ("text", "說明"), ("time", "時間"), ("en
 
 def add_arguments(sub):
     subs = sub.add_subparsers(dest="agenda_command", metavar="<子子命令>", required=True)
-    ad = subs.add_parser("add", help="加一條日程", description="加一條日程：到期、會議、承諾、提醒、期間。")
-    ad.add_argument("--kind", required=True, help="種類：到期、會議、承諾、提醒、期間")
+    ad = subs.add_parser("add", help="加一條日程", description="加一條日程：到期、會議、提醒、期間。")
+    ad.add_argument("--kind", required=True, help="種類：到期、會議、提醒、期間")
     ad.add_argument("--date", required=True, help="日期 YYYY-MM-DD（期間是預計結束）")
     ad.add_argument("--text", required=True, help="一句話")
     ad.add_argument("--start", help="開始日期 YYYY-MM-DD（期間一定要有）")

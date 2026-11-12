@@ -26,12 +26,15 @@ apply 按列判斷（同一個 rel 兩列各看各的），migrated 同一個 re
 開著的兩種帳待處理關掉（how「記帳改成另外的客製功能」，舊帳不再更新，問了沒處可改）；第十節原本是 on 或 spoken 的（D-534 時已開的庫）
 回一句 notes 說舊帳還在 系統/帳.md、不會再更新（finish 印，升級後第一句）。.system/money.json、streams/money/、系統/帳.md、系統/帳/、
 實體的 欄:、清冊裡抽過錢的指紋都不碰。md 有手改未套用時 Skip。schema_version 不動。
+拿掉承諾（#68，D-547）：再一列，rel 是 .system/agenda.json，一樣不看 schema、看內容：還有 kind 是 agenda.LEGACY_KINDS 的條目算 0、
+沒有（或沒檔）算 1、讀不了不算。rewrite 走 agenda._mutate 一次空寫入，轉換由它在手改比對之後做（promise 原地改 deadline，不加歷程），
+備份、流水檔、重畫、匯出都跟平常寫入一樣。schema_version 不動。
 """
 import json
 from collections import namedtuple
 from pathlib import Path
 
-from kb._lib import cards, entities, hold_migrate, inventory, profile
+from kb._lib import agenda, cards, entities, hold_migrate, inventory, profile
 from kb._lib import pending as pending_lib  # 這支自己有 pending()
 from kb._lib.io import FileLock, read_json, write_text_atomic
 
@@ -227,6 +230,23 @@ def _hold_stored(vault):
         return None
 
 
+def _promise_stored(vault):
+    """拿掉承諾那列（#68）：還有舊種類（promise）的條目算 0，沒有、沒檔算 1；讀不了回 None。"""
+    try:
+        data = agenda._load_raw(vault)
+    except (ValueError, OSError):
+        return None
+    return 0 if any(i.get("kind") in agenda.LEGACY_KINDS for i in data["items"]) else 1
+
+
+def _rewrite_promise(vault, turn_id):
+    """一次空寫入：_mutate 在手改比對之後把舊種類轉掉（#68）。沒有回合 _mutate 不轉，列進 skipped。"""
+    if not turn_id:
+        raise ValueError("沒有回合，舊的承諾沒轉")
+    agenda._mutate(vault, turn_id, lambda data: (None, False))
+    return {"notes": []}
+
+
 STATE_FILES = (
     Migration(profile.PROFILE_POSIX, lambda: profile.SCHEMA_VERSION, profile.stored_schema, _rewrite_profile),
     Migration(inventory.INVENTORY_POSIX, lambda: inventory.SCHEMA_VERSION, _raw_version(inventory.INVENTORY_POSIX),
@@ -238,6 +258,7 @@ STATE_FILES = (
     Migration(profile.PROFILE_POSIX, lambda: profile.SCHEMA_VERSION, _dirs_stored, _rewrite_dirs),
     Migration(hold_migrate.REL, lambda: 1, _hold_stored, hold_migrate.rewrite),  # 收件匣與 AI 產出合成暫存區（放寬甲第二輪 13）
     Migration(profile.PROFILE_POSIX, lambda: 1, _money_stored, _rewrite_money),  # 拿掉記帳（#65，看內容）
+    Migration(agenda.AGENDA_POSIX, lambda: 1, _promise_stored, _rewrite_promise),  # 拿掉承諾（#68，看內容）
 )
 CARD_HEADER_MIGRATIONS = []
 

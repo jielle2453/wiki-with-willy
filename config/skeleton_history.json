@@ -181,5 +181,19 @@
     ".gitignore": "2a77146b52d17617ce1296d450435a8819b203b04401bb2b16702e001be706eb",
     "AGENTS.md": "e46abc35318e22123f472d5ecc970284c4e8af12e5f6fa64d8cda344ea8f67bb",
     "CLAUDE.md": "c3d751c81fc762a9f7887ece6c4e1bc7f7944eac20142d3ea2f30c3c3c5c8232"
+  },
+  "0.42.0": {
+    ".claude/settings.json": "7bc059b1ebedefa4a052efe5216ae840cd3693763960a695fba8d846cccea0e3",
+    ".gitattributes": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da",
+    ".gitignore": "2a77146b52d17617ce1296d450435a8819b203b04401bb2b16702e001be706eb",
+    "AGENTS.md": "e46abc35318e22123f472d5ecc970284c4e8af12e5f6fa64d8cda344ea8f67bb",
+    "CLAUDE.md": "c3d751c81fc762a9f7887ece6c4e1bc7f7944eac20142d3ea2f30c3c3c5c8232"
+  },
+  "0.42.1": {
+    ".claude/settings.json": "7bc059b1ebedefa4a052efe5216ae840cd3693763960a695fba8d846cccea0e3",
+    ".gitattributes": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da",
+    ".gitignore": "2a77146b52d17617ce1296d450435a8819b203b04401bb2b16702e001be706eb",
+    "AGENTS.md": "e46abc35318e22123f472d5ecc970284c4e8af12e5f6fa64d8cda344ea8f67bb",
+    "CLAUDE.md": "c3d751c81fc762a9f7887ece6c4e1bc7f7944eac20142d3ea2f30c3c3c5c8232"
   }
 }

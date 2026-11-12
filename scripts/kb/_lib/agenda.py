@@ -1,6 +1,6 @@
 """日程 .system/agenda.json（schema 1，D-062、D-125～D-130）與渲染視圖 系統/日程.md（D-067：JSON 為真）。
 
-一條一個日期或一段時間：id（a- 加 8 碼 hex）、kind（deadline｜meeting｜promise｜reminder｜period）、start（有就是一條 bar，D-126）、
+一條一個日期或一段時間：id（a- 加 8 碼 hex）、kind（deadline｜meeting｜reminder｜period；promise 是 #68 前的舊值，寫入時轉成 deadline）、start（有就是一條 bar，D-126）、
 date、ended（只有期間用）、time、text、entities（實體名稱，同檔案卡；rename／merge 由 entities 呼叫這裡一起換）、status（open｜done｜cancelled）、
 source（D-041：interview｜inferred｜confirmed｜corrected）、origin（製卡抽出的才有：{card, fp}，fp 是那張檔案卡的 fp 前 12 碼，D-130）、
 lead_days、created_turn、history（每筆 {date, change, by, turn}）；有 proposal 的是「原檔新版跟客戶說的不同，等客戶選」。
@@ -12,7 +12,7 @@ lead_days、created_turn、history（每筆 {date, change, by, turn}）；有 pr
 agenda_export_dir 就在匯出自己的鎖裡重讀 agenda.json 與實體，把 willy-agenda/1 寫到 <夾>/willy-agenda.json（T-3；
 exported_at 以外都一樣就不寫）；失敗不擋日程，寫 hook-errors.log（source agenda_export），每次結果記在 .system/agenda_export.json。
 重複（D-501）：repeat {every year|month|week, from 錨點}，一條永遠代表「下一次」。會議、提醒過了就移到下一次（load 在記憶體移，
-_mutate 寫回並記歷程）；到期、承諾、期間要 done 才移、狀態維持 open。改日期錨點跟著換。
+_mutate 寫回並記歷程）；到期、期間要 done 才移、狀態維持 open。改日期錨點跟著換。
 #65 拿掉記帳：日程頁不再列帳的到期件，日程不記錢。實體名字寫成連到卡實際位置的連結（linker）。
 """
 import calendar
@@ -30,9 +30,11 @@ from kb._lib.io import FileLock, read_json, write_json_atomic, write_text_atomic
 AGENDA_POSIX = ".system/agenda.json"
 MD_POSIX = "系統/日程.md"
 SCHEMA_VERSION = 1
-KINDS = {"到期": "deadline", "會議": "meeting", "承諾": "promise", "提醒": "reminder", "期間": "period"}
+KINDS = {"到期": "deadline", "會議": "meeting", "提醒": "reminder", "期間": "period"}
+LEGACY_KINDS = {"promise": "deadline"}  # #68 拿掉的種類 → 現在的；舊資料讀到照它看（D-547）
 KIND_TEXT = {v: k for k, v in KINDS.items()}
-TRACKED = ("deadline", "promise")  # 過了還 open 才算逾期（D-129）
+KIND_TEXT.update({old: KIND_TEXT[new] for old, new in LEGACY_KINDS.items()})
+TRACKED = ("deadline", "promise")  # 過了還 open 才算逾期（D-129）；promise 是還沒轉的舊值，照到期追
 PASSING = ("meeting", "reminder")  # 過了就算已過去
 STATUSES = ("open", "done", "cancelled")
 SOURCES = ("interview", "inferred", "confirmed", "corrected")
@@ -55,7 +57,7 @@ HEADER = ("# 日程\n"
 EMPTY_SENTENCE = "日程是空的；說「9/25 下午有個會」我就記下來。"
 DATE_MSG = "日期要寫 YYYY-MM-DD，而且是真的日期"
 TIME_MSG = "時間要寫 HH:MM"
-KIND_MSG = "種類要是 到期、會議、承諾、提醒、期間 之一"
+KIND_MSG = "種類要是 到期、會議、提醒、期間 之一"
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _TIME = re.compile(r"\d{2}:\d{2}")
 _CHANGE_DATE = re.compile(r"date (\d{4}-\d{2}-\d{2}) → (\d{4}-\d{2}-\d{2})")
@@ -171,7 +173,7 @@ def parse_time(text):
 def kind_of(kind):
     """中文或英文種類名 → 英文值；不認得丟 AgendaRefused。"""
     kind = KINDS.get(kind, kind)
-    if kind not in KIND_TEXT:
+    if kind not in KINDS.values():  # 不查 KIND_TEXT：它含舊值 promise（#68 拒收）
         raise AgendaRefused(KIND_MSG)
     return kind
 
@@ -201,8 +203,10 @@ def _mutate(vault, turn_id, fn, hand_out=None):
         hand = _consume_hand(vault, data, turn_id)
         if hand_out is not None:
             hand_out.append(hand)
+        # 手改比對之後才轉：比對要用她看到的那份（#68）；沒有回合（kb init 補畫日程.md）不轉，備份要回合
+        legacy = bool(turn_id) and _convert_legacy(data)
         result, changed = fn(data)
-        changed = changed or rolled or isinstance(hand, dict) or hand == "unrecognized"  # hand.UNRECOGNIZED：頁面照常重寫
+        changed = changed or rolled or legacy or isinstance(hand, dict) or hand == "unrecognized"  # hand.UNRECOGNIZED：頁面照常重寫
         if changed:
             from kb._lib import turn
             turn.backup(vault, AGENDA_POSIX, turn_id)
@@ -215,6 +219,14 @@ def _mutate(vault, turn_id, fn, hand_out=None):
     if changed:
         safe_export(vault)  # 放開 agenda.json 的鎖之後（T-1）
     return result
+
+
+def _convert_legacy(data):
+    """拿掉的舊種類原地換成現在的（#68：promise → deadline）；不加歷程。回有沒有換。"""
+    hits = [i for i in data["items"] if i.get("kind") in LEGACY_KINDS]
+    for it in hits:
+        it["kind"] = LEGACY_KINDS[it["kind"]]
+    return bool(hits)
 
 
 def apply_hand(vault, turn_id):

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from kb._lib.io import FileLock, read_json, write_json_atomic
 
-FORMAT_VERSION = 2  # 跟大升級走（D-335）：遷移表有新列的那一版 +1，tools/release.py 守；舊版讀到比它新的行照讀、寫之前停（D-298）
+FORMAT_VERSION = 3  # 跟大升級走（D-335）：遷移表有新列的那一版 +1，tools/release.py 守；舊版讀到比它新的行照讀、寫之前停（D-298）
 STREAMS_REL = ".system/streams"
 LOCAL_REL = ".system/local"
 LEGACY_REL = ".system/legacy"

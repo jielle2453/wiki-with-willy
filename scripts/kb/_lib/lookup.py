@@ -99,7 +99,8 @@ def _read_ranges(vault, rel):
 def lookup(vault, query):
     """回 {"query","entity","synthesis","read_ranges","cards","statements","rulings","findings","agenda","unsorted","mentions","verify_max",
     "in_progress"（算在這個實體下的製作中檔，同 cards.wip 的欄位，D-525；沒登記也沒卡提到時是全部製作中的檔，檔名有問的詞的在前，#37）}
-    （沒登記多 mentions_total；沒卡提到再多 in_progress_total）。verify_max 是要逐份核對的份數上限（answer_verify_max，answer 裁定 6）；裁示帶日期（短標用）。"""
+    （沒登記多 mentions_total 與 similar〔名稱或別名含有問的字的實體 {name,type}〕；沒卡提到再多 in_progress_total；
+    similar 只有一個時照它查，多 partial: 全名，query 照舊是問的字，#37 重開）。verify_max 是要逐份核對的份數上限（answer_verify_max，answer 裁定 6）；裁示帶日期（短標用）。"""
     from kb._lib import agenda, cards, findings, inventory, rulings, statements, synthesis
     ent = entities.load(vault)
     sorted_ = cards.light_sort(vault)
@@ -108,10 +109,15 @@ def lookup(vault, query):
     out = {"query": query, "entity": None, "synthesis": None, "read_ranges": None, "cards": [], "statements": [], "rulings": [], "findings": [],
            "agenda": [], "unsorted": unsorted, "mentions": [], "verify_max": config.get(vault, "answer_verify_max"),
            "tags": [], "in_progress": []}
+    similar = partial(ent, query) if e is None or e.get("status") != "active" else []
+    if len(similar) == 1:  # 簡稱：名稱或別名含有問的字的只有一個，就照它查（#37 重開）
+        e = similar[0]
+        out["partial"] = e["name"]
     if e is None or e.get("status") != "active":
         found = mentions(vault, query)
         limit = config.get(vault, "lookup_mentions_max")
-        out.update(mentions=found[:limit], mentions_total=len(found))
+        out.update(mentions=found[:limit], mentions_total=len(found),
+                   similar=[{"name": x["name"], "type": x.get("type")} for x in similar[:limit]])
         if not found:  # 還沒整理的檔沒有卡，可能就在裡面（#37）
             out["in_progress"], out["in_progress_total"] = wip_hint(vault, [query], sorted_=sorted_)
         return out
@@ -146,6 +152,15 @@ def lookup(vault, query):
     out["agenda"] = _agenda(vault, name)
     out["in_progress"] = [r for r in cards.wip(vault, sorted_=sorted_) if name in r["entities"]]  # 製作中（D-525）
     return out
+
+
+def partial(ent, query):
+    """名稱或別名的 key 含有 query（至少 2 字）的 active 實體，照名稱長度、名稱排；一個實體只算一次（#37 重開：簡稱）。"""
+    k = entities.key(str(query or "").strip())
+    if len(k) < 2:
+        return []
+    rows = [e for e in ent["entities"] if e.get("status") == "active" and any(k in entities.key(w) for w in entities.words(e))]
+    return sorted(rows, key=lambda e: (len(e["name"]), e["name"]))
 
 
 def wip_hint(vault, words, names=(), sorted_=None):

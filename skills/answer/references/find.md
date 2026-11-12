@@ -73,6 +73,7 @@
 
 ## 六、名稱沒登記：`mentions`
 
+她說的是簡稱時：lookup 帶 `partial` 是照名稱或別名含有這個字的唯一實體查的，回答講全名；帶 `similar` 挑對得上問題的用全名再 lookup，看不出是哪個就問她。
 lookup 回 `entity: null` 時，`mentions` 列標題或正文出現這個詞的卡（`where` 是標題或正文），`mentions_total` 是全部份數。
 升級前做的舊卡（沒有實體欄）也找得到。讀那幾張卡回答，並說「這個名字還沒登記成案子」；客戶要登記交 note。
 `mentions` 的卡沒帶 `ruled_out`：引用前跑一次 `kb cards list --json`，照編號找那張的 `ruled_out`。

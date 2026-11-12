@@ -72,15 +72,18 @@ def wip_lines(got):
 
 def _lines(got):
     if got["entity"] is None:
+        names = "、".join(x["name"] + (f"（{x['type']}）" if x.get("type") else "") for x in got.get("similar") or [])
+        similar = [f"名稱有這個字的：{names}；要哪個用全名再查"] if names else []
         if not got["mentions"]:
-            return [lookup_lib.NOTHING] + wip_lines(got)
-        out = [f"沒有登記「{got['query']}」；有 {got['mentions_total']} 張卡提到它"]
+            return [lookup_lib.NOTHING] + similar + wip_lines(got)
+        out = [f"沒有登記「{got['query']}」；有 {got['mentions_total']} 張卡提到它"] + similar
         out += [f"- {m['title']}（{m['where']}）" for m in got["mentions"]]
         if got["mentions_total"] > len(got["mentions"]):
             out.append(f"……還有 {got['mentions_total'] - len(got['mentions'])} 張")
         return out
     e = got["entity"]
-    out = [_summary(got)]
+    out = [f"沒有登記「{got['query']}」，照「{got['partial']}」查："] if got.get("partial") else []
+    out.append(_summary(got))
     if e["aliases"]:
         out.append("別名：" + "、".join(e["aliases"]))
     if got["synthesis"]:

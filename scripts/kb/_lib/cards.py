@@ -674,24 +674,26 @@ def set_front_value(text, key, value):
     return "".join(out)
 
 
-def sync_fronts(vault, turn_id, ids=None, undo=None):
+def sync_fronts(vault, turn_id, ids=None, undo=None, groups=None):
     """檔案卡檔頭的「卡式」「封存」照清冊補或拿掉（kb cards sync、kb cards mode、kb archive 用）；ids 給了只動那幾張。
-    卡重寫過，redo 記號跟著換。回 changed（給日誌的 [{"path","action"}]）。"""
+    卡重寫過，redo 記號跟著換。回 changed（給日誌的 [{"path","action"}]）。groups 是呼叫端剛掃好的 _scan_groups 結果（不再掃一次）。"""
     from kb._lib import inventory, turn
     by_id = {e["id"]: e for e in inventory.load(vault)["entries"] if e.get("id")}
     changed, shas = [], {}
-    for cid, group in _scan_groups(vault)[0].items():
+    for cid, group in (groups if groups is not None else _scan_groups(vault)[0]).items():
         entry = by_id.get(cid)
         if entry is None or entry.get("status") != "active" or (ids is not None and cid not in ids):
             continue
         want = {"卡式": POINTER_TEXT if entry.get("card_mode") == POINTER else None,
                 "封存": (entry.get("archived") or {}).get("date") or None}
         card = group[0]
+        diffs = {k: v for k, v in want.items() if card["front"].get(k) != v}
+        if not diffs:  # 檔頭都對：不讀全文（#71 C-8，1 萬張卡逐張讀要幾秒）
+            continue
         text = _read(vault, card["path"])
         new = text
-        for key_, value in want.items():
-            if card["front"].get(key_) != value:
-                new = set_front_value(new, key_, value)
+        for key_, value in diffs.items():
+            new = set_front_value(new, key_, value)
         if new == text:
             continue
         before = inventory.card_sha(vault, card["path"])
@@ -1369,7 +1371,19 @@ def sync(vault, sources, turn_id, undo=None):
     """kb cards sync 的本體（note 改規則第 2 點開放給型別操作呼叫）：同編號多張留正本、其餘備進回合後刪；moved 的卡搬到原檔
     現在該在的夾（檔名不變；同夾只改檔頭），原檔清單與開原檔重算；舊路徑備成 delete、新路徑備成 create。
     undo（entities._Undo）給了就在每次寫、刪之前記舊內容，呼叫端出錯時還原。總目錄、綜合卡快取、日誌由呼叫端做。
-    回 {"moved","updated","dropped","skipped","changed","touched"（動到的卡掛的實體名稱）}。"""
+    回 {"moved","updated","dropped","skipped","changed","touched"（動到的卡掛的實體名稱）}。
+    先只跑分桶（light，sync 只用 moved、duplicates）：兩樣都空就只補卡式、封存後回，不算整理計畫、批次、實體掛載、綜合卡（#71 C-8）。"""
+    from kb._lib import entities, inventory
+    _restore_pdf(vault)  # todo 唯一會寫檔的一步，照舊先跑
+    light, groups, _data = _sort_files(vault, sources, entities.load(vault), inventory.load(vault)["entries"], light=True)
+    if light["moved"] or light["duplicates"]:
+        return _sync_all(vault, sources, turn_id, undo)
+    return {"moved": [], "updated": [], "dropped": [], "skipped": [], "changed": sync_fronts(vault, turn_id, undo=undo, groups=groups),
+            "touched": []}
+
+
+def _sync_all(vault, sources, turn_id, undo=None):
+    """sync 有卡要搬、要刪時的整份做法（改前的 sync）。"""
     from kb._lib import inventory, turn
     data = todo(vault, sources)
     by_id = {e["id"]: e for e in inventory.load(vault)["entries"]}

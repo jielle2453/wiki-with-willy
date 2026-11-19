@@ -26,6 +26,7 @@ reconcile 給 folders exclude／remove：排除或拿掉的位置從條目拿掉
 import copy
 import fnmatch
 import hashlib
+import marshal
 import os
 import re
 import secrets
@@ -62,6 +63,7 @@ EXAMPLES_MAX = 3
 HASH_CHUNK = 1 << 20  # 算位元組指紋一次讀 1 MB，每塊之間可以喊停
 
 _clock = time.monotonic  # 測試換掉它觸發時間預算
+_MEMO = {}  # vault 絕對路徑 → (靠的檔的樣子, 清冊的 marshal 快照)：同一個 process 內 load 的結果（D-548 (3)）；streams.forget() 一起清
 
 
 def _path(vault):
@@ -100,8 +102,30 @@ def _fs_key(path):
 
 # ---------- 讀寫與遷移 ----------
 
+def _memo_sig(vault):
+    from kb._lib import streams
+    return streams.GEN[0], streams.memo_sig(vault, "inventory")
+
+
 def load(vault):
-    """回 {"schema_version": 2, "entries": [...]}。檔不在回空的；壞 JSON、形狀不對、版本比 2 新丟 ValueError。"""
+    """回 {"schema_version": 2, "entries": [...]}。檔不在回空的；壞 JSON、形狀不對、版本比 2 新丟 ValueError。
+    同一個 process 內記住：清冊檔（與它的流水檔）沒變就回記住那份的複本，不重讀（D-548 (3)）。"""
+    from kb._lib import streams
+    key = streams._vkey(vault)
+    sig = _memo_sig(vault)
+    hit = _MEMO.get(key)
+    if hit is not None and hit[0] == sig:
+        return marshal.loads(hit[1])  # 複本（同 deepcopy，快 5 倍）
+    _MEMO.pop(key, None)
+    out = _load(vault)
+    after = _memo_sig(vault)
+    # 讀的時候只重寫了衍生副本與記號才記（有流水檔時清冊檔就是副本）；沒有流水檔的舊庫清冊檔要一樣
+    if after == sig or (after[0] == sig[0] and after[1][:-2] == sig[1][:-2] and streams.exists(vault, "inventory")):
+        _MEMO[key] = (after, marshal.dumps(out))
+    return out
+
+
+def _load(vault):
     data = read_json(_path(vault))
     if data is None:
         return copy.deepcopy(EMPTY)
@@ -148,8 +172,12 @@ def _migrate(vault, entry):
 
 def _write(vault, entries):
     """呼叫端持有清冊的鎖。"""
+    from kb._lib import streams
     _drop_stale_redo(vault, entries)
-    write_json_atomic(_path(vault), {"schema_version": SCHEMA_VERSION, "entries": entries})
+    try:
+        write_json_atomic(_path(vault), {"schema_version": SCHEMA_VERSION, "entries": entries})
+    finally:
+        streams.forget(vault, "inventory")
 
 
 def card_sha(vault, rel):

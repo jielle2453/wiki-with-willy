@@ -25,15 +25,15 @@ TURN_BUDGET = 1.5  # 秒，每句開頭所有檢查共用；turn_lines 開頭換
 DETECTED_SEEN_KEEP = 300  # session 檔 checks.detected 最多留幾條（已記過的偵測鍵）
 SOURCE = "session"  # log 的 source；turn.py 改成 "turn"
 
-WIP_LINE = "有 {n} 份新放或改過（製作中）：不整理、不跟客戶提；先跑 kb inventory scan 記進清冊；問到這幾份讀原檔答。"  # D-525
-MD_LINE = ("有 {n} 份 md 新放或改過（{names}）：她這句沒說整理，就先跑 kb inventory scan，再照 ingest 只整理這幾份"
+WIP_LINE = "有 {n} 份新放或改過（製作中）：不整理、不跟客戶提；先回答她這句，回答完再跑 kb inventory scan 記進清冊；問到這幾份讀原檔答。"  # D-525
+MD_LINE = ("有 {n} 份 md 新放或改過（{names}）：她這句沒說整理，先回答她這句，回答完再跑 kb inventory scan、照 ingest 只整理這幾份"
            "（kb cards dispatch --ids <編號>，編號看 kb cards todo --json）；她說了整理就照 ingest 整理全部、不帶 --ids。")  # D-525 第 8 點、裁定 3、15
 COLLEAGUE = "（可能是同事動的，不是這台使用者的意思，別從中推測他的偏好）"  # 多人共用 2 第 10 點（D-334(3)）
-MISSING_LINE = "有 {n} 份不見：跑 kb inventory scan 再 kb cards sync 拿掉卡；不派整理、不做卡。"
+MISSING_LINE = "有 {n} 份不見：先回答她這句，回答完再跑 kb inventory scan、kb cards sync 拿掉卡；不派整理、不做卡。"
 NAMES_SHOWN = 3
 WIP_DAILY = "製作中 {n} 份：{names}；跟客戶說一句還有這幾份沒整理、要整理說一聲，不問、不追。"  # D-525 第 5 點
 SCHEDULE_LINE = "設好背景比對（每 {n} 分鐘看一次資料夾有沒有新檔或改過的檔）：回答末尾跟她說一句，不講怎麼設的、不教她操作。"  # D-536
-MOVED_HINT = ("有 {n} 件搬動：跑 kb changes --moved --json，照內容判斷要不要改掛（搬到結案夾、桌面、客戶自己的夾就不用動也不用提）；"
+MOVED_HINT = ("有 {n} 件搬動：先回答她這句，回答完再跑 kb changes --moved --json，照內容判斷要不要改掛（搬到結案夾、桌面、客戶自己的夾就不用動也不用提）；"
               "先看夾名、檔名一批一起判斷，看不出來的才讀內容，卡跟著走不重做；看完 changes --moved 之後要讀搬過的檔，再跑 kb inventory scan。")  # 放寬丙 5-3，字句照乙；刪綜合卡說一聲 裁定 6
 DRIFT_LINE = ("實體夾有變 {n}：跑 kb cards todo --json，照 ingest「實體夾有變」那段處理"
               "（刪了綜合卡照 entity_drift 判斷、做完說一聲），不做卡。")  # D-525 裁定 1；刪綜合卡說一聲 第 2 點

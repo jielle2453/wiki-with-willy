@@ -47,6 +47,7 @@
   - `kb output save "<夾>"`：程式打包、驗，過了才把原檔現在那份存成同夾「<主檔名>（版本一、二…）」再蓋回原檔，檔名不變。
   - 回「檔案正開著，改視窗裡那份」：原檔沒動，改走上面開著那條。
   - 回答照念它印的那句，列出改了哪些字、哪幾格、哪幾頁，最後問她一句要不要刪掉之前的版本；她說好才 `kb source-edit trash <那幾份>`。
+- **查版面先叫 Office 自己算，不先轉圖**（開著的算視窗裡那份，關著的開工作區副本算、算完關掉）：PowerPoint 比字實際的高（`TextFrame2.TextRange.BoundHeight`）跟框高、Word 看頁數與分頁（`ComputeStatistics`、`Range.Information`）、Excel 看儲存格顯示的字（`Range.Text`）有沒有變 #### 或被截；有問題直接改，全部改完只轉一次圖、只轉改過的頁或範圍。每輪整份轉圖一次要 20～30 秒（#72）。
 - **轉格式、匯出、另存**（「這份轉成 PDF」）：`kb office copy` → `kb office pdf "<副本>"` → `kb output save "<PDF>" --to … --from <原檔>`；不直接寫進知識庫或原檔。
 
 ## 沒有工具時怎麼說

@@ -11,6 +11,7 @@
 """
 import hashlib
 import json
+import marshal
 import os
 import secrets
 import time
@@ -78,6 +79,8 @@ COMPACT_BYTES = 1_000_000  # 自己的檔超過這個大小，寫完順手併掉
 hard_delete = False  # purge 期間：刪掉的筆連這台檔裡的舊行一起拿掉（原文不留在自己的檔裡）
 stats = {"merges": 0}  # 快取沒命中、真的合併的次數（測試計次用）
 _TURN = {}  # (vault, kind) → 最近一次 turn.backup 記的回合代號
+_MEMO = {}  # (vault 絕對路徑, kind) → (靠的檔的樣子, 整份文件的 marshal 快照)：同一個 process 內 read_doc 的結果，不寫檔、不跨指令（D-548 (3)）
+GEN = [0]  # 清全部或清清冊時 +1：inventory.load 記住的跟著失效
 
 
 # ---------- 本機代號 ----------
@@ -108,6 +111,39 @@ def note_turn(vault, kind, turn_id):
     _TURN[(str(vault), base(kind))] = turn_id
 
 
+def _vkey(vault):
+    return os.path.normcase(os.path.abspath(vault))
+
+
+def _stat3(path):
+    try:
+        st = os.stat(path)
+        return (True, st.st_size, st.st_mtime_ns)
+    except OSError:
+        return (False, 0, 0)
+
+
+def memo_sig(vault, kind):
+    """read_doc 的結果靠哪些檔：這種類的流水檔、舊檔副本、副本記號（有本機那一半的再加那一半），各 (存在, 大小, mtime_ns)。"""
+    sig = [(f.name,) + _stat3(f) for f in _files(vault, base(kind))]
+    if kind in SPLIT:
+        sig.append(_stat3(local_path(vault, kind)))
+    sig += [_stat3(Path(vault) / legacy_rel(kind)), _stat3(_mirror_mark(vault, kind))]
+    return tuple(sig)
+
+
+def forget(vault=None, kind=None):
+    """清掉 read_doc（與 inventory.load）記住的結果：不給 vault 清全部（測試用）；給了清這種類，連同一份流水檔的封存視角。"""
+    if vault is None or base(kind) == "inventory":
+        GEN[0] += 1
+    if vault is None:
+        _MEMO.clear()
+        return
+    v, b = _vkey(vault), base(kind)
+    for k in [k for k in _MEMO if k[0] == v and base(k[1]) == b]:
+        del _MEMO[k]
+
+
 # ---------- 本機那一半（清冊的掃描所見、待處理的原檔不見／讀不到） ----------
 
 def local_path(vault, kind):
@@ -129,8 +165,11 @@ def _write_local(vault, kind, items):
     if _read_local(vault, kind) == items and (p.is_file() or not items):
         return
     p.parent.mkdir(parents=True, exist_ok=True)
-    with FileLock(p):
-        _w(p, {"schema_version": 1, "items": items})
+    try:
+        with FileLock(p):
+            _w(p, {"schema_version": 1, "items": items})
+    finally:
+        forget(vault, kind)
 
 
 def _split(kind, doc):
@@ -560,7 +599,13 @@ def diff(before, after, state=None):
 
 def write(vault, kind, before, after, turn_id=None, who=None, reverts=None, row_extra=None):
     """比出新增、刪掉、改了哪幾欄，每筆一行 append 進這台的檔。回寫了幾行。row_extra 是每行另外帶的欄（退回的 drop／undrop）。"""
-    vault = Path(vault)
+    try:
+        return _write(Path(vault), kind, before, after, turn_id, who, reverts, row_extra)
+    finally:
+        forget(vault, kind)
+
+
+def _write(vault, kind, before, after, turn_id, who, reverts, row_extra):
     path = own_file(vault, kind)
     path.parent.mkdir(parents=True, exist_ok=True)
     turn_id = turn_id or _TURN.get((str(vault), kind))
@@ -694,14 +739,20 @@ def write_mask(vault, kind, ids, fields, turn_id=None):
     with FileLock(path):
         row = {"v": FORMAT_VERSION, "op": "mask", "ids": list(ids), "fields": list(fields), "seq": 0, "by": path.stem,
                "at": _now(), "turn": turn_id}
-        _append(path, [json.dumps(row, ensure_ascii=False) + "\n"])
-        _scrub_own(vault, kind, path)
+        try:
+            _append(path, [json.dumps(row, ensure_ascii=False) + "\n"])
+            _scrub_own(vault, kind, path)
+        finally:
+            forget(vault, kind)
 
 
 def scrub(vault, kind):
     path = own_file(vault, kind)
     with FileLock(path):
-        _scrub_own(vault, kind, path)
+        try:
+            _scrub_own(vault, kind, path)
+        finally:
+            forget(vault, kind)
 
 
 def _scrub_own(vault, kind, path):
@@ -754,6 +805,7 @@ def compact(vault, kind):
         if dropped:
             from kb._lib.io import write_text_atomic
             write_text_atomic(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep))
+            forget(vault, kind)
         return dropped
 
 
@@ -819,7 +871,24 @@ def records_to_doc(kind, recs):
 
 
 def read_doc(vault, kind):
-    """流水檔合起來的整份文件；沒有流水檔回 None（呼叫端改讀舊檔）。"""
+    """流水檔合起來的整份文件；沒有流水檔回 None（呼叫端改讀舊檔）。
+    同一個 process 內記住：靠的檔（memo_sig）沒變就回記住那份的複本，不重讀（D-548 (3)）。
+    複本用 marshal 快照還原（同 deepcopy 的效果，1 萬筆清冊 0.13 秒，deepcopy 要 0.76 秒）。"""
+    key = (_vkey(vault), kind)
+    sig = memo_sig(vault, kind)
+    hit = _MEMO.get(key)
+    if hit is not None and hit[0] == sig:
+        return marshal.loads(hit[1])
+    _MEMO.pop(key, None)
+    doc = _read_doc(vault, kind)
+    if doc is not None:
+        after = memo_sig(vault, kind)
+        if after[:-2] == sig[:-2]:  # 讀的時候只重寫了副本與記號才記；流水檔、本機那一半中途變了（吸收外部改動、別的行程寫）下次重讀
+            _MEMO[key] = (after, marshal.dumps(doc))
+    return doc
+
+
+def _read_doc(vault, kind):
     if not exists(vault, kind):
         return None
     st = load(vault, kind)
@@ -848,7 +917,13 @@ def read_doc(vault, kind):
 
 def write_doc(vault, kind, data):
     """整份交回：只有舊檔沒有流水檔時先把舊檔搬成這台的流水檔，再比出改動寫進去。"""
-    vault = Path(vault)
+    try:
+        _write_doc(Path(vault), kind, data)
+    finally:
+        forget(vault, kind)
+
+
+def _write_doc(vault, kind, data):
     if not exists(vault, kind):
         migrate_kind(vault, kind)
     if kind in SPLIT:
@@ -927,6 +1002,7 @@ def migrate_kind(vault, kind, keep_legacy_dir=None):
             os.replace(path, dest)
         except OSError:
             path.unlink()
+    forget(vault, kind)
     load(vault, kind)  # 順便把衍生副本寫回舊路徑
     return len(recs)
 
@@ -1060,5 +1136,8 @@ def purge_tombstones(vault, kind):
             replace[rid] = {"v": FORMAT_VERSION, "op": "create" if alone else "set", "id": rid, "seq": seq,
                             "base": 0 if alone else max(prev - 1, 0), "by": by, "who": None, "at": _now(), "turn": None,
                             "set": dict(rec), **({"app": _app()} if _app() else {})}
-        _rewrite_own(vault, path, replace, dead)
+        try:
+            _rewrite_own(vault, path, replace, dead)
+        finally:
+            forget(vault, kind)
         return len(own_ids)

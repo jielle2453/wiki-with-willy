@@ -4,6 +4,20 @@
 bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；事後補就會變成第二份會漂的清單。
 為什麼只寫 spec 或決策裡有的，查不到寫「待補」，不推測。
 
+## 0.42.4 — 2026-11-19
+- **給客戶的一句話**：你問事情時會先回答，整理留到答完或你說了再做，查資料和整理也比較快；改簡報、Word、Excel 時先算好版面，存好就停。
+- **改了什麼**（#71、#72，D-548）：
+  - #71 A：`streams.read_doc` 與 `inventory.load` 在同一次執行內記住結果（marshal 快照，呼叫端改回傳物件不影響快取；寫入、外部改動、mtime 變都重讀）。
+  - #71 B：每句開頭的提醒（還沒整理的檔、md、找不到、搬動）改成先回答、答完才做清冊的事；scan 保留。
+  - #71 C-8：`kb cards sync` 沒有搬動、重複時不跑整理計畫，只補卡式、封存。輸出跟改前逐位元組相同。
+  - #72：produce 原則加「`kb output save` 放回之後就停，不跑 `kb cards todo`／`sync`／`dispatch`，她說整理才做」；`references/make.md` 加「查版面先叫 Office 自己算（PowerPoint `BoundHeight`、Word 頁數分頁、Excel `Range.Text`），全部改完只轉一次圖」。原建議放骨架 CLAUDE.md，常駐預算放不下，改放 produce（#72 裁定 1）。
+  - 不動骨架、資料格式。
+- **為什麼**：2026-11-19 用 3224 份的知識庫，找一份 PPT 等半分鐘以上，改 PPT 約 20 分鐘：每輪整份轉圖、存回後又自己跑 `cards todo`（單次 40～111 秒），客戶問一句 AI 先照提醒跑 scan、sync 才回答。jacky：修改、討論期間只做這句要的事，確定後說整理再做。
+- **commit**：134f40b4、da7ee85b（#71）；9086fb10、0fcdbd58、44aab9e9（#72）
+- **spec**：design/specs/2026-11-19-先回答與讀檔快取.md、design/specs/2026-11-19-改檔先算版面.md
+- **關掉的 issue**：#71、#72
+- **還沒驗、還沒定的**：#71 C 的速度目標沒到（1 萬份壞卡測試庫，改後 `cards sync` 6.3 秒、`lookup` 9.5 秒，目標 1～2 秒、1 秒內；改前 sync 46.8 秒）；3000 份級客戶庫沒量。剩下的大頭（lookup 整份分桶兩次、掃卡片夾、啟動、清冊）交 #73、B-535；`lookup` 收尾待問（C-9）這版不做。#72 新舊對照裡 AI 自己用 python 估字寬，沒叫 Office 的 `BoundHeight`；多輪修跑版的大簡報沒測。`ingest` SKILL.md「先 `inventory scan`」那句還沒改成先回答。
+
 ## 0.42.3 — 2026-11-12
 - **給客戶的一句話**：內部整理，用起來沒有變化。
 - **改了什麼**（B-690）：answer skill 本文「不是這裡的話」那段縮短（說新的事、糾正、記下來走 note 等轉介照舊，拿掉與 description 重複的例句），本文 3069 → 2977 字，回到 3000 字上限內；`test_skill_answer.py::Body::test_size` 轉綠。不改行為。

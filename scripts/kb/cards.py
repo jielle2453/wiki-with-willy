@@ -90,7 +90,7 @@ def add_arguments(sub):
     bt.add_argument("--failed", action="append", default=[], help="跟 --done 一起：沒做成的一份「<編號>：<原因>」，可重複")
     st = subs.add_parser("status", help="背景整理到哪了（只讀）", description="還在跑幾批、這次做好幾份、還剩幾份。")
     sp = subs.add_parser("stop", help="停背景整理", description="放掉這個對話的批次；回要停的子代理。")
-    wp = subs.add_parser("wip", help="製作中的檔（只讀）", description="新放、改過、她還沒說整理的檔（md 以外）與算在哪個實體下（D-525）。")
+    wp = subs.add_parser("wip", help="製作中的檔（只讀）", description="新放、改過、她還沒說整理的檔與算在哪個實體下（D-525）。")
     mo = subs.add_parser("mode", help="這份檔記成完整卡或指路卡", description="會一直改的檔：記成指路卡（pointer）或完整卡（full）；只記清冊，判斷交 AI。")
     mo.add_argument("id", help="清冊編號（f-…）")
     mo.add_argument("state", choices=["full", "pointer"], help="full 完整卡、pointer 指路卡")

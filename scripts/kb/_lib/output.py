@@ -22,7 +22,7 @@ OUTPUT = inventory.HOLD  # 暫存區（D-324：原 AI 產出與收件匣合成�
 ONLY_OUTPUT = "只能放進暫存區底下"  # output_rel（草稿判斷）還在用
 NEEDS_FILE_NAME = "--to 要寫成 <夾>/<檔名>"
 LINK_IN_OUTPUT = "--link 的成品要放在暫存區底下"
-NO_MD = "md 檔用檔案工具寫就好"
+NO_MD = "md 不經 output save：用 Write 直接寫到要放的位置{dest}，不要從工作區 cp 或 mv 搬（會被擋）"  # D-551(3)
 NOT_FOUND = "找不到這個檔：{path}"
 CREDENTIAL = "這個檔名像密碼或金鑰，不放"
 DRAFT_OUTSIDE = "草稿不在暫存區：{path}"
@@ -131,6 +131,16 @@ def resolve_dest(vault, sources, raw, cwd):
     if first and (Path(vault) / first).exists() and not (Path(cwd) / first).exists():
         return Path(os.path.abspath(Path(vault) / text))
     return Path(os.path.abspath(Path(cwd) / text))
+
+
+def _md_dest(vault, sources, parent_text, cwd, name):
+    """NO_MD 括號裡的目的地（知識庫相對，或來源的「別名/相對路徑」）；拿不到（不准放、知識庫外）回空字串。只算不動檔。"""
+    try:
+        place = place_at(vault, sources, resolve_dest(vault, sources, parent_text, cwd), name)
+    except Refused:
+        return ""
+    shown = place["rel"] or (place["uri_shown"] or "")[len("file://"):]
+    return f"（{shown}）" if shown else ""
 
 
 def place_at(vault, sources, dest_dir, name):
@@ -319,7 +329,7 @@ def save(vault, src, to, turn_id, cwd, from_=None, draft=None, link=None, replac
     if ":" in name or _UNSAFE.search(name):
         raise Refused(COLON)
     if Path(name).suffix.lower() == ".md":
-        raise Refused(NO_MD)
+        raise Refused(NO_MD.format(dest=_md_dest(vault, sources, parent_text, cwd, name)))
     place = place_at(vault, sources, resolve_dest(vault, sources, parent_text, cwd), name)
     if place["rel"] and credentials.match_segment(place["rel"].split("/")[1:]) is not None:
         raise Refused(CREDENTIAL)

@@ -4,7 +4,7 @@
 開場只留 kb 行、核心規則、偏好、摺疊行與「這台今天第一次」那批（daily）；其他每句開頭做（turn_lines）：
   daily（env.json 的 daily_done 不是今天才做）→ 讀背景比對的清單（file_compare，D-536）→ line_card_edits → line_tags
   → line_profile → line_missing_sources → 搬動、變動（change_lines）、實體夾有變（line_drift）。
-新放、改過的檔先算製作中，不叫 AI 整理；md 照舊整理那幾份（D-525）。
+新放、改過的檔先算製作中，不叫 AI 整理；md 也一樣（D-525、D-551）。
 時間到（TURN_BUDGET 秒，從 hook 開始算）就停，沒做完的下一句接著做。各檢查先比修改時間（記在 session 的回合檔 checks，
 上次檢查的時間），沒變不讀；同一件同一個對話講過就不再印（checks 的 told）。全部只讀（卡的基準與 env.json 的記號例外，照舊）。
 任何例外只寫 .system/hook-errors.log（source 由呼叫端的 SOURCE 決定），其他檢查照做。
@@ -26,8 +26,6 @@ DETECTED_SEEN_KEEP = 300  # session 檔 checks.detected 最多留幾條（已記
 SOURCE = "session"  # log 的 source；turn.py 改成 "turn"
 
 WIP_LINE = "有 {n} 份新放或改過（製作中）：不整理、不跟客戶提；先回答她這句，回答完再跑 kb inventory scan 記進清冊；問到這幾份讀原檔答。"  # D-525
-MD_LINE = ("有 {n} 份 md 新放或改過（{names}）：她這句沒說整理，先回答她這句，回答完再跑 kb inventory scan、照 ingest 只整理這幾份"
-           "（kb cards dispatch --ids <編號>，編號看 kb cards todo --json）；她說了整理就照 ingest 整理全部、不帶 --ids。")  # D-525 第 8 點、裁定 3、15
 COLLEAGUE = "（可能是同事動的，不是這台使用者的意思，別從中推測他的偏好）"  # 多人共用 2 第 10 點（D-334(3)）
 MISSING_LINE = "有 {n} 份不見：先回答她這句，回答完再跑 kb inventory scan、kb cards sync 拿掉卡；不派整理、不做卡。"
 NAMES_SHOWN = 3
@@ -239,15 +237,6 @@ def drift_count(vault):
     return _DRIFT[key]
 
 
-def _is_md(uri):
-    return uri.lower().endswith(".md")
-
-
-def _names(uris):
-    names = [u.rsplit("/", 1)[-1] for u in uris]
-    return "、".join(names[:NAMES_SHOWN]) + ("等" if len(names) > NAMES_SHOWN else "")
-
-
 def _stamp(vault, sources, uri):
     """檔現在的「大小:修改時間」（裁定 18：同一份又改了再講）；找不到檔回空字串。"""
     from kb._lib import inventory
@@ -259,10 +248,10 @@ def _stamp(vault, sources, uri):
     return f"{st.st_size}:{st.st_mtime_ns}"
 
 
-def change_lines(vault, told_files=(), session_id=None):
-    """每句開頭的變動（D-525）：回 (行清單, 更新後的 told_files)。md 以外的新增、修改 → WIP_LINE（製作中，不叫整理）；md → MD_LINE
-    （這個 session 按過停止不印，answer 裁定 14）；不見 → MISSING_LINE。同一份同一個內容一個對話只講一次，又改了再講（裁定 18：
-    鍵「wip|uri|大小:修改時間」「md|uri|…」，記新鍵時同一份的舊鍵拿掉；不見的鍵「missing|uri」在檔回來後拿掉（missing、
+def change_lines(vault, told_files=()):
+    """每句開頭的變動（D-525）：回 (行清單, 更新後的 told_files)。新增、修改（md 也是，D-551）→ WIP_LINE（製作中，不叫整理）；
+    不見 → MISSING_LINE。同一份同一個內容一個對話只講一次，又改了再講（裁定 18：
+    鍵「wip|uri|大小:修改時間」，記新鍵時同一份的舊鍵拿掉（含升級前的「md|uri|…」，不另遷移）；不見的鍵「missing|uri」在檔回來後拿掉（missing、
     still_missing 都不算回來），又不見再講）。清冊裡記成指路卡、封存、照設定不整理、讀不了的不算（cards.not_wip，裁定 8）。搬動、重複、之前就不見的不算；要先補位置或
     --finish 轉格式時都不印。不報「還有幾份沒整理」（放寬丙 3，D-310(2)）。"""
     told = list(told_files)
@@ -299,21 +288,22 @@ def change_lines(vault, told_files=(), session_id=None):
     def fresh(kind, uris):
         return [u for u in dict.fromkeys(uris) if key(kind, u) not in seen]
     changed = [u for u in report["added"] + report["modified"] if inventory.uri_key(u) not in skip]
-    groups = (("wip", fresh("wip", [u for u in changed if not _is_md(u)])),
-              ("md", [] if _stopped(vault, session_id) else fresh("md", [u for u in changed if _is_md(u)])),
-              ("missing", fresh("missing", report["missing"])))
+    groups = (("wip", fresh("wip", changed)), ("missing", fresh("missing", report["missing"])))
     lines, keys = [], []
     for kind, uris in groups:
         if not uris:
             continue
-        line = (WIP_LINE.format(n=len(uris)) if kind == "wip" else MISSING_LINE.format(n=len(uris)) if kind == "missing"
-                else MD_LINE.format(n=len(uris), names=_names(uris)))
+        line = WIP_LINE.format(n=len(uris)) if kind == "wip" else MISSING_LINE.format(n=len(uris))
         if any(_colleague_uri(vault, sources, u) for u in uris):  # 多人時共用夾裡的變動：不說「你」、不掛這台的人
             line += COLLEAGUE
         lines.append(line)
         keys += [key(kind, u) for u in uris]
-    old = {k.rsplit("|", 1)[0] for k in keys if not k.startswith("missing|")}  # 同一份的舊鍵（含沒帶指紋的舊格式）
-    told = [k for k in told if k not in old and k.rsplit("|", 1)[0] not in old]
+    old = {k.rsplit("|", 1)[0].split("|", 1)[1] for k in keys if k.startswith("wip|")}  # 同一份的舊鍵（含沒帶指紋、md| 的舊格式）
+
+    def stale(k):
+        kind, _, rest = k.partition("|")
+        return kind in ("wip", "md") and (rest in old or rest.rsplit("|", 1)[0] in old)
+    told = [k for k in told if not stale(k)]
     return lines, told + keys
 
 
@@ -333,20 +323,6 @@ def line_moved_files(vault, told):
 
     fresh = [k for k in (f"moved|{g['from']}|{g['to']}" for g in cards.group_moves(vault, got[1]["moved"])) if k not in told]
     return (MOVED_HINT.format(n=len(fresh)), fresh) if fresh else None
-
-
-def _stopped(vault, session_id):
-    """這個 session 按過停止嗎（session 檔記著 ingest_stopped，answer 第 9 點）。只讀；讀不到當沒按過。"""
-    if not session_id:
-        return False
-    from kb._lib import turn
-
-    try:
-        data = turn._read_turn(turn._session_file(vault, session_id))
-    except OSError as e:
-        log_vault(vault, e)
-        return False
-    return bool(data and data.get("ingest_stopped"))
 
 
 # ---------- 卡、標籤、設定檔、找不到的來源 ----------
@@ -735,7 +711,7 @@ def turn_lines(vault, session_id):
         if moved and not yield_to_upgrade(vault):
             tell(moved[0])
             told.extend(moved[1])
-        lines, told_files = guarded(change_lines, vault, told_files, session_id) or ([], told_files)
+        lines, told_files = guarded(change_lines, vault, told_files) or ([], told_files)
         for line in lines:
             tell(line)
         tell(guarded(line_drift, vault), once=True)

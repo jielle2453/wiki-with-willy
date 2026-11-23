@@ -59,6 +59,18 @@ def members(vault):
         return []
 
 
+def member_of(vault, name):
+    """名字或別名 → 第五節「本人」那列的正名；對不上回 None（比法同設定檔：全半形、大小寫不分）。"""
+    try:
+        from kb._lib import profile
+
+        rows = [a for a in (profile.load(vault) or {}).get("about") or [] if a.get("kind") == "person"]
+    except Exception:  # noqa: BLE001
+        return None
+    key = profile._key(str(name).strip())
+    return next((a["name"] for a in rows if key in {profile._key(n) for n in [a["name"], *(a.get("aliases") or [])]}), None)
+
+
 def parse_whose(text):
     """--whose 的字 → "team" 或名字清單。空字串、全隊類字眼都是 team。"""
     names = [x.strip() for x in str(text or "").replace("、", ",").replace("，", ",").split(",") if x.strip()]

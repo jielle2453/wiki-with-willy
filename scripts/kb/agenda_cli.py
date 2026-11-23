@@ -25,7 +25,7 @@ CLI_LOCK_TIMEOUT = 30
 LOCK_BUSY = "等不到鎖，沒有寫入"
 CHANGED = [{"path": agenda.AGENDA_POSIX, "action": "modify"}, {"path": agenda.MD_POSIX, "action": "modify"}]
 FIELD_LABEL = (("start", "開始"), ("text", "說明"), ("time", "時間"), ("entities", "掛的實體"), ("lead_days", "提前天數"), ("repeat", "重複"),
-               ("whose", "誰的"))
+               ("whose", "誰的"), ("owner", "負責人"))
 
 
 def add_arguments(sub):
@@ -41,6 +41,7 @@ def add_arguments(sub):
     ad.add_argument("--lead-days", type=int, help="提前幾天提醒；沒給用 agenda_window_days")
     ad.add_argument("--repeat", help="每年、每月、每週（D-501）")
     ad.add_argument("--whose", help="全隊或名字（可用逗號分開幾個人）；沒給是全隊；製卡抽的一律全隊")
+    ad.add_argument("--owner", help="負責人：成員名字（逗號分開幾個人）；無 是空著；只有多人共用用；不影響誰看得到")
     ed = subs.add_parser("edit", help="改一條日程", description="改日期、開始、時間、說明、掛的實體、提前天數。")
     ed.add_argument("id", help="日程編號（a-…）")
     ed.add_argument("--date", help="新日期 YYYY-MM-DD")
@@ -51,6 +52,7 @@ def add_arguments(sub):
     ed.add_argument("--lead-days", type=int, help="提前幾天提醒")
     ed.add_argument("--repeat", help="每年、每月、每週；不重複 是拿掉")
     ed.add_argument("--whose", help="改成全隊或名字（逗號分開幾個人）；製卡抽的一律全隊")
+    ed.add_argument("--owner", help="負責人：成員名字（逗號分開幾個人）；無 是空著；只有多人共用用；不影響誰看得到")
     ed.add_argument("--card", help="照這張卡的新版重對（只能是出處那張）：來源維持推測、記下新版的指紋")
     helps = {"done": "記成完成", "cancel": "取消", "reopen": "重開"}
     status_parsers = [subs.add_parser(name, help=text, description=f"把一條日程{text}。") for name, text in helps.items()]
@@ -115,7 +117,7 @@ def _origin(vault, it):
 def _add(vault, args, as_json, conversation, turn_id):
     it, created = agenda.add(vault, args.kind.strip(), args.date, args.text, args.entity or [], turn_id, start=args.start,
                              time=args.time, card=args.card, lead_days=args.lead_days, repeat=args.repeat,
-                             whose=args.whose)
+                             whose=args.whose, owner=args.owner)
     line = f"{_describe(it)}{_origin(vault, it)}"
     if not created:
         _out(as_json, [f"日程裡已經有這條：{line}"], {"item": it, "created": False})
@@ -140,7 +142,8 @@ def _changes(before, after):
 
 def _edit(vault, args, as_json, conversation, turn_id):
     fields = {"date": args.date, "start": args.start, "time": args.time, "text": args.text, "entities": args.entity,
-              "lead_days": args.lead_days, "repeat": args.repeat, "whose": args.whose}
+              "lead_days": args.lead_days, "repeat": args.repeat, "whose": args.whose,
+              "owner": args.owner}
     before = copy.deepcopy(agenda.get(vault, args.id))
     if all(v is None for v in fields.values()) and not args.card and before.get("source") != "inferred":
         print("沒有給要改的欄位")  # 推測的那條不帶欄位是「記成確認」（lint 桌面版確認後）
@@ -254,7 +257,8 @@ def _list(vault, args, as_json):
     for it in items:
         names = it.get("entities") or []
         print(f"- {_when(it)}{agenda.KIND_TEXT.get(it['kind'], it['kind'])} {it['text']}"
-              + (f"（{'、'.join(names)}）" if names else "") + agenda.repeat_suffix(it) + _suffix(it))
+              + (f"（{'、'.join(names)}）" if names else "") + (f"（負責：{'、'.join(it['owner'])}）" if it.get("owner") else "")
+              + agenda.repeat_suffix(it) + _suffix(it))
     return 0
 
 

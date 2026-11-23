@@ -85,6 +85,9 @@ CODE_REASON = ("這段程式會刪檔或覆蓋檔，來不及先留一份：刪�
                "搬檔改名（os.rename、shutil.move）可以照跑。" + AI_TAIL)
 EXCLUDED_REASON = "「{alias}」使用者說過不讀，不讀也不寫；使用者要重新納入時跑 kb folders include <路徑>。" + AI_TAIL
 EXCLUDED_INSIDE_REASON = "這個範圍底下有使用者說過不讀的夾，縮到不含它的子資料夾再做。" + AI_TAIL
+SEARCH_CODE = "search"  # D-550：知識庫與來源裡整夾找字，改走 kb find／kb lookup
+SEARCH_REASON = ("在知識庫或來源裡整夾找字不准：找資料用 kb find \"<字>\"（卡與綜合卡）或 kb lookup <實體>；"
+                 "要看原檔某一段，先從卡找到那份，再 Read，或 kb convert 後對那一個檔 Grep。" + AI_TAIL)
 SCRIPT_UNREAD = "script_unread"  # 腳本檔讀不到或超過 guard_script_max_bytes：照 D-306(4) 放行，ledger 記一行
 RUN_FILE = ("deny", "run_file", "知識庫與原檔夾裡的程式或巨集檔不直接執行；要打開給使用者看，用 PDF、Word 這類文件。" + AI_TAIL)
 _RUN_EXT = ("", ".exe", ".com", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".lnk", ".wsf", ".wsh", ".vbe", ".jse", ".msc", ".cpl")  # 裸程式名在效用 cwd 底下找的副檔名
@@ -167,6 +170,60 @@ _WILDCARD_CHARS = set("*?[")
 SEARCH_ALWAYS = {"rg", "find", "tree", "select-string", "sls"}  # 本來就遞迴或讀整個管線
 GREP_FAMILY = {"grep", "egrep", "fgrep", "findstr"}  # 要帶 -r／-R／--recursive／/s
 LIST_VERBS = {"ls", "dir", "get-childitem", "gci"}  # 要帶 -r／-R／-Recurse／/s
+PIPE_SEARCH = {"select-string", "sls"}  # 沒給 -Path 時找的是管線前面幾段給的檔（D-550）
+RG_LIKE = {"ag", "ack", "ugrep"}  # 裁定 8：跟 rg 一樣，沒點名範圍時找效用 cwd
+RG_LIKE_LIST = {"-g", "-f", "--help", "--version", "-V", "--list-file-types", "--help-types"}  # ag -g、ack -f／-g 只列檔名、說明與版本
+CONTENT_WORDS = GREP_FAMILY | PIPE_SEARCH | RG_LIKE | {"rg"}  # xargs、find -exec 跑這些就是找內容（裁定 8）
+FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+XARGS_VALUED = {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars",
+                "--process-slot-var"}  # -e、-i、-l 的值要黏著寫（-l1），不吃下一個字
+GIT_VALUED = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def _first_command(words, valued):
+    """跳過選項（valued 裡的要吃下一個值）後的第一個字，當動詞看（小寫、去路徑與 .exe）；沒有回空字串。"""
+    skip = False
+    for w in words:
+        if skip:
+            skip = False
+            continue
+        if w.startswith("-"):
+            skip = w in valued
+            continue
+        if w in (".", "{}"):
+            continue  # xargs -I{} 拆字時多出的 .、替換用的 {}（不是要跑的指令）
+        return cmdparse._base(w)
+    return ""
+
+
+def _content_search(verbs, flags, words=(), verb=""):
+    """這一段是不是找內容（D-550）：grep 家族帶遞迴、rg、Select-String、findstr /s；裁定 8 加 git grep、ag、ack、ugrep，
+    與 xargs、find -exec 跑的找內容動詞（只看這一段的動詞與它包著跑的那個，不看參數裡剛好同名的字，review 1）。
+    find、tree、ls、gci 只列檔名不算。回 "grep"（沒點名範圍時找效用 cwd）、"rg"（第一段才找效用 cwd，管線後面是過濾前一段）、
+    "pipe"（Select-String：沒點名時找管線前段的檔）、"xargs"（一律加上管線前段的檔）或 None。"""
+    low = [f.lower() for f in flags]
+    words = [str(w) for w in words]
+    at = next((i for i, w in enumerate(words) if cmdparse._base(w) == verb), None) if verb else None
+    rest = words[at + 1:] if at is not None else []
+    if verb == "xargs":
+        return "xargs" if _first_command(rest, XARGS_VALUED) in CONTENT_WORDS else None
+    if verb == "find":
+        for i, w in enumerate(rest):
+            if w.lower() in FIND_EXEC and i + 1 < len(rest) and cmdparse._base(rest[i + 1]) in CONTENT_WORDS:
+                return "grep"  # find … -exec grep：找的是 find 的範圍
+    if verb == "git" and _first_command(rest, GIT_VALUED) == "grep":
+        return "grep"  # git grep：沒給 pathspec 時找效用 cwd 底下
+    if verb in RG_LIKE:
+        return None if RG_LIKE_LIST & set(flags) else "rg"
+    if any(v in ("grep", "egrep", "fgrep") and any(_is_recursive_flag(v, f) for f in flags) for v in verbs):
+        return "grep"
+    if "findstr" in verbs and any(_FINDSTR_SWITCHES.match(f) and "s" in f for f in low):  # 裁定 16 #2
+        return "grep"
+    if "rg" in verbs and not ({"--files", "--type-list", "--help", "-h", "--version", "-V"} & set(flags)):
+        return "rg"  # rg --files 只列檔名（code review F2）
+    if any(v in PIPE_SEARCH for v in verbs):
+        return "pipe"
+    return None
 
 
 def _token_filename_hit(text):
@@ -350,6 +407,7 @@ def _stages(command, powershell=False):
 
 
 _CD_VERBS = cmdparse._CD | {"push-location"}  # V6：Push-Location 也是 cd
+_FINDSTR_SWITCHES = re.compile(r"^/[a-zA-Z]+$")  # 裁定 16 #2：findstr 開關可併寫（/spin、/sx）
 _SINGLE_SWITCH = re.compile(r"^/[a-zA-Z]$")  # V5／X3：開關式指令或 PowerShell 的單字母 /x 是旗標
 
 
@@ -582,14 +640,14 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
     base = normalize(cwd, None)
     out = {"read_dirs": [], "implicit_dirs": [], "read_paths": set(), "write_targets": set(), "write_globs": [],
            "globs": [], "cd_dirs": [], "cd_targets": set(), "token": None, "unparsed": False, "has_write": False,
-           "list_only": False, "body_reads": [], "stages": [], "open_exempt": set()}
+           "list_only": False, "body_reads": [], "stages": [], "open_exempt": set(), "search_dirs": []}
     open_targets, other_paths = set(), set()
     plans = _plan_stages(cleaned, bodies, tool == "PowerShell")
     out["stages"] = plans
     out["list_only"] = bool(plans) and not bodies and all(
         not p["redirect"] and (cmdparse.list_only(p["verb"], p["words"]) if p["stage"] == 0 else _text_filter(p, cwd, tool))
         for p in plans)
-    sub_paths, sub_globs, sub_write_empty = {}, {}, {}
+    sub_paths, sub_globs, sub_write_empty, sub_scope = {}, {}, {}, {}
     uncertain, cd_written = [], set()
 
     def add_write(p, _tok):
@@ -708,11 +766,11 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
                         out["globs"].append(p)  # 第十輪 A3：導向目標含萬用字元（> ../客*/a.txt），前綴夾與展開命中也進區判斷
                         out["write_globs"].append(p)
                 continue
-            word = low.replace("\\", "/").rsplit("/", 1)[-1]
+            word = cmdparse._base(tok)  # 裁定 16 #1：rg.exe、grep.exe、findstr.exe 也認
             if word in SEARCH_ALWAYS or word in GREP_FAMILY or word in LIST_VERBS:
                 verbs.append(word)  # 動詞任一處都算（time、sudo、LC_ALL=C、$x = 前綴不用特別處理）
                 continue
-            if tok.startswith("-") or (switch_ok and _SINGLE_SWITCH.match(tok)):
+            if tok.startswith("-") or (switch_ok and _SINGLE_SWITCH.match(tok)) or ("findstr" in verbs and _FINDSTR_SWITCHES.match(tok)):
                 flags.append(tok)
                 continue
             if out["token"] is None and (_outside_vault(base, vault_n) or "$" in tok or "%" in tok):
@@ -768,6 +826,19 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
             if os.path.isdir(p) and not open_kind:
                 out["read_dirs"].append(p)
         search = any(v in SEARCH_ALWAYS or any(_is_recursive_flag(v, f) for f in flags) for v in verbs)
+        finding = _content_search(verbs, flags, plan["words"], verb) if not write_verb else None
+        if finding:  # D-550：找內容的範圍（點名的夾、萬用字元前綴夾；沒點名時效用 cwd 或管線前段的夾）
+            named = [d for d in stage_reads if os.path.isdir(d)] + [_pattern_head(g) for g in stage_globs]
+            if not has_read_path and base is not None and (finding == "grep" or (finding == "rg" and plan["stage"] == 0)):
+                named.append(base)
+            if finding == "xargs" or (not has_read_path and finding == "pipe"):
+                named += sub_scope.get(plan["sub"], [])  # xargs 帶了別的檔也照樣把前段給的檔接在後面（review 3）
+            out["search_dirs"].extend(d for d in named if d)
+        # 這一段給管線後面的範圍（Select-String 沒給 -Path 時找的是它）：點名的夾、萬用字元前綴夾，沒點名時列或找的效用 cwd（review P1）
+        scope = [d for d in stage_reads if os.path.isdir(d)] + [_pattern_head(g) for g in stage_globs]
+        if not has_read_path and base is not None and (search or verb in LIST_VERBS or verb == "tree"):
+            scope.append(base)
+        sub_scope.setdefault(plan["sub"], []).extend(d for d in scope if d)
         if search and not has_read_path and not write_verb and base is not None and not inside(base, vault_n):
             out["read_dirs"].append(base)
             out["implicit_dirs"].append(base)
@@ -1055,7 +1126,7 @@ def _nearest_existing(path):
     return cur
 
 
-def _file_tool(tool, target, cwd, vault, sources):
+def _file_tool(tool, target, cwd, vault, sources, search=True):
     column = "read" if tool in READ_TOOLS else "write"
     path = normalize(target, cwd)
     vault_n = normalize(vault, None)
@@ -1076,6 +1147,8 @@ def _file_tool(tool, target, cwd, vault, sources):
             if code:
                 return Decision("deny", scan_zone, code, reason, [_row(tool, "deny", scan_zone, code, target)], vault)
     decision, code, reason = _verdict(zone, column, alias)
+    if search and tool == "Grep" and decision != "deny" and os.path.isdir(path) and search_scope(path, vault_n, sources, zone):
+        decision, code, reason = "deny", SEARCH_CODE, SEARCH_REASON  # D-550：整夾找字改走 kb find／kb lookup
     if column == "write" and is_willy_file(zone, path, vault_n):
         decision, code, reason = "deny", "willy", willy_reason(zone, path, vault_n, target)
     rows = []
@@ -1149,6 +1222,17 @@ def above_willy(path, vault_n):
     """path 是知識庫的上層，或上層 vault 那份外掛夾的上層（<上>/.obsidian、<上>/.obsidian/plugins 與更上面）：整夾刪掉、改名、搬走，
     裡面 willy 的檔跟著走。path、vault_n 都已 normalize。_ancestor_zone 與 kb source-edit（#66 丙裁定 10）共用。"""
     return inside(vault_n, path) or any(inside(outer, path) for outer in outer_plugin_dirs(vault_n))
+
+
+def search_scope(path, vault_n, sources, zone=None):
+    """D-550：整夾找字要擋的範圍：總資料夾裡（含本身，skill 夾 Z13 除外）、登記來源裡、或包住總資料夾的上層夾。
+    只包住來源、不包住總資料夾的上層夾不算。path、vault_n 都已 normalize。"""
+    zone = zone or classify(path, vault_n, sources)[0]
+    if in_workspace(path, vault_n):
+        return False  # 裁定 10：produce 工作區是 kb office copy --unpack 的工作複本，裡面整夾找字放行
+    if inside(path, vault_n):
+        return zone != "Z13"
+    return zone in SOURCE_ZONES or inside(vault_n, path)
 
 
 def _ancestor_zone(path, vault_n, sources):
@@ -2113,6 +2197,10 @@ def _shell_tool(tool, command, cwd, vault, sources, depth=0):
         if zone == "Z10b":
             _d, code, reason = _verdict(zone, "read", alias)
             return deny(zone, code, reason)
+    # D-550：整夾找字（排除夾、憑證已在前面判過）
+    for p in dict.fromkeys(info["search_dirs"]):
+        if os.path.isdir(p) and search_scope(p, vault_n, sources):
+            return deny(classify(p, vault_n, sources)[0], SEARCH_CODE, SEARCH_REASON)
     # 放寬甲：使用者區規則（U1～U6）；看不出目標的（原本的 unparsed）照 U5 看動詞
     got = _user_rules(info, ctx, normalize(cwd, None), [z for _p, z, _a in classified], recurse)
     if got is not None:
@@ -2323,17 +2411,18 @@ def _decide(payload):
                 if d.decision == "deny":
                     return d
             # 第十一輪保底：path 或樣式含 { 時，{ 之前的資料夾先做區判斷（Glob path "../raw/行政/{薪資,x}/*" 要 Z10b）
-            for text, base in ((str(target), cwd), (str(ti.get("pattern") or ""), target_n), (str(ti.get("glob") or ""), target_n)):
+            for n, (text, base) in enumerate(((str(target), cwd), (str(ti.get("pattern") or ""), target_n),
+                                              (str(ti.get("glob") or ""), target_n))):
                 head = cmdparse.brace_head(text) if "{" in text else None
-                if head is not None:
-                    d = _file_tool(tool, normalize(head, base), cwd, vault, sources)
+                if head is not None:  # 整夾找字只看 path；pattern、glob 推出的前綴夾不算（review F1）
+                    d = _file_tool(tool, normalize(head, base), cwd, vault, sources, search=n == 0)
                     if d.decision == "deny":
                         return d
             # pattern／glob 帶絕對路徑或 .. 時，它的固定前綴也是讀的目標（審閱補）
             pattern = str(ti.get("pattern") or ti.get("glob") or "").replace("\\", "/")
             if pattern and (re.match(r"^([a-zA-Z]:/|/)", pattern) or ".." in pattern.split("/")):
                 head = normalize(_pattern_head(pattern), target_n)
-                d = _file_tool(tool, head, cwd, vault, sources)
+                d = _file_tool(tool, head, cwd, vault, sources, search=False)
                 if d.decision == "deny":
                     return d
             # B-425 (a)（T-7 後）：Glob 樣式是單一檔名、而且 path 底下的排除夾全是 unused 時，不判 Z10b，

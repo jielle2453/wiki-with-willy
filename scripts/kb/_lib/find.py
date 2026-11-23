@@ -218,8 +218,8 @@ def _fallback_words(q, parsed, cond):
     main = [p for p in parsed if p["kind"] != "time"]
     if not any(p["kind"] in ("entity", "type", "tag") for p in main):
         return None
-    if len(main) == 1 and main[0]["kind"] in ("entity", "type"):
-        return None  # 整串就是一個認得的實體或卡型：沒有卡就是沒有，不拆錯
+    if len(main) == 1 and main[0]["kind"] == "entity":
+        return None  # 整串就是一個認得的實體：沒有卡就是沒有，不拆錯；只有一個卡型、0 張時照樣當字找內文（#75 裁定 21）
     rest = list(q)
     for a, b in cond["time_spans"]:  # 第一次拆字認到的時間詞那一段，不是字樣相同的第一處
         rest[a:b] = " " * (b - a)
@@ -229,6 +229,14 @@ def _fallback_words(q, parsed, cond):
         return None
     again = [{"kind": "word", "text": w, "label": f"字 {w}", "value": w} for w in words]
     return again, {"entity": [], "type": [], "tag": [], "time": [], "word": [entities.key(w) for w in words], "time_spans": []}
+
+
+def _type_has_cards(vault, q, parsed, cond, ent_data):
+    """整串只認到一個卡型（加時間詞）時，拿掉時間詞那個卡型有沒有卡；不是這種串回 False。"""
+    main = [p for p in parsed if p["kind"] != "time"]
+    if len(main) != 1 or main[0]["kind"] != "type" or not cond["time"]:
+        return False  # 沒有時間詞時第一次 0 筆就是該卡型 0 張
+    return bool(_search(vault, q, main, dict(cond, time=[], time_spans=[]), ent_data)["files"])
 
 
 def find(vault, q, today=None):
@@ -241,6 +249,8 @@ def find(vault, q, today=None):
     if out["files"]:
         return out
     again = _fallback_words(q, parsed, cond)
+    if again is not None and _type_has_cards(vault, q, parsed, cond, ent_data):
+        again = None  # 卡型有卡、只是被時間詞濾成 0：照舊回 0 筆，不丟掉卡型與時間（#75 裁定 21 的 code review）
     if again is not None:
         second = _search(vault, q, again[0], again[1], ent_data)
         second["fallback"] = True

@@ -286,6 +286,7 @@ def _asks(out, vault, config, full_plan, state=None):
     asks.extend(_credential_asks(vault, out))  # 密碼與守門：排在原檔不見之後、逾期之前
     asks.extend(_ruling_asks(vault))  # 「別信」蓋在新版上會讓綜合卡漏掉新內容，排在逾期之前（note 改知識釐清）
     asks.extend(_agenda_asks(vault))
+    asks.extend(_owner_ask(vault, out))
     asks.extend(_draft_asks(vault))
     asks.extend(_inbox_asks(vault))
     asks.extend(_name(i) for i in out.get("synthesis_new") or [] if not i.get("confirmed"))
@@ -497,6 +498,42 @@ def _agenda_asks(vault):
         out.extend(_conflict(it, titles.get(it["proposal"].get("card"))) for it in proposals)
     out.extend(_close_asks(vault, titles))
     return out
+
+
+OWNER_LISTED = 3
+OWNER_SAY_NOTE = ("她說了誰負責的逐條跑 kb agenda edit <編號> --owner <名字>；她說不用或沒提到的跑 kb agenda edit <編號> --owner 無；"
+                  "編號用 kb agenda list --json 找沒有 owner 的卡抽條目")
+
+
+def owner_items(vault):
+    """整理抽到、還沒定負責人的日程（D-549）：多人、open、卡抽的、沒有 owner 鍵、日期今天以後；照日期排。"""
+    from kb._lib import people
+    if not people.multi(vault):
+        return []
+    try:
+        items = agenda.load(vault)["items"]
+    except ValueError:
+        return []
+    today = agenda._today()
+    got = [i for i in items if i.get("status") == "open" and i.get("origin") and "owner" not in i
+           and all(i.get(k) for k in ("id", "text", "date")) and str(i["date"]) >= today]  # 少鍵跳過（裁定 16 #9b）
+    return sorted(got, key=lambda i: (i.get("date", ""), i.get("id", "")))
+
+
+def _owner_ask(vault, out):
+    """整理完（沒有待整理的）才問一題：這些卡抽條目要不要指定負責人；她不答就照 asks 到期關掉。"""
+    if _waiting(out, vault) != 0:
+        return []
+    items = owner_items(vault)
+    if not items:
+        return []
+    ids = sorted(i["id"] for i in items)
+    shown = "、".join(f"{agenda.md_of(i['date'])} {i['text']}" for i in items[:OWNER_LISTED])
+    more = f"（還有 {len(items) - OWNER_LISTED} 條）" if len(items) > OWNER_LISTED else ""
+    question = f"整理檔案時抽到 {len(items)} 條日程沒寫誰負責：{shown}{more}。要指定負責人嗎？"
+    return [_ask(f"owner:{_digest(''.join(ids))}", "agenda_owner", question, [
+        _result("我來說", note=OWNER_SAY_NOTE),
+        _result("都先空著", [cmd("agenda", "edit", aid, "--owner", "無") for aid in ids])])]
 
 
 def _with_entities(it):
@@ -806,6 +843,12 @@ def _about_of(ask, ctx):
         card = (item.get("origin") or {}).get("card") or ((item.get("proposal") or {}).get("card"))
         if card:
             files.append(card)
+    elif kind == "owner":
+        for item in owner_items(ctx.vault):
+            ents += ctx.ids_of(item.get("entities"))
+            card = item["origin"].get("card") if isinstance(item["origin"], dict) else None
+            if card:
+                files.append(card)  # origin 壞掉不炸（裁定 16 #9b 的 code review）
     elif kind == "ruling":
         r = ctx.ruling(target) or {}
         ents += ctx.ids_of(r.get("entities"))

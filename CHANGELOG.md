@@ -4,6 +4,21 @@
 bump `plugin.json` 版號的那個 commit 要同時寫這裡，不事後補；事後補就會變成第二份會漂的清單。
 為什麼只寫 spec 或決策裡有的，查不到寫「待補」，不推測。
 
+## 0.43.0 — 2026-11-23
+- **給客戶的一句話**：日程每一件事可以記誰負責，整理檔案時原檔寫了就照填、沒寫的整理完一次問你；找資料改走知識庫的搜尋，比較快也不會漏。
+- **改了什麼**（#75，D-549、D-550）：
+  - 日程加選填的負責人 `owner`（成員名單裡的人，可多人）：`kb agenda add/edit --owner`（`無` 清空），人讀 list 多「（負責：X）」；製卡時原檔寫明交給誰就照填，原檔改了照原檔、原檔沒寫保留人手填的（`origin.owner` 記原檔上次寫的）；只改負責人不動 `source`。不影響誰看得到（D-289 不改），日程頁、首頁長相不變。
+  - `kb asks` 新題 `agenda_owner`：多人知識庫、所有檔都整理完、還沒定負責人的未來卡抽條目，一次問；「都先空著」寫 `[]`，不再問。
+  - 匯出 `willy-agenda/1` 多 `owner` 欄，不進指紋、不升 schema（D-501 先例）。
+  - build `team.md`：成員可先用 `kb profile add 關於你` 一次加好，沒用過 willy 的人也能被指定。
+  - 守門：在知識庫或來源裡整夾找字（Grep 整夾、`grep -r`、`rg`、`findstr /s`、`Select-String -Recurse`、`git grep`、`ag`、`ack`、`ugrep`、`find | xargs grep`、`find -exec grep`，含 `.exe`、findstr 併寫開關）擋，理由句教 AI 改用 `kb find`／`kb lookup`；produce 工作區 unpack 出來的子夾放行。answer `find.md`、produce SKILL.md 改成先用 `kb find`。
+  - `kb find` 只打一個卡型名、那種卡 0 張時，改當字找標題與內文（原本回 0 筆）。
+- **為什麼**：jacky 要日程記誰負責（#75）；GUANGUAN、willy-16 實測 AI 找資料常整夾 grep 原檔，慢又漏卡上的整理結果，jacky 裁示併進這題。確認時發現「報價」被當卡型 0 筆，擋掉 grep 後就沒路可找，一起修。
+- **commit**：f8668b62（負責人）；ff2f8d1c、a6df2bc9（守門）；a9ecf684（測試第 2 輪修正）；10403db6（kb find）
+- **spec**：design/specs/2026-11-23-日程負責人.md
+- **關掉的 issue**：#75
+- **還沒驗、還沒定的**：守門還繞得過的寫法（`sh -c`、`parallel`、`$(find …)`、迴圈餵 grep 等）接受不追，D-550 不是保密邊界；cwd 在知識庫外時不表態。單人知識庫說「某人負責」時資訊沒留下。負載高時 guard hook 可能逾時。都記 backlog。
+
 ## 0.42.4 — 2026-11-19
 - **給客戶的一句話**：你問事情時會先回答，整理留到答完或你說了再做，查資料和整理也比較快；改簡報、Word、Excel 時先算好版面，存好就停。
 - **改了什麼**（#71、#72，D-548）：

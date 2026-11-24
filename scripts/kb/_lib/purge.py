@@ -16,6 +16,7 @@
    （#65 起 money.json 與帳頁不碰：willy 不再讀；舊庫留著的帳不在清除範圍）
 6. 工作日誌：changed 與 note 裡指到那夾的路徑換「（已排除）」，有指到的回合 result 整欄換掉，prompt 不動（journal.scrub）；
 7. ledger.tsv 與 hook-errors.log 裡指到那夾的路徑換「（已排除）」。
+（網頁對話的畫面紀錄跟工作日誌同一組字詞清，web_chat.scrub；沒清掉算在「工作日誌」那項。）
 先改目前的狀態（備進這一回合），再清全部回合（含這一回合剛備的），最後是暫存、日誌與留痕。
 第一輪修（測試報告）：範圍（卡編號、office 副本檔名的雜湊）第一次就記進那條排除（purge_ids、purge_names），
 重跑照記下的清（舊版清過之後就算不出來了）；哪一項沒清掉（檔開著、鎖等不到）就留著 pending、回還剩什麼，全部清完才標完成、
@@ -1472,6 +1473,11 @@ def _purge(vault, alias, spec, root, turn_id, keep_snapshots=()):
     counts["temp"] = _temp(vault, ids, sc["hashes"], counts)
     try:
         counts["journal"] = journal.scrub(vault, words, mention=lambda text: words(text) != text, keep=keep)
+    except OSError:
+        counts["left"]["journal"] += 1
+    try:  # 網頁對話的畫面紀錄（#74 第 2 份，D-353）：同一組字詞
+        from kb._lib import web_chat
+        web_chat.scrub(vault, words, mention=lambda text: words(text) != text, keep=keep)
     except OSError:
         counts["left"]["journal"] += 1
     for rel in (ledger.LEDGER_REL, ledger.ERROR_LOG_REL):

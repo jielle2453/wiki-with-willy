@@ -157,8 +157,9 @@ def _latest_turn_time(vault, session_id, now):
 
 OVERRIDE = None  # kb.py --turn 給的回合代號（cli 設，一次呼叫一個行程）
 SESSION = None  # kb.py --session 給的 session（守門替主對話的每個單一 kb 呼叫插的，D-506；兩個視窗不會串）
-VIA = None  # kb.py --via 給的來源（只有 "obsidian"，Obsidian 外掛帶的，#22 D-255）：這次呼叫自己開一個回合，不碰 current.json 與 turns/
-_VIA_TURNS = {}  # 知識庫 → 這個行程裡 Obsidian 的回合（同一次呼叫內沿用同一個）
+VIA = None  # kb.py --via 給的來源（"obsidian"：Obsidian 外掛帶的，#22 D-255；"web"：網頁小伺服器帶的，#74）：這次呼叫自己開一個回合，不碰 current.json 與 turns/
+VIA_SOURCES = {"obsidian": "obsd", "web": "webp"}  # --via 收的值 → 回合代號的尾（各自一組，退回不互碰）
+_VIA_TURNS = {}  # 知識庫 → 這個行程裡 --via 的回合（同一次呼叫內沿用同一個）
 
 
 class NoSuchTurn(ValueError):
@@ -212,8 +213,8 @@ def current(vault, session_id=None):
 
 
 def _via_turn(vault):
-    """--via obsidian 的回合（D-255）：第一次要用時才開（只讀的指令不開），同一次呼叫沿用同一個。代號尾 obsd，
-    只寫 versions/<回合>/turn.json（source: obsidian）：不寫 turns/ 也不寫 current.json，所以不併進正在回答的對話、
+    """--via obsidian／web 的回合（D-255）：第一次要用時才開（只讀的指令不開），同一次呼叫沿用同一個。代號尾 obsd（網頁 webp），
+    只寫 versions/<回合>/turn.json（source: obsidian 或 web）：不寫 turns/ 也不寫 current.json，所以不併進正在回答的對話、
     對話裡的 current() 也看不到它；程式段由 journal 認 source。"""
     key = str(vault)
     got = _VIA_TURNS.get(key)
@@ -223,9 +224,9 @@ def _via_turn(vault):
     latest = _latest_turn_time(vault, None, now)
     if latest is not None and now <= latest:
         now = latest + timedelta(seconds=1)
-    tid = f"{now:%Y%m%d-%H%M%S}-obsd"
+    tid = f"{now:%Y%m%d-%H%M%S}-{VIA_SOURCES[VIA]}"
     data = {"schema_version": 1, "turn": tid, "session_id": "", "started": now.strftime("%Y-%m-%dT%H:%M:%S"),
-            "prompt_head": "", "source": "obsidian", "done": True, "note": ""}
+            "prompt_head": "", "source": VIA, "done": True, "note": ""}
     meta = _meta_file(vault, tid)
     meta.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(meta, data)
@@ -235,9 +236,9 @@ def _via_turn(vault):
 
 def _now_file(vault):
     """這次呼叫的「目前回合檔」：有 --session 是那個對話的 turns/<sid>.json，沒有是 current.json（D-506）。
-    --via obsidian 沒有對話：回一個永遠不存在的檔，讀目前回合的（mark、touch、last、_set）全落空，不會記到正在回答的對話上。"""
+    --via obsidian／web 沒有對話：回一個永遠不存在的檔，讀目前回合的（mark、touch、last、_set）全落空，不會記到正在回答的對話上。"""
     if VIA:
-        return Path(vault) / TURNS_REL / "via-obsidian.none"
+        return Path(vault) / TURNS_REL / f"via-{VIA}.none"
     return _session_file(vault, SESSION) if SESSION else _current_file(vault)
 
 

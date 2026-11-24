@@ -101,7 +101,47 @@ def check(vault, rel, raw=False):
     sha = fingerprint(text)
     if not want or sha == want or sha in (data["history"].get(rel) or []):
         return None
+    if _synced_in(vault, rel, text):
+        return None
     return text
+
+
+SYNCED_LINE = "同步換進別台畫的〈{name}〉，已照這台重畫"
+_SYNCED_SEEN = set()
+
+
+def _synced_in(vault, rel, text):
+    """頁跟上次畫的不同，是同步換進別台畫的那份嗎（測試 #6，D-554）：頁被追蹤、內容等於 HEAD 那版、最後動它的 commit
+    是 pull 進來的（照 reflog，git.own_commits）。是的話換掉的那份存 handedits、記 log，回 True（呼叫端照流水檔重畫）。
+    只在頁不同時才叫 git；她在 Obsidian 改、同步外掛 commit 的，最後 commit 是這台的，照舊當手改。出錯當不是。"""
+    try:
+        from kb._lib import git
+        if git.outer_repo(vault) is None:
+            return False
+        key = (str(Path(vault).resolve()), rel, fingerprint(text))
+        if key in _SYNCED_SEEN:  # 同一個程序已經判過、存過
+            return True
+        head = git.show_many_at(vault, "HEAD", [rel]).get(rel)
+        if head is None:
+            return False
+        if head.decode("utf-8", errors="replace").lstrip("\ufeff").replace("\r\n", "\n") != text.replace("\r\n", "\n"):
+            return False
+        last = git.last_commit(vault, rel)
+        if not last or last in git.own_commits(vault):
+            return False
+        keep(vault, rel, text)
+        ledger.log_error(vault, SYNCED_LINE.format(name=Path(rel).stem), source="renders")
+        _SYNCED_SEEN.add(key)
+        sha = fingerprint(text)
+
+        def accept(data):  # 這份當成程式寫過的：下次 check 直接對上，不再叫 git、不再存（code review 3）
+            old = [h for h in data["history"].get(rel, []) if h != sha]
+            data["history"][rel] = (old + [sha])[-HISTORY_MAX:]
+        _edit(vault, accept)
+        return True
+    except Exception as e:  # noqa: BLE001
+        ledger.log_error(vault, f"{rel} 同步換頁判斷失敗：{type(e).__name__}: {e}", source="renders")
+        return False
 
 
 def recorded_day(vault, rel):

@@ -62,8 +62,8 @@ def _lines(row):
     changed = journal.changed_text(row.get("changed"))
     tail = [f"{INDENT}改了：{changed}"] if changed else []
     if row.get("kind") == "program":
-        if row.get("source") == "obsidian":
-            head = f"{when}｜{journal.OBSIDIAN_LABEL}"
+        if row.get("source") in journal.VIA_LABELS:  # Obsidian 外掛、網頁按的
+            head = f"{when}｜{journal.VIA_LABELS[row['source']]}"
         else:
             head = (f"{when}｜{journal.AUTO_LABELS[row.get('command')]}" if row.get("command") in journal.AUTO_LABELS
                     else f"{when}｜你在終端機跑的：kb {row.get('command', '')}".rstrip())  # 自動跑的不說是她跑的

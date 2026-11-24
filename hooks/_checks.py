@@ -574,6 +574,8 @@ def profile_mtime(vault):
                           os.path.join(str(vault), *profile.MD_POSIX.split("/"))])
 
 
+REFRESH_STARTED_LINE = "同步剛拉進新的改動，正在背景整理：結果下一句才有，這句照常回答、不用跟客戶提。"  # 確認 #2
+UNTRACK_LINE = "同步：有 {n} 個 willy 自己的檔被同步追蹤，會讓別台記的東西被蓋回舊的；要問她要不要停止追蹤（kb sync untrack）"  # 確認 #4
 REBASE_LINE = "同步卡住了（rebase 到一半），請聯絡服務人員：跟客戶說一句，不要自己動 git。"
 PULLED_LINE = ("git 同步進來 {n} 個檔（{names}）：那是同事動的，跟客戶說「可能是同事動的」、不要說「你」，也不要從中推測客戶的意思。")
 CONFLICT_CARD_LINE = ("你跟 {other} 同時改了「{name}」的卡：我留了 {other} 那版、標成要重做，客戶改的那段在 kb cards edits，"
@@ -601,19 +603,47 @@ def carried_lines(vault):
     return out
 
 
-def refresh_lines(vault):
-    """git HEAD 變了（或 rebase 做到一半）才叫 kb refresh 的本體；回 [(行, once)]。不是 git 或沒變什麼都不做。"""
+def syncing(vault):
+    """背景對帳還沒做完（HEAD 變了還沒記、或 refresh 鎖 10 分鐘內有人拿著）。只看檔，不叫 git。"""
     from kb._lib import git, refresh
 
-    if not git.is_repo(vault):
+    if git.outer_repo(vault) is None:
+        return False
+    if refresh.head_changed(vault):
+        return True
+    try:
+        return time.time() - os.path.getmtime(os.path.join(str(vault), refresh.LOCAL, "refresh.lock")) < 600
+    except OSError:
+        return False
+
+
+def line_untrack(vault):
+    """開場：sync_untrack 待處理還開著就提一行（確認 #4）。只讀待處理檔，不叫 git。"""
+    from kb._lib import pending
+    from kb._lib.refresh import UNTRACK_KEY
+
+    item = next((i for i in pending.load(vault)["items"]
+                 if i.get("kind") == "lint" and i.get("key") == UNTRACK_KEY and i.get("status") == "open"), None)
+    n = ((item or {}).get("data") or {}).get("n") if item else None
+    return UNTRACK_LINE.format(n=n) if n else None
+
+
+def refresh_lines(vault):
+    """git 對帳（D-293，確認 #2 改背景）：rebase 到一半直接給那句；HEAD 變了或正在合併就開背景 kb refresh --background
+    （同一個狀態只開一次），那句給「正在背景整理」；背景做完存的結果這句拿、給完刪掉。回 [(行, once)]。
+    只讀檔、開子行程，不叫 git；不是 git 什麼都不做。"""
+    from kb._lib import git, refresh
+
+    if git.outer_repo(vault) is None:  # 子夾也叫（D-554 實作疑義 2）；只往上找 .git，不叫子行程
         return []
-    rebase = git.rebase_in_progress(vault)
-    if not rebase and not refresh.head_changed(vault):
-        return []
-    got = refresh.run(vault)
+    if git.rebase_in_progress(vault):
+        return [(REBASE_LINE, True)]
     out = []
-    if got.get("rebase"):
-        out.append((REBASE_LINE, True))
+    if refresh.needs_refresh(vault) and refresh.spawn_background(vault):
+        out.append((REFRESH_STARTED_LINE, True))
+    got = refresh.take_result(vault)
+    if not got:
+        return out
     for c in got.get("conflicts") or []:
         name = os.path.basename(c["path"])
         if c["kind"] == "card":
@@ -673,6 +703,13 @@ def turn_lines(vault, session_id):
     # 0. git 對帳（多人共用 3，D-293）：HEAD 變了才叫，排在檔案比對之前；跑完才給比對（對帳不能停一半）
     for line, once in guarded(refresh_lines, vault) or []:
         tell(line, once=once)
+    if guarded(syncing, vault):  # 背景對帳還沒做完：pull 進來的還沒記，比對會當成她改的（code review 3），下一句再比
+        try:
+            turn.set_checks(vault, session_id, {"stamps": stamps, "told": told[-TOLD_KEEP:],
+                                                "told_files": told_files[-FILES_KEEP:], "detected": list(checks.get("detected") or [])})
+        except Exception as e:  # noqa: BLE001
+            log_vault(vault, e)
+        return out
     # 1. 檔案比對：搬動、不見、新增寫進這一句的 detected.jsonl（by outside）；變動行與整理提示在最後一步用它的結果
     got = None
     detected = list(checks.get("detected") or [])

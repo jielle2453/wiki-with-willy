@@ -35,7 +35,30 @@ def _path(vault):
     return Path(vault) / ENV_REL
 
 
+_RECOVER_TRIED = set()
+
+
+def _recover(vault):
+    """env.json 不在：被 pull 進來的 commit 刪掉（別台停止追蹤）就拿 pull 前這台那版寫回（確認 #1，D-554）。
+    用另一把鎖（env.json.recover）：寫 env.json 的人都拿著 env.json 的鎖叫 _load，同一把會卡死。
+    同一個程序同一個 HEAD 只試一次；新 clone、不是 pull 刪的、拿不回都不寫，照舊當空的。"""
+    from kb._lib import git
+    key = (str(Path(vault).resolve()), git.outer_head(vault))
+    if key in _RECOVER_TRIED or not key[1]:
+        return
+    _RECOVER_TRIED.add(key)
+    try:
+        from kb._lib import refresh
+        _path(vault).parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(_path(vault)) + ".recover"):
+            refresh.recover_local(vault, ENV_REL.as_posix())
+    except Exception:  # noqa: BLE001  拿不回照舊
+        pass
+
+
 def _load(vault):
+    if not _path(vault).exists():
+        _recover(vault)
     try:
         with open(_path(vault), encoding="utf-8") as f:
             data = json.load(f)
@@ -182,7 +205,7 @@ def machine_id(vault):
     p = _path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(p):
-        data = _load(vault)
+        data = _load(vault)  # env.json 被同步刪掉時 _load 先拿回（確認 #1）
         machine = _machine(data, create=True)
         if not (isinstance(machine.get("machine_id"), str) and machine["machine_id"]):
             machine["machine_id"] = "m-" + secrets.token_hex(4)

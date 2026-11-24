@@ -156,5 +156,13 @@
   "git_file_max_mb": 95,
   "_why_git_file_max_mb": "知識庫裡還沒追蹤的非文字檔超過幾 MB 就加進 .git/info/exclude、不推（多人共用 3 D-301：GitHub 單檔上限 100 MB）",
   "relocate_search_seconds": 20,
-  "_why_relocate_search_seconds": "kb folders locate 最多花幾秒找，時間到就用已經找到的候選回答（D-322 第 8 件）"
+  "_why_relocate_search_seconds": "kb folders locate 最多花幾秒找，時間到就用已經找到的候選回答（D-322 第 8 件）",
+  "web_idle_close_minutes": 30,
+  "_why_web_idle_close_minutes": "網頁對話背後的 claude 閒置幾分鐘就關掉（D-351）；AI 在回、背景助手在跑、卡片在等時不關，之後她再說話用 resume 接回同一段",
+  "web_segment_idle_minutes": 60,
+  "_why_web_segment_idle_minutes": "網頁對話閒置超過幾分鐘、而且這一段也夠長時，她下一句開新的一段（D-351）；1 小時剛好是快取過期的時間（B-547）",
+  "web_segment_growth_tokens": 50000,
+  "_why_web_segment_growth_tokens": "網頁對話這一段開始後多出來的長度超過幾 token，閒置夠久時才開新的一段（D-351）；短的接回比開新的便宜，又不丟上下文",
+  "web_chat_keep_days": 30,
+  "_why_web_chat_keep_days": "網頁上的對話紀錄留幾天（D-353）；只給畫面往回捲，事情本身記在工作日誌；她說一句可以改長"
 }

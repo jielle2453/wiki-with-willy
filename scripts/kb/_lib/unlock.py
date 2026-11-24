@@ -3,7 +3,7 @@
 憑證管理員：ctypes 叫 advapi32 的 CredWriteW／CredReadW／CredDeleteW／CredEnumerateW（CRED_TYPE_GENERIC、
 CRED_PERSIST_LOCAL_MACHINE），標準函式庫就做得到。每筆的 TargetName 是 wiki-with-willy/<知識庫編號>/<種類>/<名稱>
 （知識庫編號照 _lib/vault.ensure_vault_id，同一台電腦兩個知識庫不混）。種類兩種：「記下的密碼」（門禁這類客戶要記的）、
-「PDF 密碼」（kb convert --saved 用）。同一個名稱只留一筆（換種類也是換掉）。值不進任何檔、不進錯誤訊息。
+「PDF 密碼」（kb convert --saved 用）。另有「網頁/Cloudflare」一筆（KIND_WEB，web_access 存讀，kb unlock 不認）。同一個名稱只留一筆（換種類也是換掉）。值不進任何檔、不進錯誤訊息。
 非 Windows 一律 Refused「這台電腦不是 Windows，存不了密碼」。
 .system/unlock.json（schema 1）記授權過的種類與開過的檔，沒有任何密碼：
 {"schema_version": 1, "kinds": [{label, credential: "PDF 密碼/<名稱>", examples: [id], date, turn}],
@@ -22,6 +22,7 @@ PREFIX = "wiki-with-willy"
 KIND_NOTE = "記下的密碼"
 KIND_PDF = "PDF 密碼"
 KINDS = (KIND_NOTE, KIND_PDF)
+KIND_WEB = "網頁"  # 手機登入用的 Cloudflare 權杖（#74 第 4 份）：不在 KINDS，kb unlock list／get 看不到，只由 web_access 讀
 UNLOCK_POSIX = ".system/unlock.json"
 SCHEMA_VERSION = 1
 NAME_MAX = 60

@@ -46,12 +46,15 @@ AUTO_LABELS = {"lint --background": "每週健檢（自動）"}
 
 
 OBSIDIAN_LABEL = "你在 Obsidian 按的"  # --via obsidian 的程式段（#22，D-255）
+WEB_LABEL = "你在網頁按的"  # --via web 的程式段（#74 網頁首頁與看卡，D-255 比照）
+VIA_LABELS = {"obsidian": OBSIDIAN_LABEL, "web": WEB_LABEL}  # 程式段的 source → 抬頭
 
 
 def program_label(command, source=None):
-    """程式段的抬頭：Obsidian 外掛按的（source obsidian）寫「你在 Obsidian 按的」，自動跑的照 AUTO_LABELS，其他是「程式 <指令>」。"""
-    if source == "obsidian":
-        return OBSIDIAN_LABEL
+    """程式段的抬頭：Obsidian 外掛按的（source obsidian）寫「你在 Obsidian 按的」、網頁按的（source web）寫「你在網頁按的」，
+    自動跑的照 AUTO_LABELS，其他是「程式 <指令>」。"""
+    if source in VIA_LABELS:
+        return VIA_LABELS[source]
     return AUTO_LABELS.get(str(command or ""), f"程式 {command or ''}".rstrip())
 
 # 地板句（D-084）：區 → [(action, 動詞)], 單位；Z7 不數，其他區數總檔數
@@ -369,7 +372,7 @@ def record_program(vault, note, changed, command, actions=None):
     if actions:
         row["actions"] = actions
     if turn.VIA:
-        row["source"] = turn.VIA  # Obsidian 外掛按的：抬頭寫「你在 Obsidian 按的」，不說是她在終端機跑的
+        row["source"] = turn.VIA  # Obsidian 外掛或網頁按的：抬頭寫「你在 Obsidian 按的」／「你在網頁按的」，不說是她在終端機跑的
 
     def edit(items):
         items.append((None, row))

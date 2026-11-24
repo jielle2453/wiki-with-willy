@@ -22,6 +22,8 @@
 
 - `guard_stale`：守門好像沒在跑。請服務人員看，她不用做什麼；「你直接修」時也只能交服務人員。
 - `versions_unwritable`：回合備份夾寫不進去，改了東西沒辦法退回。請服務人員看，在那之前先別大改。
+- `sync_untrack`：willy 自己的檔被同步追蹤了，會讓別台記的東西被蓋回舊的。照問句問她要不要停止追蹤（檔案都留著）；她說好跑 `kb sync untrack`，
+  照成功句跟她說其他電腦不用先做什麼，再 resolve；不要就照「先不要」。不自己打 git 指令。
 - `system_link`：系統夾裡有捷徑。先自己看是什麼（`kb selftest`），講給她聽；是什麼說不準再問她。
 - `inferred:agenda`、`inferred:entity`、`inferred:profile`：我猜的放太久沒確認。照結果的 `note` 一條一條唸給她聽，對的確認（日程是 `kb agenda edit <編號>` 不帶欄位，印「記成確認了：…」）、
   不對的照她說的改（日程照 note 的 `references/agenda.md`、名字 `kb entity confirm`、設定檔照 note 的 `references/preference.md`）。

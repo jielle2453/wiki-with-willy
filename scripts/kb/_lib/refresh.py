@@ -6,11 +6,15 @@
 (c) 知識庫 repo 裡的原檔：只對 git 這次 pull 動到的檔算指紋（pull 會把修改時間全更新）；雲端的原檔不在這裡比（交給每句開頭的檔案比對）。
 (d) 大檔（超過 git_file_max_mb 還沒追蹤）加進 .git/info/exclude。
 (e) 記這次的 HEAD（.system/local/last_head）與 pull 進來的檔（.system/local/pulled.json，手改基準用）。
-git 不在或不是 repo：什麼都不做（回空結果）。
+(f) 停止追蹤（D-554 (3)）：每天查一次被追蹤的該忽略檔，有就開一件 sync_untrack 待處理；別台停止追蹤、pull 把這台的
+本機狀態檔刪掉時，從 git 歷史寫回；合併衝突裡被 .gitignore 列的路徑留這台的、停止追蹤。
+知識庫在別人的 repo 子夾時（D-554 實作疑義 1，部分修訂 D-546）只做 (e) 的 HEAD 與 (f)，衝突只碰知識庫夾裡被忽略的路徑；
+(b)～(d) 與其他衝突只在知識庫自己有 .git 時做。git 不在或不在任何 repo：什麼都不做（回空結果）。
 """
 import hashlib
 import json
 import os
+from datetime import date
 from pathlib import Path
 
 from kb._lib import git
@@ -21,6 +25,14 @@ LAST_HEAD = LOCAL + "/last_head"
 PULLED = LOCAL + "/pulled.json"
 PULLED_KEEP = 200
 SYSTEM_PREFIXES = (".system/", "系統/", ".obsidian/", "檔案索引/", ".git/")
+UNTRACK_KEY = "sync_untrack"
+UNTRACK_CHECK = "sync_untrack"  # 健檢那一項的名字（kb/lint/checks/sync_untrack.py）
+UNTRACK_STAMP = LOCAL + "/untrack_checked"
+UNTRACK_DO = "kb sync untrack"
+CHECK_LINE = "有 {n} 個 willy 自己的檔被同步追蹤（本機狀態 {local} 個、可重算的副本 {copies} 個、渲染頁 {rendered} 個）；會讓別台的改動被蓋掉"
+ASK_TEXT = "有 {n} 個 willy 自己的檔被同步追蹤了，會讓別台記的東西被蓋回舊的。要我停止追蹤嗎？檔案都留著。"
+KEPT_LINE = "同事停止追蹤了 {n} 個檔，這台的本機狀態照留"
+APPEND_EXT = (".tsv", ".log", ".jsonl")  # 只往後加的本機檔：pull 刪掉後又被寫了新的，舊的接在前面
 
 
 def _log(vault, text):
@@ -30,7 +42,7 @@ def _log(vault, text):
 
 def empty():
     return {"rendered": [], "pulled": [], "changed": {"added": 0, "modified": 0, "missing": 0}, "unsure": 0,
-            "conflicts": [], "big": [], "rebase": False}
+            "conflicts": [], "big": [], "rebase": False, "kept_local": 0}
 
 
 def read_last_head(vault):
@@ -42,7 +54,7 @@ def read_last_head(vault):
 
 def head_changed(vault):
     """每句開頭用：HEAD 跟記下的不同才要叫 refresh。不是 git 回 False。"""
-    now = git.head(vault)
+    now = git.outer_head(vault)  # 子夾時照上層 repo 的 HEAD（D-554 實作疑義 2）
     return bool(now) and now != read_last_head(vault)
 
 
@@ -53,7 +65,8 @@ def _sha(text):
 def run(vault, turn_id=None):
     """回 kb refresh --json 的結構；多一個 "skipped": True 表示同時有別人在跑。"""
     out = empty()
-    if not git.is_repo(vault):
+    own = git.is_repo(vault)
+    if not own and git.outer_repo(vault) is None:
         return out
     (Path(vault) / LOCAL).mkdir(parents=True, exist_ok=True)
     try:
@@ -62,12 +75,12 @@ def run(vault, turn_id=None):
     except TimeoutError:
         return dict(out, skipped=True)
     try:
-        return _run(vault, turn_id, out)
+        return _run(vault, turn_id, out, own)
     finally:
         lock.__exit__(None, None, None)
 
 
-def _run(vault, turn_id, out):
+def _run(vault, turn_id, out, own=True):
     from kb._lib import turn
     if turn_id is None:
         turn_id = turn.current(vault)["turn"]
@@ -75,27 +88,368 @@ def _run(vault, turn_id, out):
         _log(vault, "同步卡住了（rebase 到一半），請聯絡服務人員")
         out["rebase"] = True
         return out
+    failed = False  # 寫回、衝突收拾出錯：不記這次的 HEAD，下次再試（補驗 1）
     if git.merge_in_progress(vault) and git.unmerged(vault):
-        out["conflicts"] = resolve_conflicts(vault, turn_id)
-    head = git.head(vault)
+        try:
+            out["conflicts"] = resolve_conflicts(vault, turn_id, own=own)
+        except Exception as e:  # noqa: BLE001
+            _log(vault, f"合併衝突收拾失敗：{type(e).__name__}: {str(e)[:100]}，下次再試")
+            failed = True
+    head = git.outer_head(vault)
     old = read_last_head(vault)
-    pulled = git.changed_by_others(vault, old, head) or []  # 別人寫的 commit 動到的檔；自己（外掛）commit 的不算
-    out["pulled"] = pulled
-    out["rendered"] = _render_pages(vault, turn_id)
-    _originals(vault, pulled, out)
-    out["big"] = check_big(vault)
-    if head:
+    out["kept_local"], gone_pages, ok = _keep_local(vault, old, head)
+    failed = failed or not ok
+    if own:
+        pulled = git.changed_by_others(vault, old, head) or []  # 別人寫的 commit 動到的檔；自己（外掛）commit 的不算
+        out["pulled"] = pulled
+        out["rendered"] = _render_pages(vault, turn_id, also=gone_pages)
+        _originals(vault, pulled, out)
+        out["big"] = check_big(vault)
+    elif gone_pages:  # 子夾：只補畫被同事停止追蹤刪掉的頁（D-546 其餘不重畫）
+        out["rendered"] = _render_pages(vault, turn_id, also=gone_pages, only=True)
+    _daily_untrack(vault, turn_id)
+    if head and not failed:
         write_text_atomic(Path(vault) / LAST_HEAD, head + "\n")
-    _remember_pulled(vault, pulled)
+    if own:
+        _remember_pulled(vault, out["pulled"])
     return out
+
+
+# ---------- (f) 停止追蹤 ----------
+
+OWN_ROOTS = (".system", "系統", "總目錄.md")  # willy 自己的檔只會在這幾處（測試 #1）
+
+
+def _rule(pattern):
+    """.gitignore 一行 → (放行嗎, 只對資料夾嗎, regex)；空行、註解回 None。夠用就好：*、**、?、開頭 /、結尾 /、!。"""
+    import re
+    pat = pattern.rstrip("\r\n").rstrip()
+    if not pat or pat.startswith("#"):
+        return None
+    neg = pat.startswith("!")
+    pat = pat[1:] if neg else pat
+    dir_only = pat.endswith("/")
+    pat = pat.rstrip("/")
+    anchored = "/" in pat
+    pat = pat.lstrip("/")
+    out, i = "", 0
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pat.startswith("/**", i):
+            out, i = out + "/.*", i + 3
+        elif pat[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif pat[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(pat[i]), i + 1
+    return neg, dir_only, re.compile(("" if anchored else "(?:.*/)?") + out + r"\Z")
+
+
+def _rules(text):
+    return [r for r in (_rule(ln) for ln in (text or "").splitlines()) if r]
+
+
+def _ignored_by(rules, rel):
+    """照這份規則 rel 被忽略嗎（git 的意思：上層資料夾被忽略，底下的放行不回來）。"""
+    parts = rel.split("/")
+    for k in range(1, len(parts) + 1):
+        sub, is_dir = "/".join(parts[:k]), k < len(parts)
+        hit = None
+        for neg, dir_only, rx in rules:
+            if (is_dir or not dir_only) and rx.match(sub):
+                hit = not neg
+        if hit and is_dir:
+            return True
+        if k == len(parts):
+            return bool(hit)
+    return False
+
+
+_ALLOWED = []
+
+
+def _skeleton_allowed():
+    """骨架 .gitignore 用 ! 放行的（這些不是 willy 不同步的檔）；一個程序讀一次。"""
+    if _ALLOWED:
+        return _ALLOWED[0]
+    _ALLOWED.append(_read_allowed())
+    return _ALLOWED[0]
+
+
+def _read_allowed():
+    from kb._lib import paths
+    try:
+        text = (paths.plugin_root() / "skeleton" / ".gitignore").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [(False, d, rx) for neg, d, rx in _rules(text) if neg]
+
+
+def classify(rel):
+    """willy 自己的檔是哪一類：copies（流水檔合起來的副本）、rendered（渲染頁）、local（本機狀態）；
+    不是 willy 自己的回 None，一律不碰（測試 #1：名單由 willy 定，不靠 git 的忽略規則）。"""
+    from kb._lib import streams
+    if rel.startswith("系統/") or rel == "總目錄.md":
+        return "rendered"
+    if not rel.startswith(".system/") or rel.startswith(".system/streams/"):
+        return None
+    allowed = _skeleton_allowed()
+    if allowed and _ignored_by(allowed, rel):
+        return None
+    copies = {v[0] for v in streams.KINDS.values()} | {v[1] for v in streams.VIEWS.values()}
+    return "copies" if rel in copies else "local"
+
+
+def own_ignored(vault, rels):
+    """這些路徑裡 willy 自己的、又被知識庫自己的 .gitignore 列的（上層 repo 的 .gitignore、info/exclude、
+    全域 excludesFile 都不算，測試 #1）。只讀檔，不叫 git。"""
+    try:
+        rules = _rules((Path(vault) / ".gitignore").read_text(encoding="utf-8-sig", errors="replace"))  # 記事本存的會帶 BOM；
+        # 舊記事本、PowerShell 5.1 存的中文註解不是 UTF-8：換成 �，規則照讀（補驗 1）
+    except OSError:
+        return []
+    return [r for r in rels if classify(r) and _ignored_by(rules, r)]
+
+
+def own_tracked(vault):
+    """HEAD 裡被追蹤、又該忽略的 willy 檔（kb sync untrack 要停止追蹤的那些）。"""
+    return own_ignored(vault, git.tracked_in_head(vault, OWN_ROOTS))
+
+
+def untrack_summary(vault, paths=None):
+    """{"paths","n","local","copies","rendered"}：kb sync untrack --check、selftest、每日偵測、健檢共用。"""
+    paths = own_tracked(vault) if paths is None else list(paths)
+    got = {"paths": paths, "n": len(paths), "local": 0, "copies": 0, "rendered": 0}
+    for rel in paths:
+        kind = classify(rel)
+        if kind:
+            got[kind] += 1
+    return got
+
+
+def check_line(summary):
+    return CHECK_LINE.format(**summary)
+
+
+def ask_text(summary):
+    return ASK_TEXT.format(n=summary["n"])
+
+
+def ask_data(summary):
+    return dict({k: summary[k] for k in ("n", "local", "copies", "rendered")}, do=UNTRACK_DO)
+
+
+def _daily_untrack(vault, turn_id):
+    """每天最多查一次（日期記在 .system/local/untrack_checked），有就開一件 sync_untrack 待處理。出錯只記 log。"""
+    stamp = Path(vault) / UNTRACK_STAMP
+    today = date.today().isoformat()
+    try:
+        if stamp.read_text(encoding="utf-8").strip() == today:
+            return
+    except OSError:
+        pass
+    try:
+        write_text_atomic(stamp, today + "\n")
+        got = untrack_summary(vault)
+        if got["n"]:
+            from kb._lib import pending
+            pending.add_lint(vault, UNTRACK_KEY, ask_text(got), ask_data(got), turn_id, check=UNTRACK_CHECK)
+    except Exception as e:  # noqa: BLE001
+        _log(vault, f"查同步追蹤失敗：{type(e).__name__}: {str(e)[:100]}")
+
+
+def _write_bytes(target, data):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.willy-tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, target)
+
+
+def _old_contents(vault, rels, orig=None):
+    """被 git 刪掉的檔刪掉前這台的內容 {路徑: bytes}：先看 ORIG_HEAD（pull 前的這台），沒有的再看上次記的 HEAD。
+    每個版本一次 cat-file，不隨檔數增加（確認 #2）。不看「歷史上刪掉前的那一版」：新 clone 會拿到別台的 env.json（review 1）。"""
+    got, left = {}, list(rels)
+    for rev in (orig if orig is not None else git.orig_head(vault), read_last_head(vault)):
+        if not left or not rev:
+            continue
+        got.update(git.show_many_at(vault, rev, left))
+        left = [r for r in left if r not in got]
+    return got
+
+
+def _pulled_deleted(vault, head=None):
+    """這台上次記的 HEAD（沒有就 pull 前的 ORIG_HEAD）到現在之間，pull 進來的 commit 刪掉、現在被 .gitignore 列的檔：
+    (base, orig, [路徑])。這台自己的 commit 不算（實作疑義 3）；新 clone 沒有 base，回空。"""
+    head = head or git.outer_head(vault)
+    orig = git.orig_head(vault)
+    base = read_last_head(vault) or orig
+    if not base or not head or base == head:
+        return base, orig, []
+    deleted = git.deleted_by_others(vault, base, head)
+    return base, orig, own_ignored(vault, deleted)
+
+
+def recover_local(vault, rel):
+    """被 pull 進來的 commit 刪掉（別台停止追蹤）、現在被 .gitignore 列的本機檔（相對知識庫夾）寫回原位；
+    檔還在、不是 pull 刪的、拿不回回 False（env._load 在 env.json 不見時叫，確認 #1）。"""
+    target = Path(vault) / rel
+    if target.exists() or git.outer_repo(vault) is None:
+        return False
+    _base, orig, gone = _pulled_deleted(vault)
+    if rel not in gone:
+        return False
+    data = _old_contents(vault, [rel], orig).get(rel)
+    if data is None:
+        return False
+    _write_bytes(target, data)
+    return True
+
+
+def _keep_local(vault, old, head):
+    """別台停止追蹤、這次 pull 把這台的本機狀態檔刪掉：寫回原位（寫回後已被忽略，不會再進 git）。
+    副本、渲染頁不寫回（讀的時候、_render_pages 重算）。只往後加的檔（ledger、log、journal）pull 之後又被寫了新的：舊的接在前面。
+    git 叫的次數固定（log、reflog、check-ignore、rev-parse、cat-file 一兩次），不隨檔數增加。
+    回 (寫回幾個, 被刪掉的渲染頁, 沒出錯嗎)；渲染頁交給呼叫端重畫（_render_pages 平常只畫還在的頁）。出錯記 log，呼叫端不記 HEAD。"""
+    try:
+        orig = git.orig_head(vault)
+        base = old or orig
+        if not base or base == head:
+            return 0, [], True
+        deleted = git.deleted_by_others(vault, base, head)
+        deleted = own_ignored(vault, deleted)
+        pages = [r for r in deleted if classify(r) == "rendered" and not (Path(vault) / r).exists()]
+        need = [r for r in deleted if classify(r) == "local" and (not (Path(vault) / r).exists() or r.endswith(APPEND_EXT))]
+        old_data = _old_contents(vault, need, orig) if need else {}
+        n = 0
+        for rel in need:
+            target, data = Path(vault) / rel, old_data.get(rel)
+            if data is None:
+                continue
+            if not target.exists():
+                _write_bytes(target, data)
+                n += 1
+                continue
+            cur = target.read_bytes()
+            if not cur.startswith(data):
+                _write_bytes(target, data + (b"" if data.endswith(b"\n") else b"\n") + cur)
+                n += 1
+        if n:
+            _log(vault, KEPT_LINE.format(n=n))
+        return n, pages, True
+    except Exception as e:  # noqa: BLE001
+        _log(vault, f"寫回本機狀態檔失敗：{type(e).__name__}: {str(e)[:100]}，下次再試")
+        return 0, [], False
+
+
+# ---------- 背景對帳（確認 #2：每句開頭不在 hook 裡跑 refresh） ----------
+
+RESULT_CACHE = LOCAL + "/cache/refresh-lines.json"
+SPAWNED = LOCAL + "/refresh-spawned"
+SPAWN_STALE = 600  # 開過的背景 10 分鐘還沒對完（被砍、當掉）：同一個狀態可以再開
+
+
+def _merge_head(vault):
+    d = git._git_dir(vault)
+    try:
+        return (d / "MERGE_HEAD").read_text(encoding="utf-8").strip() if d else ""
+    except OSError:
+        return ""
+
+
+def state_key(vault):
+    """這台現在的同步狀態（HEAD、合併中的對方、rebase）：同一個狀態背景只開一次。只讀檔，不叫 git。"""
+    return f"{git.outer_head(vault) or ''} {_merge_head(vault)} {int(git.rebase_in_progress(vault))}"
+
+
+def needs_refresh(vault):
+    """HEAD 變了、正在合併或 rebase 才要對帳（每句開頭問，不叫 git）。"""
+    return git.rebase_in_progress(vault) or git.merge_in_progress(vault) or head_changed(vault)
+
+
+def spawn_background(vault):
+    """開 kb refresh --background（DETACHED、不等）；同一個狀態已經開過（或正在跑）就不再開，回有沒有開。"""
+    import time
+    key = state_key(vault)
+    mark = Path(vault) / SPAWNED
+    try:
+        if mark.read_text(encoding="utf-8").strip() == key and time.time() - mark.stat().st_mtime < SPAWN_STALE:
+            return False
+    except OSError:
+        pass
+    mark.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(mark, key + "\n")
+    if os.environ.get("WIKI_WITH_WILLY_NO_BACKGROUND"):  # 測試：不開子行程，就地跑完（暫存庫會被刪）
+        run_background(vault)
+        return True
+    import subprocess
+    import sys
+    from kb._lib import paths
+    kw = {"cwd": str(vault), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+          "close_fds": True}
+    if os.name == "nt":
+        kw["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                               | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    else:
+        kw["start_new_session"] = True
+    try:
+        subprocess.Popen([sys.executable, str(paths.plugin_root() / "scripts" / "kb.py"), "refresh", "--background"], **kw)
+    except OSError:
+        try:
+            mark.unlink()  # 沒開成：下一句再試
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def run_background(vault):
+    """kb refresh --background 的本體：對帳，做完把要給 AI 的結果存起來（別人正在跑就不存，那邊會存）。"""
+    got = run(vault)
+    if not got.get("skipped"):
+        save_result(vault, got)
+    return got
+
+
+def save_result(vault, got):
+    """背景做完：要給 AI 的結果（衝突、pull 進來的檔、太大的檔、rebase）存起來，下一句開頭 take_result 拿；
+    上一次的還沒被拿就併在一起。"""
+    p = Path(vault) / RESULT_CACHE
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(p):
+        cur = read_json(p, None) or {}
+        keep = {"rebase": bool(cur.get("rebase") or got.get("rebase"))}
+        for k in ("conflicts", "pulled", "big"):
+            keep[k] = list(cur.get(k) or []) + [x for x in got.get(k) or [] if x not in (cur.get(k) or [])]
+        write_json_atomic(p, keep)
+
+
+def take_result(vault):
+    """拿背景存的結果並刪掉（給一次）；沒有回 None。"""
+    p = Path(vault) / RESULT_CACHE
+    if not p.exists():
+        return None
+    with FileLock(p):
+        got = read_json(p, None)
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    return got if isinstance(got, dict) else None
 
 
 # ---------- (b) 重畫 ----------
 
-def _render_pages(vault, turn_id):
-    """日程、待處理、裁示照 purge.py 的做法在 renders.suppressed 裡、hand={} 重畫；設定檔 md 她改過就不蓋；總目錄重畫。"""
+def _render_pages(vault, turn_id, also=(), only=False):
+    """日程、待處理、裁示照 purge.py 的做法在 renders.suppressed 裡、hand={} 重畫；設定檔 md 她改過就不蓋；總目錄重畫。
+    平常只畫還在的頁；also 是被同事停止追蹤、pull 刪掉的頁，不在也畫（D-554）。only：只畫 also 列的（子夾庫）。"""
     from kb._lib import agenda, cards, pending, profile, renders, rulings
     done = []
+    also = set(also or ())
+
+    def want(rel, always=False):
+        return rel in also if only else (always or rel in also or (Path(vault) / rel).exists())
 
     def step(rel, fn):
         try:
@@ -105,11 +459,11 @@ def _render_pages(vault, turn_id):
         except Exception as e:  # noqa: BLE001  一頁畫不出來不擋其他頁
             _log(vault, f"重畫 {rel} 失敗：{type(e).__name__}: {str(e)[:100]}")
 
-    if (Path(vault) / agenda.MD_POSIX).exists():
+    if want(agenda.MD_POSIX):
         step(agenda.MD_POSIX, lambda: agenda.render(vault, turn_id, hand={}))
-    if (Path(vault) / pending.MD_POSIX).exists():
+    if want(pending.MD_POSIX):
         step(pending.MD_POSIX, lambda: pending.render(vault, turn_id=turn_id))
-    if (Path(vault) / rulings.MD_POSIX).exists():
+    if want(rulings.MD_POSIX):
         step(rulings.MD_POSIX, lambda: rulings.render(vault, turn_id, hand={}))
 
     def prof():
@@ -120,18 +474,20 @@ def _render_pages(vault, turn_id):
             raise LookupError("設定檔被她手改過，不蓋掉")  # 照現在先問
         with profile.lock(vault):
             profile.write_locked(vault, profile.load(vault), turn_id)
-    try:  # 設定檔 md 不進 git（#42）：別台不再追蹤時 pull 會刪掉這台的，沒有也要畫
-        prof()
-        done.append(profile.MD_POSIX)
-    except LookupError:
-        pass
-    except Exception as e:  # noqa: BLE001
-        _log(vault, f"重畫設定檔失敗：{type(e).__name__}: {str(e)[:100]}")
-    try:
-        cards.render_index(vault, turn_id)
-        done.append(cards.INDEX_POSIX)
-    except Exception as e:  # noqa: BLE001
-        _log(vault, f"重畫總目錄失敗：{type(e).__name__}: {str(e)[:100]}")
+    if want(profile.MD_POSIX, always=True):
+        try:  # 設定檔 md 不進 git（#42）：別台不再追蹤時 pull 會刪掉這台的，沒有也要畫
+            prof()
+            done.append(profile.MD_POSIX)
+        except LookupError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            _log(vault, f"重畫設定檔失敗：{type(e).__name__}: {str(e)[:100]}")
+    if want(cards.INDEX_POSIX, always=True):
+        try:
+            cards.render_index(vault, turn_id)
+            done.append(cards.INDEX_POSIX)
+        except Exception as e:  # noqa: BLE001
+            _log(vault, f"重畫總目錄失敗：{type(e).__name__}: {str(e)[:100]}")
     return done
 
 
@@ -233,22 +589,35 @@ def _copy_name(rel, who):
     return f"{stem}（{who}的版本）{ext}"
 
 
-def resolve_conflicts(vault, turn_id):
-    """回 conflicts 清單，全部處理完 commit_merge。"""
+def resolve_conflicts(vault, turn_id, own=True):
+    """回 conflicts 清單，全部處理完 commit_merge。own False（知識庫在別人的 repo 子夾）只收拾知識庫夾裡被 .gitignore 列的路徑，
+    其他衝突不碰；整個 repo 都沒有衝突了才 commit_merge（D-554 實作疑義 1）。"""
     from kb._lib import card_base
+    from kb._lib.skeleton import UNTRACKED
     got = []
-    for rel in git.unmerged(vault):
-        other = git.author_of(vault, "MERGE_HEAD", rel) or "同事"
+    stages = git.unmerged_stages(vault)  # 一次 ls-files -u 拿所有 stage（確認 #2：git 次數不隨檔數增加）
+    todo = list(stages)
+    ignored = set(own_ignored(vault, todo))
+    drop = [r for r in todo if r in UNTRACKED or r in ignored]
+    # 不進 git 的檔（#42 設定檔 md；D-554 被 .gitignore 列的）：一律不追蹤，留這台的；這台的版本一次 cat-file 讀
+    mine_all = git.cat_batch(vault, [stages[r].get(2) for r in drop]) if drop else {}
+    if mine_all is None:  # 讀不到這台那版：先不收拾，合併照留、下次再試（不能當成這台沒有而刪掉或留對方的）
+        _log(vault, "合併衝突收拾不了：讀不到這台的版本，下次再試")
+        return got
+    for rel in drop:
         target = Path(vault) / rel
-        from kb._lib.skeleton import UNTRACKED
-        if rel in UNTRACKED:  # 設定檔 md 不進 git（#42）：還沒升級的那台改了、這邊不再追蹤 → 一律不追蹤，留這台的、之後重畫
-            mine = git.show_stage_bytes(vault, rel, 2)
-            if mine is not None:
-                target.write_bytes(mine)
-            elif target.exists():  # 這邊已不追蹤、對方改了：工作區被換成對方畫的，刪掉讓 _render_pages 畫這台的
-                target.unlink()
-            git.untrack(vault, [rel])
-            continue
+        mine = mine_all.get(stages[rel].get(2))
+        if mine is not None:
+            _write_bytes(target, mine)
+        elif target.exists() and classify(rel) != "local":  # 這邊已不追蹤、對方改了：工作區是對方的，刪掉讓這台重畫、重算
+            target.unlink()
+    if drop:
+        git.untrack(vault, drop, force=True)
+    rest = [r for r in todo if r not in drop] if own else []
+    authors = git.authors_between(vault, "HEAD", "MERGE_HEAD") if rest else {}
+    for rel in rest:
+        other = authors.get(rel) or "同事"
+        target = Path(vault) / rel
         if rel.startswith(".system/streams/"):
             _merge_streams(vault, rel)
             git.add(vault, [rel])
@@ -282,6 +651,10 @@ def resolve_conflicts(vault, turn_id):
                 (Path(vault) / copy_rel).write_bytes(theirs)
             git.add(vault, [x for x in (rel, copy_rel) if (Path(vault) / x).exists()])
             got.append({"path": rel, "kind": "file", "other": other, "copy": copy_rel})
+    if not own:
+        if not git.unmerged(vault, everywhere=True):
+            git.commit_merge(vault)
+        return got
     if not git.unmerged(vault):
         # 標重做與 pending 改到的這台流水檔（.system/streams/<種類>/<代號>.jsonl）一起進這個合併 commit
         git.add(vault, [rel for _st, rel in git.status_untracked_and_modified(vault) if rel.startswith(".system/") and not rel.startswith(".system/local/")])

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>willy</title>
+<meta name="theme-color" content="#2457C5">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="willy">
+<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="chat.css">
+</head>
+<body data-view="home">
+<div class="app">
+  <nav class="side" aria-label="選單">
+    <div class="brand">willy</div>
+    <div class="menu" id="menu"></div>
+    <p class="conn"><span class="dot" id="dot"></span><span id="state">連線中…</span></p>
+  </nav>
+  <main class="main" id="main"></main>
+  <aside class="chatcol" aria-label="對話"><div id="chat"></div></aside>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="pending-count" id="pending" role="status" hidden></div>
+<nav class="tabs" aria-label="分頁">
+  <a href="#/" data-tab="home">首頁</a>
+  <a href="#/find" data-tab="find">找卡</a>
+  <a href="#/chat" data-tab="chat">對話</a>
+</nav>
+<script src="md.js"></script>
+<script src="queue.js"></script>
+<script src="chat.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

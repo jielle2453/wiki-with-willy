@@ -1,6 +1,7 @@
 """kb refresh [--json]（多人共用 3，D-293）：git pull 之後讓這台對上。重畫頁、比 pull 進來的原檔、收拾合併衝突、記大檔。
 
-每句話開頭 hook 在 git HEAD 變了才叫；Obsidian 外掛看到 .git 變了也叫。不是 git repo 什麼都不做。
+每句話開頭 hook 在 git HEAD 變了或正在合併時開 --background（不等，結果下一句給，確認 #2）；Obsidian 外掛看到 .git 變了也叫。
+不是 git repo 什麼都不做。
 """
 import argparse
 import json
@@ -17,6 +18,8 @@ CLI_LOCK_TIMEOUT = 30
 
 def add_arguments(sub):
     sub.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
+    sub.add_argument("--background", action="store_true", default=argparse.SUPPRESS,
+                     help="每句開頭 hook 開的：不印東西，結果存給下一句")
 
 
 def lines(got):
@@ -39,6 +42,13 @@ def run(args):
         return 3
     vault = Path(os.path.realpath(str(found)))
     kio.LOCK_TIMEOUT = CLI_LOCK_TIMEOUT
+    if getattr(args, "background", False):
+        try:
+            refresh.run_background(vault)
+        except Exception as e:  # noqa: BLE001  背景沒人看：記 log
+            refresh._log(vault, f"背景對帳沒做完：{type(e).__name__}: {str(e)[:100]}")
+            return 3
+        return 0
     try:
         got = refresh.run(vault)
     except (TimeoutError, OSError, ValueError) as e:

@@ -81,6 +81,12 @@ def _size(path):
     return total
 
 
+def _via(info):
+    """Obsidian 外掛或網頁按的回合（turn.json 的 source 是 turn.VIA_SOURCES 的一個）；source 壞了（不是字串）當不是。"""
+    src = info.get("source")
+    return isinstance(src, str) and src in turn.VIA_SOURCES
+
+
 def plan(vault, now=None):
     """算要清什麼，不動任何東西：回 {"turns": [回合夾 Path]（由舊到新）, "snapshots": [Path], "earliest", "freed_bytes"}。"""
     now = now or datetime.now()
@@ -96,13 +102,13 @@ def plan(vault, now=None):
     rows.sort(key=lambda r: (r[0], r[1].name))  # 由舊到新
     protected = _protected(vault)
     cutoff = now - timedelta(days=days)
-    # Obsidian 的回合（--via obsidian，D-264）不算進回合數上限與下限，只照天數清；其餘照舊
-    ours = [r for r in rows if r[2].get("source") != "obsidian"]
+    # Obsidian 與網頁的回合（--via obsidian／web，D-264）不算進回合數上限與下限，只照天數清；其餘照舊
+    ours = [r for r in rows if not _via(r[2])]
     total = len(ours)
     candidates = [r[1] for i, r in enumerate(ours)
                   if r[1].name not in protected and (r[0] < cutoff or total - i > keep_turns)]
     doomed = candidates[:max(0, total - min_turns)]
-    doomed += [r[1] for r in rows if r[2].get("source") == "obsidian" and r[1].name not in protected and r[0] < cutoff]
+    doomed += [r[1] for r in rows if _via(r[2]) and r[1].name not in protected and r[0] < cutoff]
     gone = {d.name for d in doomed}
     left = [r for r in ours if r[1].name not in gone]  # 「最早還能退回的那一句」是對話與終端機的，Obsidian 的沒有那句話
     earliest = None

@@ -74,7 +74,12 @@ AGAIN = "再說一次「退回」會把這次的退回取消，不會再往前�
 OVERLAP_HEAD = "退不回去：這一句之後，有別的地方也改過同一份，什麼都沒動"
 OVERLAP_TAIL = "要退得先到那個對話退回它，或直接跟我說要改成什麼。"
 OVERLAP_TAIL_OBSIDIAN = "那份後來你在 Obsidian 改過，退回會把那邊改的一起蓋掉，所以沒動；跟我說要改成什麼，我直接改。"
+OVERLAP_TAIL_WEB = "那份後來你在網頁改過，退回會把那邊改的一起蓋掉，所以沒動；跟我說要改成什麼，我直接改。"
 OBSIDIAN_SAID = "你在 Obsidian 按的"
+WEB_SAID = "你在網頁按的"
+# --via 的回合（Obsidian 外掛、網頁）各自一組：source → (說法, 退回撞到時接的那句, versions list 的標記)
+VIA_TEXT = {"obsidian": (OBSIDIAN_SAID, OVERLAP_TAIL_OBSIDIAN, "（Obsidian）"),
+            "web": (WEB_SAID, OVERLAP_TAIL_WEB, "（網頁）")}
 SIDE_WORDS = {"other": "另一個對話", "none": "對話外", "self": "這個對話"}
 OTHER_LINE = "另一個對話還有 {n} 次改動，不在這裡退"
 _DRIVE = re.compile(r"^[A-Za-z]:")
@@ -158,14 +163,16 @@ def _side(t):
 
 
 def _obsidian(t):
-    return t.get("source") == "obsidian"
+    """--via 的回合（Obsidian 外掛或網頁按的，D-255）：回 source（"obsidian"／"web"），不是回 None。"""
+    src = t.get("source")
+    return src if isinstance(src, str) and src in VIA_TEXT else None
 
 
 def _in_range(t):
-    """退回看得到的回合（D-507、D-255）：Obsidian 外掛叫的（--via obsidian）只看 Obsidian 的；對話裡（--session）跳過別的對話的
-    與 Obsidian 的；終端機（兩個都沒有）全部。"""
+    """退回看得到的回合（D-507、D-255）：Obsidian 外掛叫的（--via obsidian）只看 Obsidian 的、網頁叫的（--via web）只看網頁的；
+    對話裡（--session）跳過別的對話的與 Obsidian、網頁的；終端機（兩個都沒有）全部。"""
     if turn.VIA:
-        return _obsidian(t)
+        return _obsidian(t) == turn.VIA
     if turn.SESSION:
         return _side(t) != "other" and not _obsidian(t)
     return True
@@ -236,9 +243,9 @@ def _refuse_overlap(hits, as_json):
     print(OVERLAP_HEAD)
     for h in hits[:ENTRY_LINES_MAX]:
         side = _side(h["turn"])
-        if _obsidian(h["turn"]):  # Obsidian 的回合不是「對話外」，是她在 Obsidian 按的（裁定 13）
+        if _obsidian(h["turn"]):  # Obsidian 的回合不是「對話外」，是她在 Obsidian 按的（裁定 13）；網頁的同
             when = _short_time(h["turn"].get("started"))
-            print(f"- {h['path']}：{when + ' ' if when else ''}{OBSIDIAN_SAID}")
+            print(f"- {h['path']}：{when + ' ' if when else ''}{VIA_TEXT[_obsidian(h['turn'])][0]}")
             continue
         word = SIDE_WORDS[side] if turn.SESSION or side == "none" else "對話裡"  # 終端機沒有「這個對話」，不說「另一個」
         print(f"- {h['path']}：{_describe(h['turn'])}（{word}）")
@@ -246,8 +253,8 @@ def _refuse_overlap(hits, as_json):
         print(f"……共 {len(hits)} 處")
     if any(not _obsidian(h["turn"]) for h in hits):  # 別的對話那句照舊；有 Obsidian 的再接一句（裁定 13、23）
         print(OVERLAP_TAIL)
-    if any(_obsidian(h["turn"]) for h in hits):
-        print(OVERLAP_TAIL_OBSIDIAN)
+    for src in [s for s in VIA_TEXT if any(_obsidian(h["turn"]) == s for h in hits)]:
+        print(VIA_TEXT[src][1])
     return 3
 
 
@@ -574,10 +581,10 @@ def _list(vault, n, as_json):
     if not all_turns:
         print("還沒有任何改動紀錄")
         return 0
-    others = sum(1 for t in all_turns if not _in_range(t) and not _obsidian(t) and _changed(t))  # Obsidian 的自成一組，不算「另一個對話」
+    others = sum(1 for t in all_turns if not _in_range(t) and not _obsidian(t) and _changed(t))  # Obsidian、網頁的自成一組，不算「另一個對話」
     for t in [t for t in all_turns if _in_range(t)][:n]:
         c = _counts(vault, t)
-        flags = (("（Obsidian）" if _obsidian(t) else "") + ("（已退回）" if t["reverted"] else "")
+        flags = ((VIA_TEXT[_obsidian(t)][2] if _obsidian(t) else "") + ("（已退回）" if t["reverted"] else "")
                  + ("（這一次）" if t["turn"] == current else ""))
         outputs = "" if c["outputs"] is None else f"、成品 {c['outputs']}"
         print(f"{_describe(t)}{flags}｜修改 {c['modify']}、新增 {c['create']}、刪除 {c['delete']}{outputs}")
@@ -848,7 +855,7 @@ def _acting_turn(vault, target_turn):
       換掉 turns/<sid>.json 與 current.json；Stop 收原回合那一行。連續退回每次再開一個，journal_turn 一路繼承。"""
     rt = turn.current(vault)
     if turn.VIA:
-        return rt  # Obsidian 外掛叫的：這次呼叫自己的回合就是動作回合，不動 current.json（D-255）
+        return rt  # Obsidian 外掛、網頁叫的：這次呼叫自己的回合就是動作回合，不動 current.json（D-255）
     if not rt.get("session_id") or rt.get("done"):
         return turn.start(vault, None, f"退回 {target_turn}")
     if rt["turn"] == target_turn:
@@ -1443,9 +1450,9 @@ def _conflict_entry(it, hits, by_turn, vault=None):
         return out
     for h in hits:
         t = by_turn.get(h["turn"])
-        obs = bool(t and _obsidian(t))  # Obsidian 的回合不是「對話外」，是她在 Obsidian 按的（裁定 13）
-        said = f"{_short_time(t.get('started')) or ''} {OBSIDIAN_SAID}".strip() if obs else _describe(t)
-        later.append({"item": h["item"], "side": "obsidian" if obs else (_side(t) if t else "none"), "said": said,
+        obs = _obsidian(t) if t else None  # Obsidian 的回合不是「對話外」，是她在 Obsidian 按的（裁定 13）；網頁的同
+        said = f"{_short_time(t.get('started')) or ''} {VIA_TEXT[obs][0]}".strip() if obs else _describe(t)
+        later.append({"item": h["item"], "side": obs if obs else (_side(t) if t else "none"), "said": said,
                       "op": h["op"], "to": h["to"] or h["from"]})
     last = hits[-1]
     now = last["to"] or last["from"]

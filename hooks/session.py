@@ -9,6 +9,8 @@
 kb upgrade --background 的子行程、不等它。背景健檢（D-221、D-227）：上次健檢超過 lint_background_days 天就背景開 kb lint --background。
 升級把 AI 產出併進暫存區、同名不同內容留下的（line_hold_left，放寬甲）每次開場都印到搬完為止。
 core.md 之後接設定檔第六節的「客戶偏好（…）：」一條一行（D-137，沒有不印；讀不到這段不印、寫 log；框住，測試後修正裁定 15）。
+網頁對話（#74 第 2 份，D-351）：環境變數 WIKI_WITH_WILLY_WEB 是 "1"（小伺服器開的 claude）而且 source 是 startup（換新的一段）時，
+最後再接「最近的工作日誌…：」加最近 5 段（格式同 kb journal recent，整段最多 2,000 字）；沒有日誌或出錯（只記 log）不加，其他照常。
 任何例外寫 .system/hook-errors.log（source session），永遠 exit 0。找到知識庫之後的例外另印一行出錯的 additionalContext
 （失敗明講，開場注入測試後修正 D2）；找不到知識庫、stdin 壞掉不輸出。write／flush 也包住：pipe 斷掉照樣 exit 0。
 hook 不是從 scripts/ 跑的，所以這裡動 sys.path（hooks/*.py 是唯一例外，CLAUDE.md 三）。
@@ -84,7 +86,7 @@ def status_lines(vault, source, session_id=None):
         who = None
     if who:
         out.append(who)
-    for fn in (line_hold_left, lambda v: line_compact(v, source)):
+    for fn in (_checks.line_untrack, line_hold_left, lambda v: line_compact(v, source)):
         try:
             line = fn(vault)
         except Exception as e:  # noqa: BLE001
@@ -150,6 +152,32 @@ def preferences_block(vault):
     return "\n".join(lines)
 
 
+WEB_JOURNAL_HEAD = "最近的工作日誌（網頁對話換新的一段，接得上前面的事；更早的用 kb journal recent --find 查）："
+WEB_JOURNAL_ROWS = 5
+WEB_JOURNAL_MAX_CHARS = 2000  # 常駐預算（test_budget.py 守）
+
+
+def web_journal_block(vault, source):
+    """網頁對話換新的一段（WIKI_WITH_WILLY_WEB=1 且 startup）：最近 5 段工作日誌，格式同 kb journal recent；
+    其他情況、沒有日誌回 None；出錯寫 log 回 None。超過 2,000 字截掉、結尾加「…」。"""
+    if os.environ.get("WIKI_WITH_WILLY_WEB") != "1" or source != "startup":
+        return None
+    try:
+        from kb import journal_cli
+        from kb._lib import journal
+
+        rows = journal.recent(vault, WEB_JOURNAL_ROWS)
+        if not rows:
+            return None
+        block = WEB_JOURNAL_HEAD + "\n" + "\n".join("\n".join(journal_cli._lines(r)) for r in rows)
+    except Exception as e:  # noqa: BLE001
+        _log_vault(vault, e)
+        return None
+    if len(block) > WEB_JOURNAL_MAX_CHARS:
+        block = block[:WEB_JOURNAL_MAX_CHARS - 1] + "…"
+    return block
+
+
 def emit(context):
     """印一行 SessionStart JSON；write／flush 出錯（pipe 斷掉）吞掉。
     沒送出的字還在緩衝，結束時 Python 會再 flush 一次、失敗就 exit 120，所以把 fd 1 指到 devnull。"""
@@ -193,6 +221,9 @@ def main():
     except BaseException as e:  # noqa: BLE001
         _log(e, payload)
         context = kb_line + "\n" + ERROR_LINE.format(type(e).__name__) + "\n\n" + core
+    web = web_journal_block(vault, payload.get("source"))
+    if web:
+        context += "\n\n" + web
     emit(context)
 
 

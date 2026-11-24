@@ -903,6 +903,11 @@ ASK_READ_ANY = "要讓 AI 讀一份檔名像密碼的檔"
 ASK_AUTHORIZE = "要讓「{}」這一種的檔都用「{}」這組密碼自動開"
 ASK_EXPLICIT = "要用存好的「{}」密碼開「{}」這一份"
 ASK_UNKNOWN = "認不出這個知識庫指令要做什麼，可能是密碼相關的動作；請確認再按允許"
+# 網頁手機（#74 第 4 份，D-357、R-09）：誰能從手機登入、換 Cloudflare 權杖，也要她按允許（網頁上就是允許卡）
+WEB_ASK_COMMANDS = ("access", "token")
+ASK_WEB_ADD = "要讓 {} 可以從手機登入，看得到整個知識庫、能叫 AI"
+ASK_WEB_REMOVE = "要讓 {} 不能再從手機登入"
+ASK_WEB_TOKEN = "要換掉手機登入用的 Cloudflare 權杖"
 ASK_PREFIX = "需要客戶按允許才會執行："
 NO_SUCH_FILE = "no_such_file"
 NO_SUCH_FILE_REASON = "找不到這份檔"
@@ -2245,7 +2250,7 @@ def _read_label(vault, cwd, arg):
 
 def secret_action(command, tool, vault, cwd=None):
     """D-212：單一 kb 呼叫是不是四種開新口子的密碼動作（kb unlock get、kb ruling add --kind 可以讀、kb unlock authorize、
-    kb convert --saved … --explicit）。是回理由句，不是回 None。參數照 kb 自己的 argparse 認（縮寫、--x=值、順序都一樣）；
+    kb convert --saved … --explicit），或網頁手機的 kb web access add／remove、kb web token set／forget（D-357）。是回理由句，不是回 None。參數照 kb 自己的 argparse 認（縮寫、--x=值、順序都一樣）；
     子命令那個字、或 unlock／ruling／convert 的參數裡有看不出實際值的字（變數、萬用字元），認不出來，照 ask。
     argparse 拆不過的不問：守門用的就是 kb.py 跑的那一份 argparse，拆不過 kb 就什麼都不做。
     #50：後面接 # 註解時殼不會把註解傳給 kb：每個可能的註解開頭都截掉再認一次，任何一種是密碼動作就問。"""
@@ -2267,7 +2272,9 @@ def _secret_action_one(command, tool, vault, cwd=None):
     lead_ok = all(not u and (a in ("-h", "--help") or (a.startswith("--") and "--json".startswith(a) and len(a) > 2))
                   for a, u in parsed[:first or 0])
     if first is not None and lead_ok and parsed[first][0] in cli.COMMANDS and parsed[first][0] not in SECRET_COMMANDS:
-        return None  # 認得、又不是這三個子命令：照常放行，不用載入整個 argparse
+        nxt = parsed[first + 1] if first + 1 < len(parsed) else None
+        if parsed[first][0] != "web" or nxt is None or (not nxt[1] and nxt[0] not in WEB_ASK_COMMANDS):
+            return None  # 認得、又不是這三個子命令（web 也不是 access／token）：照常放行，不用載入整個 argparse
     if any(u for _a, u in parsed):
         return ASK_UNKNOWN
     argv = [a for a, _u in parsed]
@@ -2307,6 +2314,11 @@ def _secret_action_one(command, tool, vault, cwd=None):
     if command_name == "convert" and args.saved is not None and args.explicit:
         label = _file_label(vault, args.target)
         return ASK_EXPLICIT.format(m(args.saved), m(label) if label else "那份檔")
+    if command_name == "web" and getattr(args, "web_command", None) == "access":
+        if args.access_command in ("add", "remove"):
+            return (ASK_WEB_ADD if args.access_command == "add" else ASK_WEB_REMOVE).format(m(args.email))
+    if command_name == "web" and getattr(args, "web_command", None) == "token":
+        return ASK_WEB_TOKEN
     return None
 
 
@@ -2323,8 +2335,9 @@ def secret_in(command, tool, vault, cwd, root):
     def plain(text):  # 殼會接回去的拆字（unl\ock、"un""lock"、unl`ock）先接回去再比（第二輪審查 1）
         return re.sub(r"[\\`'\"{}]", "", text.casefold())
 
-    def has_word(text):
-        return bool(words & set(re.findall(r"[a-z]+", plain(text))))
+    def has_word(text):  # web 要跟 access 或 token 一起出現才算（kb web status 這類不問）
+        found = set(re.findall(r"[a-z]+", plain(text)))
+        return bool(words & found) or ("web" in found and bool(set(WEB_ASK_COMMANDS) & found))
 
     def unclear_sub(seg):  # 每個 kb.py 後面的第一個字：- 開頭（全域選項會吃值，猜不準子命令）、或不是認得的非密碼子命令，算認不出
         text = plain(seg)

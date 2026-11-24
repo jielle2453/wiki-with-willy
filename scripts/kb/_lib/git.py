@@ -90,12 +90,17 @@ def _git_dir(vault):
     d = _plain_git_dir(vault)
     if d is not None:
         return d
+    root = outer_repo(vault)  # 子夾：上層是一般 clone 就讀檔，不叫子行程（每句開頭會問 rebase，D-554 實作疑義 2）
+    d = _plain_git_dir(root) if root is not None else None
+    if d is not None:
+        return d
     got = _ok(vault, "rev-parse", "--absolute-git-dir")
     return Path(got) if got else None
 
 
 def _head_from_files(d):
-    """讀 .git/HEAD → 分支檔或 packed-refs 的 sha；讀不懂回 None（呼叫端改叫 git）。"""
+    """讀 .git/HEAD → 分支檔或 packed-refs 的 sha；讀不懂回 None（呼叫端改叫 git）；分支還沒有 commit（檔案式 ref，
+    沒分支檔、packed-refs 也沒有）回 ""：確定沒有 HEAD，不必叫 git（家目錄是空 repo 時每句多付好幾次，code review 3 後實測）。"""
     try:
         text = (d / "HEAD").read_text(encoding="utf-8").strip()
         if not text.startswith("ref:"):
@@ -111,6 +116,8 @@ def _head_from_files(d):
                 parts = line.split()
                 if len(parts) == 2 and parts[1] == ref and _is_sha(parts[0]):
                     return parts[0]
+        if not (d / "reftable").exists():
+            return ""
     except (OSError, UnicodeDecodeError):
         pass
     return None
@@ -125,7 +132,7 @@ def head(vault):
         return None
     d = _plain_git_dir(vault)
     got = _head_from_files(d) if d is not None else None
-    return got or _ok(vault, "rev-parse", "HEAD")
+    return None if got == "" else (got or _ok(vault, "rev-parse", "HEAD"))
 
 
 def changed_since(vault, old, new):
@@ -138,26 +145,57 @@ def changed_since(vault, old, new):
     return [x for x in got.split("\0") if x]
 
 
-def changed_by_others(vault, old, new):
-    """old..new 之間，不是這台的人（git config user.name）寫的 commit 動到的檔（pull 進來的）；自己 commit 的不算。
-    old 空或不認得回 None。"""
-    if not old or not new:
-        return None
-    mine = _ok(vault, "config", "user.name")
-    rc, out, _e = run(vault, "-c", "core.quotepath=false", "log", "--no-merges", "--format=\x01%an", "--name-only", f"{old}..{new}")
+def own_commits(vault):
+    """這台自己做的 commit（HEAD 的 reflog 裡 commit…、commit (merge)… 那幾種；kb sync untrack 也記成 commit:）。
+    pull、merge、reset 移過來的不算。分「別人的」不看作者名：一人多台、同步外掛都用同一個名字（D-554 實作疑義 3）。"""
+    rc, out, _e = run(vault, "reflog", "show", "--format=%H %gs", "HEAD")
+    if rc != 0:
+        return set()
+    got = set()
+    for ln in out.splitlines():
+        sha, _sp, subject = ln.partition(" ")
+        if subject.startswith(("commit", "cherry-pick", "revert", "am:")) or _REPLAYED.match(subject) or _MERGED.search(subject):
+            got.add(sha)
+    return got
+
+
+# pull --rebase／rebase 把這台的 commit 重放一次：新的 sha 記成 "pull -q --rebase origin main (pick): …"、衝突解完是
+# "rebase (continue): …"，還是這台的；(start) 那行指的是對方的 commit，不算（git 2.50 實測）
+# 這台 pull／merge 做出來的合併 commit（"pull --no-rebase: Merge made by the 'ort' strategy."）也是這台的：
+# -m 對遠端那個 parent 比出的是這台自己的改動（code review 3）；fast-forward 的 sha 是對方的，不算
+_MERGED = re.compile(r"^(pull|merge)\b[^:]*: Merge made by ")
+_REPLAYED = re.compile(r"^(pull|rebase)\b[^()]*\((pick|reword|edit|squash|fixup|continue)\): ")
+
+
+def _pulled_log(vault, old, new, extra, merges=False):
+    """old..new 之間這台原本沒有、pull 進來的 commit（去掉 own_commits），各自動到的檔：回 [路徑]；不認得回 None。
+    merges：合併 commit 也看（-m，對每個 parent 各比一次；只在別台的合併 commit 裡刪掉的也認得，測試 #3）。"""
+    rc, out, _e = run(vault, "-c", "core.quotepath=false", "log", "-m" if merges else "--no-merges", "--format=\x01%H",
+                      "--name-only", *extra, f"{old}..{new}")
     if rc != 0:
         return None
-    got, author = [], None
+    mine = own_commits(vault)
+    got, skip = [], False
     for ln in out.splitlines():
         if ln.startswith("\x01"):
-            author = ln[1:]
-        elif ln.strip() and author != mine and ln not in got:
+            skip = ln[1:].strip() in mine
+        elif ln.strip() and not skip and ln not in got:
             got.append(ln)
     return got
 
 
-def unmerged(vault):
-    got = _ok(vault, "diff", "--name-only", "--diff-filter=U", "-z")
+def changed_by_others(vault, old, new):
+    """old..new 之間 pull 進來的 commit（這台自己 commit 的不算，照 reflog、不看作者名，D-554 實作疑義 3）動到的檔。
+    old 空或不認得回 None。"""
+    if not old or not new:
+        return None
+    return _pulled_log(vault, old, new, [])
+
+
+def unmerged(vault, everywhere=False):
+    """衝突中的檔，相對於知識庫夾、只限知識庫夾裡；everywhere 回整個 repo 的（子夾時看還有沒有別的衝突，D-554 實作疑義 1）。"""
+    args = ["diff", "--name-only", "--diff-filter=U", "-z"] + ([] if everywhere else ["--relative", "--", "."])
+    got = _ok(vault, *args)
     return [x for x in (got or "").split("\0") if x]
 
 
@@ -171,19 +209,37 @@ def rebase_in_progress(vault):
     return bool(d and ((d / "rebase-merge").is_dir() or (d / "rebase-apply").is_dir()))
 
 
+def busy(vault):
+    """合併、rebase、cherry-pick、revert、am 做到一半（kb sync untrack 不動 index，D-554）。"""
+    d = _git_dir(vault)
+    return bool(d and (merge_in_progress(vault) or rebase_in_progress(vault)
+                       or (d / "CHERRY_PICK_HEAD").exists() or (d / "REVERT_HEAD").exists()))
+
+
 def show_stage(vault, path, stage):
     """衝突檔的第 2（自己）或第 3（對方）版內容；沒有回 None。"""
-    rc, out, _e = run(vault, "show", f":{int(stage)}:{path}")
+    rc, out, _e = run(vault, "show", f":{int(stage)}:./{path}")  # ./：相對知識庫夾（子夾也對）
     return out if rc == 0 else None
 
 
-def show_stage_bytes(vault, path, stage):
+def _bytes(vault, *args):
     if not available():
         return None
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    r = subprocess.run(["git", "-C", str(vault), "show", f":{int(stage)}:{path}"], capture_output=True, env=env,
+    r = subprocess.run(["git", "-C", str(vault), *args], capture_output=True, env=env,
                        stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return r.stdout if r.returncode == 0 else None
+
+
+def show_stage_bytes(vault, path, stage):
+    return _bytes(vault, "show", f":{int(stage)}:./{path}")
+
+
+def show_at(vault, rev, path):
+    """某個版本裡這個檔（相對知識庫夾）的內容 bytes；沒有回 None（D-554）。"""
+    if not rev:
+        return None
+    return _bytes(vault, "cat-file", "--filters", f"{rev}:./{path}")  # --filters：跟 checkout 一樣轉換行（autocrlf）
 
 
 def checkout_theirs(vault, path):
@@ -191,12 +247,63 @@ def checkout_theirs(vault, path):
     return rc == 0
 
 
-def untrack(vault, paths):
-    """不再追蹤（git rm --cached，工作區的檔留著）；沒追蹤的跳過。回有沒有成功。"""
-    if not paths:
-        return True
-    rc, _o, _e = run(vault, "rm", "--cached", "--quiet", "--ignore-unmatch", "--", *paths)
-    return rc == 0
+BATCH_CHARS = 6000  # 一次命令列放多少字的路徑（Windows 命令列上限 32767，留餘裕）
+
+
+def _batches(paths):
+    cur, n = [], 0
+    for p in paths:
+        if cur and n + len(p) + 1 > BATCH_CHARS:
+            yield cur
+            cur, n = [], 0
+        cur.append(p)
+        n += len(p) + 1
+    if cur:
+        yield cur
+
+
+def untrack(vault, paths, env=None, force=False):
+    """不再追蹤（git rm --cached，工作區的檔留著）；沒追蹤的跳過。路徑多時分批、照字面不展開萬用字元（D-554）。
+    force：暫存的內容跟 HEAD、工作區都不同也照拿掉（只動 index）。回有沒有全部成功。"""
+    for chunk in _batches(list(paths or [])):
+        rc, _o, _e = run(vault, "--literal-pathspecs", "rm", "-r", "--cached", "--quiet", "--ignore-unmatch",
+                         *(["-f"] if force else []), "--", *chunk, env=env)
+        if rc != 0:
+            return False
+    return True
+
+
+def untrack_commit(vault, paths, message):
+    """只把這些路徑停止追蹤並 commit（D-554 (3)）：別的已暫存改動不帶進這個 commit、照舊暫存著。
+    做法：暫存的 index 從 HEAD 讀、rm --cached、write-tree、commit-tree（作者照 git 設定）、update-ref，再對真的 index rm --cached。
+    回 "ok"｜"nothing"（HEAD 裡沒有這些，沒 commit）｜"error"（什麼都沒動）｜"partial"（commit 做好了、這台的 index 沒拿掉）；檔案一律留在硬碟上。"""
+    d = _git_dir(vault)
+    old = outer_head(vault)
+    if d is None or not old or not paths:
+        return "error"
+    tmp = d / "willy-untrack.index"
+    env = {"GIT_INDEX_FILE": str(tmp)}
+    try:
+        rc, _o, _e = run(vault, "read-tree", "HEAD", env=env)
+        if rc != 0 or not untrack(vault, paths, env=env):
+            return "error"
+        tree = _ok(vault, "write-tree", env=env)
+        if not tree:
+            return "error"
+        if tree == _ok(vault, "rev-parse", "HEAD^{tree}"):  # 沒東西可拿掉：不做空 commit（測試 #8）
+            return "nothing"
+        rc, out, _e = run(vault, "commit-tree", tree, "-p", old, "-m", message)
+        if rc != 0 or not out.strip():
+            return "error"
+        rc, _o, _e = run(vault, "update-ref", "-m", "commit: " + message, "HEAD", out.strip(), old)  # reflog 記成這台的 commit
+        if rc != 0:
+            return "error"
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return "ok" if untrack(vault, paths, force=True) else "partial"  # commit 已做好、真的 index 沒拿掉：外掛下次會再加回
 
 
 def add(vault, paths):
@@ -211,6 +318,11 @@ def commit_merge(vault):
     return rc == 0
 
 
+def last_commit(vault, path):
+    """最後動到這個檔（相對知識庫夾）的 commit；沒有回 None。"""
+    return _ok(vault, "log", "-1", "--format=%H", "--", path)
+
+
 def author_of(vault, rev, path=None):
     """git log -1 --format=%an <rev> [-- path]；沒有回 None。"""
     args = ["log", "-1", "--format=%an", rev]
@@ -223,6 +335,129 @@ def author_of(vault, rev, path=None):
 def tracked(vault, path):
     rc, _o, _e = run(vault, "ls-files", "--error-unmatch", "--", path)
     return rc == 0
+
+
+def outer_repo(vault):
+    """知識庫在哪個 repo 裡（自己的 .git 或上層的，D-554 實作疑義 1）：回 repo 根目錄；不在 repo、沒有 git 回 None。
+    每句開頭都會問：只往上找 .git，不叫子行程。"""
+    if not available():
+        return None
+    try:
+        p = Path(os.path.abspath(str(vault)))
+        ceiling = {os.path.normcase(os.path.abspath(c)) for c in os.environ.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep) if c}
+        for d in (p, *p.parents):
+            g = d / ".git"
+            if _plain_git_dir(d) is not None or g.is_file():  # 夾要有 HEAD、objects、refs（照 git 的判斷；家目錄只有 HEAD 的殘夾跳過往上找）；檔是 worktree／submodule
+                return d
+            if os.path.normcase(str(d)) in ceiling:  # 照 git 的規矩：不往這層以上找
+                return None
+    except OSError:
+        pass
+    return None
+
+
+def outer_head(vault):
+    """知識庫所在 repo 的 HEAD（子夾時是上層 repo 的）；不在 repo 回 None。一般 clone 讀檔，不叫子行程。"""
+    root = outer_repo(vault)
+    if root is None:
+        return None
+    d = _plain_git_dir(root)
+    got = _head_from_files(d) if d is not None else None
+    return None if got == "" else (got or _ok(root, "rev-parse", "HEAD"))
+
+
+def orig_head(vault):
+    return _ok(vault, "rev-parse", "-q", "--verify", "ORIG_HEAD")
+
+
+def tracked_in_head(vault, paths):
+    """HEAD 裡有的檔（相對知識庫夾），限這些路徑底下；只暫存還沒 commit 的不算（測試 #8）。不在 repo、沒有 git 回 []。"""
+    if outer_repo(vault) is None:
+        return []
+    rc, out, _e = run(vault, "-c", "core.quotepath=false", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", *paths)
+    return [x for x in out.split("\0") if x] if rc == 0 else []
+
+
+def deleted_by_others(vault, old, new):
+    """old..new 之間 pull 進來的 commit 刪掉過的檔（相對知識庫夾、只限知識庫夾裡）；不認得回 []。
+    看每個 commit 而不是兩端比：old 時還沒追蹤、中間加了又刪的也算；這台自己的 commit（含 kb sync untrack）不算。"""
+    if not old or not new:
+        return []
+    return _pulled_log(vault, old, new, merges=True, extra=["--relative", "--diff-filter=D", "--", "."]) or []
+
+
+# ---------- 一次拿齊（確認 #2：git 次數不隨檔數增加） ----------
+
+def prefix(vault):
+    """知識庫夾在 repo 裡的位置（"" 或 "文件/總資料夾/"）；不在 repo 回 None。只看檔案。"""
+    root = outer_repo(vault)
+    if root is None:
+        return None
+    rel = os.path.relpath(os.path.abspath(str(vault)), str(root)).replace(os.sep, "/")
+    return "" if rel == "." else rel.rstrip("/") + "/"
+
+
+def unmerged_stages(vault):
+    """衝突中的檔與各 stage 的物件：{路徑（相對知識庫夾）: {stage: sha}}，一次 ls-files -u。"""
+    rc, out, _e = run(vault, "-c", "core.quotepath=false", "ls-files", "-u", "-z", "--", ".")
+    got = {}
+    for ent in (out.split("\0") if rc == 0 else []):
+        meta, _tab, path = ent.partition("\t")
+        parts = meta.split()
+        if path and len(parts) == 3:
+            got.setdefault(path, {})[int(parts[2])] = parts[1]
+    return got
+
+
+def cat_batch(vault, names):
+    """一次讀很多物件（sha，或 rev:repo 根目錄算起的路徑），cat-file --batch：回 {名字: bytes}，沒有的不列；讀失敗回 None。
+    不做換行轉換（--batch 加 --filters 收不了 rev:路徑，git 2.50 實測），寫回的是 commit 進去的樣子。"""
+    names = list(dict.fromkeys(n for n in names if n))
+    if not names or not available():
+        return {}
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        r = subprocess.run(["git", "-C", str(vault), "cat-file", "--batch"], input="".join(n + "\n" for n in names).encode("utf-8"),
+                           capture_output=True, env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    got, buf, i = {}, r.stdout, 0
+    for n in names:
+        nl = buf.find(b"\n", i)
+        if nl < 0:
+            break
+        head = buf[i:nl].decode("utf-8", errors="replace").split()
+        i = nl + 1
+        if len(head) != 3 or not head[2].isdigit():  # "<名字> missing"／"ambiguous"
+            continue
+        size = int(head[2])
+        got[n] = buf[i:i + size]
+        i += size + 1
+    return got
+
+
+def show_many_at(vault, rev, paths):
+    """某個版本裡這些檔（相對知識庫夾）的內容：{路徑: bytes}，沒有的不列；一次 cat-file。"""
+    pre = prefix(vault)
+    if not rev or pre is None or not paths:
+        return {}
+    names = {f"{rev}:{pre}{p}": p for p in paths}
+    return {names[k]: v for k, v in (cat_batch(vault, list(names)) or {}).items()}
+
+
+def authors_between(vault, old, new):
+    """old..new 每個檔最近一次是誰改的（相對知識庫夾）：{路徑: 人名}，一次 log。"""
+    rc, out, _e = run(vault, "-c", "core.quotepath=false", "log", "--format=\x01%an", "--name-only", "--relative",
+                      f"{old}..{new}", "--", ".")
+    got, who = {}, None
+    for ln in (out.splitlines() if rc == 0 else []):
+        if ln.startswith("\x01"):
+            who = ln[1:]
+        elif ln.strip() and who:
+            got.setdefault(ln, who)
+    return got
 
 
 def status_untracked_and_modified(vault):

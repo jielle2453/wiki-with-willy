@@ -34,7 +34,8 @@ NOT_TRUE_HOW = pending.LINT_GONE_HOW
 # 舊版開的 lint 件沒記 check：照 key 的開頭認是哪一項開的（條件消失時關，測試 T-1）
 KEY_CHECKS = (("guard_stale", "guard"), ("versions_unwritable", "backup"), ("system_link", "system_dir"),
               ("inferred:", "inferred"), ("skeleton:", "versions"), ("synthesis_big:", "sizes"),
-              ("redo_by_profile:", "stale_by_profile"), ("promote:", "rulings_promote"), ("preference:", "preferences"))
+              ("redo_by_profile:", "stale_by_profile"), ("promote:", "rulings_promote"), ("preference:", "preferences"),
+              ("sync_untrack", "sync_untrack"))
 CLOSED_TEXT = "關掉 {n} 件已經不成立的待處理"
 ASIDE_TEXT = "收起 {n} 件放超過 {days} 天沒動的待處理（先放著，有變化會再拿出來）"
 OPENING_LOCK_WAIT = 0.5  # 開場記「今天開過了」只等這麼久，等不到這次不開（開場 hook 有時限）

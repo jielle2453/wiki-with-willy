@@ -217,6 +217,13 @@ class _InventoryLagged(Exception):
 
 def _restore_sources(vault, original):
     kio.write_text_atomic(_sources_path(vault), original)
+    _adopt_back(vault, _sources_path(vault))
+
+
+def _adopt_back(vault, path):
+    """倒回的整份副本明白吸收進流水檔（D-554 (2)，副本只讀之後不靠讀的時候吸收）。"""
+    from kb._lib import streams
+    streams.adopt_path(vault, path, "rollback")
 
 
 def _inventory_step(vault, original, step, *args):
@@ -313,8 +320,9 @@ def _guarded_drop(vault, ids, turn_id, original, inv_before, before_write=None):
         return _drop_cards(vault, ids, turn_id, undo)
     except Exception as e:  # noqa: BLE001  任何一步不行就整段倒回
         for step in (lambda: _restore_sources(vault, original),
-                     lambda: inv_before is not None and kio.write_text_atomic(
+                     lambda: inv_before is not None and (kio.write_text_atomic(
                          Path(vault) / inventory.INVENTORY_REL, inv_before.decode("utf-8")),
+                         _adopt_back(vault, Path(vault) / inventory.INVENTORY_REL)),
                      undo.rollback):
             try:
                 step()

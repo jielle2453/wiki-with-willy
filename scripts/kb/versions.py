@@ -68,6 +68,7 @@ MOVE_OPEN = "退不回去：「{name}」裡有檔案正開著，什麼都沒動�
 MOVE_FAILED = "退不回去：{why}，什麼都沒動"
 MOVE_CREDENTIAL = "退不回去：「{name}」裡有檔名像密碼或金鑰的檔，不搬進知識庫；先把那些檔移開再說退回，什麼都沒動"
 PURGED_MARK = "（已排除）"
+ADOPT_FAILED = "「{kind}」沒退成：舊的內容沒寫進去；要退回的那一份{where}"
 FILE_OPEN = "退不回去：「{rel}」正開著（檔案總管、Office 或記事本），什麼都沒動；關掉再說一次退回"
 UNEXPECTED = "退不回去：{why}；可能只退了一部分，先別再說退回，請服務人員看一下"
 AGAIN = "再說一次「退回」會把這次的退回取消，不會再往前退。"  # 成功時最後一行（B-441：D-074 連退兩次是取消，不是再往前）
@@ -112,6 +113,13 @@ def add_arguments(sub):
                          description="回合備份超過 30 天或 200 個就從最舊的清（至少留最近 20 個），快照留最近 2 份；--check 只算。")
     cl.add_argument("--check", action="store_true", help="只算會清什麼，不動任何東西")
     cl.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
+    ow = subs.add_parser("overwritten", help="列出被改回舊值的改動（同步之後別台改的被蓋掉）",
+                         description="列出把別台改的值改回舊值的行（一行一件，後面是行代號）；--undo <行代號> 只退那一行。")
+    ow.add_argument("--kind", help="只看這個種類（agenda、entities、statements…）")
+    ow.add_argument("--since", help="只看這天（YYYY-MM-DD）以後寫的行")
+    ow.add_argument("--undo", metavar="行代號", help="退這一行：<種類>:<筆 id>:<台代號>:<seq>")
+    ow.add_argument("--yes", action="store_true", help="之後有人又改過同一欄、她同意之後：照退")
+    ow.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
 
 def turns(vault):
@@ -380,7 +388,24 @@ def _copy_back(vault, src, dst):
                 from kb._lib import ledger
                 rel = Path(dst).relative_to(Path(vault)).as_posix() if Path(dst).is_relative_to(Path(vault)) else Path(dst).name
                 ledger.log_error(vault, f"退回後「{rel}」設回隱藏沒成：{e.strerror or type(e).__name__}", source="versions")
+    _adopt(vault, dst)
     _remirror(vault, dst)
+
+
+def _adopt(vault, path):
+    """寫回的是流水檔種類的副本（.system/<種類>.json，舊的整份）：明白吸收進流水檔，行帶 via undo（D-554 (2)；
+    副本只讀之後不再靠讀的時候吸收）。吸收不成（第二輪裁定 6）：記 log、舊的那份存到 handedits、
+    副本照流水檔重寫，丟 _AdoptFailed（那一種沒退成）。"""
+    from kb._lib import streams
+    v = streams.virtual_kind(path)
+    if v is None:
+        return
+    try:
+        streams.adopt(vault, v[1], "undo")
+    except Exception as e:  # noqa: BLE001
+        from kb._lib import ledger
+        ledger.log_error(vault, f"退回的「{Path(path).name}」沒寫進流水檔：{type(e).__name__}: {str(e)[:100]}", source="versions")
+        raise _AdoptFailed(v[1], streams.keep_copy(vault, v[1])) from e
 
 
 def _remirror(vault, path):
@@ -443,6 +468,14 @@ def _plain(vault, e):
         except (ValueError, OSError):
             pass
     return why
+
+
+class _AdoptFailed(Exception):
+    """退回把舊的整份副本寫回原位、但沒寫進流水檔（#78 第二輪裁定 6）：那一種沒退成，不准說成功。"""
+    def __init__(self, kind, saved):
+        self.kind, self.saved = kind, saved
+        self.line = ADOPT_FAILED.format(kind=kind, where=f"存在 {saved}" if saved else "沒存成")
+        super().__init__(self.line)
 
 
 class _FolderFailed(Exception):
@@ -1057,7 +1090,7 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
     ai_keys = _output_keys(vault)
 
     restored, removed, lost, touched_z3, kept_msgs, kept_ids = [], [], [], [], [], []
-    changed_backup, changed_srcs = [], []
+    changed_backup, changed_srcs, not_adopted = [], [], []
     purged = False
     sctx = {"vault": vault, "rt": rt["turn"], "restored": [], "render": set()}
     for it in sorted(stream_items, key=lambda i: i["seq"], reverse=True):  # 流水檔：每一項寫一行反向的（多人共用 1）
@@ -1113,7 +1146,11 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
                 continue
             turn.backup(vault, rel, rt["turn"])
             dst.parent.mkdir(parents=True, exist_ok=True)
-            _copy_back(vault, src, dst)
+            try:
+                _copy_back(vault, src, dst)
+            except _AdoptFailed as failed:  # 那一種沒退成，別的照常（第二輪裁定 6）
+                not_adopted.append(failed.line)
+                continue
             restored.append(rel)
             if is_z3:
                 touched_z3.append(rel)
@@ -1159,6 +1196,15 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
             unmarked = _undo_revert_marks(vault, target)
         except ValueError:
             pass  # 標記已撤；清冊讀不到，成品 status 不對帳
+    if not_adopted and not (restored or removed or folders_done):  # 一件都沒退成（疑義 12）：只講沒退成，不算退回過、不寫 journal
+        _seal(vault, conversation)
+        if as_json:
+            print(json.dumps({"turn": target["turn"], "prompt_head": target["prompt_head"], "reverted": False,
+                              "not_adopted": not_adopted}, ensure_ascii=False))
+        else:
+            for line in not_adopted:
+                print(line)
+        return 3
     _mark_acting_turn(vault, rt["turn"], target["turn"], unmarked)
     write_json_atomic(target["dir"] / "reverted.json",
                       {"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "by_turn": rt["turn"]})
@@ -1181,7 +1227,7 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
     if as_json:
         print(json.dumps({
             "turn": target["turn"], "prompt_head": target["prompt_head"], "by_turn": rt["turn"],
-            "restored": restored, "removed": removed, "lost": lost, "backup_changed": changed_backup,
+            "restored": restored, "removed": removed, "lost": lost, "backup_changed": changed_backup, "not_adopted": not_adopted,
             "outputs": out_rels, "outputs_deleted": bool(delete_outputs), "kept": kept_msgs,
             "undone_revert_of": target["reverted_turn"], "inventory_error": inv_error,
             "folders": folders_done, "folders_kept": folders_kept,
@@ -1189,11 +1235,13 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
             "in_bin": [_uri_name(m["from"]) for m in target["moves"] if m["op"] == "trash"], "purged": purged,
             "again": AGAIN, "converted": bool(converted),
         }, ensure_ascii=False))
-        return 0
+        return 3 if not_adopted else 0
     if lost:
         print(f"無法還原 {len(lost)} 檔（備份已不在）：" + "、".join(lost))
     if changed_backup:
         print(BACKUP_CHANGED.format(n=len(changed_backup), names="、".join(changed_backup)))
+    for line in not_adopted:
+        print(line)
     print(sentence)
     for rel in out_rels:
         print(f"    {rel}")
@@ -1220,7 +1268,7 @@ def _revert_locked(vault, code, delete_outputs, as_json, conversation):
     if converted:
         print(converted)
     print(AGAIN)
-    return 0
+    return 3 if not_adopted else 0
 
 
 def _delete_outputs(vault, code, as_json, conversation=False):
@@ -1555,7 +1603,7 @@ def _undo_locked(vault, targets, as_json, conversation, all_turns=None):
     rt = _acting_turn(vault, todo[0]["turn"])
     ctx = {"vault": vault, "sources": sources_lib.load(vault), "rt": rt["turn"], "restored": [], "removed": [],
            "touched_z3": [], "moves": [], "render": set(), "kept": []}
-    done, conflict, skipped = [], [], []
+    done, conflict, skipped, not_adopted = [], [], [], False
     done_ids = set()
     for it in todo:
         if it.get("why") == "derived":
@@ -1584,6 +1632,9 @@ def _undo_locked(vault, targets, as_json, conversation, all_turns=None):
             status, why, message = _do_item(ctx, led, it)
         except _FolderFailed as e:
             status, why, message = "skipped", "failed", e.line
+        except _AdoptFailed as e:  # 那一種沒退成，別項照常；exit code 非 0（第二輪裁定 6）
+            status, why, message = "skipped", "failed", e.line
+            not_adopted = True
         except Exception as e:  # noqa: BLE001  一項出事不拖累別項
             ledger.log_error(vault, f"undo {it['item']} 失敗：{type(e).__name__}: {e}", source="versions")
             status, why, message = "skipped", "failed", UNEXPECTED.format(why=_plain(vault, e))
@@ -1605,7 +1656,7 @@ def _undo_locked(vault, targets, as_json, conversation, all_turns=None):
             vault, UNDO_HEAD.format(n=len(done)),
             [{"path": r, "action": "modify"} for r in ctx["restored"]] + [{"path": r, "action": "delete"} for r in ctx["removed"]],
             "versions undo", conversation, actions=items.actions_of_turn(vault, ctx["rt"]))
-    return 0 if (done or conflict or kept) else 3
+    return 0 if (done or conflict or kept) and not not_adopted else 3
 
 
 def _unfixable_message(it):
@@ -1919,6 +1970,173 @@ def _undo_record_item(ctx, it):
     return "done", None, None
 
 
+# ---------- kb versions overwritten（#78 第三段，D-554 (4)） ----------
+
+OW_NOTHING = "沒有找到被改回舊值的改動"
+OW_NOT_FOUND = "找不到這一行：{code}"
+OW_KIND_WORDS = {"agenda": "日程", "entities": "實體", "statements": "口述", "rulings": "裁示", "findings": "發現", "pending": "待處理",
+                 "profile": "設定檔", "sources": "來源", "inventory": "清冊", "card_base": "卡的基準", "set_aside": "先不要"}
+OW_FIELD_WORDS = {"date": "日期", "start": "開始", "time": "時間", "text": "說明", "status": "狀態", "note": "備註", "entities": "掛的實體",
+                  "name": "名稱", "type": "類型", "owner": "負責人", "whose": "給誰", "tags": "標籤", "checklist": "子項目"}
+OW_SUB_WORDS = {"done": "打勾", "text": "文字", "del": "拿掉"}
+_OW_DATE = re.compile(r"^\d{4}-(\d\d-\d\d)$")
+
+
+def _ow_field(it):
+    head, _, rest = it["field"].partition(":")
+    if not rest:
+        return OW_FIELD_WORDS.get(head, head)
+    cid, _, f = rest.rpartition(":")
+    if head == "tags":
+        return f"標籤「{cid}」"
+    return f"子項「{it.get('sub') or cid}」{OW_SUB_WORDS.get(f, f)}"
+
+
+def _ow_value(it, value):
+    f = it["field"].rpartition(":")[2] if ":" in it["field"] else None
+    if f in ("done", "on", "del"):
+        return {"done": ("有勾", "沒勾"), "on": ("有", "沒有"), "del": ("拿掉", "留著")}[f][0 if value else 1]
+    if value is None:
+        return "沒有"
+    if isinstance(value, str):
+        m = _OW_DATE.match(value)
+        return m.group(1) if m else (value if len(value) <= 30 else value[:30] + "…")
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= 30 else text[:30] + "…"
+
+
+def _ow_who(vault, line):
+    from kb._lib import streams
+    return "這台" if line.get("by") == streams.machine_id(vault) else (line.get("who") or line.get("by") or "不知道哪一台")
+
+
+def _ow_time(at, short=False):
+    at = str(at or "")
+    return (at[5:10] if short else f"{at[5:10]} {at[11:16]}").strip() or "不知道什麼時候"
+
+
+def _ow_suffix(line):
+    via = line.get("via")
+    if via:
+        return {"undo": "（退回時寫的）", "restore": "（還原時寫的）", "rollback": "（做到一半沒成、倒回時寫的）"}.get(via, f"（{via} 寫的）")
+    return "（對話外的程式寫的）" if line.get("turn") is None else ""
+
+
+def _ow_what(it):
+    return f"{OW_KIND_WORDS.get(it['kind'], it['kind'])}「{it['title']}」{_ow_field(it)}"
+
+
+def _ow_sentence(vault, it):
+    ow = it["overwritten"]
+    return (f"{_ow_what(it)}：{_ow_who(vault, ow)} {_ow_time(ow['at'])} 改成 {_ow_value(it, ow['value'])}，"
+            f"{_ow_who(vault, it['line'])} {_ow_time(it['line']['at'])} 又改回 {_ow_value(it, it['back_to'])}{_ow_suffix(it['line'])}"
+            f"　[{it['code']}]")
+
+
+def _ow_find(vault, kind=None, since=None):
+    from kb._lib import streams
+    out = []
+    for k in ([kind] if kind else [k for k in streams.KINDS if k not in streams.OVERWRITTEN_ASK]):  # 第二輪裁定 2
+        if streams.exists(vault, k):
+            out += streams.overwritten(vault, k)
+    if since:
+        out = [it for it in out if str(it["line"]["at"] or "")[:10] >= since]
+    out.sort(key=lambda it: (str(it["line"]["at"] or ""), it["kind"], it["id"], it["field"]))
+    return out
+
+
+def _ow_public(it):
+    return {k: it[k] for k in ("kind", "id", "field", "line", "overwritten", "back_to", "code")}
+
+
+def _overwritten(vault, args, as_json, conversation):
+    from kb._lib import streams
+    kind, since = args.kind, args.since
+    if kind and kind not in streams.KINDS:
+        print(f"沒有這個種類：{kind}（有：{'、'.join(streams.KINDS)}）")
+        return 2
+    if since:
+        try:
+            datetime.strptime(since, "%Y-%m-%d")
+        except ValueError:
+            print("--since 要寫成 YYYY-MM-DD")
+            return 2
+    if args.undo is not None:  # 空字串也算給了（測試第 2 輪 #19：當錯，不印整份清單）
+        return _overwritten_undo(vault, args.undo, bool(args.yes), as_json, conversation)
+    try:
+        found = _ow_find(vault, kind, since)
+    except ValueError as e:
+        print(f"讀不了：{e}")
+        return 3
+    if as_json:
+        print(json.dumps({"items": [_ow_public(it) for it in found]}, ensure_ascii=False))
+    elif not found:
+        print(OW_NOTHING)
+    else:
+        for it in found:
+            print(_ow_sentence(vault, it))
+    return 0
+
+
+def _overwritten_undo(vault, code, yes, as_json, conversation):
+    """照行代號 <種類>:<筆 id>:<台代號>:<seq> 退那一行（streams.revert_line，turn 是 null 的也行）；之後有人又改了同一欄先問，--yes 才做。"""
+    from kb._lib import streams
+
+    def fail(message, **more):
+        print(json.dumps(dict({"ok": False, "code": code, "message": message}, **more), ensure_ascii=False) if as_json else message)
+        return 3
+    parts = str(code).split(":")
+    kind = parts[0]
+    if len(parts) < 4 or kind not in streams.KINDS or not re.fullmatch(r"[0-9]{1,9}", parts[-1]):  # 只收 ASCII 數字、限長度（#18）
+        return fail(OW_NOT_FOUND.format(code=code))
+    rid, by, seq = ":".join(parts[1:-2]), parts[-2], int(parts[-1])
+    lock = kio.FileLock(revert_lock_path(vault), timeout=REVERT_LOCK_TRY)
+    try:
+        lock.__enter__()
+    except TimeoutError:
+        return fail("另一個退回還在做，等它做完再試")
+    try:
+        try:
+            eff = streams.line_effects(vault, kind, rid, seq, by) if streams.exists(vault, kind) else None
+        except ValueError as e:
+            return fail(f"讀不了：{e}")
+        if eff is None or streams.current(vault, kind, rid) is None:
+            return fail(OW_NOT_FOUND.format(code=code))
+        try:
+            mine = [it for it in streams.overwritten(vault, kind) if it["code"] == code]
+        except ValueError as e:
+            return fail(f"讀不了：{e}")
+        if not mine:  # 只退列得出來的行：建立的行、已退過的行、一般的改動不從這裡退（review 2）
+            return fail(OW_NOT_FOUND.format(code=code))
+        later = [r for r in streams.later_lines(vault, kind, rid, seq, eff["fields"])
+                 if not any(isinstance(x, dict) and x.get("seq") == seq and x.get("by") == by for x in (r.get("reverts") if isinstance(r.get("reverts"), list) else []))]  # 型別怪的照「之後又改過」算（#17）
+        if later and not yes:
+            last = later[-1]
+            what = _ow_what(mine[0]) if mine else code
+            return fail(f"{what}：{_ow_who(vault, last)} {_ow_time(last.get('at'))} 之後又改過，改回會蓋過去；她說要改回就加 --yes",
+                        needs_yes=True, later=[streams._who_of(r) for r in later])
+        rt = _acting_turn(vault, code)["turn"]
+        rel = streams.legacy_rel(kind)
+        try:
+            turn.backup(vault, rel, rt)
+        except Exception:  # noqa: BLE001  備不了不擋：流水檔只往後加，這一行本身退得回
+            pass
+        streams.revert_line(vault, kind, rid, eff, rt)
+        _render_record_md(vault, rel, rt)
+        _seal(vault, conversation)
+    finally:
+        lock.__exit__(None, None, None)
+    lines = [f"已改回：{_ow_what(it)} {_ow_value(it, it['back_to'])} → {_ow_value(it, it['overwritten']['value'])}"
+             f"（照{_ow_who(vault, it['overwritten'])} {_ow_time(it['overwritten']['at'], short=True)} 的）" for it in mine]
+    also = [f for f in eff["fields"] if f not in {it["field"] for it in mine} and f not in streams.append_only(kind)
+            and not f.endswith((":comments", ":pos")) and not (f.startswith("tags:") and f.endswith(":text"))]
+    if also:  # 同一行還改了別的欄：一起改回了，講出來（review 3）
+        lines.append("這一行同時改的也一起改回：" + "、".join(_ow_field({"field": f, "sub": None}) for f in also))
+    print(json.dumps({"ok": True, "code": code, "done": [_ow_public(it) for it in mine], "message": "\n".join(lines)}, ensure_ascii=False)
+          if as_json else "\n".join(lines))
+    return 0
+
+
 def run(args):
     vault = guard.find_vault(os.getcwd())
     if vault is None:
@@ -1935,6 +2153,8 @@ def run(args):
     conversation = journal_cli.in_conversation(vault)
     if args.versions_command == "clean":
         return _clean(vault, args.check, as_json, conversation)
+    if args.versions_command == "overwritten":
+        return _overwritten(vault, args, as_json, conversation)
     if args.versions_command == "undo":
         global _YES
         _YES = bool(getattr(args, "yes", False))

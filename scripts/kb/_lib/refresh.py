@@ -99,6 +99,10 @@ def _run(vault, turn_id, out, own=True):
     old = read_last_head(vault)
     out["kept_local"], gone_pages, ok = _keep_local(vault, old, head)
     failed = failed or not ok
+    try:
+        restore_env(vault)
+    except Exception as e:  # noqa: BLE001
+        _log(vault, f"換回這台的 env.json 失敗：{type(e).__name__}: {str(e)[:100]}，下次再試")
     if own:
         pulled = git.changed_by_others(vault, old, head) or []  # 別人寫的 commit 動到的檔；自己（外掛）commit 的不算
         out["pulled"] = pulled
@@ -289,6 +293,38 @@ def _pulled_deleted(vault, head=None):
         return base, orig, []
     deleted = git.deleted_by_others(vault, base, head)
     return base, orig, own_ignored(vault, deleted)
+
+
+ENV_BACK_LINE = "同步帶來別台的 env.json，已換回這台的"
+
+
+def restore_env(vault):
+    """env.json 的這台代號跟 .system/local/env.mine.json 不同（別台還在追蹤、commit 了它的 env.json，pull 時 git 照蓋被忽略的檔）：
+    用這台的備份寫回、記 log，回 True。沒有備份（舊版升上來第一次）不動（#78 第二段第 6 點）。"""
+    import json
+    from kb._lib import env
+    from kb._lib.io import FileLock
+    mp = Path(vault) / env.MINE_REL
+    if not mp.is_file():
+        return False
+    p = Path(vault) / env.ENV_REL
+    with FileLock(p):  # 備份在鎖裡讀：換代號的人也拿這把鎖（review 8）
+        try:
+            raw = mp.read_bytes()
+            mine = env.mine_id(json.loads(raw.decode("utf-8")))
+        except (OSError, ValueError):
+            return False
+        if not mine:
+            return False
+        try:
+            cur = env.mine_id(json.loads(p.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            cur = None
+        if cur == mine:
+            return False
+        _write_bytes(p, raw)
+    _log(vault, ENV_BACK_LINE)
+    return True
 
 
 def recover_local(vault, rel):
@@ -613,8 +649,9 @@ def resolve_conflicts(vault, turn_id, own=True):
             target.unlink()
     if drop:
         git.untrack(vault, drop, force=True)
-    rest = [r for r in todo if r not in drop] if own else []
-    authors = git.authors_between(vault, "HEAD", "MERGE_HEAD") if rest else {}
+    # 子夾庫：別人 repo 的衝突不碰，只收拾知識庫的流水檔（兩邊的行都留；#78 第二段第 5 點）
+    rest = [r for r in todo if r not in drop and (own or r.startswith(".system/streams/"))]
+    authors = git.authors_between(vault, "HEAD", "MERGE_HEAD") if any(not r.startswith(".system/streams/") for r in rest) else {}
     for rel in rest:
         other = authors.get(rel) or "同事"
         target = Path(vault) / rel
@@ -701,15 +738,40 @@ def _mark_redo(vault, rel, turn_id):
 
 
 def _merge_streams(vault, rel):
-    """流水檔衝突（理論上不會）：兩邊的行都留、去掉重複的行。"""
+    """流水檔衝突：stage 2、stage 3，加上工作區裡衝突標記以外、讀得懂的行（衝突還在時照樣寫進來的，測試第 2 輪 #14），
+    三邊取聯集、去掉重複的行。"""
     a = git.show_stage(vault, rel, 2) or ""
     b = git.show_stage(vault, rel, 3) or ""
+    try:
+        work = _work_lines((Path(vault) / rel).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        work = []
     seen, lines = set(), []
-    for ln in (a + "\n" + b).splitlines():
+    for ln in (a + "\n" + b).splitlines() + work:
         if ln.strip() and ln not in seen:
             seen.add(ln)
             lines.append(ln)
     write_text_atomic(Path(vault) / rel, "\n".join(lines) + "\n")
+
+
+def _work_lines(text):
+    """工作區那份裡讀得懂的流水行：衝突標記、壞行不算；diff3 的共同祖先段（||||||| 到 =======）也不收，免得救回兩邊都拿掉的行。"""
+    out, base = [], False
+    for ln in text.splitlines():
+        if ln.startswith("|||||||"):
+            base = True
+            continue
+        if ln.startswith(("<<<<<<<", "=======", ">>>>>>>")):
+            base = False
+            continue
+        if base:
+            continue
+        try:
+            if isinstance(json.loads(ln), dict):
+                out.append(ln)
+        except (ValueError, RecursionError):
+            pass
+    return out
 
 
 def public(got):

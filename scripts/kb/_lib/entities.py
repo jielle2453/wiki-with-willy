@@ -921,6 +921,7 @@ class _Undo:
         self.v = Path(vault)
         self.steps = []
         self.folder_log = []
+        self.was_empty = set()
 
     def folder(self, turn_id, op, src, dst=None):
         self.folder_log.append((turn_id, op, src, dst))
@@ -933,6 +934,17 @@ class _Undo:
 
     def file(self, rel):
         p = self.v / rel
+        if not p.is_file():  # 副本是衍生的，不在不代表那種是空的（#78 第二輪裁定 7、review）：有流水檔就先照它畫出來再記；
+            from kb._lib import streams  # 真的什麼都沒有（沒副本、沒流水檔）才記成「原本是空的」，倒回時吸收成空的
+            v = streams.virtual_kind(p)
+            if v is not None and Path(v[0]).resolve() == self.v.resolve():
+                try:
+                    if streams.exists(self.v, v[1]):
+                        streams.read_doc(self.v, v[1])
+                    else:
+                        self.was_empty.add(rel)
+                except (OSError, ValueError):
+                    pass
         self.steps.append(("file", rel, p.read_bytes() if p.is_file() else None))
 
     def moved(self, src, dst):
@@ -941,6 +953,18 @@ class _Undo:
     def rmdir(self, rel):
         self.steps.append(("rmdir", rel, None))
 
+    def _adopt(self, p, absent_empty):
+        """吸收不成只記 log：後面的倒回步驟照做（review；OSError 也一樣，中途丟出會留半套）。"""
+        from kb._lib import streams
+        v = streams.virtual_kind(p)
+        if v is None or not streams.exists(self.v, v[1]):  # 那一種還沒有流水檔：舊檔寫回就好，不遷移、不吸收（測試第 2 輪 #22）
+            return
+        try:
+            streams.adopt_path(self.v, p, "rollback", absent_empty=absent_empty)
+        except Exception as e:  # noqa: BLE001
+            from kb._lib import ledger
+            ledger.log_error(self.v, f"倒回的「{p.name}」沒寫進流水檔：{type(e).__name__}: {str(e)[:100]}", source="entities")
+
     def rollback(self):
         for kind, a, b in reversed(self.steps):
             if kind == "file":
@@ -948,9 +972,12 @@ class _Undo:
                 if b is None:
                     if p.is_file():
                         os.remove(p)
+                    if a in self.was_empty:  # 記的時候沒副本也沒流水檔：那種原本是空的，吸收成空的（#78 第二輪裁定 7）
+                        self._adopt(p, True)
                 else:
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_bytes(b)
+                    self._adopt(p, False)  # 副本只讀（D-554 (2)）：倒回的整份明白吸收，不靠讀的時候
             elif kind == "move":
                 os.rename(self.v / b, self.v / a)
             else:

@@ -61,6 +61,8 @@ BIGGER = {"agenda": ("round",)}
 FOLLOW = {"agenda": {"date": "round"}}  # 自動移（同一行把 round 加大）的 date 跟 round 大的那行走、不算撞到（測試第 3 輪裁定 16）
 # 掃描看到的、只在這台算的那一半放 .system/local/<種類>.json（新定 3）；共用那一半走流水檔
 SPLIT = ("inventory", "pending", "profile")
+# kb versions overwritten 預設不列、--kind 指名才列的種類（#78 第二輪裁定 2）：每台自己算、自己寫的，兩台來回寫各自的值不是誰蓋掉誰講的話
+OVERWRITTEN_ASK = ("inventory", "card_base", "pending")
 LOCAL_PROFILE = ("md_sha256",)  # 設定檔 md 這台渲染出的指紋：md 不進 git、每台自己畫（#42），比手改要用這台的
 LOCAL_PENDING_KINDS = ("missing_file", "unreadable")  # 原檔不見、讀不到：看這台的掃描，只開在本機
 RETRACT = {k: v[3] for k, v in KINDS.items()}
@@ -294,6 +296,9 @@ def _log(vault, text):
         pass
 
 
+CONFLICT_MARKS = ("<<<<<<<", "=======", ">>>>>>>")
+
+
 def _read_file(vault, path):
     """[(idx, 行)]；最後一行不完整略過並記 log，其他壞行丟 ValueError。"""
     try:
@@ -304,6 +309,9 @@ def _read_file(vault, path):
     out = []
     for i, text in enumerate(lines):
         if not text.strip():
+            continue
+        if text.startswith(CONFLICT_MARKS):  # git 合併沒收拾完留下的：那幾行略過，其他行照讀（#78 第二段第 5 點）
+            _log(vault, f"{Path(path).name} 第 {i + 1} 行略過：合併衝突標記")
             continue
         try:
             row = json.loads(text)
@@ -561,18 +569,63 @@ def load(vault, kind):
 
 def _mirror(vault, kind, st):
     """合併結果照舊的整份 JSON 寫回舊路徑，當這台的衍生副本（不進 git）：還直接開舊路徑讀、查有沒有檔的程式照舊能用。
-    正本是流水檔；副本被改、被刪都不影響（讀的一律走 streams）。"""
+    正本是流水檔；副本被改、被刪都不影響（讀的一律走 streams）。
+    重寫前比磁碟上的副本跟這台上次寫出的指紋（記號）：不同、內容又跟這次要寫的不一樣，就是被外面換過，
+    先存 handedits 再重寫，重寫後那一種的渲染頁跟著重畫（確認第 3 輪 #14、#15：不靠 load() 的快取判斷）。"""
+    swapped = False
     try:
         from kb._lib.io import write_text_atomic
         for k in [kind] + [v for v, (b, _r) in VIEWS.items() if b == kind]:
             legacy = Path(vault) / legacy_rel(k)
             text = json.dumps(joined_doc(vault, k, st.records), ensure_ascii=False, indent=2) + "\n"
+            if _swapped_copy(vault, k, legacy, text):
+                _keep_swapped(vault, legacy)
+                swapped = True
             write_text_atomic(legacy, text)
             mp = _mirror_mark(vault, k)
             mp.parent.mkdir(parents=True, exist_ok=True)
             write_text_atomic(mp, _sha(legacy.read_bytes()))
     except OSError:
         pass
+    if swapped:
+        _redraw(vault, kind)
+
+
+def _swapped_copy(vault, kind, legacy, text):
+    """副本在、有記號、指紋跟記號不同、內容跟要寫的也不同 → 被外面換過。沒記號（沒有依據）、副本不在、
+    壞了或不是物件（驗收 13：直接重寫、不存）、內容一樣只是排法不同（別台寫的、退回換回的）都不算。"""
+    try:
+        raw = legacy.read_bytes()
+        mark = _mirror_mark(vault, kind).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if _sha(raw) == mark:
+        return False
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return False
+    return isinstance(doc, dict) and doc != json.loads(text)
+
+
+REDRAW = ("agenda", "pending", "rulings")  # 副本換過重寫後跟著重畫頁的種類（#15）；設定檔頁要拿 profile 鎖，這裡可能已在鎖裡，不畫
+_REDRAWING = set()
+
+
+def _redraw(vault, kind):
+    """照 refresh 的重畫入口只畫那一頁；畫不出來只記 log，不擋讀寫。"""
+    key = (_vkey(vault), kind)
+    if kind not in REDRAW or key in _REDRAWING:
+        return
+    _REDRAWING.add(key)
+    try:
+        from kb._lib import agenda, pending, refresh, rulings
+        page = {"agenda": agenda.MD_POSIX, "pending": pending.MD_POSIX, "rulings": rulings.MD_POSIX}[kind]
+        refresh._render_pages(vault, None, also=(page,), only=True)
+    except Exception as e:  # noqa: BLE001
+        _log(vault, f"{kind} 副本重寫後重畫頁面失敗：{type(e).__name__}: {str(e)[:100]}")
+    finally:
+        _REDRAWING.discard(key)
 
 
 def remirror_local(vault, path):
@@ -1381,10 +1434,11 @@ def diff(before, after, state=None, kind=None):
     return out
 
 
-def write(vault, kind, before, after, turn_id=None, who=None, reverts=None, row_extra=None):
-    """比出新增、刪掉、改了哪幾欄，每筆一行 append 進這台的檔。回寫了幾行。row_extra 是每行另外帶的欄（退回的 drop／undrop）。"""
+def write(vault, kind, before, after, turn_id=None, who=None, reverts=None, row_extra=None, via=None):
+    """比出新增、刪掉、改了哪幾欄，每筆一行 append 進這台的檔。回寫了幾行。row_extra 是每行另外帶的欄（退回的 drop／undrop）。
+    via：明白吸收副本寫的行（adopt）記從哪裡來（undo、restore），選填鍵，舊版照讀（#78 第二段第 2 點）。"""
     try:
-        return _write(Path(vault), kind, before, after, turn_id, who, reverts, row_extra)
+        return _write(Path(vault), kind, before, after, turn_id, who, reverts, dict(row_extra or {}, **({"via": via} if via else {})))
     finally:
         forget(vault, kind)
 
@@ -1689,27 +1743,141 @@ def _read_doc(vault, kind):
     if not exists(vault, kind):
         return None
     st = load(vault, kind)
-    doc = _mirror_edited(vault, kind, joined_doc(vault, kind, st.records))
+    joined = joined_doc(vault, kind, st.records)
+    doc = _mirror_edited(vault, kind, joined)
+    legacy = Path(vault) / legacy_rel(kind)
     if doc is None:
-        legacy = Path(vault) / legacy_rel(kind)
         try:
-            if legacy.is_file() and _sha(legacy.read_bytes()) != _mirror_mark(vault, kind).read_text(encoding="utf-8").strip():
+            if not legacy.is_file():
+                _mirror(vault, kind, st)  # 副本被刪：重寫
+            elif _sha(legacy.read_bytes()) != _mirror_mark(vault, kind).read_text(encoding="utf-8").strip():
                 _mirror(vault, kind, st)  # 副本壞了或不是物件：從流水檔重寫
         except OSError:
             pass
-    if doc is not None:  # 副本被外部整份改過：當成一次整份交回吸收進流水檔
-        legacy = Path(vault) / legacy_rel(kind)
-        raw = legacy.read_bytes()
-        write_doc(vault, kind, doc)
-        st = load(vault, kind)
-        if joined_doc(vault, kind, st.records) == doc:  # 吸收後內容一樣：副本留原樣的位元組（退回換回舊版的檔不被重排）
+    elif doc == joined:  # 內容一樣、只是排法不同（退回換回的舊檔）：副本留原樣的位元組，只換記號
+        _mark_as_is(vault, kind, legacy)
+    else:  # 副本被外面換過（git 同步、還原、手改）：不吸收（D-554 (1)），換掉的那份存一份、照流水檔重寫
+        st = load(vault, kind)  # 別的行程剛寫完（流水檔、副本都是新的，這裡拿到的是舊的）不算換過：重讀一次再比（review 3）
+        joined = joined_doc(vault, kind, st.records)
+        if doc == joined:
+            _mark_as_is(vault, kind, legacy)
+        else:
+            _keep_swapped(vault, legacy)
+            _mirror(vault, kind, st)
+    return joined
+
+
+HANDEDITS_REL = ".system/handedits"
+KEEP_SWAPPED = 20  # 同名只留最近幾份
+SWAPPED_LINE = "{name} 被外面換過（git 同步、還原或手改），已照流水檔重寫；換掉的那份存在 {saved}"
+
+
+def _mark_as_is(vault, kind, legacy):
+    try:
+        from kb._lib.io import write_text_atomic
+        write_text_atomic(_mirror_mark(vault, kind), _sha(legacy.read_bytes()))
+    except OSError:
+        pass
+
+
+def _keep_swapped(vault, legacy):
+    """換掉的副本存到 .system/handedits/<時間>-<檔名>（照 renders.keep：先遮值；同名加 -2…），同名只留最近 KEEP_SWAPPED 份，記 log。
+    存不了只記 log：副本是衍生的，照樣從流水檔重寫（正本是流水檔，沒有東西會丟）。"""
+    from datetime import datetime
+    name = legacy.name
+    try:
+        from kb._lib import renders
+        from kb._lib.io import write_text_atomic
+        text = renders.masked(vault, legacy.read_bytes().decode("utf-8", errors="replace"))
+        folder = Path(vault) / HANDEDITS_REL
+        folder.mkdir(parents=True, exist_ok=True)
+        had = sorted((p for p in folder.glob(f"*-{name}") if p.is_file()), key=lambda p: (p.stat().st_mtime_ns, p.name))
+        if had and had[-1].read_text(encoding="utf-8") == text:  # 副本重寫不成（被占用）時同一份不重複存、不洗 log（review 2）
+            return f"{HANDEDITS_REL}/{had[-1].name}"
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target, n = folder / f"{stamp}-{name}", 1
+        while target.exists():
+            n += 1
+            target = folder / f"{stamp}-{n}-{name}"
+        write_text_atomic(target, text)
+        same = sorted((p for p in folder.glob(f"*-{name}") if p.is_file()), key=lambda p: (p.stat().st_mtime_ns, p.name))
+        for old in same[:-KEEP_SWAPPED]:
             try:
-                from kb._lib.io import write_text_atomic
-                legacy.write_bytes(raw)
-                write_text_atomic(_mirror_mark(vault, kind), _sha(raw))
+                old.unlink()
             except OSError:
                 pass
-    return joined_doc(vault, kind, st.records)
+        _log(vault, SWAPPED_LINE.format(name=name, saved=f"{HANDEDITS_REL}/{target.name}"))
+        return f"{HANDEDITS_REL}/{target.name}"
+    except Exception as e:  # noqa: BLE001
+        _log(vault, f"{name} 被外面換過，已照流水檔重寫；換掉的那份沒存成：{type(e).__name__}: {str(e)[:100]}")
+        return None
+
+
+def keep_copy(vault, kind):
+    """吸收不成的時候（#78 第二輪裁定 6）：現在這份副本存到 handedits、副本照流水檔重寫；回存到哪（相對知識庫，沒存成回 None）。"""
+    vault, kind = Path(vault), base(kind)
+    legacy = vault / legacy_rel(kind)
+    saved = _keep_swapped(vault, legacy) if legacy.is_file() else None
+    try:
+        forget(vault, kind)
+        _mirror(vault, kind, load(vault, kind))
+    except Exception as e:  # noqa: BLE001  重寫不成：拿掉「看過」的記號，下次讀照「外面換過」的路再試（review）
+        try:
+            _mirror_mark(vault, kind).unlink()
+        except OSError:
+            pass
+        _log(vault, f"{legacy.name} 沒照流水檔重寫成：{type(e).__name__}: {str(e)[:100]}")
+    _redraw(vault, kind)  # 退回可能把頁面也換回舊的：照流水檔重畫（#15；記號已被 adopt 標成看過，_mirror 不會自己畫）
+    return saved
+
+
+def adopt(vault, kind, via, absent_empty=False):
+    """明白吸收現在的副本（willy 自己把舊的整份換回原位之後：退回 via="undo"、還原 via="restore"）：
+    就是舊的吸收（write_doc），寫的每行帶 via（D-554 (2)）。副本沒有、壞了、不是物件回 0；回寫了幾行。
+    吸收後內容跟副本一樣：副本留原樣的位元組（換回的舊檔不被重排）。
+    absent_empty（倒回，第二輪裁定 7）：副本不在、流水檔在 → 那種原本是空的，吸收成空的（活著的筆全部照「不在整份裡」拿掉），副本照吸收後的流水檔畫出來。
+    只給「記的時候沒副本也沒流水檔」的倒回用（entities._Undo.was_empty）：副本是衍生的，光看它不在不能當成空的。"""
+    vault = Path(vault)
+    legacy = vault / legacy_rel(kind)
+    if absent_empty and not legacy.is_file():
+        if not exists(vault, kind):
+            return 0
+        try:
+            return _write_doc(vault, kind, {}, via=via)
+        finally:
+            forget(vault, kind)
+    try:
+        raw = legacy.read_bytes()
+        doc = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(doc, dict):
+        return 0
+    if exists(vault, kind):  # 先把這份記成看過的：吸收途中有人讀這種類（寫行要查這台是誰 → 讀 profile）不會把它當成外面換過、存一份又重寫
+        _mark_as_is(vault, kind, legacy)
+    try:
+        n = _write_doc(vault, kind, doc, via=via)
+    finally:
+        forget(vault, kind)
+    st = load(vault, kind)
+    if joined_doc(vault, kind, st.records) == doc:
+        try:
+            legacy.write_bytes(raw)
+            _mark_as_is(vault, kind, legacy)
+        except OSError:
+            pass
+    else:  # 吸收後跟副本不完全一樣（只記在這台的那一半、合併規則）：副本照流水檔重寫，免得下次讀被當成外面換過
+        _mirror(vault, kind, st)
+    return n
+
+
+def adopt_path(vault, path, via, absent_empty=False):
+    """path 是流水檔種類的副本（.system/<種類>.json）就 adopt，不是就什麼都不做；回寫了幾行。
+    willy 自己把舊的整份寫回原位的地方（退回、做到一半失敗倒回）寫完叫這個。"""
+    v = virtual_kind(path)
+    if v is None or Path(v[0]).resolve() != Path(vault).resolve():
+        return 0
+    return adopt(vault, v[1], via, absent_empty=absent_empty)
 
 
 def write_doc(vault, kind, data):
@@ -1720,7 +1888,7 @@ def write_doc(vault, kind, data):
         forget(vault, kind)
 
 
-def _write_doc(vault, kind, data):
+def _write_doc(vault, kind, data, via=None):
     if not exists(vault, kind):
         migrate_kind(vault, kind)
     if kind in SPLIT:
@@ -1741,10 +1909,11 @@ def _write_doc(vault, kind, data):
         else:
             data.pop("md_sha256", None)
     after = doc_to_records(kind, data)
-    changed = write(vault, base(kind), before, after)
+    changed = write(vault, base(kind), before, after, via=via)
     if kind in SPLIT and not changed:
         st = load(vault, kind)
         _mirror(vault, kind, st)  # 只有本機那一半變了：副本也要跟著換
+    return changed
 
 
 def migrate_kind(vault, kind, keep_legacy_dir=None):
@@ -1903,6 +2072,159 @@ def revert_line(vault, kind, rid, effects, turn_id, who=None):
                 new.pop(k, None)
     write(vault, kind, {rid: cur}, {rid: new}, turn_id=turn_id, who=who, reverts=ref, row_extra=lists)
     return True
+
+
+# ---------- 被改回舊值的改動（#78 第三段，D-554 (4)） ----------
+
+ABSENT = None  # 那一欄沒有值（JSON 給 null）
+_SUB_WATCH = ("text", "done", "del", "on")  # 子項、標籤看的欄；位置、留言不算
+
+
+def _line_values(row, skip):
+    """一行設了哪些欄 [(欄名, 值)]：一般欄、unset（值是 ABSENT）、子項與標籤的欄（「欄:id:那一欄」）。只往後加的欄不算。"""
+    out = [(k, v) for k, v in (row.get("set") or {}).items() if k not in skip]
+    out += [(k, ABSENT) for k in (row.get("unset") or []) if k not in skip]
+    got = row.get("sub")
+    for k, items in (got.items() if isinstance(got, dict) else ()):
+        for cid, ch in (items.items() if isinstance(items, dict) else ()):
+            for f, v in (ch.items() if isinstance(ch, dict) else ()):
+                if f in _SUB_WATCH and not (k in KEYED and f != "on"):  # 標籤只看有沒有
+                    if f in ("done", "del") and isinstance(v, dict):  # 勾、拿掉是一組（誰、什麼時候）：只比真假
+                        v = v.get(f)
+                    out.append((f"{k}:{_tkey(cid) if k in KEYED else cid}:{f}", bool(v) if f != "text" else v))
+    return out
+
+
+def _reverts_ok(v):
+    """reverts 要是清單、每項是 {seq: 整數, by: 字串, …}；None 當沒有。"""
+    if v is None:
+        return True
+    return isinstance(v, list) and all(isinstance(x, dict) and isinstance(x.get("seq"), int) and not isinstance(x.get("seq"), bool)
+                                       and isinstance(x.get("by"), str) for x in v)
+
+
+def _done_round(row, field):
+    """這行對子項勾那一欄（「欄:id:done」）寫的 round；不是勾的欄回 None；勾不是一組（合併不認）回 -1。"""
+    head, _, rest = field.partition(":")
+    cid, _, f = rest.rpartition(":")
+    if f != "done" or head in KEYED:
+        return None
+    got = row.get("sub")
+    ch = ((got.get(head) or {}).get(cid) if isinstance(got, dict) and isinstance(got.get(head), dict) else None) or {}
+    g = ch.get("done") if isinstance(ch, dict) else None
+    return _round(g) if isinstance(g, dict) else -1
+
+
+def _done_round_in(rec, field):
+    """這筆現在那個子項勾的 round（沒有就 0）。"""
+    head, _, rest = field.partition(":")
+    cid = rest.rpartition(":")[0]
+    items = (rec or {}).get(head)
+    it = next((i for i in items if isinstance(i, dict) and str(i.get("id")) == cid), None) if isinstance(items, list) else None
+    r = (it or {}).get("done_round", 0)
+    return r if isinstance(r, int) and not isinstance(r, bool) else 0
+
+
+def _value_in(rec, field):
+    """這筆現在那一欄的值（子項、標籤的欄從整份清單找）；沒有回 ABSENT。"""
+    head, _, rest = field.partition(":")
+    if not rest:
+        return (rec or {}).get(field, ABSENT)
+    cid, _, f = rest.rpartition(":")
+    items = (rec or {}).get(head)
+    items = items if isinstance(items, list) else []
+    if head in KEYED:
+        return any(isinstance(t, str) and _tkey(t) == _tkey(cid) for t in items) if f == "on" else ABSENT
+    it = next((i for i in items if isinstance(i, dict) and str(i.get("id")) == cid), None)
+    if it is None:
+        return ABSENT
+    if f == "del":
+        return bool(it.get("del"))
+    return bool(it.get(f)) if f == "done" else it.get(f, ABSENT)
+
+
+def _sub_title(rec, field):
+    head, _, rest = field.partition(":")
+    cid = rest.rpartition(":")[0]
+    for i in ((rec or {}).get(head) or []) if rest and head not in KEYED else ():
+        if isinstance(i, dict) and str(i.get("id")) == cid:
+            return i.get("text")
+    return None
+
+
+def _who_of(row):
+    return {"by": row.get("by"), "who": row.get("who"), "seq": row.get("seq"), "at": row.get("at")}
+
+
+def overwritten(vault, kind):
+    """把某一欄設回以前的值、蓋掉別台寫的值的行（D-554 (4)）：照合併的順序走每一筆、每一欄。列出的條件：
+    (a) 這行把那欄設回這筆那欄以前出現過的值；(b) 被蓋掉的那個值是別台寫的、這行看過它（沒看過是撞到，另外列）；
+    (c) 這行不是退回（沒有 reverts）、不是 willy 明白吸收的行（帶 via：退回、還原、倒回，第二輪裁定 3）、不是解掉撞到的行。
+    只往後加的欄不算；已經被退回的行不列。
+    不靠 seen 判斷是不是吸收（吸收行也看過別台的行）。回 [{kind, id, field, line, overwritten, back_to, code, title, sub}]，照行的時間排。"""
+    kind = base(kind)
+    skip = set(append_only(kind))
+    groups = {}
+    for f in _files(vault, kind):
+        for _i, row in _good_rows(vault, f, kind):
+            rid = row.get("id")
+            if "reverts" in row and not _reverts_ok(row["reverts"]):  # 型別怪的退回行整行略過（測試第 2 輪 #17，照壞行的規矩）
+                _log(vault, f"{f.name} 一行的 reverts 格式不對，列被改回的改動時略過（{rid}，seq {row.get('seq')}）")
+                continue
+            if row.get("op") != "mask" and isinstance(rid, str) and rid != META_ID:
+                rows = groups.setdefault(rid, [])
+                rows.append((_seq(row), str(row.get("by", "")), len(rows), row))
+    out = []
+    for rid, rows in groups.items():
+        rows = [r[3] for r in sorted(rows, key=lambda r: r[:3])]
+        undone = {(r.get("seq"), r.get("by")) for row in rows for r in (row.get("reverts") or [])
+                  if isinstance(r, dict) and r.get("id") == rid}
+        fold, rec, hist = _Fold(kind), None, {}
+        cap = max([g["round"] for g in (row.get("set") or {} for row in rows) if _nat(g.get("round"))] or [0])
+        fold.round_cap = {rid: cap}  # 跟合併一樣：勾的回合比這筆設過的都大當壞值（rec 才跟實際合併一致）
+        for n, row in enumerate(rows):
+            for k in (row.get("set") or {}):  # 整份清單重寫（建立、遷移）：子項、標籤各欄的歷史從這裡重算（review 4）
+                if k in nested(kind):
+                    for name in [x for x in hist if x.startswith(k + ":")]:
+                        del hist[name]
+            for field, value in _line_values(row, skip):
+                h = hist.get(field)
+                if h is None:
+                    h = hist[field] = [] if rec is None else [(_value_in(rec, field), rows[0])]
+                r = _done_round(row, field)
+                if r is not None:  # 子項的勾照 #77 算 round（測試第 2 輪 #16）：跟合併一樣，每行從套到前一行的 rec 讀現在的回合
+                    cur = _done_round_in(rec, field)
+                    if r < 0 or r < cur or r > cap:  # 勾不是一組、round 輸、round 超過這筆設過的：合併沒套上，不列、不算進歷史
+                        continue
+                    if r > cur:  # 換輪：新一輪從沒勾起算；重置勾本身不算蓋掉
+                        hist[field] = [(False, {"by": "", "seq": 0, "seen": {}}), (value, row)]  # 起點是誰都看過的空佔位
+                        continue
+                if h:
+                    prev, prow = h[-1]
+                    setters = [r for _v, r in h]
+                    back = value != prev and any(v == value for v, _r in h[:-1])
+                    # 解掉撞到的行：第一個看過撞到的兩邊又設這一欄的那行；之後的行不算（review 1）
+                    solved = any(_apart(a, b) and va != vb and _saw(row, a) and _saw(row, b)
+                                 and not any(r is not a and r is not b and _saw(r, a) and _saw(r, b) for _v, r in h)
+                                 for i, (va, a) in enumerate(h) for vb, b in h[i + 1:])
+                    hit = (back and prow.get("by") != row.get("by") and not row.get("reverts") and not row.get("via")
+                           and _saw(row, prow) and not solved)
+                    if hit and (row.get("seq"), row.get("by")) not in undone and setters:
+                        out.append({"kind": kind, "id": rid, "field": field,
+                                    "line": dict(_who_of(row), turn=row.get("turn"), via=row.get("via")),
+                                    "overwritten": dict(_who_of(prow), value=prev), "back_to": value,
+                                    "code": f"{kind}:{rid}:{row.get('by')}:{row.get('seq')}",
+                                    "title": None, "sub": _sub_title(rec, field)})
+                h.append((value, row))
+            try:
+                rec = fold.apply({} if rec is None else rec, rid, row, n)
+            except Exception:  # noqa: BLE001  套不上的行照合併的做法略過
+                pass
+        for it in out:
+            if it["id"] == rid and it["title"] is None:
+                it["title"] = next((str(rec[k]) for k in ("text", "name", "alias", "title") if rec and isinstance(rec.get(k), str) and rec[k]), rid)
+    out.sort(key=lambda it: (str(it["line"]["at"] or ""), it["id"], it["field"]))
+    return out
 
 
 def conflicts_of(vault, kind):

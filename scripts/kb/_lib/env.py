@@ -17,6 +17,7 @@ from pathlib import Path
 from kb._lib.io import FileLock, write_json_atomic
 
 ENV_REL = Path(".system") / "env.json"
+MINE_REL = Path(".system") / "local" / "env.mine.json"  # 這台那份的備份（被忽略、不會被同步帶走；#78 第二段第 6 點）
 KEY = "missing_sources_reported"
 
 
@@ -54,6 +55,76 @@ def _recover(vault):
             refresh.recover_local(vault, ENV_REL.as_posix())
     except Exception:  # noqa: BLE001  拿不回照舊
         pass
+
+
+def _save(vault, p, data, mine=False):
+    """寫 env.json，同時存一份到 .system/local/env.mine.json（refresh 拿來換回被同步蓋掉的 env.json）。
+    env.json 的這台代號跟備份不同（被同步換成別台的，還沒換回）時不蓋備份，免得把別台的身分記成這台的；
+    mine（產生代號、測試換代號）一律蓋。備份寫不了不擋。"""
+    write_json_atomic(p, data)
+    try:
+        mp = Path(vault) / MINE_REL
+        if not mine:
+            old = _backup_id(vault)  # 備份壞了當沒有，照蓋（review 7）
+            if old and old != mine_id(data):
+                return
+        mp.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(mp, data)
+    except OSError:
+        pass
+
+
+def _backup_id(vault):
+    """env.mine.json 記的這台代號；沒有、壞了回 None。"""
+    try:
+        return mine_id(json.loads((Path(vault) / MINE_REL).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+_BACKUP_OK = {}  # vault → 看過的 env.json 樣子（mtime、大小）：沒變就不再比備份
+
+
+def _own_id(vault, got):
+    """env.json 讀到的這台代號 got 要不要信：跟 env.mine.json 不同（同步換進別台的 env.json，兩台機器名一樣時那一筆是別台的，
+    review 5）就先換回這台的；還沒有備份（舊版升上來）就照現在的補一份（review 9）。env.json 沒變不重比。"""
+    p = _path(vault)
+    try:
+        st = p.stat()
+        sig = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return got
+    key = str(Path(vault))
+    if _BACKUP_OK.get(key) == sig:
+        return got
+    old = _backup_id(vault)
+    if old is None:
+        try:
+            with FileLock(p):
+                data = _load(vault)
+                if mine_id(data) == got:
+                    mp = Path(vault) / MINE_REL
+                    mp.parent.mkdir(parents=True, exist_ok=True)
+                    write_json_atomic(mp, data)
+        except OSError:
+            pass
+    elif old != got:
+        try:
+            from kb._lib import refresh
+            if refresh.restore_env(vault):
+                return _text_of(vault, "machine_id") or got
+        except Exception:  # noqa: BLE001  換不回照舊
+            pass
+        return got
+    _BACKUP_OK[key] = sig
+    return got
+
+
+def mine_id(data):
+    """一份 env 內容裡這台的 machine_id；沒有回 None。"""
+    machine = data.get("machines", {}).get(machine_name()) if isinstance(data, dict) and isinstance(data.get("machines"), dict) else None
+    value = machine.get("machine_id") if isinstance(machine, dict) else None
+    return value if isinstance(value, str) and value else None
 
 
 def _load(vault):
@@ -105,7 +176,7 @@ def mark_missing(vault, src_ids):
         marks = _marks(data, create=True)
         for src_id in src_ids:
             marks.setdefault(src_id, date.today().isoformat())
-        write_json_atomic(p, data)
+        _save(vault, p, data)
 
 
 def clear_missing(vault, src_ids):
@@ -119,7 +190,7 @@ def clear_missing(vault, src_ids):
         marks = _marks(data)
         for src_id in src_ids:
             marks.pop(src_id, None)
-        write_json_atomic(p, data)
+        _save(vault, p, data)
 
 
 def _text_of(vault, key):
@@ -134,7 +205,7 @@ def _set_text(vault, key, value):
     with FileLock(p):
         data = _load(vault)
         _machine(data, create=True)[key] = str(value)
-        write_json_atomic(p, data)
+        _save(vault, p, data, mine=key == "machine_id")
 
 
 def vault_path(vault):
@@ -183,7 +254,7 @@ def set_update_check(vault, value):
     with FileLock(p):
         data = _load(vault)
         _machine(data, create=True)["update_check"] = dict(value)
-        write_json_atomic(p, data)
+        _save(vault, p, data)
 
 
 def daily_done(vault):
@@ -200,7 +271,15 @@ def machine_id(vault):
     """這台的流水檔代號（m- 加 8 碼 hex）：env.json 這台那一筆的 machine_id，沒有就產生寫回（多人共用 1）。"""
     got = _text_of(vault, "machine_id")
     if got:
-        return got
+        return _own_id(vault, got)
+    try:  # env.json 被同步換成別台的（沒有這台那一筆）：先用這台的備份換回，不產新代號（#78 第二段第 6 點）
+        from kb._lib import refresh
+        if refresh.restore_env(vault):
+            got = _text_of(vault, "machine_id")
+            if got:
+                return got
+    except Exception:  # noqa: BLE001  換不回照舊
+        pass
     import secrets
     p = _path(vault)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -209,7 +288,7 @@ def machine_id(vault):
         machine = _machine(data, create=True)
         if not (isinstance(machine.get("machine_id"), str) and machine["machine_id"]):
             machine["machine_id"] = "m-" + secrets.token_hex(4)
-            write_json_atomic(p, data)
+            _save(vault, p, data, mine=True)
         return machine["machine_id"]
 
 
@@ -233,7 +312,7 @@ def set_agenda_export_dir(vault, path):
             machine["agenda_export_dir"] = str(path)
         else:
             machine.pop("agenda_export_dir", None)
-        write_json_atomic(p, data)
+        _save(vault, p, data)
 
 
 def source_paths(vault):
@@ -266,4 +345,4 @@ def set_source_path(vault, src_id, path):
             paths.pop(src_id, None)
         else:
             paths[src_id] = str(path)
-        write_json_atomic(p, data)
+        _save(vault, p, data)

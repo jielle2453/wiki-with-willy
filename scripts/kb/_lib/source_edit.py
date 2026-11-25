@@ -870,6 +870,8 @@ def do_move(vault, plan, turn_id, op, replace=False, permanent=False):
         if versions:
             from kb._lib.io import write_text_atomic
             write_text_atomic(sp, original.decode("utf-8"))
+            from kb._lib import streams
+            streams.adopt_path(vault, sp, "rollback")  # 副本只讀（D-554 (2)）
     made = Path(vault) / plan["make_dir"] if plan.get("make_dir") else None
 
     def unmake():

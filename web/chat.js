@@ -37,6 +37,34 @@
     return n;
   }
 
+  /** 線條圖示（icons.js 的 window.WillyIcons，class wc-icon）；沒載到回 null。 */
+  function icon(name) {
+    return window.WillyIcons ? window.WillyIcons.icon(name, "wc-icon") : null;
+  }
+
+  function put(parent, child) {
+    if (child) {
+      parent.appendChild(child);
+    }
+    return child;
+  }
+
+  /** AI 的小頭像：圓形加圖示。 */
+  function avatar() {
+    var a = el("span", "wc-avatar");
+    a.setAttribute("aria-hidden", "true");
+    put(a, icon("sparkles"));
+    return a;
+  }
+
+  /** 卡片最上面一行：圖示加一句（要你選、要你按允許）。 */
+  function cardHead(name, text, cls) {
+    var head = el("div", "wc-card-head" + (cls ? " " + cls : ""));
+    put(head, icon(name));
+    head.appendChild(el("span", null, text));
+    return head;
+  }
+
   function api(path, body) {
     var opt = { cache: "no-store", headers: { "X-Willy": "1" } };
     if (body !== undefined) {
@@ -139,7 +167,7 @@
 
     qs.forEach(function (q) {
       var box = el("div", "wc-q");
-      box.appendChild(el("div", null, q.question));
+      box.appendChild(el("div", "wc-card-text", q.question));
       var opts = el("div", "wc-opts");
       var optButtons = [];
       (q.options || []).forEach(function (o) {
@@ -210,7 +238,8 @@
   }
 
   function permissionCard(card, node) {
-    node.appendChild(el("div", null, card.reason || "AI 要做一件需要你同意的事"));
+    node.appendChild(cardHead("shield-alert", "要你按允許", "wc-warn"));
+    node.appendChild(el("div", "wc-card-text", card.reason || "AI 要做一件需要你同意的事"));
     var opts = el("div", "wc-opts");
     var yes = el("button", "wc-btn wc-main", "允許");
     var no = el("button", "wc-btn", "不允許");
@@ -247,8 +276,9 @@
       node.className = "wc-done";
       node.textContent = row.text;
     } else if (live) {
-      node.className = "wc-card";
+      node.className = "wc-card" + (live.kind === "question" ? "" : " wc-perm");
       if (live.kind === "question") {
+        node.appendChild(cardHead("circle-help", "AI 想問你"));
         questionCard(live, node);
       } else {
         permissionCard(live, node);
@@ -270,12 +300,16 @@
     }
     if (row.who === "ai") {
       // AI 常用 Markdown：有 md.js（window.WillyMd，先整份跳脫再轉）就畫成格式，沒有照舊純文字。她的與系統訊息一律純文字。
+      var wrap = el("div", "wc-ai-row");
+      wrap.appendChild(avatar());
       if (window.WillyMd) {
         var n = el("div", "wc-ai wc-md");
         n.innerHTML = window.WillyMd.render(row.text || "").html;
-        return n;
+        wrap.appendChild(n);
+        return wrap;
       }
-      return el("div", "wc-ai", row.text);
+      wrap.appendChild(el("div", "wc-ai", row.text));
+      return wrap;
     }
     return el("div", "wc-system", row.text);
   }
@@ -332,8 +366,19 @@
     }
   }
 
+  /** 「AI 正在回…」：頭像加三個跳動的點（字給讀螢幕的）。 */
   function setBusy(on) {
-    busyLine.textContent = on ? "AI 正在回…" : "";
+    busyLine.textContent = "";
+    if (!on) {
+      return;
+    }
+    busyLine.appendChild(avatar());
+    var dots = el("span", "wc-dots");
+    dots.appendChild(el("i"));
+    dots.appendChild(el("i"));
+    dots.appendChild(el("i"));
+    busyLine.appendChild(dots);
+    busyLine.appendChild(el("span", "wc-sr", "AI 正在回…"));
   }
 
   function setCards(cards) {
@@ -478,7 +523,10 @@
     pendingBox.textContent = "";
     (texts || []).forEach(function (t) {
       var row = el("div", "wc-her wc-pending", t);
-      row.appendChild(el("small", null, "主機開了才會送出"));
+      var note = el("small");
+      put(note, icon("clock"));
+      note.appendChild(el("span", null, "主機開了才會送出"));
+      row.appendChild(note);
       pendingBox.appendChild(row);
     });
     if (stick) {
@@ -497,7 +545,12 @@
     }
     root = el("section", "wc-chat");
     root.setAttribute("aria-label", "跟 AI 說");
-    root.appendChild(el("div", "wc-head", "跟 AI 說"));
+    var head = el("div", "wc-head");
+    head.appendChild(avatar());
+    var title = el("div", "wc-head-text");
+    title.appendChild(el("span", "wc-head-title", "跟 AI 說"));
+    head.appendChild(title);
+    root.appendChild(head);
     list = el("div", "wc-list");
     list.setAttribute("aria-live", "polite");
     root.appendChild(list);
@@ -506,6 +559,7 @@
     busyLine = el("div", "wc-busy");
     root.appendChild(busyLine);
     var bar = el("div", "wc-bar");
+    var compose = el("div", "wc-compose");
     input = el("textarea", "wc-input");
     input.rows = 1;
     input.placeholder = "跟 AI 說";
@@ -517,11 +571,17 @@
         send();
       }
     });
-    sendBtn = el("button", "wc-send", "送出");
+    sendBtn = el("button", "wc-send");
     sendBtn.type = "button";
+    sendBtn.setAttribute("aria-label", "送出");
+    sendBtn.title = "送出（Enter）";
+    if (!put(sendBtn, icon("arrow-up"))) {
+      sendBtn.textContent = "送出";
+    }
     sendBtn.addEventListener("click", send);
-    bar.appendChild(input);
-    bar.appendChild(sendBtn);
+    compose.appendChild(input);
+    compose.appendChild(sendBtn);
+    bar.appendChild(compose);
     root.appendChild(bar);
     container.appendChild(root);
     api("/api/chat").then(function (r) {
@@ -532,7 +592,10 @@
     }).then(function (data) {
       load(data);
       toBottom();
-    }).catch(function () {}).then(listen);
+    }).catch(function () {}).then(function () {
+      root.classList.add("wc-live");  // 之後新來的訊息才有浮上來的動畫，打開時的舊訊息不動
+      listen();
+    });
   }
 
   function setPage(path) {

@@ -3,7 +3,8 @@
 
 叫 kb：[python, <plugin>/scripts/kb.py, (--via web), …]，工作目錄＝知識庫、PYTHONIOENCODING=utf-8、不開視窗、60 秒；
 結束碼照外掛：0 成功（訊息用 stdout 第一行）、3 被拒（stdout 第一行原樣）、其他「沒做成：<stderr 第一行>」。
-只讀的（home、find、lookup、entity panel）不帶 --via web，跟外掛一樣不開回合；她按的動作帶 --via web 自己開回合（D-255）。
+只讀的（home、find、lookup、entity panel，D-361 的 agenda list、pending list、cards list）不帶 --via web，跟外掛一樣不開回合；她按的動作帶 --via web 自己開回合（D-255）。
+/api/cards 另外直接讀現成的 .system/inventory.json 補每張的原檔副檔名（ext，只讀）。
 網頁不能送任意 argv：/api/act 只收幾種動作，參數驗過格式、值一律用 --旗標=值 傳（不會被當成別的旗標）；
 「要你確認的」的答案由這裡重抓一次 kb home 找 argv，不收網頁送來的。
 POST 一律要 X-Willy: 1、Origin（有的話）要是自己的網址、JSON 64 KB 上限（上傳另計 50 MB）；
@@ -164,7 +165,8 @@ def _error(handler, code, text=""):
 def route(handler, method, path, query):
     """web.py 每個請求先叫這支（Host 已經檢查過）；處理了回 True。"""
     gets = {"/api/home": _home, "/api/find": _find, "/api/page": _page, "/api/latest-report": _latest,
-            "/api/open": _open, "/api/file": _file, "/api/note": _note_get}
+            "/api/open": _open, "/api/file": _file, "/api/note": _note_get,
+            "/api/agenda": _agenda, "/api/pending": _pending, "/api/cards": _cards}
     posts = {"/api/act": _act, "/api/upload": _upload, "/api/note": _note_post}
     table = gets if method == "GET" else posts if method == "POST" else {}
     vault = Path(handler.server.vault)
@@ -279,6 +281,61 @@ def _home(handler, vault, params):
         _json(handler, 502, {"error": outcome(code, out, err)[1]})
         return
     _send(handler, 200, out.encode("utf-8"))
+
+
+def _read_only(handler, vault, args, shape, wrap=None):
+    """只讀的 kb 指令（不帶 --via web）的 --json 原樣轉給網頁（D-361）；回的不是 shape（dict／list）就 502。
+    wrap：list 包成 {wrap: list}。"""
+    code, out, err = run_kb(vault, args)
+    got = _parse(out) if code == 0 else None
+    if not isinstance(got, shape):
+        _json(handler, 502, {"error": outcome(code, out, err)[1] if code else "沒做成：回的看不懂"})
+        return
+    _json(handler, 200, {wrap: got} if wrap else got)
+
+
+def _agenda(handler, vault, params):
+    """日程頁（D-361）：kb agenda list --all --json（含過去、做完、取消的）。"""
+    _read_only(handler, vault, ["agenda", "list", "--all", "--json"], dict)
+
+
+def _pending(handler, vault, params):
+    """待處理頁（D-361）：kb pending list --json（還沒處理的，含先放著的），包成 {"items": […]}。"""
+    _read_only(handler, vault, ["pending", "list", "--json"], list, "items")
+
+
+def _cards(handler, vault, params):
+    """總目錄頁（D-361）：kb cards list --json（全部的檔案卡：標題、卡型、日期、路徑…），每張補 ext（原檔副檔名，圖示上色用）。"""
+    code, out, err = run_kb(vault, ["cards", "list", "--json"])
+    got = _parse(out) if code == 0 else None
+    if not isinstance(got, dict):
+        _json(handler, 502, {"error": outcome(code, out, err)[1] if code else "沒做成：回的看不懂"})
+        return
+    exts = _exts(vault)
+    for c in got.get("cards") or []:
+        if isinstance(c, dict):
+            c["ext"] = exts.get(c.get("id"), "")
+    _json(handler, 200, got)
+
+
+def _exts(vault):
+    """原檔副檔名 {f-編號: "pdf"}：直接讀 .system/inventory.json 現成的（不經 inventory.load，那會重寫衍生副本），
+    取每份第一個位置的副檔名；網址條目、讀不到、形狀不對都當沒有（圖示退回照卡型）。"""
+    from kb._lib.io import read_json
+    try:
+        data = read_json(Path(vault) / ".system" / "inventory.json")
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for e in (data.get("entries") if isinstance(data, dict) else None) or []:
+        if not isinstance(e, dict) or e.get("kind") == "link" or not isinstance(e.get("id"), str):
+            continue
+        locs = e.get("locations") if isinstance(e.get("locations"), list) else []
+        uri = locs[0].get("uri") if locs and isinstance(locs[0], dict) else ""
+        m = re.search(r"\.([0-9A-Za-z]{1,8})$", str(uri or ""))
+        if m:
+            out[e["id"]] = m.group(1).lower()
+    return out
 
 
 def _find(handler, vault, params):

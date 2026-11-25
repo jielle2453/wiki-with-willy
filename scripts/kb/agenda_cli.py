@@ -1,4 +1,4 @@
-"""kb agenda add／edit／done／cancel／reopen／recheck／scanned／list／render／export（日程第 2 點，D-062、D-125～D-130、D-140）。
+"""kb agenda add／edit／done／cancel／reopen／recheck／scanned／list／render／export／check（日程第 2 點，D-062、D-125～D-130、D-140）。
 
 日程只准這裡寫（經 _lib/agenda）：每次在 agenda.json 的鎖裡讀改寫（CLI 等 30 秒，等不到「等不到鎖，沒有寫入」exit 3），
 寫前備進回合，寫完重渲染 系統/日程.md。拒絕的第一行就是原因、exit 3；成功句與拒絕句一字不差（驗收 1～3）。
@@ -8,6 +8,8 @@ list 可篩（answer 第 8 點）：--from／--to 照 parse_date（YYYY-MM-DD）
 照登記的名稱認。
 export（D-500）：不帶參數立刻匯出一次；--set 先試寫一個暫存檔、過了才寫進 .system/config.json（寫前備進回合）再匯出；--off 只清設定、
 不刪已經匯出的檔；--status 印設定與 .system/agenda_export.json。匯出失敗與拒絕 exit 1（spec 定的），白話原因。
+check（D-552）：子項 add／done／undo／remove／restore／edit／move／comment／uncomment；本來就那樣的 exit 0、不寫檔，
+子項那欄兩邊改得不一樣時照寫一行定下來；--json 印 {id, checklist, progress}。--json 的條目一律是對外的形狀（agenda.public）。
 """
 import argparse
 import copy
@@ -24,8 +26,12 @@ from kb.inventory_cli import NOT_IN_VAULT, find_vault
 CLI_LOCK_TIMEOUT = 30
 LOCK_BUSY = "等不到鎖，沒有寫入"
 CHANGED = [{"path": agenda.AGENDA_POSIX, "action": "modify"}, {"path": agenda.MD_POSIX, "action": "modify"}]
+CHECK_HELP = "子項目：一件日程底下的幾個步驟，各自可勾；全勾完不會自動標完成"
+SETTLED = "（兩邊不一樣那處已照這次的定下來）"
 FIELD_LABEL = (("start", "開始"), ("text", "說明"), ("time", "時間"), ("entities", "掛的實體"), ("lead_days", "提前天數"), ("repeat", "重複"),
-               ("whose", "誰的"), ("owner", "負責人"))
+               ("whose", "誰的"), ("owner", "負責人"), ("tags", "標籤"))
+TAG_HELP = "標籤：短字，可以幾個，大小寫、全形半形算同一個"
+NOTE_HELP = "註記：一段可改的字；空字串是清掉"
 
 
 def add_arguments(sub):
@@ -42,6 +48,8 @@ def add_arguments(sub):
     ad.add_argument("--repeat", help="每年、每月、每週（D-501）")
     ad.add_argument("--whose", help="全隊或名字（可用逗號分開幾個人）；沒給是全隊；製卡抽的一律全隊")
     ad.add_argument("--owner", help="負責人：成員名字（逗號分開幾個人）；無 是空著；只有多人共用用；不影響誰看得到")
+    ad.add_argument("--tag", action="append", help=TAG_HELP + "（一個 --tag 給一個）")
+    ad.add_argument("--note", help=NOTE_HELP)
     ed = subs.add_parser("edit", help="改一條日程", description="改日期、開始、時間、說明、掛的實體、提前天數。")
     ed.add_argument("id", help="日程編號（a-…）")
     ed.add_argument("--date", help="新日期 YYYY-MM-DD")
@@ -54,6 +62,10 @@ def add_arguments(sub):
     ed.add_argument("--whose", help="改成全隊或名字（逗號分開幾個人）；製卡抽的一律全隊")
     ed.add_argument("--owner", help="負責人：成員名字（逗號分開幾個人）；無 是空著；只有多人共用用；不影響誰看得到")
     ed.add_argument("--card", help="照這張卡的新版重對（只能是出處那張）：來源維持推測、記下新版的指紋")
+    ed.add_argument("--tag", action="append", help=TAG_HELP + "（加上；一個 --tag 給一個）")
+    ed.add_argument("--untag", action="append", help="拿掉這個標籤（沒有就略過）")
+    ed.add_argument("--clear-tags", action="store_true", help="標籤全部拿掉")
+    ed.add_argument("--note", help=NOTE_HELP)
     helps = {"done": "記成完成", "cancel": "取消", "reopen": "重開"}
     status_parsers = [subs.add_parser(name, help=text, description=f"把一條日程{text}。") for name, text in helps.items()]
     for p in status_parsers:
@@ -71,6 +83,7 @@ def add_arguments(sub):
     ls.add_argument("--from", dest="date_from", help="只列這天（YYYY-MM-DD）以後的")
     ls.add_argument("--to", dest="date_to", help="只列這天（YYYY-MM-DD）以前的")
     ls.add_argument("--entity", action="append", default=[], help="只列掛著這個實體的，可以重複")
+    ls.add_argument("--tag", action="append", default=[], help="只列有這個標籤的，可以重複（都要有）；" + TAG_HELP)
     rd = subs.add_parser("render", help="重寫日程.md", description="手動重寫 系統/日程.md。")
     ex = subs.add_parser("export", help="把日程放到指定資料夾",
                          description="不帶參數立刻匯出一次 willy-agenda.json；--set 設定資料夾並匯出、--off 停止匯出、--status 看設定與上次結果。")
@@ -78,13 +91,36 @@ def add_arguments(sub):
     mode.add_argument("--set", dest="set_dir", metavar="<資料夾>", help="之後每次日程有變就放一份到這個資料夾（要已經存在、寫得進去）")
     mode.add_argument("--off", action="store_true", help="不再匯出（已經匯出的檔不刪）")
     mode.add_argument("--status", action="store_true", help="印設定的資料夾與上次匯出的結果")
-    for p in [ad, ed, *status_parsers, rc, sc, ls, rd, ex]:
+    ck = subs.add_parser("check", help="子項目", description=CHECK_HELP)
+    cks = ck.add_subparsers(dest="check_command", metavar="<動作>", required=True)
+    ck_parsers = []
+    for name, text in (("add", "加子項（可以一次加幾項）"), ("done", "勾一項"), ("undo", "取消勾"), ("remove", "拿掉一項"),
+                       ("restore", "放回拿掉的一項（要完整編號）"), ("edit", "改一項的字（勾的狀態、留言不動）"), ("move", "換一項的位置"), ("comment", "在一項底下留言"),
+                       ("uncomment", "拿掉一則留言")):
+        cp = cks.add_parser(name, help=text, description=f"{CHECK_HELP}。{text}。")
+        cp.add_argument("id", help="日程編號（a-…）")
+        if name == "add":
+            cp.add_argument("texts", nargs="+", metavar="內容", help="子項的一句話，可以給幾個")
+        else:
+            cp.add_argument("sub", metavar="子項", help="子項編號（c-… 從 list --json 的 checklist 找；N 是目前第 N 項）")
+        if name in ("edit", "comment"):
+            cp.add_argument("text", metavar="內容", help="新的字" if name == "edit" else "留言（最多 500 字）")
+        if name == "uncomment":
+            cp.add_argument("mid", metavar="留言", help="留言編號（m-…；N 是那項目前第 N 則）")
+        if name == "move":
+            cp.add_argument("--to", type=int, required=True, help="移到第幾項（1 起算）")
+        if name in ("done", "undo", "comment", "remove", "restore"):
+            cp.add_argument("--by", help="是誰（成員名字；別台代記時用）；單人知識庫不用")
+        ck_parsers.append(cp)
+    for p in [ad, ed, *status_parsers, rc, sc, ls, rd, ex, *ck_parsers]:
         p.add_argument("--vault", help="總資料夾；沒給就從目前目錄往上找")
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 輸出")
 
 
 def _out(as_json, lines, payload):
     if as_json:
+        if isinstance(payload.get("item"), dict):  # 條目一律對外的形狀（子項濾掉拿掉的、不帶 round，D-552）
+            payload = dict(payload, item=agenda.public(payload["item"]))
         print(json.dumps(payload, ensure_ascii=False))
     else:
         print("\n".join(lines))
@@ -117,7 +153,7 @@ def _origin(vault, it):
 def _add(vault, args, as_json, conversation, turn_id):
     it, created = agenda.add(vault, args.kind.strip(), args.date, args.text, args.entity or [], turn_id, start=args.start,
                              time=args.time, card=args.card, lead_days=args.lead_days, repeat=args.repeat,
-                             whose=args.whose, owner=args.owner)
+                             whose=args.whose, owner=args.owner, tags=args.tag, note=args.note)
     line = f"{_describe(it)}{_origin(vault, it)}"
     if not created:
         _out(as_json, [f"日程裡已經有這條：{line}"], {"item": it, "created": False})
@@ -137,6 +173,9 @@ def _changes(before, after):
         if old != new:
             parts.append(f"{label}{' ' + old if old else ''} → {new}")
             labels.append(label)
+    if before.get("note") != after.get("note"):  # 註記不唸內容（D-553）
+        parts.append("註記 改了" if after.get("note") else "註記 清掉")
+        labels.append("註記")
     return parts, labels
 
 
@@ -145,11 +184,16 @@ def _edit(vault, args, as_json, conversation, turn_id):
               "lead_days": args.lead_days, "repeat": args.repeat, "whose": args.whose,
               "owner": args.owner}
     before = copy.deepcopy(agenda.get(vault, args.id))
-    if all(v is None for v in fields.values()) and not args.card and before.get("source") != "inferred":
+    tagged = bool(args.tag or args.untag or args.clear_tags) or args.note is not None
+    if all(v is None for v in fields.values()) and not tagged and not args.card and before.get("source") != "inferred":
         print("沒有給要改的欄位")  # 推測的那條不帶欄位是「記成確認」（lint 桌面版確認後）
         return 3
-    after = agenda.edit(vault, args.id, turn_id, by="ai" if conversation else "program", card=args.card, **fields)
+    after = agenda.edit(vault, args.id, turn_id, by="ai" if conversation else "program", card=args.card, tags_add=args.tag,
+                        tags_remove=args.untag, tags_clear=args.clear_tags, note=args.note, **fields)
     parts, labels = _changes(before, after)
+    settled = "note" in (after.get("_force") or [])  # 註記撞到、這次定下來（D-553）
+    if settled and not parts:
+        parts, labels = ["註記"], ["註記"]
     if not parts and before.get("source") == "inferred" and after.get("source") == "confirmed":
         journal_cli.record_program_or_warn(vault, f"日程記成確認：{after['text']}", CHANGED, "agenda edit", conversation)
         _out(as_json, [f"記成確認了：{after['text']}"], {"item": after, "changed": True})
@@ -162,7 +206,7 @@ def _edit(vault, args, as_json, conversation, turn_id):
     else:
         note = f"改日程：{after['text']}（{'、'.join(labels)}）"
     journal_cli.record_program_or_warn(vault, note, CHANGED, "agenda edit", conversation)
-    lines, payload = ["已改：" + "；".join(parts)], {"item": after, "changed": True}
+    lines, payload = ["已改：" + "；".join(parts) + (SETTLED if settled else "")], {"item": after, "changed": True}
     _out(as_json, lines, payload)
     return 0
 
@@ -212,6 +256,78 @@ def _scanned(vault, args, as_json, conversation, turn_id):
     return 0
 
 
+def _progress(it):
+    got = agenda.progress(it)
+    return f"（{got[0]}/{got[1]}）" if got else ""
+
+
+def _marks(conflicts, it):
+    """標籤、有註記、註記撞到（D-553）。"""
+    out = f"（標籤：{'、'.join(it['tags'])}）" if it.get("tags") else ""
+    if it.get("note"):
+        out += "（有註記）"
+    if any(c.get("id") == it.get("id") and c.get("field") == "note" for c in conflicts):
+        out += "（註記兩邊改得不一樣）"
+    return out
+
+
+def _clash(conflicts, it):
+    n = agenda.clash_count(conflicts, it.get("id"))
+    return f"（子項有 {n} 處兩邊改得不一樣）" if n else ""
+
+
+def _check(vault, args, as_json, conversation, turn_id):
+    by = "ai" if conversation else "program"
+    action, aid = args.check_command, args.id
+    if action == "add":
+        out = agenda.check_add(vault, aid, args.texts, turn_id, by)
+        names = "、".join(c["text"] for c in out["added"])
+        line = f"已加 {len(out['added'])} 項到「{out['item']['text']}」：{names}{_progress(out['item'])}"
+        note = f"日程加子項：{out['item']['text']}：{names}"
+    elif action in ("done", "undo"):
+        out = agenda.check_set(vault, aid, args.sub, action == "done", turn_id, by, who=args.by)
+        it, sub = out["item"], out["sub"]
+        if not out["changed"]:
+            line = f"「{sub['text']}」本來就{'勾了' if action == 'done' else '沒勾'}{_progress(it)}"
+        else:
+            line = f"已{'勾' if action == 'done' else '取消勾'}「{sub['text']}」{_progress(it)}"
+            got = agenda.progress(it)
+            if action == "done" and got[0] == got[1]:
+                line += "，子項都勾完了（這件日程本身沒有標完成）"
+        note = f"日程子項{'勾' if action == 'done' else '取消勾'}：{it['text']}：{sub['text']}"
+    elif action == "remove":
+        out = agenda.check_remove(vault, aid, args.sub, turn_id, by, who=args.by)
+        line = (f"已拿掉「{out['sub']['text']}」" + (_progress(out["item"]) or "（沒有子項了）")) if out["changed"] else "本來就拿掉了"
+        note = f"日程拿掉子項：{out['item']['text']}：{out['sub']['text']}"
+    elif action == "restore":
+        out = agenda.check_restore(vault, aid, args.sub, turn_id, by, who=args.by)
+        line = f"已放回「{out['sub']['text']}」{_progress(out['item'])}" if out["changed"] else f"「{out['sub']['text']}」本來就在"
+        note = f"日程放回子項：{out['item']['text']}：{out['sub']['text']}"
+    elif action == "edit":
+        out = agenda.check_edit(vault, aid, args.sub, args.text, turn_id, by)
+        line = f"已把「{out['old']}」改成「{out['sub']['text']}」" if out["changed"] else f"「{out['sub']['text']}」本來就是這樣"
+        note = f"日程子項改字：{out['item']['text']}：{out['old']} → {out['sub']['text']}"
+    elif action == "move":
+        out = agenda.check_move(vault, aid, args.sub, args.to, turn_id, by)
+        line = f"已把「{out['sub']['text']}」移到第 {args.to} 項" if out["changed"] else f"「{out['sub']['text']}」本來就是這樣"
+        note = f"日程子項換位置：{out['item']['text']}：{out['sub']['text']} 到第 {args.to} 項"
+    elif action == "comment":
+        out = agenda.check_comment(vault, aid, args.sub, args.text, turn_id, by, who=args.by)
+        line = f"已在「{out['sub']['text']}」留言（第 {out['count']} 則）"
+        note = f"日程子項留言：{out['item']['text']}：{out['sub']['text']}"
+    else:
+        out = agenda.check_uncomment(vault, aid, args.sub, args.mid, turn_id, by)
+        line = f"已拿掉「{out['sub']['text']}」的一則留言" if out["changed"] else "本來就拿掉了"
+        note = f"日程子項拿掉留言：{out['item']['text']}：{out['sub']['text']}"
+    if out.get("resolved"):
+        line += SETTLED
+    if out["changed"]:
+        journal_cli.record_program_or_warn(vault, note, CHANGED, f"agenda check {action}", conversation)
+    it = out["item"]
+    _out(as_json, [line], {"id": it["id"], "checklist": agenda.public_checklist(it, restored=True), "progress": list(agenda.progress(it) or (0, 0))})
+    return 0
+
+
 def _suffix(it):
     label = agenda.STATUS_TEXT.get(it.get("status"), "")
     return (agenda.INFERRED_MARK if it.get("source") == "inferred" else "") + label
@@ -246,10 +362,14 @@ def _list(vault, args, as_json):
     items = [i for i in items if _in_range(i, start, end)]
     if keys is not None:
         items = [i for i in items if any(entities.key(n) in keys for n in i.get("entities") or [])]
+    if args.tag:  # 都要有（D-553）
+        want = {agenda.tag_key(agenda._tag(t)) for t in args.tag}
+        items = [i for i in items if want <= {agenda.tag_key(t) for t in i.get("tags") or []}]
     items = sorted(items, key=lambda i: (i.get("start") or i.get("date", ""), i.get("date", ""), i.get("time") or "",
                                          i.get("id", "")))
+    conflicts = streams.conflicts_of(vault, "agenda")
     if as_json:
-        print(json.dumps({"items": items, "conflicts": streams.conflicts_of(vault, "agenda")}, ensure_ascii=False))
+        print(json.dumps({"items": [agenda.public(i) for i in items], "conflicts": conflicts}, ensure_ascii=False))
         return 0
     if not items:
         print("日程是空的")
@@ -258,7 +378,7 @@ def _list(vault, args, as_json):
         names = it.get("entities") or []
         print(f"- {_when(it)}{agenda.KIND_TEXT.get(it['kind'], it['kind'])} {it['text']}"
               + (f"（{'、'.join(names)}）" if names else "") + (f"（負責：{'、'.join(it['owner'])}）" if it.get("owner") else "")
-              + agenda.repeat_suffix(it) + _suffix(it))
+              + _progress(it) + _marks(conflicts, it) + _clash(conflicts, it) + agenda.repeat_suffix(it) + _suffix(it))
     return 0
 
 
@@ -375,7 +495,7 @@ def _export(vault, args, as_json):
 
 
 WRITERS = {"add": _add, "edit": _edit, "done": _status, "cancel": _status, "reopen": _status, "recheck": _recheck,
-           "scanned": _scanned}
+           "scanned": _scanned, "check": _check}
 
 
 def run(args):

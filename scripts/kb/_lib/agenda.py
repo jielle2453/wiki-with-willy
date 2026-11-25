@@ -22,6 +22,7 @@ import hashlib
 import json
 import re
 import secrets
+import unicodedata
 from pathlib import Path
 
 from kb._lib import config
@@ -53,6 +54,27 @@ OWNER_NONE = ("無", "沒有", "空")
 OWNER_SINGLE = "單人知識庫不用負責人"
 OWNER_BLANK = "負責人要寫成員名字；要空著寫 無"
 OWNER_CARD_EMPTY = "原檔沒寫負責人就不帶 --owner"
+BY_SINGLE = "單人知識庫不用 --by"  # 子項（D-552）
+WHO_UNKNOWN = "這台還不知道是誰，先 kb who set <名字>，或帶 --by"
+CHECK_NONE = "這件還沒有子項"
+SUB_MAX = 50
+SUB_TEXT_MAX = 200
+SUB_EMPTY = "子項要有內容"
+TAG_MAX = 10  # 標籤與註記（D-553）
+TAG_LEN = 20
+NOTE_MAX = 1000
+TAG_EMPTY = "標籤要有字"
+TAG_LONG = f"標籤最多 {TAG_LEN} 字"
+TAG_COMMA = "一個標籤不能有逗號或頓號；幾個標籤分開給 --tag"
+TAG_MANY = f"一件最多 {TAG_MAX} 個標籤"
+TAG_BOTH = "同一個標籤不能同時加又拿掉"
+NOTE_LONG = f"註記最多 {NOTE_MAX} 字"
+RESTORE_FULL = "放回要用子項的完整編號（c-…），從 list --json 的 conflicts 或歷程取"
+SUB_LONG = f"子項最多 {SUB_TEXT_MAX} 字"
+COMMENT_MAX = 500
+COMMENT_COUNT = 200  # 一個子項最多幾則留言
+COMMENT_EMPTY = "留言要有內容"
+COMMENT_LONG = f"留言最多 {COMMENT_MAX} 字"
 HAND_BY = "hand"  # 她直接改日程.md、程式照做的歷程（D-263）
 HEADER = ("# 日程\n"
           "這是什麼：要做的事與日期，程式從 .system/agenda.json 整理出來；〔推測〕是我從檔案讀到的，不對就跟我說。\n"
@@ -335,7 +357,15 @@ def _roll(it, today):
     old = it["date"]
     yesterday = (dt.date.fromisoformat(today) - dt.timedelta(days=1)).isoformat()
     _move(it, next_after(rep, yesterday))
+    _next_round(it)
     return old
+
+
+def _next_round(it):
+    """移到下一次：回合數加 1，上一回合的勾一律算沒勾（不逐項改子項，留言留著；D-552 (5)、(11)）。回歷程要接的那段。"""
+    r = it.get("round", 0)
+    it["round"] = (r if isinstance(r, int) and not isinstance(r, bool) and r >= 0 else 0) + 1  # 只認 int（測試裁定 2）
+    return "，子項重設" if _live(it) else ""
 
 
 def _roll_all(data, turn_id):
@@ -343,7 +373,7 @@ def _roll_all(data, turn_id):
     for it in data["items"]:
         old = _roll(it, today)
         if old:
-            _log(it, f"重複：{old} 過了，移到 {it['date']}", "program", turn_id)
+            _log(it, f"重複：{old} 過了，移到 {it['date']}" + ("，子項重設" if _live(it) else ""), "program", turn_id)
             moved = True
     return moved
 
@@ -364,7 +394,7 @@ def _text(value):
 
 
 def add(vault, kind, date, text, entities, turn_id, start=None, time=None, card=None, source=None, lead_days=None, repeat=None,
-        whose=None, owner=None):
+        whose=None, owner=None, tags=None, note=None):
     """回 (條目, 新建了嗎)。驗完才寫；card 有給 → 來源 inferred、origin 記那張卡與它現在的 fp，
     同一張卡已有同種類、同日期、同文字的 open 條目就不重複、回既有。"""
     kind = kind_of(kind)
@@ -384,6 +414,8 @@ def add(vault, kind, date, text, entities, turn_id, start=None, time=None, card=
     owners = _owner(vault, owner) if owner is not None else None
     if card and owners == []:
         raise AgendaRefused(OWNER_CARD_EMPTY)
+    tags = _tags_of(tags) if tags else None
+    note = _note(note) if note is not None else None
     source = source or "confirmed"
     if source not in SOURCES:
         raise AgendaRefused(f"來源要是 {'、'.join(SOURCES)} 之一")
@@ -411,9 +443,52 @@ def add(vault, kind, date, text, entities, turn_id, start=None, time=None, card=
             it["whose"] = who
         if owners is not None:
             it["owner"] = owners
+        if tags:
+            it["tags"] = tags
+        if note:
+            it["note"] = note
         data["items"].append(it)
         return (it, True), True
     return _mutate(vault, turn_id, fn)
+
+
+def _tag(value):
+    """標籤整理（D-553）：NFKC、空白併一個、開頭的 # 去掉；拒絕空的、逗號頓號、太長。"""
+    from kb._lib import streams
+    text = " ".join(streams.clean_text(" ".join(unicodedata.normalize("NFKC", str(value or "")).split())).split()).lstrip("#").strip()
+    if not text:
+        raise AgendaRefused(TAG_EMPTY)
+    if any(c in text for c in ",，、"):
+        raise AgendaRefused(TAG_COMMA)
+    if len(text) > TAG_LEN:
+        raise AgendaRefused(TAG_LONG)
+    return text
+
+
+def tag_key(text):
+    """比對用的寫法：大小寫不分（全形半形在 _tag 的 NFKC 已經併了）。"""
+    return str(text).casefold()
+
+
+def _tags_of(values):
+    """--tag 給的幾個 → 整理過、同鍵只留第一個；超過上限拒絕。"""
+    out = {}
+    for v in values:
+        t = _tag(v)
+        out.setdefault(tag_key(t), t)
+    if len(out) > TAG_MAX:
+        raise AgendaRefused(TAG_MANY)
+    return [out[k] for k in sorted(out)]
+
+
+def _note(value):
+    """註記整理（D-553）：換行統一成 \n、換行與 tab 以外的控制字元拿掉、前後空白去掉；空的回 None（清掉）。"""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    from kb._lib import streams
+    text = streams.clean_text(text, keep_newline=True).strip()  # Cc 與雙向控制字元拿掉、留換行（測試裁定 7）
+    if len(text) > NOTE_MAX:
+        raise AgendaRefused(NOTE_LONG)
+    return text or None
 
 
 def show(value, key=None):
@@ -448,14 +523,21 @@ def _owner(vault, value):
         return []
     out = []
     for name in names:
-        got = people.member_of(vault, name)
-        if got is None:
-            members = people.members(vault)
-            head = f"團隊成員沒有「{name}」；成員：{'、'.join(members)}" if members else "設定檔還沒登記團隊成員"
-            raise AgendaRefused(f"{head}。是同事的話先 kb profile add 關於你 名稱={name} 是什麼=本人")
+        got = _member(vault, name)
         if got not in out:
             out.append(got)
     return out
+
+
+def _member(vault, name):
+    """成員名字或別名 → 正名；對不上丟 AgendaRefused（負責人、子項的 --by 共用）。"""
+    from kb._lib import people
+    got = people.member_of(vault, name)
+    if got is None:
+        members = people.members(vault)
+        head = f"團隊成員沒有「{name}」；成員：{'、'.join(members)}" if members else "設定檔還沒登記團隊成員"
+        raise AgendaRefused(f"{head}。是同事的話先 kb profile add 關於你 名稱={name} 是什麼=本人")
+    return got
 
 
 def visible(vault, items):
@@ -494,7 +576,7 @@ def _edit_fn(vault, aid, turn_id, by, card, new):
             want["repeat"] = {"every": want["repeat"], "from": day} if want["repeat"] else None
         elif "date" in want and it.get("repeat"):
             want["repeat"] = {**it["repeat"], "from": day}
-        changes, owner_only = [], False
+        changes, owner_only, forced = [], False, False
         for key in EDITABLE:
             if key in want and want[key] != it.get(key):
                 if key != "repeat" or show(want[key], key) != show(it.get(key), key):  # 只換錨點不另記
@@ -503,14 +585,42 @@ def _edit_fn(vault, aid, turn_id, by, card, new):
                     it.pop(key, None)
                 else:
                     it[key] = want[key]
-        if changes and all(c.startswith("owner ") for c in changes):
-            owner_only = True  # 只改負責人不算改內容：推測的照樣是推測（D-549 第 5 點）
-        dirty = bool(changes) or "proposal" in it or origin_moved
+        ops = want.get("_tags")
+        if ops:  # 標籤（D-553）：拿掉、加上；同鍵不重複、不改寫法
+            keys = {tag_key(t): t for t in it.get("tags") or []}
+            plus, minus = [], []
+            for k in list(keys) if ops["clear"] else ops["remove"]:
+                if k in keys:
+                    minus.append(keys.pop(k))
+            for t in ops["add"]:
+                if tag_key(t) not in keys:
+                    keys[tag_key(t)] = t
+                    plus.append(t)
+            if len(keys) > TAG_MAX:
+                raise AgendaRefused(TAG_MANY)
+            if plus or minus:
+                if keys:
+                    it["tags"] = [keys[k] for k in sorted(keys)]
+                else:
+                    it.pop("tags", None)
+                changes.append("標籤 " + " ".join([f"+{t}" for t in plus] + [f"-{t}" for t in minus]))
+        if "_note" in want:  # 註記（D-553）：整段換；撞到時值一樣也寫一行定下來
+            if want["_note"] != it.get("note"):
+                if want["_note"] is None:
+                    it.pop("note", None)
+                else:
+                    it["note"] = want["_note"]
+                changes.append("註記 改了")
+            if _note_clash(vault, aid):
+                it["_force"], forced = ["note"], True
+        if changes and all(c.startswith(("owner ", "標籤 ", "註記 ")) for c in changes):
+            owner_only = True  # 只改負責人、標籤、註記不算改內容：推測的照樣是推測（D-549 第 5 點、D-553）
+        dirty = bool(changes) or "proposal" in it or origin_moved or forced
         if changes:
             if it.get("source") == "inferred" and not card and not owner_only:
                 it["source"] = "corrected"
             _log(it, "；".join(changes), by, turn_id)
-        elif it.get("source") == "inferred" and not card and set(new) != {"owner"}:
+        elif it.get("source") == "inferred" and not card and (not new or set(new) - {"owner", "_tags", "_note"}):
             it["source"] = "confirmed"
             _log(it, CONFIRM_CHANGE, by, turn_id)
             dirty = True
@@ -522,7 +632,12 @@ def _edit_fn(vault, aid, turn_id, by, card, new):
     return fn
 
 
-def edit(vault, aid, turn_id, by="ai", card=None, **fields):
+def _note_clash(vault, aid):
+    from kb._lib import streams
+    return any(c.get("id") == aid and c.get("field") == "note" for c in streams.conflicts_of(vault, "agenda"))
+
+
+def edit(vault, aid, turn_id, by="ai", card=None, tags_add=None, tags_remove=None, tags_clear=False, note=None, **fields):
     """改 date、start、time、text、entities、lead_days、repeat（None 當沒給；repeat「不重複」是拿掉；改日期錨點跟著換）。來源是 inferred 而這次不是帶 card 的重對 → corrected；
     card 給了（只能是出處那張卡）= 照新版重對：來源不變、origin.fp 更新。有 proposal 一律清掉。回條目。
     來源是 inferred、沒有改任何欄（她說推測的那條是對的）→ 記成 confirmed、歷程記一筆（lint 桌面版確認後）。"""
@@ -550,6 +665,14 @@ def edit(vault, aid, turn_id, by="ai", card=None, **fields):
         new["owner"] = _owner(vault, new["owner"])
         if card and new["owner"] == []:
             raise AgendaRefused(OWNER_CARD_EMPTY)
+    if tags_add or tags_remove or tags_clear:  # 標籤（D-553）：加、拿掉（沒有的略過）、全清
+        plus = [_tag(t) for t in tags_add or []]
+        minus = [tag_key(_tag(t)) for t in tags_remove or []]
+        if {tag_key(t) for t in plus} & set(minus):
+            raise AgendaRefused(TAG_BOTH)
+        new["_tags"] = {"add": plus, "remove": minus, "clear": bool(tags_clear)}
+    if note is not None:
+        new["_note"] = _note(note)
 
     return _mutate(vault, turn_id, _edit_fn(vault, aid, turn_id, by, card, new))
 
@@ -564,7 +687,7 @@ def _status_fn(aid, status, turn_id, by):
         if status == "done" and old == "open" and it.get("repeat"):  # 完成這一次：移到下一次、維持 open（D-501）
             was = it["date"]
             _move(it, next_after(it["repeat"], was))
-            _log(it, f"完成 {was} 那次，下次 {it['date']}", by, turn_id)
+            _log(it, f"完成 {was} 那次，下次 {it['date']}{_next_round(it)}", by, turn_id)
             return it, True
         it["status"] = status
         change = f"status {old} → {status}"
@@ -583,6 +706,324 @@ def set_status(vault, aid, status, turn_id, by="ai"):
     if status not in STATUSES:
         raise ValueError(f"狀態要是 {'、'.join(STATUSES)} 之一：{status!r}")
     return _mutate(vault, turn_id, _status_fn(aid, status, turn_id, by))
+
+
+# ---------- 子項（D-552）：每項 id（c- 加 6 碼 hex）、text、pos、done（勾了多 done_by、done_at，勾或取消都記 done_round），
+# 留言 comments（m- 加 6 碼 hex）；拿掉的子項、留言帶 del 留在整份文件裡（restore、退回、多人合併用），對外一律濾掉。
+# 不進指紋、不經 edit；多人同時改照子項的每一欄合併（streams.NESTED）。
+
+def _all(it):
+    subs = it.get("checklist")
+    return [c for c in subs if isinstance(c, dict)] if isinstance(subs, list) else []
+
+
+def _pos(c):
+    v = c.get("pos")
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+
+def _live(it):
+    """沒拿掉的子項，照 pos、再照 id。"""
+    return sorted((c for c in _all(it) if not c.get("del")), key=lambda c: (_pos(c), str(c.get("id"))))
+
+
+def _done(it, c):
+    """有效狀態：勾了、而且是這一回合勾的（D-552 (11)：重複日程移到下一次就加一回合）。"""
+    return bool(c.get("done")) and c.get("done_round", 0) == it.get("round", 0)
+
+
+def _notes(c):
+    return sorted((m for m in c.get("comments") or [] if isinstance(m, dict) and not m.get("del")),
+                  key=lambda m: (str(m.get("at") or ""), str(m.get("id"))))
+
+
+def public_checklist(it, restored=False):
+    """對外的子項（list --json、匯出、成功句 --json）：不列拿掉的，勾用有效狀態，不帶 pos、done_round。
+    restored：放回過的項帶 restored_by、restored_at（list --json 用；匯出不帶，確認裁定 6）。"""
+    out = []
+    for c in _live(it):
+        on = _done(it, c)
+        row = {"id": c.get("id"), "text": c.get("text"), "done": on, "done_by": c.get("done_by") if on else None,
+               "done_at": c.get("done_at") if on else None,
+               "comments": [{"id": m.get("id"), "by": m.get("by"), "at": m.get("at"), "text": m.get("text")} for m in _notes(c)]}
+        if restored and (c.get("restored_by") or c.get("restored_at")):
+            row.update(restored_by=c.get("restored_by"), restored_at=c.get("restored_at"))
+        out.append(row)
+    return out
+
+
+def removed_checklist(it):
+    """拿掉的子項：誰、什麼時候拿掉（單人 removed_by 是 null；第一版拿掉的沒記人）。"""
+    gone = sorted((c for c in _all(it) if c.get("del")), key=lambda c: (_pos(c), str(c.get("id"))))
+    return [{"id": c.get("id"), "text": c.get("text"), "removed_by": c.get("removed_by"), "removed_at": c.get("removed_at")}
+            for c in gone]
+
+
+def public(it):
+    """對外的條目：checklist 換成對外的形狀（沒有子項就不帶），有拿掉的多 checklist_removed，不帶 round。"""
+    out = {k: v for k, v in it.items() if k not in ("checklist", "round", "_force")}
+    subs = public_checklist(it, restored=True)
+    if subs:
+        out["checklist"] = subs
+    gone = removed_checklist(it)
+    if gone:
+        out["checklist_removed"] = gone
+    return out
+
+
+def progress(it):
+    """(已勾, 總數)：只算沒拿掉的、勾用有效狀態；沒有子項回 None。"""
+    live = _live(it)
+    return (sum(1 for c in live if _done(it, c)), len(live)) if live else None
+
+
+def _new_ref(rows, prefix):
+    """c-／m- 加 6 碼 hex，隨機（兩台同時加不會撞）；這份裡已有的（含拿掉的）重抽。"""
+    taken = {r.get("id") for r in rows}
+    while True:
+        got = f"{prefix}-{secrets.token_hex(3)}"
+        if got not in taken:
+            return got
+
+
+def _short(value, empty, limit, too_long):
+    from kb._lib import streams
+    text = " ".join(streams.clean_text(" ".join(str(value or "").split())).split())  # 壓空白照 _text；再拿掉控制字元（測試裁定 7）
+    if not text:
+        raise AgendaRefused(empty)
+    if len(text) > limit:
+        raise AgendaRefused(too_long)
+    return text
+
+
+def _sub(it, cid, gone_ok=False):
+    """子項收完整編號（c-…，含拿掉的）或數字 N（目前第 N 項）。拿掉的只有 gone_ok（remove、restore）收。"""
+    live, ref = _live(it), str(cid).strip()
+    if ref.isdigit():
+        got = live[int(ref) - 1] if 1 <= int(ref) <= len(live) else None
+    else:
+        got = next((c for c in _all(it) if c.get("id") == ref), None)
+    if got is None:
+        if not live:
+            raise AgendaRefused(CHECK_NONE)
+        raise AgendaRefused(f"這件沒有子項 {ref}；有：" + "、".join(f"{n} {c.get('text')}" for n, c in enumerate(live, 1)))
+    if got.get("del") and not gone_ok:
+        raise AgendaRefused(f"「{got.get('text')}」已經被拿掉了；要放回用 kb agenda check restore {it.get('id')} {got.get('id')}")
+    return got
+
+
+def _who(vault, who, need=True):
+    """勾、留言記的名字：給了 --by 照成員比對轉正名；沒給是這台的人；單人回 None（不記名字）。
+    need False（取消勾，不記名字）時多人這台沒設身分也不擋。"""
+    from kb._lib import people
+    if who is not None:
+        if not people.multi(vault):
+            raise AgendaRefused(BY_SINGLE)
+        return _member(vault, str(who).strip())
+    if not people.multi(vault):
+        return None
+    mine = people.me(vault)
+    if mine is None and need:
+        raise AgendaRefused(WHO_UNKNOWN)
+    return mine
+
+
+def _now():
+    return dt.datetime.now().isoformat(timespec="seconds")
+
+
+def _clashes(vault, aid):
+    """這條子項兩邊改得不一樣的欄（checklist:<子項>:<欄>）。"""
+    from kb._lib import streams
+    return {c.get("field") for c in streams.conflicts_of(vault, "agenda")
+            if c.get("id") == aid and str(c.get("field", "")).startswith("checklist:")}
+
+
+def clash_count(conflicts, aid):
+    return sum(1 for c in conflicts if c.get("id") == aid and str(c.get("field", "")).startswith("checklist:"))
+
+
+def _settle(sub, field, clash):
+    """撞到的就是這一欄：值一樣也寫一行（_force 給 streams.diff），那處撞到就解掉。"""
+    if f"checklist:{sub.get('id')}:{field}" in clash:
+        sub["_force"] = [field]
+        return True
+    return False
+
+
+def _check(vault, aid, turn_id, fn):
+    """子項的讀改寫（走 _mutate，有改才備份、寫）：fn(it, 撞到的欄) 回 (額外結果 dict, 有沒有改)；回 {"item", "changed", **額外}。
+    完成、取消的條目照樣可以動子項。"""
+    def outer(data):
+        it = _find(data, aid)
+        extra, changed = fn(it, _clashes(vault, aid))
+        return {"item": it, "changed": changed, **extra}, changed
+    return _mutate(vault, turn_id, outer)
+
+
+def check_add(vault, aid, texts, turn_id, by="ai"):
+    """加一到多項（接在最後），一個不合就都不加。回多帶 added（新加的子項）。"""
+    texts = [_short(t, SUB_EMPTY, SUB_TEXT_MAX, SUB_LONG) for t in (texts or [""])]
+
+    def fn(it, _clash):
+        if len(_live(it)) + len(texts) > SUB_MAX:
+            raise AgendaRefused(f"一件最多 {SUB_MAX} 個子項")
+        subs = it.setdefault("checklist", [])
+        top, added = max((_pos(c) for c in _all(it)), default=0), []
+        for text in texts:
+            top += 1
+            sub = {"id": _new_ref(subs, "c"), "text": text, "pos": top, "done": False}
+            subs.append(sub)
+            added.append(sub)
+            _log(it, f"check + {text}", by, turn_id)
+        return {"added": added}, True
+    return _check(vault, aid, turn_id, fn)
+
+
+def check_set(vault, aid, cid, done, turn_id, by="ai", who=None):
+    """勾（done True）或取消勾：勾的記 done_by（單人不記）、done_at，取消就清掉；都記 done_round。
+    有效狀態已經是那樣不改（changed False），撞到的是這一欄例外（resolved True）。"""
+    name = _who(vault, who, need=bool(done))
+
+    def fn(it, clash):
+        sub = _sub(it, cid)
+        force = _settle(sub, "done", clash)
+        if _done(it, sub) == bool(done) and not force:
+            return {"sub": sub}, False
+        sub.update(done=bool(done), done_round=it.get("round", 0))
+        sub.pop("done_by", None)
+        sub.pop("done_at", None)
+        if done:
+            if name:
+                sub["done_by"] = name
+            sub["done_at"] = _now()
+        _log(it, f"check {sub['text']} {'done' if done else 'undo'}", by, turn_id)
+        return {"sub": sub, "resolved": force}, True
+    return _check(vault, aid, turn_id, fn)
+
+
+def check_remove(vault, aid, cid, turn_id, by="ai", who=None):
+    """拿掉（標 del，勾、留言留著；記 removed_by（單人不記）、removed_at，清掉 restored_*）；
+    已經拿掉不改，撞到的是拿掉這一欄例外（確定拿掉）。"""
+    name = _who(vault, who)
+
+    def fn(it, clash):
+        sub = _sub(it, cid, gone_ok=True)
+        force = _settle(sub, "del", clash)
+        if sub.get("del") and not force:
+            return {"sub": sub}, False
+        sub["del"] = True
+        for key in ("removed_by", "restored_by", "restored_at"):
+            sub.pop(key, None)
+        if name:
+            sub["removed_by"] = name
+        sub["removed_at"] = _now()
+        _log(it, f"check - {sub['text']}", by, turn_id)
+        return {"sub": sub, "resolved": force}, True
+    return _check(vault, aid, turn_id, fn)
+
+
+def check_restore(vault, aid, cid, turn_id, by="ai", who=None):
+    """放回拿掉的那項（勾、留言、位置跟拿掉前一樣；記 restored_by、restored_at，清掉 removed_*）；
+    本來就在不改，撞到的是拿掉這一欄例外。"""
+    if str(cid).strip().isdigit():  # 數字只指得到沒拿掉的項：放回只收完整編號
+        raise AgendaRefused(RESTORE_FULL)
+    name = _who(vault, who)
+
+    def fn(it, clash):
+        sub = _sub(it, cid, gone_ok=True)
+        force = _settle(sub, "del", clash)
+        if not sub.get("del") and not force:
+            return {"sub": sub}, False
+        for key in ("del", "removed_by", "removed_at", "restored_by"):
+            sub.pop(key, None)
+        if name:
+            sub["restored_by"] = name
+        sub["restored_at"] = _now()
+        _log(it, f"check 放回 {sub['text']}", by, turn_id)
+        return {"sub": sub, "resolved": force}, True
+    return _check(vault, aid, turn_id, fn)
+
+
+def check_edit(vault, aid, cid, text, turn_id, by="ai"):
+    """只換字；勾的狀態、誰勾的、留言、編號不動。字一樣不改（撞到的是字例外）。回多帶 old（原本的字）。"""
+    text = _short(text, SUB_EMPTY, SUB_TEXT_MAX, SUB_LONG)
+
+    def fn(it, clash):
+        sub = _sub(it, cid)
+        old, force = sub.get("text"), _settle(sub, "text", clash)
+        if old == text and not force:
+            return {"sub": sub, "old": old}, False
+        sub["text"] = text
+        _log(it, f"check 改字 {old} → {text}", by, turn_id)
+        return {"sub": sub, "old": old, "resolved": force}, True
+    return _check(vault, aid, turn_id, fn)
+
+
+def check_move(vault, aid, cid, to, turn_id, by="ai"):
+    """移到第 to 項（1 起算）：只改那一項的 pos（夾在新位置前後兩項中間；最前減 1、最後加 1）；
+    兩項間距小於 1e-6 才整份重編 1、2、3…。已在那裡不改。"""
+    def fn(it, _clash):
+        sub = _sub(it, cid)
+        live = _live(it)
+        if isinstance(to, bool) or not isinstance(to, int) or not 1 <= to <= len(live):
+            raise AgendaRefused(f"位置要是 1 到 {len(live)}")
+        if live.index(sub) == to - 1:
+            return {"sub": sub}, False
+        others = [c for c in live if c is not sub]
+        prev = others[to - 2] if to >= 2 else None
+        nxt = others[to - 1] if to - 1 < len(others) else None
+        if prev is not None and nxt is not None:
+            if _pos(nxt) - _pos(prev) < 1e-6:
+                for n, c in enumerate(others[:to - 1] + [sub] + others[to - 1:], 1):
+                    c["pos"] = n
+            else:
+                sub["pos"] = (_pos(prev) + _pos(nxt)) / 2
+        else:
+            sub["pos"] = _pos(prev) + 1 if prev is not None else _pos(nxt) - 1
+        _log(it, f"check {sub['text']} 移到第 {to}", by, turn_id)
+        return {"sub": sub}, True
+    return _check(vault, aid, turn_id, fn)
+
+
+def check_comment(vault, aid, cid, text, turn_id, by="ai", who=None):
+    """子項底下留一則言（m-…，誰、何時、內容；單人不記誰）。歷程不記內容。回多帶 comment、count（現有幾則）。"""
+    text = _short(text, COMMENT_EMPTY, COMMENT_MAX, COMMENT_LONG)
+    name = _who(vault, who)
+
+    def fn(it, _clash):
+        sub = _sub(it, cid)
+        if len(_notes(sub)) >= COMMENT_COUNT:
+            raise AgendaRefused(f"「{sub['text']}」的留言已經 {COMMENT_COUNT} 則，先拿掉一些舊的")
+        notes = sub.setdefault("comments", [])
+        note = {"id": _new_ref(notes, "m")}
+        if name:
+            note["by"] = name
+        note.update(at=_now(), text=text)
+        notes.append(note)
+        _log(it, f"check {sub['text']} 留言 {note['id']}", by, turn_id)
+        return {"sub": sub, "comment": note, "count": len(_notes(sub))}, True
+    return _check(vault, aid, turn_id, fn)
+
+
+def check_uncomment(vault, aid, cid, mid, turn_id, by="ai"):
+    """拿掉一則留言（標 del；誰寫的都能拿）：收完整編號或數字 N（那項目前第 N 則）。已經拿掉不改。"""
+    def fn(it, _clash):
+        sub = _sub(it, cid)
+        ref = str(mid).strip()
+        if ref.isdigit():
+            live = _notes(sub)
+            note = live[int(ref) - 1] if 1 <= int(ref) <= len(live) else None
+        else:
+            note = next((m for m in sub.get("comments") or [] if isinstance(m, dict) and m.get("id") == ref), None)
+        if note is None:
+            raise AgendaRefused(f"「{sub['text']}」沒有留言 {ref}")
+        if note.get("del"):
+            return {"sub": sub, "comment": note}, False
+        note["del"] = True
+        _log(it, f"check {sub['text']} 拿掉留言 {note['id']}", by, turn_id)
+        return {"sub": sub, "comment": note}, True
+    return _check(vault, aid, turn_id, fn)
 
 
 def recheck(vault, aid, turn_id, propose_date=None, propose_text=None, by="ai"):
@@ -1056,7 +1497,8 @@ def render(vault, turn_id=None, data=None, today=None, base=None, hand=None):
 EXPORT_NAME = "willy-agenda.json"
 EXPORT_SCHEMA = "willy-agenda/1"
 EXPORT_STATE_POSIX = ".system/agenda_export.json"
-EXPORT_FIELDS = ("id", "kind", "start", "date", "time", "text", "entities", "status", "source", "lead_days", "repeat", "owner")
+EXPORT_FIELDS = ("id", "kind", "start", "date", "time", "text", "entities", "status", "source", "lead_days", "repeat", "owner",
+                 "checklist", "tags", "note")
 FP_FIELDS = ("kind", "date", "start", "time", "text", "entities", "status", "lead_days")  # 手機寫回靠它判衝突，改了要升 schema
 EXPORT_NO_DIR = "資料夾不存在"
 EXPORT_NO_WRITE = "資料夾寫不進去"
@@ -1077,6 +1519,8 @@ def export_payload(vault, data):
         row = {k: it.get(k) for k in EXPORT_FIELDS}
         row["repeat"] = (it.get("repeat") or {}).get("every")  # D-501：只給週期，不進指紋
         row["owner"] = list(it.get("owner") or [])  # D-549：一律清單，不進指紋
+        row["checklist"] = public_checklist(it)  # D-552：一律清單、有效狀態、不列拿掉的，不進指紋
+        row["tags"] = list(it.get("tags") or [])  # D-553：一律清單、註記沒有是 null，都不進指紋
         row["fp"] = item_fp(it)
         items.append(row)
     names = [{"id": e.get("id"), "name": e.get("name"), "type": e.get("type")} for e in entities.load(vault)["entities"]
@@ -1156,7 +1600,7 @@ def _export_locked(vault, folder):
         target = Path(folder) / EXPORT_NAME
         written = not _same_export(target, payload)
         if written:
-            write_text_atomic(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            write_text_atomic(target, json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n")  # 嚴格 JSON（測試裁定 3）
     except Exception as e:  # noqa: BLE001  匯出只是一份視圖，不能擋日程（D-500）
         if isinstance(e, FileNotFoundError):
             reason = EXPORT_NO_DIR

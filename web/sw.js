@@ -10,7 +10,7 @@ var VERSION = new URL(self.location.href).searchParams.get("v") || "0";
 var SHELL = "willy-" + VERSION;
 var DATA = "willy-data";
 var PAGES_MAX = 60;
-var FILES = ["/", "/index.html", "/app.css", "/chat.css", "/md.js", "/queue.js", "/chat.js", "/app.js",
+var FILES = ["/", "/index.html", "/app.css", "/chat.css", "/md.js", "/icons.js", "/queue.js", "/chat.js", "/app.js",
   "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", function (event) {

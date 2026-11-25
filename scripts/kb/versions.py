@@ -1863,8 +1863,10 @@ def _undo_stream_item(ctx, it):
         others = set()
         for r in _other_machine_lines(vault, it):
             others |= set(r.get("set") or {}) | set(r.get("unset") or [])
+            others |= {f for f in streams._sub_fields(r) if not f.endswith(":comments")}  # 子項的欄也一樣（D-552 裁定 8）
         others -= set(streams.append_only(st["kind"]))  # 歷程照拿掉自己那一行，別人加的留著（D-337）
-        eff = dict(eff, fields=[f for f in eff["fields"] if f not in others])
+        # 子項的欄：別台整份清單重寫過（others 有 checklist）也算改過（D-552 裁定 8）
+        eff = dict(eff, fields=[f for f in eff["fields"] if f not in others and not (":" in f and f.partition(":")[0] in others)])
         if not eff["fields"]:
             return "skipped", "gone", f"{it['what']} 的欄位都被別人改過了，沒有可改回的"
     turn.backup(vault, it["file"], rt)

@@ -1,25 +1,33 @@
 """共用流水檔（多人共用 1，D-288）：每台只寫自己的 .system/streams/<種類>/<這台代號>.jsonl，一行一筆改動，讀的時候合起來。
 
 行：{"v","op":"create|set|mask","id","seq","base","by","who","at","turn","set":{欄:值},"unset":[欄],"reverts":[…],
-"drop":{欄:[元素]},"undrop":{欄:[元素]}}。
+"drop":{欄:[元素]},"undrop":{欄:[元素]},"sub":{欄:{元素id:{改了的那幾欄}}}}。
 合併：同一筆照 seq、同 seq 照 by 排；每一欄取最後一個設這一欄的行；兩行設同一欄、值不同、彼此都沒看過對方
 （A.seq > B.base 而且 B.seq > A.base）才算撞到，進 conflicts。
 只往後加的欄（APPEND_ONLY，D-337）：不取最後一行，把每一行帶來的清單合起來（同內容只留一次、照 date 再照版號排），不算撞到；
 退回的行帶 drop（被退回那次加的元素，之後別台的行再帶著也不回來）、undrop（退回一次退回：放回來）。
+逐項合併的欄（NESTED，D-552 子項）：行不放整份清單，sub 只記改了的元素的那幾欄；每個元素的每一欄各自取最後一行，
+撞到的欄名是「欄:元素id:那一欄」；拿掉的元素標 del 留著（restore、退回用）；set 裡整份清單的舊寫法當成基準照讀。
+每行帶 seen（{台代號: 這筆在那台的最大 seq}，測試裁定 11）判「看過沒」，沒有 seen 的舊行照舊用 base；
+合併前每行先驗型別與字數，不合的整行略過、記 log（測試裁定 1、3）。
+標籤（KEYED，D-553）：sub 記「鍵: {on, text}」，加的贏、不算撞到；註記（RESOLVE）是一般欄另套「解掉」。
 各模組照舊「整份讀進、整份交回」：io.read_json／write_json_atomic 認得 LEGACY 的檔名，轉到這裡（doc_to_records／records_to_doc）。
 刪掉一筆寫 set {"_del": true}（讀回來不列）；undo 一筆新增寫 RETRACT 的收回欄（kb versions undo）。
 """
 import hashlib
 import json
 import marshal
+import math
 import os
+import unicodedata
 import secrets
 import time
 from pathlib import Path
 
 from kb._lib.io import FileLock, read_json, write_json_atomic
 
-FORMAT_VERSION = 3  # 跟大升級走（D-335）：遷移表有新列的那一版 +1，tools/release.py 守；舊版讀到比它新的行照讀、寫之前停（D-298）
+FORMAT_VERSION = 4  # 跟大升級走（D-335）：遷移表有新列、或行多了舊版看不懂的寫法（4：子項的 sub，D-552 (12)）的那一版 +1，
+# tools/release.py 守；舊版讀到比它新的行照讀、寫之前停（D-298）
 STREAMS_REL = ".system/streams"
 LOCAL_REL = ".system/local"
 LEGACY_REL = ".system/legacy"
@@ -43,6 +51,14 @@ KINDS = {
 }
 # 種類 → 只往後加的欄（D-337）：合起來時各行的清單聯集、不算撞到；退回只拿掉那次加的元素
 APPEND_ONLY = {"agenda": ("history",)}
+# 種類 → 逐項合併的欄（D-552）：清單的每個元素帶 id，text、done、pos、del 各自合併，留言（comments）照 D-337 合起來
+NESTED = {"agenda": ("checklist", "tags")}
+KEYED = ("tags",)  # 逐項合併的欄裡是字串清單的（D-553 標籤）：元素是比對用的鍵（casefold），只有 on、text；加的贏、不算撞到
+RESOLVE = {"agenda": ("note",)}  # 一般欄、另套「解掉」：之後有一行看過兩邊又設了這一欄就不再列撞到（D-553）
+SUB_CLASH = ("text", "done", "del")  # 會撞到的子項欄；pos 取最後一行、不算撞到
+# 種類 → 取大的欄（裁定 7）：照一般欄取最後一行，但跟最後一行彼此沒看過的行設了更大的值就取大的，不算撞到
+BIGGER = {"agenda": ("round",)}
+FOLLOW = {"agenda": {"date": "round"}}  # 自動移（同一行把 round 加大）的 date 跟 round 大的那行走、不算撞到（測試第 3 輪裁定 16）
 # 掃描看到的、只在這台算的那一半放 .system/local/<種類>.json（新定 3）；共用那一半走流水檔
 SPLIT = ("inventory", "pending", "profile")
 LOCAL_PROFILE = ("md_sha256",)  # 設定檔 md 這台渲染出的指紋：md 不進 git、每台自己畫（#42），比手改要用這台的
@@ -73,6 +89,11 @@ def _is_archived(rec):
 def append_only(kind):
     """這種類只往後加的欄（D-337）；沒有回空的。"""
     return APPEND_ONLY.get(base(kind), ())
+
+
+def nested(kind):
+    """這種類逐項合併的欄（D-552）；沒有回空的。"""
+    return NESTED.get(base(kind), ()) if kind else ()
 
 
 COMPACT_BYTES = 1_000_000  # 自己的檔超過這個大小，寫完順手併掉被同一台後面的行蓋過的舊行
@@ -262,6 +283,7 @@ class State:
         self.records = {}
         self.meta = {}
         self.conflicts = []
+        self.seen = {}  # id → {台代號: 這筆在那台的最大 seq}（測試裁定 11）
 
 
 def _log(vault, text):
@@ -285,15 +307,180 @@ def _read_file(vault, path):
             continue
         try:
             row = json.loads(text)
-            if not isinstance(row, dict):
-                raise ValueError("不是物件")
         except ValueError as e:
             if i == len(lines) - 1 or all(not t.strip() for t in lines[i + 1:]):
                 _log(vault, f"{Path(path).name} 最後一行不完整，略過")
                 continue
             raise ValueError(f"{path}（第 {i + 1} 行讀不懂：{e}）") from e
+        if not isinstance(row, dict):  # 整行不是物件：略過（測試裁定 1）
+            _log(vault, f"{Path(path).name} 第 {i + 1} 行略過：不是物件")
+            continue
         out.append((i, row))  # 比這版新的行照收（認得的欄照算、不認得的略過）；寫之前才擋（check_writable，多人共用 2 第 4 點）
     return out
+
+
+TEXT_MAX = {"agenda": {"checklist": 200, "comment": 500, "tag": 20, "note": 1000}}  # 合併時的字數上限照 CLI
+CAPS = {"agenda": {"checklist": 200, "comments": 1000, "tags": 50}}  # 防亂寫的硬上限：多的不列
+BIDI = frozenset("\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def clean_text(value, keep_newline=False):
+    """拿掉 Unicode 類別 Cc 與雙向控制字元（keep_newline：留 \n、\t，註記用）；不是字串照回。"""
+    if not isinstance(value, str):
+        return value
+    return "".join(c for c in value if c not in BIDI and (unicodedata.category(c) != "Cc" or (keep_newline and c in "\n\t")))
+
+
+class _Bad(Exception):
+    pass
+
+
+def _need(ok, why):
+    if not ok:
+        raise _Bad(why)
+
+
+def _nat(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def _ostr(v):
+    return v is None or isinstance(v, str)
+
+
+def _fin(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _strs(v):
+    return isinstance(v, list) and all(isinstance(x, str) for x in v)
+
+
+def bad_row(row, kind=None):
+    """一行合併前先驗（測試裁定 1）：不合回原因，合回 None。"""
+    try:
+        _check_row(row, kind)
+    except _Bad as e:
+        return str(e)
+    return None
+
+
+def _check_row(row, kind):
+    _need(isinstance(row, dict), "不是物件")
+    for f in ("seq", "base"):
+        if f in row:
+            _need(_nat(row[f]), f"{f} 不是 0 以上的整數")
+    for f in ("id", "by"):
+        if f in row:
+            _need(isinstance(row[f], str), f"{f} 不是字串")
+    for f in ("who", "at", "op"):
+        _need(_ostr(row.get(f)), f"{f} 不是字串")
+    if row.get("op") == "mask":
+        _need(_strs(row.get("ids") or []) and _strs(row.get("fields") or []), "遮字那行的 ids、fields 不對")
+        return
+    got = row.get("set")
+    _need(got is None or isinstance(got, dict), "set 不是物件")
+    _need(_strs(row.get("unset") or []), "unset 不是字串清單")
+    _need(not set(got or {}) & set(row.get("unset") or []), "同一欄又 set 又 unset")  # 測試第 2 輪裁定 12
+    for name in ("drop", "undrop"):
+        d = row.get(name)
+        _need(d is None or (isinstance(d, dict) and all(isinstance(v, list) for v in d.values())), f"{name} 不對")
+    sub = row.get("sub")
+    _need(sub is None or (isinstance(sub, dict) and all(isinstance(v, dict) for v in sub.values())), "sub 不是物件")
+    if kind and base(kind) == "agenda":
+        _check_agenda(got or {}, sub or {})
+
+
+def _check_comment(c):
+    lim = TEXT_MAX["agenda"]["comment"]
+    _need(isinstance(c, dict) and isinstance(c.get("id"), str), "留言的 id 不是字串")
+    _need(isinstance(c.get("text"), str), "留言的字不是字串")
+    _need(len(c["text"]) <= lim, f"留言超過 {lim} 字")
+    _need(_ostr(c.get("by")) and _ostr(c.get("at")), "留言的 by、at 不是字串")
+    _need(isinstance(c.get("del", False), bool), "留言的 del 不是真假值")
+
+
+def _check_text(v, whole):
+    lim = TEXT_MAX["agenda"]["checklist"]
+    _need(isinstance(v, str) or (v is None and not whole), "子項的字不是字串")
+    _need(v is None or len(v) <= lim, f"子項超過 {lim} 字")
+
+
+def _check_agenda(got, sub):
+    lim = TEXT_MAX["agenda"]
+    if "round" in got:
+        _need(_nat(got["round"]), "round 不是 0 以上的整數")
+    if "note" in got:
+        _need(_ostr(got["note"]), "note 不是字串")
+        _need(got["note"] is None or len(got["note"]) <= lim["note"], f"註記超過 {lim['note']} 字")
+    if "tags" in got:
+        _need(_strs(got["tags"]), "tags 不是字串清單")
+        _need(all(len(t) <= lim["tag"] for t in got["tags"]), f"標籤超過 {lim['tag']} 字")
+    if "checklist" in got:
+        _need(isinstance(got["checklist"], list), "checklist 不是清單")
+        for e in got["checklist"]:
+            _need(isinstance(e, dict) and isinstance(e.get("id"), str), "子項不是物件或 id 不是字串")
+            _check_text(e.get("text"), True)
+            _need(e.get("pos") is None or _fin(e["pos"]), "pos 不是有限的數字")
+            _need(isinstance(e.get("done", False), bool) and isinstance(e.get("del", False), bool), "done、del 不是真假值")
+            _need(_nat(e.get("done_round", 0)), "done_round 不是 0 以上的整數")
+            _need(all(_ostr(e.get(f)) for f in ("done_by", "done_at", "removed_by", "removed_at", "restored_by", "restored_at")),
+                  "子項的人、時間不是字串")
+            cs = e.get("comments", [])
+            _need(isinstance(cs, list), "comments 不是清單")
+            for c in cs:
+                _check_comment(c)
+    for cid, ch in (sub.get("checklist") or {}).items():
+        _need(isinstance(ch, dict), "子項的改動不是物件")
+        if "text" in ch:
+            _check_text(ch["text"], False)
+        _need(ch.get("pos") is None or _fin(ch["pos"]), "pos 不是有限的數字")
+        if "done" in ch:
+            g = ch["done"]
+            _need(isinstance(g, dict) and isinstance(g.get("done"), bool), "done 那組不對")
+            _need(_ostr(g.get("by")) and _ostr(g.get("at")) and _nat(g.get("round", 0)), "done 那組的人、時間、回合不對")
+        if "del" in ch:
+            g = ch["del"]
+            _need(isinstance(g, bool) or (isinstance(g, dict) and isinstance(g.get("del"), bool) and _ostr(g.get("by"))
+                                          and _ostr(g.get("at"))), "del 那組不對")
+        if "comments_add" in ch:
+            _need(isinstance(ch["comments_add"], list), "comments_add 不是清單")
+            for c in ch["comments_add"]:
+                _check_comment(c)
+        for f in ("comments_drop", "comments_undrop"):
+            if f in ch:
+                _need(_strs(ch[f]), f"{f} 不是字串清單")
+    for key, ch in (sub.get("tags") or {}).items():
+        _need(isinstance(ch, dict) and isinstance(ch.get("on"), bool), "標籤的改動不對")
+        _need(_ostr(ch.get("text")) and len(ch.get("text") or "") <= lim["tag"], f"標籤不是字串或超過 {lim['tag']} 字")
+
+
+def _good_rows(vault, path, kind):
+    """讀一個檔、驗過的行 [(idx, 行)]；不合的整行略過、記 log。"""
+    out = []
+    for i, row in _read_file(vault, path):
+        why = bad_row(row, kind)
+        if why:
+            _log(vault, f"{Path(path).name} 第 {i + 1} 行略過：{why}")
+            continue
+        out.append((i, row))
+    return out
+
+
+def _seen(row):
+    """這行的 seen（測試裁定 11）：型別不對當沒有（None）。"""
+    v = row.get("seen")
+    if isinstance(v, dict) and all(isinstance(k, str) and _nat(x) for k, x in v.items()):
+        return v
+    return None
+
+
+def _saw(x, y):
+    """x 看過 y：x 有 seen 看 seen，沒有（格式 3 以前）照舊用 base。"""
+    got = _seen(x)
+    if got is not None:
+        return got.get(str(y.get("by", "")), 0) >= _seq(y)
+    return _base(x) >= _seq(y)
 
 
 class NewerFormat(Exception):  # noqa: F811  不是 ValueError：各 CLI 的 except ValueError 不要吞掉，由 kb/cli.py 統一回那一句；  帶寫那一行的 willy 版本，給「同事已經用 X 記過東西了」那句用
@@ -354,7 +541,7 @@ def load(vault, kind):
         if c.get("sig") == sig and c.get("v") == FORMAT_VERSION:  # 舊版算的快取（合併規則可能不同，D-337）不用
             st = State()
             st.records = {k: v for k, v in c["records"]}
-            st.meta, st.conflicts = c["meta"], c["conflicts"]
+            st.meta, st.conflicts, st.seen = c["meta"], c["conflicts"], c["seen"]
             return st
     except (OSError, ValueError, KeyError, TypeError):
         pass
@@ -365,7 +552,7 @@ def load(vault, kind):
         cp.parent.mkdir(parents=True, exist_ok=True)
         tmp = cp.with_name(cp.name + f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps({"sig": sig, "v": FORMAT_VERSION, "records": list(st.records.items()), "meta": st.meta,
-                                   "conflicts": st.conflicts}, ensure_ascii=False), encoding="utf-8")
+                                   "conflicts": st.conflicts, "seen": st.seen}, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, cp)
     except OSError:
         pass
@@ -450,6 +637,19 @@ def _old_format(row):
     return not isinstance(v, int) or v < 2
 
 
+_NONE = object()  # 暫存原本沒有那一格
+
+
+def _tag_copy(state):
+    """標籤暫存的複本：只複製狀態的架子，行（row）照指同一個、不複製（測試第 3 輪裁定 15）。"""
+    return _NONE if state is _NONE else {k: dict(v, rows=dict(v["rows"])) for k, v in state.items()}
+
+
+def _sub_copy(st):
+    """一個子項合併狀態的複本：done、del 只會被整個換掉，留言只會加；行裡的值不複製（測試第 3 輪裁定 15）。"""
+    return _NONE if st is _NONE else dict(st, notes=dict(st["notes"]), gone=set(st["gone"]))
+
+
 class _Fold:
     """一行一行套到一筆上：一般欄取最後一行；只往後加的欄（D-337）把各行帶來的清單合起來，
     同內容只留一次、照 date 再照版號（seq、by、行的先後、清單裡的位置）排；drop 的拿掉、undrop 的放回。
@@ -457,12 +657,74 @@ class _Fold:
 
     def __init__(self, kind):
         self.lists = append_only(kind) if kind else ()
+        self.nested = nested(kind)
         self.acc = {}  # (id, 欄) → ({內容: (排序, 元素)}, {拿掉的內容})
+        self.subs = {}  # (id, 欄) → {元素id: 合併狀態}（逐項合併的欄，D-552）
+        self.tagst = {}  # (id, 欄) → {鍵: {text, rows（每台最後一行）, last}}（KEYED 的欄，D-553）
+        self.round_cap = None  # id → 這筆各行設過的最大 round；勾的回合比它大當壞值（測試裁定 6）；None 不擋
+        self.notes = []  # 合併時要記 log 的
+
+    def _cap_done(self, rid, cid, ch):
+        g = ch.get("done")
+        if self.round_cap is None or not isinstance(g, dict):
+            return ch
+        cap = self.round_cap.get(rid, 0)
+        if _round(g) > cap:
+            self.notes.append(f"{rid} 子項 {cid} 勾的回合 {_round(g)} 比這筆的回合 {cap} 大，當壞值略過")
+            return {k: v for k, v in ch.items() if k != "done"}
+        return ch
+
+    def keep(self, rid, row):
+        """套一行前把那行會動到的暫存存一份（測試第 2 輪裁定 12）：丟例外時 restore 整份還原。"""
+        ks = set(row.get("set") or {}) | set(row.get("unset") or [])
+        for name in ("sub", "drop", "undrop"):
+            if isinstance(row.get(name), dict):
+                ks |= set(row[name])
+        saved = []
+        for k in ks:
+            key = (rid, k)
+            a = self.acc.get(key, _NONE)
+            saved.append((self.acc, key, _NONE if a is _NONE else (dict(a[0]), set(a[1])), None))
+            saved.append((self.tagst, key, _tag_copy(self.tagst.get(key, _NONE)), None))
+            items = self.subs.get(key, _NONE)  # 子項只存這行動到的那幾項（整份換掉的是新的 dict，舊的不會被改）
+            cids = (row.get("sub") or {}).get(k) if isinstance(row.get("sub"), dict) else None
+            one = {} if items is _NONE else {str(c): _sub_copy(items.get(str(c), _NONE)) for c in (cids if isinstance(cids, dict) else ())}
+            saved.append((self.subs, key, items, one))
+        return saved, len(self.notes)
+
+    def restore(self, kept):
+        saved, n = kept
+        for d, key, v, one in saved:
+            if v is _NONE:
+                d.pop(key, None)
+                continue
+            d[key] = v
+            for c, st in (one or {}).items():
+                if st is _NONE:
+                    v.pop(c, None)
+                else:
+                    v[c] = st
+        del self.notes[n:]
 
     def apply(self, rec, rid, row, n=0):
-        touched = set()
+        touched, grown = set(), set()
         for k, v in (row.get("set") or {}).items():
-            if k in self.lists and isinstance(v, list):
+            if k in self.nested and k in KEYED:  # 整份標籤（舊寫法、新增、purge 重寫）：當成基準
+                if isinstance(v, list):
+                    self.tagst[(rid, k)] = _tag_reset(v, row)
+                    grown.add(k)
+                else:
+                    rec[k] = v
+                    self.tagst.pop((rid, k), None)
+            elif k in self.nested:  # 整份清單（舊寫法、新增、遷移、purge 重寫）：當成基準，之後的 sub 疊上去
+                if isinstance(v, list):
+                    self.subs[(rid, k)] = {str(e["id"]): _sub_state(e, i) for i, e in enumerate(v)
+                                           if isinstance(e, dict) and e.get("id") is not None}
+                    grown.add(k)
+                else:
+                    rec[k] = v
+                    self.subs.pop((rid, k), None)
+            elif k in self.lists and isinstance(v, list):
                 if _old_format(row):  # 格式 1 的行照舊讀（整份取代，含舊版退回寫的較短清單）；從格式 2 的行起才合起來
                     self.acc[(rid, k)] = ({}, set())
                 seen = self.acc.setdefault((rid, k), ({}, set()))[0]
@@ -478,6 +740,22 @@ class _Fold:
         for k in row.get("unset") or []:
             rec.pop(k, None)
             self.acc.pop((rid, k), None)
+            self.subs.pop((rid, k), None)
+            self.tagst.pop((rid, k), None)
+        got = row.get("sub")
+        for k, items in (got.items() if isinstance(got, dict) else ()):
+            if k not in self.nested or not isinstance(items, dict):
+                continue
+            if k in KEYED:
+                _tag_apply(self.tagst.setdefault((rid, k), {}), items, row)
+                grown.add(k)
+                continue
+            subs = self.subs.setdefault((rid, k), {})
+            for cid, ch in items.items():
+                if isinstance(ch, dict):
+                    ch = self._cap_done(rid, cid, ch)
+                    _sub_apply(subs.setdefault(str(cid), _sub_state({}, 0)), ch)
+            grown.add(k)
         for name in ("drop", "undrop"):
             got = row.get(name)
             for k, es in (got.items() if isinstance(got, dict) else ()):
@@ -491,21 +769,383 @@ class _Fold:
         for k in touched:
             seen, gone = self.acc[(rid, k)]
             rec[k] = [e for key, (_s, e) in sorted(seen.items(), key=lambda kv: kv[1][0]) if key not in gone]
+        for k in grown:
+            if k in KEYED:
+                tags = _tag_list(self.tagst[(rid, k)])
+                if tags:
+                    rec[k] = tags
+                else:
+                    rec.pop(k, None)
+            else:
+                rec[k] = _sub_list(self.subs[(rid, k)])
         return rec
+
+
+# ---------- 逐項合併的欄（D-552 子項） ----------
+
+def _round(group):
+    r = group.get("round", 0) if isinstance(group, dict) else -1
+    return r if isinstance(r, int) and not isinstance(r, bool) else 0
+
+
+def _group(e):
+    """子項的勾：勾沒勾、誰、何時、哪一回合，四個一組合併。"""
+    return {"done": bool(e.get("done")), "by": e.get("done_by"), "at": e.get("done_at"), "round": e.get("done_round", 0)}
+
+
+DEL_KEYS = ("del", "removed_by", "removed_at", "restored_by", "restored_at")
+
+
+def _dgroup(e):
+    """子項的拿掉：拿掉沒、誰、何時，一組合併（確認裁定 6）；單人沒有 by。放回的 by、at 是放回的人與時間。"""
+    on = bool(e.get("del"))
+    by, at = (e.get("removed_by"), e.get("removed_at")) if on else (e.get("restored_by"), e.get("restored_at"))
+    return {"del": on, **({"by": by} if by else {}), **({"at": at} if at else {})}
+
+
+def _dv(v):
+    """行裡 del 的真假：一組的看 del、第一版的純真假照讀；沒有回 None。"""
+    if isinstance(v, dict):
+        return bool(v.get("del"))
+    return None if v is None else bool(v)
+
+
+def _sub_state(e, i):
+    """整份清單的一項 → 合併狀態（沒有 pos 的舊寫法照清單順序）。"""
+    st = {"text": e.get("text"), "pos": e.get("pos", i + 1), "done": _group(e) if e.get("done") or "done_round" in e else None,
+          "del": _dgroup(e), "notes": {}, "gone": set()}
+    for c in e.get("comments") or []:
+        if isinstance(c, dict) and c.get("id") is not None:
+            st["notes"].setdefault(c["id"], {k: v for k, v in c.items() if k != "del"})
+            if c.get("del"):
+                st["gone"].add(c["id"])
+    return st
+
+
+def _sub_apply(st, ch):
+    """一行 sub 裡一個子項的改動疊上去：各欄取最後一行；勾的回合大的贏；留言用 id 合起來、drop／undrop 拿掉放回。"""
+    for f in ("text", "pos"):
+        if f in ch:
+            st[f] = ch[f]
+    if "del" in ch:
+        v = ch["del"]
+        st["del"] = dict(v, **{"del": bool(v.get("del"))}) if isinstance(v, dict) else {"del": bool(v)}
+    g = ch.get("done")
+    if isinstance(g, dict) and _round(g) >= _round(st["done"]):
+        st["done"] = g
+    for c in ch.get("comments_add") or []:
+        if isinstance(c, dict) and c.get("id") is not None:
+            st["notes"].setdefault(c["id"], c)
+    for m in ch.get("comments_drop") or []:
+        st["gone"].add(m)
+    for m in ch.get("comments_undrop") or []:
+        st["gone"].discard(m)
+
+
+def _pos(e):
+    v = e.get("pos")
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+
+def _sub_list(subs):
+    """合併狀態 → 清單（照 pos、再照 id）；拿掉的帶 del 留著；只有勾、沒有字的（沒看過新增那行）不列。"""
+    out = []
+    for cid, st in subs.items():
+        if st["text"] is None:
+            continue
+        e = {"id": cid, "text": st["text"], "pos": st["pos"], "done": False}
+        g = st["done"]
+        if g:
+            e["done"] = bool(g.get("done"))
+            if g.get("by"):
+                e["done_by"] = g["by"]
+            if g.get("at"):
+                e["done_at"] = g["at"]
+            e["done_round"] = max(_round(g), 0)
+        notes = sorted(st["notes"].values(), key=lambda c: (str(c.get("at") or ""), str(c.get("id"))))
+        if notes:
+            e["comments"] = [dict(c, **({"del": True} if c["id"] in st["gone"] else {})) for c in notes]
+        g = st["del"]
+        if g.get("del"):
+            e["del"] = True
+        for key, val in zip(("removed_by", "removed_at") if g.get("del") else ("restored_by", "restored_at"), (g.get("by"), g.get("at"))):
+            if val:
+                e[key] = val
+        out.append(e)
+    return sorted(out, key=lambda e: (_pos(e), e["id"]))
+
+
+def _without_gone(kind, rec):
+    """purge 整筆重寫用（裁定 6）：逐項合併的欄拿掉帶 del 的元素與留言，原文不留。"""
+    rec = dict(rec)
+    for k in nested(kind):
+        if k not in KEYED and isinstance(rec.get(k), list):  # 標籤的清單本來就只有 on 的
+            rec[k] = [dict(e, **({"comments": [c for c in e["comments"] if not (isinstance(c, dict) and c.get("del"))]}
+                                 if isinstance(e.get("comments"), list) else {}))
+                      for e in rec[k] if isinstance(e, dict) and not e.get("del")]
+            for e in rec[k]:
+                if e.get("comments") == []:
+                    del e["comments"]
+    return rec
+
+
+def _tkey(t):
+    return str(t).casefold()
+
+
+def _tag_info(row, on):
+    return (bool(on), str(row.get("by", "")), row)
+
+
+def _tag_reset(v, row):
+    info = _tag_info(row, True)
+    return {_tkey(t): {"text": t, "rows": {info[1]: info}, "last": info} for t in v if isinstance(t, str)}
+
+
+def _tag_apply(state, items, row):
+    """一行 sub 裡的標籤：每個鍵記每台最後一行與整體最後一行；text 取最後一行。"""
+    for key, ch in items.items():
+        if not isinstance(ch, dict) or "on" not in ch:
+            continue
+        st = state.setdefault(str(key), {"text": None, "rows": {}, "last": None})
+        info = _tag_info(row, ch["on"])
+        st["rows"][info[1]] = info
+        st["last"] = info
+        if isinstance(ch.get("text"), str):
+            st["text"] = ch["text"]
+
+
+def _tag_on(st):
+    """on 取最後一行；跟最後一行彼此沒看過的行（每台只看它最後那行）有 on 的取 on（加的贏，D-553）。"""
+    last = st["last"]
+    if last is None:
+        return False
+    return last[0] or any(i[0] and i is not last and _apart(i[2], last[2]) for i in st["rows"].values())
+
+
+def _tag_list(state):
+    return [st["text"] for key, st in sorted(state.items()) if st["text"] and _tag_on(st)]
+
+
+def _tag_diff(old, new):
+    """兩份標籤 → {鍵: {"on": True, "text"} | {"on": False}}；有一邊不是清單回 None。"""
+    old, new = [] if old is None else old, [] if new is None else new
+    if not isinstance(old, list) or not isinstance(new, list):
+        return None
+    was = {_tkey(t): t for t in old if isinstance(t, str)}
+    now = {_tkey(t): t for t in new if isinstance(t, str)}
+    out = {k: {"on": True, "text": t} for k, t in now.items() if was.get(k) != t}
+    out.update({k: {"on": False} for k in was if k not in now})
+    return out
+
+
+def _undo_tags(old, cur, names):
+    """退回一行的標籤鍵：那行之前有就放回（原本的寫法）、沒有就拿掉；別的鍵照現在。"""
+    keys = {n.partition(":")[2].rpartition(":")[0] for n in names}
+    was = {_tkey(t): t for t in (old if isinstance(old, list) else []) if isinstance(t, str)}
+    now = {_tkey(t): t for t in (cur if isinstance(cur, list) else []) if isinstance(t, str)}
+    for k in keys:
+        if k in was:
+            now[k] = was[k]
+        else:
+            now.pop(k, None)
+    return [now[k] for k in sorted(now)]
+
+
+def _by_id(items):
+    return {str(e["id"]): e for e in (items if isinstance(items, list) else []) if isinstance(e, dict) and e.get("id") is not None}
+
+
+def _sub_diff(old, new):
+    """兩份子項清單 → {子項id: {改了的欄}}（行的 sub）；有一邊不是清單回 None（照一般欄）。
+    新的那份元素可以帶 _force（欄名清單）：撞到時值一樣也寫，那處撞到就解掉；_force 不寫進行。"""
+    old, new = [] if old is None else old, [] if new is None else new
+    if not isinstance(old, list) or not isinstance(new, list):
+        return None
+    was, now, out = _by_id(old), _by_id(new), {}
+    for cid, e in now.items():
+        prev, force, ch = was.get(cid), set(e.get("_force") or ()), {}
+        if prev is None:
+            ch.update(text=e.get("text"), pos=e.get("pos"))
+            if e.get("done") or "done_round" in e:
+                ch["done"] = _group(e)
+            if e.get("del"):
+                ch["del"] = _dgroup(e)
+        else:
+            if e.get("text") != prev.get("text") or "text" in force:
+                ch["text"] = e.get("text")
+            if e.get("pos") != prev.get("pos"):
+                ch["pos"] = e.get("pos")
+            if _group(e) != _group(prev) or "done" in force:
+                ch["done"] = _group(e)
+            if _dgroup(e) != _dgroup(prev) or "del" in force:
+                ch["del"] = _dgroup(e)
+        olds, nows = _by_id((prev or {}).get("comments")), _by_id(e.get("comments"))
+        add, drop, undrop = [], [], []
+        for mid, c in nows.items():
+            o = olds.get(mid)
+            if o is None:
+                add.append({k: v for k, v in c.items() if k != "del"})
+                if c.get("del"):
+                    drop.append(c["id"])
+            elif bool(c.get("del")) != bool(o.get("del")):
+                (drop if c.get("del") else undrop).append(c["id"])
+        drop += [o["id"] for mid, o in olds.items() if mid not in nows and not o.get("del")]
+        for name, got in (("comments_add", add), ("comments_drop", drop), ("comments_undrop", undrop)):
+            if got:
+                ch[name] = got
+        if ch:
+            out[cid] = ch
+    for cid, prev in was.items():
+        if cid not in now and not prev.get("del"):
+            out[cid] = {"del": {"del": True}}
+    return out
+
+
+def _ch(row, k, cid):
+    got = ((row.get("sub") or {}).get(k) or {}) if isinstance(row.get("sub"), dict) else {}
+    ch = got.get(cid) if isinstance(got, dict) else None
+    return ch if isinstance(ch, dict) else {}
+
+
+def _base(row):
+    b = row.get("base", 0)
+    return b if isinstance(b, int) else 0
+
+
+def _apart(a, b):
+    """彼此都沒看過對方（測試裁定 11：有 seen 看 seen）。"""
+    return not _saw(a, b) and not _saw(b, a)
+
+
+def _sub_clash(lines, k, cid, f):
+    """同一子項同一欄（text、done、del）兩邊改得不一樣的行；之後有一行看過兩邊又設了這一欄就算解掉（回空的）。
+    done 只比勾沒勾、回合不同不算；del：拿掉的那行跟沒看過它、改了字、勾或加了留言的行也算（刪除贏，D-552 (10)）。"""
+    pairs = []
+
+    def hit(a, b):
+        pairs.append((a, b))
+    setters = [r for r in lines if f in _ch(r, k, cid)]
+    for i, a in enumerate(setters):
+        for b in setters[i + 1:]:
+            va, vb = _ch(a, k, cid)[f], _ch(b, k, cid)[f]
+            if f == "done":
+                if not isinstance(va, dict) or not isinstance(vb, dict) or _round(va) != _round(vb) or \
+                        bool(va.get("done")) == bool(vb.get("done")):
+                    continue
+            elif f == "del":
+                if _dv(va) == _dv(vb):  # 只比真假，誰、何時不同不算
+                    continue
+            elif va == vb:
+                continue
+            if _apart(a, b):
+                hit(a, b)
+    if f == "del":
+        for a in setters:
+            if _dv(_ch(a, k, cid).get("del")) is not True:
+                continue
+            for b in lines:
+                c = _ch(b, k, cid)
+                if b is not a and "del" not in c and ("text" in c or "done" in c or c.get("comments_add")) and _apart(a, b):
+                    hit(a, b)
+    found = []
+    for a, b in pairs:  # 每一組各自看：之後有一行看過這兩行又設了這一欄，這組就解掉
+        if any(_saw(r, a) and _saw(r, b) for r in setters if r is not a and r is not b):
+            continue
+        for x in (a, b):
+            if x not in found:
+                found.append(x)
+    return found
+
+
+def _sub_fields(row):
+    """一行 sub 動到的欄名（「欄:子項id:那一欄」；留言的三種都算 comments）。"""
+    out = []
+    got = row.get("sub")
+    for k, items in (got.items() if isinstance(got, dict) else ()):
+        for cid, ch in (items.items() if isinstance(items, dict) else ()):
+            for f in (ch if isinstance(ch, dict) else ()):
+                name = f"{k}:{cid}:{'comments' if f.startswith('comments_') else f}"
+                if name not in out:
+                    out.append(name)
+    return out
+
+
+def _field_val(row, field):
+    """conflicts 的值：子項的欄取那行 sub 裡的那一欄（del 給整個改動，看得出拿掉還是改了什麼）。"""
+    head, _, rest = field.partition(":")
+    if rest and any(head in v for v in NESTED.values()):
+        cid, _, f = rest.rpartition(":")
+        ch = _ch(row, head, cid)
+        return ch if f == "del" else ch.get(f)
+    return _val(row, field)
+
+
+def _undo_subs(old, new, cur, names):
+    """退回一行的子項欄（D-552）：那行新加的拿掉；字、位置、勾、拿掉設回那行之前；那行加的留言拿掉、拿掉的放回。
+    別的子項與別的欄照現在。勾的回合比現在舊（中間移到下一次過）時設成這一回合沒勾。"""
+    import copy
+    was, then = _by_id(old), _by_id(new)
+    cur = copy.deepcopy(cur) if isinstance(cur, list) else []
+    now = _by_id(cur)
+    for name in names:
+        _k, _, rest = name.partition(":")
+        cid, _, f = rest.rpartition(":")
+        e = now.get(cid)
+        if e is None:
+            continue
+        prev = was.get(cid)
+        if prev is None:
+            e["del"] = True
+        elif f in ("text", "pos"):
+            e[f] = prev.get(f)
+        elif f == "done":
+            r = e.get("done_round", 0)
+            if prev.get("done_round", 0) >= r:
+                for key in ("done", "done_by", "done_at", "done_round"):
+                    if key in prev:
+                        e[key] = prev[key]
+                    else:
+                        e.pop(key, None)
+            else:
+                e.update(done=False, done_round=r)
+                e.pop("done_by", None)
+                e.pop("done_at", None)
+        elif f == "del":  # 整組設回那行之前（確認裁定 6）
+            for key in DEL_KEYS:
+                if prev.get(key):
+                    e[key] = prev[key]
+                else:
+                    e.pop(key, None)
+        elif f == "comments":
+            pc, nc = _by_id(prev.get("comments")), _by_id((then.get(cid) or {}).get("comments"))
+            cc = _by_id(e.get("comments"))
+            for mid, c in nc.items():
+                if mid in cc and not c.get("del") and (mid not in pc or pc[mid].get("del")):
+                    cc[mid]["del"] = True
+                elif mid in cc and c.get("del") and mid in pc and not pc[mid].get("del"):
+                    cc[mid].pop("del", None)
+    return cur
 
 
 def _merge(vault, files, kind=None):
     stats["merges"] += 1
     rows = []
     for f in files:
-        for i, row in _read_file(vault, f):
-            rows.append((_seq(row), str(row.get("by", "")), len(rows), row))
+        for i, row in _good_rows(vault, f, kind):
+            rows.append((_seq(row), str(row.get("by", "")), len(rows), row, Path(f).name, i))
     rows.sort(key=lambda r: r[:3])
     st = State()
     fold = _Fold(kind)
+    fold.round_cap = {}
+    for r in rows:
+        got = r[3].get("set") or {}
+        if isinstance(r[3].get("id"), str) and _nat(got.get("round")):
+            fold.round_cap[r[3]["id"]] = max(got["round"], fold.round_cap.get(r[3]["id"], 0))
     setters = {}  # (id, field) → [行]
+    subs = {}  # (id, 欄, 子項id) → [行]（逐項合併的欄，D-552）
     masks = []
-    for _s, _by, n, row in rows:
+    for _s, _by, n, row, fname, i in rows:
         op = row.get("op")
         if op == "mask":
             masks.append(row)
@@ -514,24 +1154,70 @@ def _merge(vault, files, kind=None):
         if not isinstance(rid, str):
             continue
         rec = st.records.setdefault(rid, {})
-        fold.apply(rec, rid, row, n)
+        snap, kept = dict(rec), None  # rec 的值只會被換掉、不會被就地改，淺的就夠
+        try:
+            kept = fold.keep(rid, row)  # 複本做不出來也算壞行（測試第 3 輪裁定 15）
+            fold.apply(rec, rid, row, n)
+        except Exception as e:  # 驗過還是套不上：整行不套，那筆與 fold 的暫存整份還原（測試裁定 1、測試第 2 輪裁定 12）
+            if kept is not None:
+                fold.restore(kept)
+            rec.clear()
+            rec.update(snap)
+            if not rec:
+                st.records.pop(rid, None)
+            _log(vault, f"{fname} 第 {i + 1} 行略過：{type(e).__name__}")
+            continue
+        mine = st.seen.setdefault(rid, {})
+        mine[str(row.get("by", ""))] = max(_seq(row), mine.get(str(row.get("by", "")), 0))
         for k in list(row.get("set") or {}) + list(row.get("unset") or []):
-            if k not in fold.lists:  # 只往後加的欄不算撞到（D-337）
+            if k not in fold.lists and k not in KEYED:  # 只往後加的欄、標籤不算撞到（D-337、D-553）
                 setters.setdefault((rid, k), []).append(row)
+        got = row.get("sub")
+        for k, items in (got.items() if isinstance(got, dict) else ()):
+            if k in fold.nested and k not in KEYED and isinstance(items, dict):
+                for cid in items:
+                    subs.setdefault((rid, k, str(cid)), []).append(row)
         st.meta[rid] = {"seq": max(_seq(row), st.meta.get(rid, {}).get("seq", 0)), "by": row.get("by"),
                         "who": row.get("who"), "at": row.get("at")}
+    bigger = BIGGER.get(base(kind), ()) if kind else ()
+    resolve = RESOLVE.get(base(kind), ()) if kind else ()
     for (rid, field), lines in setters.items():
+        if field in bigger:  # 取大的欄（裁定 7）：跟最後一行彼此沒看過、值更大的行贏，不算撞到
+            last, newest = lines[-1], {}
+            for r in lines:  # 每台只看它自己最後設這一欄的那行（同一台後來蓋掉的值不算，例如自己退回）
+                newest[r.get("by")] = r
+            got = [_val(r, field) for r in newest.values() if r is not last and _apart(r, last)] + [_val(last, field)]
+            nums = [v for v in got if isinstance(v, int) and not isinstance(v, bool)]
+            if nums and rid in st.records and field in st.records[rid]:
+                st.records[rid][field] = max(nums)
+            continue
         if len(lines) < 2:
             continue
-        found = []
+        lead = FOLLOW.get(base(kind), {}).get(field) if kind else None
+        if lead:
+            _follow(st.records.get(rid), field, lines, lead)
+        found, last = [], {}
+        for r in lines:  # 每台最後寫的值；兩台最後一樣就不算撞到（測試第 2 輪裁定 13）
+            last[r.get("by")] = _val(r, field)
         for i, a in enumerate(lines):
             for b in lines[i + 1:]:
-                if _val(a, field) != _val(b, field) and a.get("seq", 0) > b.get("base", 0) and b.get("seq", 0) > a.get("base", 0):
+                if _val(a, field) != _val(b, field) and last[a.get("by")] != last[b.get("by")] and _apart(a, b) \
+                        and not (lead and _moved_apart(a, b, lead, field)) \
+                        and not (field in resolve and any(_saw(r, a) and _saw(r, b) for r in lines if r is not a and r is not b)):
                     for x in (a, b):
                         if x not in found:
                             found.append(x)
         if found:
             st.conflicts.append({"id": rid, "field": field, "lines": found})
+    for (rid, k, cid), lines in subs.items():
+        for f in SUB_CLASH:
+            found = _sub_clash(lines, k, cid, f)
+            if found:
+                st.conflicts.append({"id": rid, "field": f"{k}:{cid}:{f}", "lines": found})
+    for note in fold.notes:
+        _log(vault, note)
+    if kind and base(kind) == "agenda":
+        _finish_agenda(vault, st)
     for m in masks:
         for rid in m.get("ids") or []:
             if rid in st.records:
@@ -539,6 +1225,79 @@ def _merge(vault, files, kind=None):
                     if f in st.records[rid]:
                         st.records[rid][f] = MASKED
     return st
+
+
+def _lead(row, lead, field):
+    """這行同時設的 field 與 round（自動移的那條路）的 round；沒設 field（含 unset）、round 沒設或不是 0 以上的整數回 None。"""
+    got = row.get("set") or {}
+    v = got.get(lead)
+    return v if field in got and _nat(v) else None
+
+
+def _moved_apart(a, b, lead, field):
+    """兩行都是自動移、round 又不一樣：field 跟 round 大的那行，不算撞到（測試第 3 輪裁定 16）。"""
+    ra, rb = _lead(a, lead, field), _lead(b, lead, field)
+    return ra is not None and rb is not None and ra != rb
+
+
+def _follow(rec, field, lines, lead):
+    """最後一行是自動移的，而別台彼此沒看過的自動移行 round 更大：這一欄取那行的值（測試第 3 輪裁定 16）。"""
+    last = lines[-1]
+    if rec is None or field not in rec or _lead(last, lead, field) is None:
+        return
+    newest = {}
+    for r in lines:
+        newest[r.get("by")] = r
+    won = [r for r in newest.values() if r is not last and _apart(r, last)
+           and _lead(r, lead, field) is not None and _lead(r, lead, field) > _lead(last, lead, field)]
+    if won:
+        rec[field] = max(won, key=lambda r: _lead(r, lead, field))["set"][field]
+
+
+def _cap_live(vault, rows, limit, what):
+    """硬上限只算沒拿掉的：超過的（照原本順序的後面那些）不列；拿掉的照留。"""
+    live = [r for r in rows if not (isinstance(r, dict) and r.get("del"))]
+    if len(live) <= limit:
+        return rows
+    _log(vault, f"{what} {len(live)} 個超過 {limit}，多的不列")
+    over = {id(r) for r in live[limit:]}
+    return [r for r in rows if id(r) not in over]
+
+
+def _finish_agenda(vault, st):
+    """合起來之後：防亂寫的硬上限（多的不列）、讀出時拿掉控制字元（測試裁定 3、7）。"""
+    cap = CAPS["agenda"]
+    for rid, rec in st.records.items():
+        subs = rec.get("checklist")
+        if isinstance(subs, list):
+            subs = rec["checklist"] = _cap_live(vault, subs, cap["checklist"], f"{rid} 子項")
+            for e in subs:
+                if not isinstance(e, dict):
+                    continue
+                e["text"] = clean_text(e.get("text"))
+                cs = e.get("comments")
+                if isinstance(cs, list):
+                    cs = e["comments"] = _cap_live(vault, cs, cap["comments"], f"{rid} 子項 {e.get('id')} 留言")
+                    for c in cs:
+                        if isinstance(c, dict):
+                            c["text"] = clean_text(c.get("text"))
+        tags = rec.get("tags")
+        if isinstance(tags, list):
+            seen, out = set(), []
+            for t in tags:
+                t = clean_text(t)
+                if isinstance(t, str) and t and t.casefold() not in seen:
+                    seen.add(t.casefold())
+                    out.append(t)
+            if len(out) > cap["tags"]:
+                _log(vault, f"{rid} 標籤 {len(out)} 個超過 {cap['tags']}，多的不列")
+                out = out[:cap["tags"]]
+            if out:
+                rec["tags"] = out
+            else:
+                rec.pop("tags", None)
+        if isinstance(rec.get("note"), str):
+            rec["note"] = clean_text(rec["note"], keep_newline=True)
 
 
 def _val(row, field):
@@ -550,7 +1309,8 @@ def conflicts_json(state):
     out = []
     for c in state.conflicts:
         out.append({"id": c["id"], "field": c["field"],
-                    "values": [{"value": _val(x, c["field"]), "by": x.get("by"), "seq": x.get("seq")} for x in c["lines"]]})
+                    "values": [{"value": _field_val(x, c["field"]), "by": x.get("by"), "who": x.get("who"), "seq": x.get("seq")}
+                               for x in c["lines"]]})
     return out
 
 
@@ -569,31 +1329,55 @@ def _app():
         return None
 
 
-def diff(before, after, state=None):
-    """before／after：{id: {欄: 值}}；回要寫的行（還沒填 seq、base 以外的欄）[(op, id, set, unset)]。"""
+def diff(before, after, state=None, kind=None):
+    """before／after：{id: {欄: 值}}；回要寫的行（還沒填 seq、base 以外的欄）[(op, id, set, unset, sub)]。
+    逐項合併的欄（NESTED）不放進 set，比出改了的子項放 sub（D-552）。"""
+    nest = nested(kind)
+    lists = append_only(kind) if kind else ()
+
+    def split(old, rec):
+        force = set(rec.get("_force") or ())  # 撞到時值一樣也寫（D-553 註記）；_force 本身不寫
+        s = {k: v for k, v in rec.items() if k != "_force" and k not in nest and (k not in old or old[k] != v or k in force)}
+        un = [k for k in old if k not in rec and k not in nest]
+        un += [k for k in force if k not in rec and k not in un and k not in nest]  # 撞到時定成「沒有」也寫一行
+        for k in lists:  # 只往後加的欄：只寫這次新加的（合併本來就是聯集）；只少了的（退回 drop）寫空的
+            if k in s and isinstance(s[k], list) and isinstance(old.get(k), list):
+                was = {_ekey(e) for e in old[k]}
+                s[k] = [e for e in s[k] if _ekey(e) not in was]
+        sub = {}
+        for k in nest:
+            if k not in rec and k not in old:
+                continue
+            got = (_tag_diff if k in KEYED else _sub_diff)(old.get(k), rec.get(k))
+            if got is None:  # 不是清單（例如遮掉的字）：照一般欄
+                if k not in rec:
+                    un.append(k)
+                elif old.get(k) != rec[k]:
+                    s[k] = rec[k]
+            elif got:
+                sub[k] = got
+        return s, un, sub
+
     out = []
     for rid, rec in after.items():
         if rid not in before:
             cur = state.records.get(rid) if state is not None else None
             if cur and not cur.get("_del"):  # 這筆其實已經有了（例如封存那一邊的筆搬到主文件）：只寫差的欄
-                s = {k: v for k, v in rec.items() if k not in cur or cur[k] != v}
-                un = [k for k in cur if k not in rec and k != "_del"]
-                if s or un:
-                    out.append(("set", rid, s, un))
+                s, un, sub = split({k: v for k, v in cur.items() if k != "_del"}, rec)
+                if s or un or sub:
+                    out.append(("set", rid, s, un, sub))
                 continue
-            s = dict(rec)
+            s = {k: v for k, v in rec.items() if k != "_force"}
             if cur and cur.get("_del"):
                 s["_del"] = False
-            out.append(("create", rid, s, []))
+            out.append(("create", rid, s, [], {}))
             continue
-        old = before[rid]
-        s = {k: v for k, v in rec.items() if k not in old or old[k] != v}
-        un = [k for k in old if k not in rec]
-        if s or un:
-            out.append(("set", rid, s, un))
+        s, un, sub = split(before[rid], rec)
+        if s or un or sub:
+            out.append(("set", rid, s, un, sub))
     for rid in before:
         if rid not in after:
-            out.append(("set", rid, {"_del": True}, []))
+            out.append(("set", rid, {"_del": True}, [], {}))
     return out
 
 
@@ -619,14 +1403,14 @@ def _write(vault, kind, before, after, turn_id, who, reverts, row_extra):
     with FileLock(path):
         _scrub_own(vault, kind, path)
         state = load(vault, kind)
-        changes = diff(before, after, state)
+        changes = diff(before, after, state, kind)
         if not changes and not hard_delete:
             return 0
         by = path.stem
         extra = []
         if hard_delete:  # purge：動到的筆，這台檔裡的舊行拿掉，現在的樣子整筆換成一行（留在原來的位置，順序不變）
             replace = {}
-            for op, rid, s, un in changes:
+            for _op, rid, *_rest in changes:
                 if rid not in after:
                     continue
                 prev = state.meta.get(rid, {}).get("seq", 0)
@@ -634,7 +1418,8 @@ def _write(vault, kind, before, after, turn_id, who, reverts, row_extra):
                 seq = 1 if alone else prev + 1
                 replace[rid] = {"v": FORMAT_VERSION, "op": "create" if seq == 1 else "set", "id": rid, "seq": seq,
                                 "base": 0 if seq == 1 else prev, "by": by, "who": who, "at": _now(), "turn": turn_id,
-                                "set": dict(after[rid]), **({"app": _app()} if _app() else {})}
+                                "set": _without_gone(kind, after[rid]), "seen": dict(state.seen.get(rid, {})),
+                                **({"app": _app()} if _app() else {})}
             drop = {c[1] for c in changes if c[1] not in after} | {r for r, v in state.records.items() if v.get("_del")}
             extra = _rewrite_own(vault, path, replace, drop)
             changes = [c for c in changes if c[1] not in replace]
@@ -642,12 +1427,14 @@ def _write(vault, kind, before, after, turn_id, who, reverts, row_extra):
         else:
             noted_extra = []
         lines, noted = [], []
-        for op, rid, s, un in changes:
+        for op, rid, s, un, sub in changes:
             prev = state.meta.get(rid, {}).get("seq", 0)
             row = {"v": FORMAT_VERSION, "op": op, "id": rid, "seq": prev + 1, "base": prev, "by": by, "who": who,
-                   "at": _now(), "turn": turn_id, "set": s}
+                   "at": _now(), "turn": turn_id, "set": s, "seen": dict(state.seen.get(rid, {}))}
             if un:
                 row["unset"] = un
+            if sub:
+                row["sub"] = sub
             if reverts:
                 row["reverts"] = reverts
             if row_extra:
@@ -776,6 +1563,14 @@ def _scrub_own(vault, kind, path):
                 if f in s and s[f] != MASKED:
                     s[f] = MASKED
                     dirty = True
+                got = (row.get("sub") or {}).get(f) if f in nested(kind) and isinstance(row.get("sub"), dict) else None
+                for ch in (got.values() if isinstance(got, dict) else ()):  # 子項的字、留言的字也遮（D-552）
+                    if not isinstance(ch, dict):
+                        continue
+                    for c in [ch] + [c for c in ch.get("comments_add") or [] if isinstance(c, dict)]:
+                        if "text" in c and c["text"] != MASKED:
+                            c["text"] = MASKED
+                            dirty = True
         rows.append(row)
     if dirty:
         write_text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
@@ -790,13 +1585,15 @@ def compact(vault, kind):
         return 0
     with FileLock(path):
         rows = [r for _i, r in _read_file(vault, path)]
-        seen, keep = set(), []
+        seen, keep, lists = set(), [], append_only(kind)
         for row in reversed(rows):
             if row.get("op") != "set":
                 keep.append(row)
                 continue
-            keys = {(row.get("id"), k) for k in list(row.get("set") or {}) + list(row.get("unset") or [])}
-            if keys and keys <= seen and not row.get("reverts"):
+            got = row.get("set") if isinstance(row.get("set"), dict) else {}
+            keys = {(row.get("id"), k) for k in list(got) + list(row.get("unset") or []) if k not in lists}
+            carries = any(got.get(k) for k in lists) or row.get("drop") or row.get("undrop")  # 只往後加的欄不算被蓋過（測試裁定 5）
+            if keys and keys <= seen and not row.get("reverts") and not row.get("sub") and not carries:  # 帶子項改動的行不併（D-552）
                 continue
             seen |= keys
             keep.append(row)
@@ -1016,7 +1813,7 @@ def legacy_version_dir(version):
 def _history(vault, kind, rid):
     rows = []
     for f in _files(vault, kind):
-        for _i, row in _read_file(vault, f):
+        for _i, row in _good_rows(vault, f, kind):
             if row.get("op") != "mask" and row.get("id") == rid:
                 rows.append((_seq(row), str(row.get("by", "")), len(rows), row))
     rows.sort(key=lambda r: r[:3])
@@ -1032,19 +1829,22 @@ def line_effects(vault, kind, rid, seq, by):
         if row.get("seq") == seq and row.get("by") == by:
             old = None if rec is None else dict(rec)
             new = fold.apply(dict(rec or {}), rid, row, n)
-            fields = list((row.get("set") or {}).keys()) + list(row.get("unset") or [])
+            fields = list((row.get("set") or {}).keys()) + list(row.get("unset") or []) + _sub_fields(row)
             return {"op": row.get("op"), "old": old, "new": new, "fields": fields, "row": row}
         rec = fold.apply({} if rec is None else rec, rid, row, n)
     return None
 
 
 def later_lines(vault, kind, rid, seq, fields, skip_turns=()):
-    """比 seq 大、設了 fields 其中一欄的行（skip_turns 的回合寫的不算）。只往後加的欄不算（D-337：別人加了歷程不是改了同一欄）。"""
-    fields = set(fields) - set(append_only(kind))
+    """比 seq 大、設了 fields 其中一欄的行（skip_turns 的回合寫的不算）。只往後加的欄不算（D-337：別人加了歷程不是改了同一欄）。
+    子項的欄（「欄:子項id:那一欄」，D-552）看行的 sub；留言照 D-337 不算；整份清單的行算改了那欄全部子項。"""
+    fields = {f for f in set(fields) - set(append_only(kind)) if not f.endswith(":comments")}
     out = []
     for row in _history(vault, kind, rid):
-        if _seq(row) > seq and row.get("turn") not in skip_turns and \
-                fields & (set(row.get("set") or {}) | set(row.get("unset") or [])):
+        if _seq(row) <= seq or row.get("turn") in skip_turns:
+            continue
+        whole = set(row.get("set") or {}) | set(row.get("unset") or [])
+        if fields & (whole | set(_sub_fields(row))) or any(":" in f and f.partition(":")[0] in whole for f in fields):
             out.append(row)
     return out
 
@@ -1076,12 +1876,15 @@ def revert_line(vault, kind, rid, effects, turn_id, who=None):
     row = effects["row"]
     ref = [{"kind": kind, "id": rid, "seq": row.get("seq"), "by": row.get("by")}]
     new = dict(cur)
-    lists = {}
+    lists, subs = {}, {}
     if effects["op"] == "create" or effects["old"] is None:
         new.update(RETRACT.get(kind) or {"_del": True})
     else:
         for f in effects["fields"]:
-            if f in append_only(kind):  # 只拿掉那次加的那幾行，別人加的留著（D-337）
+            head = f.partition(":")[0]
+            if ":" in f and head in nested(kind):  # 子項的欄：只改那行動到的子項（D-552）
+                subs.setdefault(head, []).append(f)
+            elif f in append_only(kind):  # 只拿掉那次加的那幾行，別人加的留著（D-337）
                 new[f], drop, undrop = _undo_list(effects["old"].get(f), (effects["new"] or {}).get(f), cur.get(f))
                 if drop:
                     lists.setdefault("drop", {})[f] = drop
@@ -1091,6 +1894,13 @@ def revert_line(vault, kind, rid, effects, turn_id, who=None):
                 new[f] = effects["old"][f]
             else:
                 new.pop(f, None)
+        for k, names in subs.items():
+            got = _undo_tags(effects["old"].get(k), cur.get(k), names) if k in KEYED else \
+                _undo_subs(effects["old"].get(k), (effects["new"] or {}).get(k), cur.get(k), names)
+            if got or k not in KEYED:
+                new[k] = got
+            else:
+                new.pop(k, None)
     write(vault, kind, {rid: cur}, {rid: new}, turn_id=turn_id, who=who, reverts=ref, row_extra=lists)
     return True
 
@@ -1135,7 +1945,8 @@ def purge_tombstones(vault, kind):
             seq = 1 if alone else prev
             replace[rid] = {"v": FORMAT_VERSION, "op": "create" if alone else "set", "id": rid, "seq": seq,
                             "base": 0 if alone else max(prev - 1, 0), "by": by, "who": None, "at": _now(), "turn": None,
-                            "set": dict(rec), **({"app": _app()} if _app() else {})}
+                            "set": _without_gone(kind, rec), "seen": {} if alone else dict(st.seen.get(rid, {})),
+                            **({"app": _app()} if _app() else {})}
         try:
             _rewrite_own(vault, path, replace, dead)
         finally:

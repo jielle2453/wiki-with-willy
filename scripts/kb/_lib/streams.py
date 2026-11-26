@@ -26,7 +26,8 @@ from pathlib import Path
 
 from kb._lib.io import FileLock, read_json, write_json_atomic
 
-FORMAT_VERSION = 4  # 跟大升級走（D-335）：遷移表有新列、或行多了舊版看不懂的寫法（4：子項的 sub，D-552 (12)）的那一版 +1，
+FORMAT_VERSION = 5  # 跟大升級走（D-335）：遷移表有新列、或行多了舊版看不懂的寫法（4：子項的 sub，D-552 (12)；
+# 5：profile 的 about 每人一欄，D-556）的那一版 +1，
 # tools/release.py 守；舊版讀到比它新的行照讀、寫之前停（D-298）
 STREAMS_REL = ".system/streams"
 LOCAL_REL = ".system/local"
@@ -34,6 +35,8 @@ LEGACY_REL = ".system/legacy"
 MASKED = "（已遮掉）"
 META_ID = "__meta__"
 PROFILE_ID = "profile"
+ABOUT = "about"  # 設定檔「關於你」：流水檔裡每人一欄 about:<名字>，刪人寫 null（D-556）；整欄 about 是舊版寫的，新版不寫不 unset
+ABOUT_PRE = ABOUT + ":"
 
 # 種類 → (舊檔相對路徑, 形狀, 清單或對照的鍵, 收回欄)
 KINDS = {
@@ -1677,6 +1680,10 @@ def doc_to_records(kind, doc):
     recs = {}
     if shape == "profile":
         recs[PROFILE_ID] = {k: v for k, v in doc.items() if k != "preferences"}
+        if isinstance(doc.get(ABOUT), list):  # 每人一欄（D-556）；整欄 about 先留著，_write_doc 換回流水檔裡的舊值
+            for a in doc[ABOUT]:
+                if isinstance(a, dict) and isinstance(a.get("name"), str):
+                    recs[PROFILE_ID][ABOUT_PRE + a["name"]] = a
         if "preferences" in doc:
             recs[PROFILE_ID]["_has_prefs"] = True  # 原本有這一欄（空的也算），讀回來才一樣
         for p in doc.get("preferences") or []:
@@ -1706,7 +1713,7 @@ def records_to_doc(kind, recs):
     if kind in HIDE_ARCHIVED:
         live = {k: v for k, v in live.items() if not _is_archived(v)}
     if shape == "profile":
-        doc = dict(live.get(PROFILE_ID) or {})
+        doc = _about_doc(dict(live.get(PROFILE_ID) or {}))
         prefs = [v for k, v in live.items() if k != PROFILE_ID]
         if prefs or doc.pop("_has_prefs", False):
             doc["preferences"] = prefs
@@ -1719,6 +1726,43 @@ def records_to_doc(kind, recs):
     else:
         doc[key] = {k: (v["_value"] if set(v) == {"_value"} else v) for k, v in rest}
     return doc
+
+
+def _about_doc(rec):
+    """profile 那一筆 → 文件的 about：每人一欄裡不是 null 的（照欄的順序），再接整欄 about 裡還沒有自己那一欄（含墓碑）的人（D-556）。"""
+    own = [k for k in rec if k.startswith(ABOUT_PRE)]
+    if not own:
+        return rec
+    rows = [rec.pop(k) for k in own]
+    rows = [r for r in rows if r is not None]
+    names = {k[len(ABOUT_PRE):] for k in own}
+    whole = rec.get(ABOUT)
+    rows += [a for a in (whole if isinstance(whole, list) else ())
+             if not (isinstance(a, dict) and isinstance(a.get("name"), str) and a["name"] in names)]
+    rec[ABOUT] = rows
+    return rec
+
+
+def _about_after(before, after):
+    """寫 profile 前把 after 那一筆的「關於你」對齊流水檔（D-556）：整欄 about 照 before（沒有就不放，新建的照文件留給舊版讀）；
+    before 有、after 沒有的人（每人一欄或整欄裡的）寫墓碑 null；只在整欄裡、沒改的人不補成每人一欄（兩台都從舊資料第一次寫時，
+    補的原值會跟另一台的改動撞到）。"""
+    old, new = before.get(PROFILE_ID), after.get(PROFILE_ID)
+    if old is None or new is None:
+        return
+    if ABOUT in old:
+        new[ABOUT] = old[ABOUT]
+    else:
+        new.pop(ABOUT, None)
+    whole = old.get(ABOUT)
+    gone = [k for k in old if k.startswith(ABOUT_PRE)]
+    was = {ABOUT_PRE + a["name"]: a for a in (whole if isinstance(whole, list) else ())
+           if isinstance(a, dict) and isinstance(a.get("name"), str)}
+    for k in gone + list(was):
+        new.setdefault(k, None)
+    for k, a in was.items():
+        if k not in old and new.get(k) == a:
+            del new[k]
 
 
 def read_doc(vault, kind):
@@ -1909,6 +1953,8 @@ def _write_doc(vault, kind, data, via=None):
         else:
             data.pop("md_sha256", None)
     after = doc_to_records(kind, data)
+    if kind == "profile":
+        _about_after(before, after)
     changed = write(vault, base(kind), before, after, via=via)
     if kind in SPLIT and not changed:
         st = load(vault, kind)
@@ -2107,7 +2153,7 @@ def _done_round(row, field):
     """這行對子項勾那一欄（「欄:id:done」）寫的 round；不是勾的欄回 None；勾不是一組（合併不認）回 -1。"""
     head, _, rest = field.partition(":")
     cid, _, f = rest.rpartition(":")
-    if f != "done" or head in KEYED:
+    if f != "done" or head in KEYED or field.startswith(ABOUT_PRE):  # about:<名字> 是一般欄（D-556），名字可能含冒號
         return None
     got = row.get("sub")
     ch = ((got.get(head) or {}).get(cid) if isinstance(got, dict) and isinstance(got.get(head), dict) else None) or {}
@@ -2128,7 +2174,7 @@ def _done_round_in(rec, field):
 def _value_in(rec, field):
     """這筆現在那一欄的值（子項、標籤的欄從整份清單找）；沒有回 ABSENT。"""
     head, _, rest = field.partition(":")
-    if not rest:
+    if not rest or field.startswith(ABOUT_PRE):
         return (rec or {}).get(field, ABSENT)
     cid, _, f = rest.rpartition(":")
     items = (rec or {}).get(head)

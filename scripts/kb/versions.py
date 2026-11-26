@@ -1982,7 +1982,16 @@ OW_SUB_WORDS = {"done": "打勾", "text": "文字", "del": "拿掉"}
 _OW_DATE = re.compile(r"^\d{4}-(\d\d-\d\d)$")
 
 
+def _ow_about(it):
+    """設定檔「關於你」的每人一欄 about:<名字>（D-556）是一般欄：回名字；不是回 None。名字可能是 done、含冒號。"""
+    f = it["field"]
+    return f[len("about:"):] if f.startswith("about:") else None
+
+
 def _ow_field(it):
+    name = _ow_about(it)
+    if name is not None:
+        return f"關於你「{name}」"
     head, _, rest = it["field"].partition(":")
     if not rest:
         return OW_FIELD_WORDS.get(head, head)
@@ -1993,7 +2002,7 @@ def _ow_field(it):
 
 
 def _ow_value(it, value):
-    f = it["field"].rpartition(":")[2] if ":" in it["field"] else None
+    f = it["field"].rpartition(":")[2] if ":" in it["field"] and _ow_about(it) is None else None
     if f in ("done", "on", "del"):
         return {"done": ("有勾", "沒勾"), "on": ("有", "沒有"), "del": ("拿掉", "留著")}[f][0 if value else 1]
     if value is None:

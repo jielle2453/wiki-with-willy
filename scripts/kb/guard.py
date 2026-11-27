@@ -131,7 +131,9 @@ VAULT_ZONES = ("Z1", "Z2", "Z4", "Z5", "Z6", "Z7", "Z8", "Z13")
 SOURCE_ZONES = ("Z9", "Z10", "Z10b")
 CREDENTIAL_REASON = "檔名像密碼或金鑰（{seg}），使用者沒說過這份可以讀，不讀也不寫。"
 CREDENTIAL_INSIDE_REASON = "這個範圍裡有檔名像密碼或金鑰的檔（{rel}），使用者沒說過可以讀；縮到不含它的子資料夾或指定單一檔。"
-CREDENTIAL_LIMIT_REASON = "範圍太大，守門來不及檢查有沒有密碼檔，縮小範圍再做。"
+CREDENTIAL_LIMIT_REASON = "範圍太大，守門來不及檢查有沒有密碼檔，縮小範圍再做：指名到檔或小一點的夾。"
+CREDENTIAL_LIMIT_GIT_REASON = ("範圍太大，守門來不及檢查有沒有密碼檔。git 不用 cd 或 -C 到上層：留在原處，用相對路徑指名檔案"
+                               "（例如 git add -- ../raw/x.md）。")  # D-558：擋下的句子有 git 時用這句
 
 
 def _credential_base(path, zone, vault_n, sources):
@@ -177,7 +179,7 @@ CONTENT_WORDS = GREP_FAMILY | PIPE_SEARCH | RG_LIKE | {"rg"}  # xargs、find -ex
 FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
 XARGS_VALUED = {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars",
                 "--process-slot-var"}  # -e、-i、-l 的值要黏著寫（-l1），不吃下一個字
-GIT_VALUED = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+GIT_VALUED = cmdparse.GIT_VALUED
 
 
 def _first_command(words, valued):
@@ -649,6 +651,7 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         for p in plans)
     sub_paths, sub_globs, sub_write_empty, sub_scope = {}, {}, {}, {}
     uncertain, cd_written = [], set()
+    chdirs = set()  # D-558：換夾的夾（cd 的目標、git -C 換到的夾）
 
     def add_write(p, _tok):
         out["write_targets"].add(p)
@@ -692,6 +695,13 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         if stage_write and stage_base in out["cd_targets"]:
             cd_written.add(stage_base)  # cd 進去之後要寫：那個夾照一般規則判（cd 的 Z10b 豁免只給只切目錄、讀、列的）
         own, stage_reads = [], []
+        tok_words = [t for t, _q, _g, _a in tokens]
+        gp = cmdparse.git_parts(tok_words)
+        c_idx = set(gp[0]) if gp else set()
+        git_dir = cmdparse.git_chdir([tok_words[k] for k in sorted(c_idx)], stage_base) if c_idx else None
+        if git_dir is not None:
+            chdirs.add(git_dir)
+        c_reads, c_base = set(), stage_base
         if verb not in _CD_VERBS:
             try:
                 own = [p for raw, p in cmdparse._walk(stage_text, stage_base or cwd, powershell=(tool == "PowerShell"))
@@ -722,7 +732,7 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
                         open_targets.add(p)
         expect_cd, has_read_path = False, False
         verbs, flags, stage_globs, redirect_targets = [], [], [], []
-        for tok, quoted, glob_out, after_redirect in tokens:
+        for k, (tok, quoted, glob_out, after_redirect) in enumerate(tokens):
             low = tok.lower()
             if expect_cd:
                 if tok.startswith("-"):
@@ -751,6 +761,7 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
                     uncertain = []
                     if base is not None:
                         out["cd_targets"].add(base)
+                        chdirs.add(base)
                 continue
             if low in _CD_VERBS:
                 expect_cd = True
@@ -782,6 +793,20 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
                         out["token_path"] = p
                         out["token_write"] = stage_write
             if tok[0] in "$%":
+                continue
+            if k in c_idx and git_dir is not None:
+                # git -C 的值：照前一個 -C（第一個照原 cwd）抽、照讀判斷，不算隱含範圍（D-558 裁定）；之後的 pathspec 接 -C 解析。
+                # 值看不出換到哪（git_dir 是 None）的照原本的路判（萬用字元走 glob 那條）
+                p = c_base = _norm(tok, c_base)
+                if p is not None and os.path.exists(p):
+                    has_read_path = True
+                    out["read_paths"].add(p)
+                    stage_reads.append(p)
+                    c_reads.add(p)
+                    if os.path.isdir(p):
+                        out["read_dirs"].append(p)
+                if k == max(c_idx) and git_dir is not None:
+                    base = git_dir
                 continue
             if tok in (".", ".."):
                 p = _norm(tok, base)
@@ -868,6 +893,12 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
             plan["unknown"] = True  # 路徑裡有展不開的變數
         plan["own"], plan["redirects"], plan["globs"], plan["reads"] = own, redirect_targets, stage_globs, stage_reads
         plan["base"] = stage_base
+        if git_dir is not None:
+            base = stage_base  # -C 只管它那一段
+        plan["run_dir"] = git_dir if git_dir is not None else stage_base
+        plan["narrow"] = cmdparse.git_narrow(plan["words"], plan["run_dir"], stage_text, tool == "PowerShell")
+        plan["named"] = (set(stage_reads) - c_reads) | {_pattern_head(g) for g in stage_globs}
+        plan["c_dirs"] = c_reads
     # 寫入那段沒有自己的路徑：吃管線前面的（ls x | xargs rm、gci x | Remove-Item、% { rm $_ }），整個子指令的路徑都算目標
     for sub in sub_write_empty:
         paths = list(dict.fromkeys(sub_paths.get(sub, [])))
@@ -878,6 +909,16 @@ def _analyze(command, cwd, vault_n, tool="Bash", bodies=()):
         else:
             out["unparsed"] = True
     out["cd_targets"] -= cd_written
+    # D-558：換夾的夾只被窄的 git 用（至少一段、每段都是），沒被別段點名讀、不是寫入目標：不走第三道、不算 Z10b
+    out["git_exempt"] = set()
+    for d in chdirs:
+        under = [p for p in plans if p.get("run_dir") == d and p["verb"] not in _CD_VERBS]
+        if (under and all(p["narrow"] for p in under) and d not in out["write_targets"]
+                and not any(d in p["named"] for p in plans) and d not in out["implicit_dirs"]):
+            out["git_exempt"].add(d)
+            for p in under:  # 連用 -C 的中間夾（git -C .. -C raw）：git 只是經過，跟最後那個夾一起不走訪
+                out["git_exempt"].update(c for c in p.get("c_dirs", ()) if c not in out["write_targets"]
+                                         and not any(c in q["named"] for q in plans) and c not in out["implicit_dirs"])
     # 開夾的豁免只給同一句沒有別段讀到的夾：別段的讀取範圍含這個夾或在它底下，照一般規則走訪（測試第 1 輪裁定 9）
     others = other_paths | out["write_targets"] | out["cd_targets"] | set(out["read_dirs"] + out["implicit_dirs"])
     out["open_exempt"] = {t for t in open_targets if not any(inside(o, t) or inside(t, o) for o in others)}
@@ -2127,13 +2168,15 @@ def _shell_tool(tool, command, cwd, vault, sources, depth=0):
         scanned = []
         for p, zone, _alias in classified + head_classified + extra:
             if p in scanned or p in writes or p in body_only or zone == "Z10" or not os.path.isdir(p) or (
-                    p in info["open_exempt"] and p not in info["read_dirs"]):
+                    p in info["open_exempt"] and p not in info["read_dirs"]) or p in info["git_exempt"]:
                 continue  # 真正的磁碟根照走訪，撞上限就「範圍太大」（W2）；/c 這種開關 cmdparse 已不當路徑（V5）；開一個夾不走訪（D-514）
             scanned.append(p)
             scan_zone = _scan_zone(p, zone, vault_n, sources)
             if not scan_zone:
                 continue
             code, reason = folder_scan(vault, p, sources)
+            if code == "credential_scan_limit" and any(pl["verb"] == "git" for pl in info["stages"]):
+                reason = CREDENTIAL_LIMIT_GIT_REASON  # D-558：教 git 能用的寫法
             if code:
                 return deny(scan_zone, code, reason)
     # 直接命中排除夾（Z10）比「範圍含排除夾」（Z10b）具體，先報它；隱含的範圍（grep -r 的效用 cwd、cat * 的效用 cwd）也算
@@ -2177,7 +2220,8 @@ def _shell_tool(tool, command, cwd, vault, sources, depth=0):
     cd_only = info["list_only"]  # cd 的 Z10b 豁免只給整句只切目錄、列檔名的（cd 進去再跑程式照擋）
     for p, zone, alias in classified:  # 照抽出的順序，每個路徑先讀、是寫的目標再寫（理由句跟第八輪以前一樣具體）
         decision, code, reason = _verdict(zone, "read", alias)
-        if decision == "deny" and not (zone == "Z10b" and cd_only and p in info["cd_targets"] and p not in writes) and not (
+        if decision == "deny" and not (zone == "Z10b" and p not in writes and (
+                (cd_only and p in info["cd_targets"]) or p in info["git_exempt"])) and not (
                 zone == "Z10b" and p in info["open_exempt"]):  # 開一個含排除夾的夾不是讀它（D-514）
             return deny(zone, code, reason)
         if p in writes:
@@ -2195,7 +2239,7 @@ def _shell_tool(tool, command, cwd, vault, sources, depth=0):
         if zone == "Z11" and sources.unresolved:
             saw_unresolved = True
     for p, zone, alias in glob_classified:
-        if zone == "Z10b" and not (cd_only and p in info["cd_targets"] and p not in writes):
+        if zone == "Z10b" and not (p not in writes and ((cd_only and p in info["cd_targets"]) or p in info["git_exempt"])):
             _d, code, reason = _verdict(zone, "read", alias)
             return deny(zone, code, reason)
     for _p, zone, alias in implicit:  # 隱含的範圍（cd 進含排除夾的夾再 grep -r、tar .）：cd 本身放行，讀那個範圍照擋
@@ -2366,6 +2410,31 @@ def secret_in(command, tool, vault, cwd, root):
     return ASK_UNKNOWN if unknown else None
 
 
+def _vault_key(vault):
+    return None if vault is None else normalize(str(vault), None)
+
+
+def cd_kb_call(command, tool, cwd, root, vault=None, sources=None):
+    """#83（D-559）：「cd <一個固定的夾> &&（PowerShell 也可 ;）單一 kb 呼叫」回 (kb 那段, cd 之後的夾)，否則 None。
+    目標夾要存在；kb.py 路徑照 cd 之後與原 cwd 都要認得出是本外掛的（cd 沒切成時跑的也是同一支）；
+    目標是排除夾或含排除夾（Z10／Z10b）的不算，照一般規則判（review：kb 的相對路徑會對著它）。"""
+    pre = cmdparse.cd_prefix(command, tool)
+    if pre is None:
+        return None
+    at, target = pre
+    try:
+        new_cwd = normalize(target, normalize(cwd, None))
+    except (OSError, ValueError):
+        return None
+    rest = command[at:]
+    if not os.path.isdir(new_cwd) or not cmdparse.is_single_plugin_call(rest, root, new_cwd, tool) \
+            or not cmdparse.is_single_plugin_call(rest, root, cwd, tool):
+        return None
+    if vault is not None and sources is not None and classify(new_cwd, normalize(vault, None), sources)[0] in ("Z10", "Z10b"):
+        return None
+    return rest, new_cwd
+
+
 def decide(payload):
     """照 tool_name 分流。回 Decision(decision, zone, reason_code, reason, ledger_rows, vault)。"""
     global _OUTER_SEEN
@@ -2391,17 +2460,29 @@ def _decide(payload):
             # PowerShell 把彎引號當引號：任何子命令的文字參數都拆得開、能夾帶別的陳述式，直接擋；Bash 裡是普通字，照常認（第四輪）
             return Decision("deny", "", "curly_quote", CURLY_REASON, [_row(tool, "deny", "", "curly_quote", command)], vault)
         single = cmdparse.is_single_plugin_call(command, root, cwd, tool)
+        call, call_cwd, call_vault = command, cwd, vault
+        if not single:
+            pre = cd_kb_call(command, tool, cwd, root, vault, sources)
+            other = pre is not None and _vault_key(find_vault(pre[1])) != _vault_key(vault)
+            if pre is not None and not (other and payload.get("agent_id")):
+                # #83：cd <夾> 接單一 kb 呼叫，算單一呼叫，照 cd 之後的夾判；子代理 cd 到別的知識庫或知識庫外照一般規則判
+                # （測試第 1 輪裁定 6、11）
+                single = True
+                call, call_cwd = pre
+                # cd 到知識庫外：hook 照原 cwd 的知識庫管（子代理範圍、自帶旗標照擋，review 1）
+                call_vault = find_vault(call_cwd) or vault
         if single or cmdparse.KB_SCRIPT.rsplit("/", 1)[-1] in command.casefold():
             try:  # 單一呼叫照 secret_action（含後面接註解，#50）；串在一起的照 secret_in 逐段看
-                ask = secret_action(command, tool, vault, cwd) if single else secret_in(command, tool, vault, cwd, root)
+                ask = (secret_action(call, tool, call_vault, call_cwd) if single
+                       else secret_in(command, tool, vault, cwd, root))
             except NoSuchFile:
                 return Decision("deny", "", NO_SUCH_FILE, NO_SUCH_FILE_REASON,
                                 [_row(tool, "deny", "", NO_SUCH_FILE, command)], vault)
             if ask is not None:  # D-212：開新口子的密碼動作要客戶按允許；前綴讓 AI 知道要停下來請客戶按（第五輪 S1）
                 reason = ASK_PREFIX + ask  # 代入的名稱在 secret_action 裡遮過（B-424 (1)）
-                return Decision("ask", "", SECRET_ACTION, reason, [_row(tool, "ask", "", SECRET_ACTION, command)], vault)
+                return Decision("ask", "", SECRET_ACTION, reason, [_row(tool, "ask", "", SECRET_ACTION, command)], call_vault)
         if single:
-            return Decision("allow", "", "", KB_CALL_REASON, [], vault)
+            return Decision("allow", "", "", KB_CALL_REASON, [], call_vault)
         if vault is None:
             return Decision("pass", "", "", "", [], None)
         return _shell_tool(tool, command, cwd, vault, sources)

@@ -1333,25 +1333,179 @@ def code_paths(text):
     return [f for f in found if "$" not in f and "%" not in f]
 
 
+GIT_VALUED = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+_GIT_C_UNSURE = set("$%`*?[{")  # -C 的值帶這些看不出換到哪：不算換夾，照原 cwd（D-558）
+_GIT_BROAD = {"-A", "--all", "-u", "--update"}
+_GIT_COMMIT_BROAD = {"-a", "--all", "-i", "--include"}
+_GIT_GLOBAL_OK = {"-C", "--no-pager", "-P", "--no-optional-locks", "--literal-pathspecs"}
+_GIT_NARROW_SUBS = {"add", "status", "diff", "log", "show", "blame", "restore", "rm", "mv", "checkout", "reset",
+                    "ls-files", "commit", "push", "pull", "fetch"}
+_GIT_FLAG_VALUED = {"-m", "--message", "-F", "--file", "--author", "--date", "-C", "-c", "--reuse-message",
+                    "--reedit-message", "--fixup", "--squash", "--cleanup", "-t", "--template", "--pathspec-from-file"}
+
+
+def git_parts(words):
+    """git 那一段的字（verb_of 是 git）：回 (-C 值的位置清單, 子命令的位置)；子命令沒有時是 len(words)。不是 git 回 None。"""
+    if verb_of(words) != "git":
+        return None
+    at = next((k for k, w in enumerate(words) if _base(w) == "git"), None)
+    if at is None:
+        return None
+    i = at + 1
+    cs = []
+    while i < len(words) and words[i].startswith("-"):
+        if words[i] in GIT_VALUED:
+            if words[i] == "-C" and i + 1 < len(words):
+                cs.append(i + 1)
+            i += 2
+            continue
+        i += 1
+    return cs, min(i, len(words))
+
+
+def git_chdir(values, base):
+    """git -C 依序相對解析後的效用 cwd（D-558）；有看不出的值或 base 推不出回 None（不算換夾）。"""
+    for v in values:
+        if base is None or not v or _GIT_C_UNSURE & set(v):
+            return None
+        base = normalize(v, base)
+    return base
+
+
+_GIT_OUTPUT = {"--output", "-o"}
+_DRIVE = re.compile(r"^[A-Za-z]:")
+
+
+def _git_args_unsure(text, powershell, valued):
+    """測試第 1 輪裁定 7、8：git 子命令之後的參數有會展開的（$、反引號、%VAR%、PowerShell 的 (…)、Bash 開頭的 ~），
+    或非旗標參數帶 :（磁碟代號 X: 開頭的除外；<rev>:<path> 讀的不是 pathspec；旗標的值不看，commit 訊息常有冒號）。拆不開也算。"""
+    sw = shell_words(text, powershell)
+    if not sw:
+        return True
+    parts = git_parts([w for w, _u in sw])
+    if parts is None:
+        return True
+    skip, dash = False, False
+    for w, unsure in sw[parts[1] + 1:]:
+        if "`" in w or _PCT_VAR.search(w) or (unsure and ("$" in w or "(" in w)) or (
+                not powershell and unsure and w.startswith("~")):
+            return True
+        if dash:
+            flag = False
+        elif w == "--":
+            dash = True
+            continue
+        else:
+            flag = w.startswith("-") and len(w) > 1
+        if skip:
+            skip = False
+            continue
+        if flag:
+            skip = w in valued
+            if not valued and ":" in w and not w.split("=", 1)[0].startswith(("--format", "--pretty")):
+                return True  # --source=HEAD:x、-sHEAD:x：旗標值裡的 <rev>:<path>（commit 以外，第 2 輪 review 2）
+            continue
+        if ":" in w and not _DRIVE.match(w):
+            return True
+    return False
+
+
+def git_narrow(words, run_dir, text=None, powershell=False):
+    """這段是不是窄的 git（D-558）：帶 pathspec（不是 .、./、:/ 與其他 : 開頭、萬用字元、或換到的夾本身；沒有 -A／--all／-u／--update），
+    commit 不帶 -a／--all／-i／--include，或 push／pull／fetch。run_dir：這段跑的夾（pathspec 照它解析）。
+    text：這段的原文（照引號規則看參數有沒有變數、替換、<rev>:<path>，測試第 1 輪裁定 7、8）；帶 --output／-o 不算（裁定 9）。"""
+    parts = git_parts(words)
+    if parts is None or parts[1] >= len(words):
+        return False
+    at = next(k for k, w in enumerate(words) if _base(w) == "git")
+    if any("=" in w for w in words[:at]):
+        return False  # GIT_DIR=…、GIT_WORK_TREE=… 換了 repo（review 4）
+    values = set(parts[0])
+    for k in range(at + 1, parts[1]):
+        if k not in values and words[k].startswith("-") and words[k] not in _GIT_GLOBAL_OK:
+            return False  # -c（alias、pager 能跑任意指令）、--work-tree、--git-dir（review 4）
+    sub, rest = words[parts[1]].lower(), words[parts[1] + 1:]
+    if sub not in _GIT_NARROW_SUBS:
+        return False  # 別名（! 開頭會跑殼）與其他子命令照舊整夾掃（review 4）
+    if sub in ("push", "pull", "fetch"):
+        return True  # 不管參數（refspec 的 HEAD:main 帶冒號）
+    valued = _GIT_FLAG_VALUED if sub == "commit" else set()  # 只有 commit 的 -m、-c、-C、-t 吃值（第 2 輪 review 1）
+    if text is not None and _git_args_unsure(text, powershell, valued):
+        return False
+    flags, specs, dash, skip = [], [], False, False
+    for w in rest:
+        if dash:
+            specs.append(w)
+        elif w == "--":
+            dash = True
+        elif skip:
+            skip = False
+        elif w.startswith("-") and len(w) > 1:
+            flags.append(w)
+            skip = w in valued
+        elif run_dir is not None and os.path.exists(normalize(w, run_dir)):
+            specs.append(w)  # 沒有 -- 時 git 也只認存在的路徑；修訂名（HEAD）、旗標值（-n 5）不算 pathspec（review 2）
+    letters = set()
+    for f in flags:
+        if not f.startswith("--"):
+            for ch in f[1:]:
+                letters.add(ch)
+                if ch in "mFCct":
+                    break  # 後面黏的是值（-mfix）
+    broad = {f.split("=", 1)[0] for f in flags} | {"-" + ch for ch in letters}
+    output = any(f.startswith("--") and len(f.split("=", 1)[0]) >= 5 and (
+        "--output".startswith(f.split("=", 1)[0]) or f.startswith("--output")) for f in flags)  # --out=、--outp 縮寫（review 3）
+    if output or broad & (_GIT_BROAD | _GIT_OUTPUT) or (sub == "commit" and broad & _GIT_COMMIT_BROAD):
+        return False
+    if sub == "commit":
+        return True
+    if not specs:
+        return False
+    for s in specs:
+        if s in ("", ".", "./", ".\\") or s.startswith(":") or set(s) & set("*?[{") or run_dir is None:
+            return False
+        if normalize(s, run_dir) == run_dir:
+            return False
+    return True
+
+
 def _walk(command, cwd, powershell=False):
     """依序產出 (原字串, 正規化路徑)，cd 之後的相對路徑接 cd 的目標。powershell：單字母 /x 一律當旗標（PowerShell 沒有 Git Bash 寫法）。
-    直譯器與殼的 -c、-e、-Command 後面那個參數是程式碼：只抽裡面的絕對路徑（D-186 (c)）。"""
+    直譯器與殼的 -c、-e、-Command 後面那個參數是程式碼：只抽裡面的絕對路徑（D-186 (c)）。
+    git -C <夾> 是那一段的效用 cwd：-C 的值照原 cwd 抽，之後的 pathspec 接 -C 解析（D-558，只管它那一段）。"""
     cleaned = DISCARD_OUTPUT.sub(" ", command)
     base, expect_cd_target, after_cd, verb = cwd, False, False, ""
     writing = is_write(command, powershell)  # 寫入指令裡像檔名的裸 token（cp /tmp/a 新檔.md）也當路徑，要經區判斷（骨架與來源登記第八輪）
     prev = ""
+    seg_words, git_state, git_val, git_c, git_cs = [], None, False, False, []
     for token, quoted, after_redirect, first, _qchar in _tokens(cleaned, powershell):
         code_arg = (verb_of([verb]) in INTERPRETERS or verb_of([verb]) in SHELL_WRAPPERS) and prev.lower() in CODE_FLAGS and not first
         prev = token
         if first:
             verb = token.lower().replace("\\", "/").rsplit("/", 1)[-1]
+            seg_words, git_state, git_val, git_c, git_cs = [], None, False, False, []
+        seg_words.append(token)
+        c_value = False
+        if git_state is None and _base(token) == "git" and verb_of(seg_words) == "git":
+            git_state = "pre"
+        elif git_state == "pre":
+            if git_val:
+                git_val, c_value = False, git_c
+            elif token.startswith("-"):
+                git_val, git_c = token in GIT_VALUED, token == "-C"
+            else:
+                git_state = "post"
+        git_base = git_chdir(git_cs, base) if git_cs else None  # 第二個 -C 接第一個解析
+        if c_value:
+            git_cs.append(token)
+        eff = base if git_base is None else git_base
         if code_arg:
             for cand in code_paths(token):
-                yield cand, normalize(cand, base)
+                yield cand, normalize(cand, eff)
             continue
         # 第十一輪保底：{ 之前的資料夾一律是候選，經區判斷（Z10／Z10b／上層）；排在展開之後，展開命中的理由（readonly_source）比前綴夾具體
         head = brace_head(token, powershell) if "{" in token and not (first and not expect_cd_target) else None
-        head_p = normalize(head, base) if head is not None else None
+        head_p = normalize(head, eff) if head is not None else None
         if expect_cd_target:
             if token.startswith("-"):
                 continue  # Set-Location -Path X、cd -- X：旗標跳過，下一個才是目標
@@ -1371,11 +1525,11 @@ def _walk(command, cwd, powershell=False):
             continue
         for text in brace_expand(token):  # 第十輪 A1：{a,b} 先展開再抽
             for cand in _candidates(text, quoted, after_redirect, after_cd, powershell or verb in SWITCH_VERBS,
-                                    write_base=(base if writing and not first else None)):
+                                    write_base=(eff if writing and not first else None)):
                 # N-c：原樣，與去掉「\ 後接非 ASCII 或空白」跳脫的形態（bash 把 薪\資 讀成 薪資）兩種都比對；
                 # PowerShell 的 \ 不是跳脫字元，只比原樣（測試 28：C:\…\網站密碼.xlsx 多產假路徑被擋）
                 for form in dict.fromkeys((cand,) if powershell else (cand, _ESCAPE.sub("", cand))):
-                    p = normalize(form, base)
+                    p = normalize(form, eff)
                     if _ABS_START.match(form) or _relative_resolves(form, p):
                         yield form, p
         if head is not None and (_ABS_START.match(head) or _relative_resolves(head, head_p)):
@@ -1639,3 +1793,35 @@ def is_single_plugin_call(command, plugin_root, cwd=None, tool=None):
         return False
     script = m.group(2).strip("\"'")
     return normalize(script, cwd) == normalize(os.path.join(str(plugin_root), KB_SCRIPT), cwd)
+
+
+_CD_PREFIX_VERBS = {"cd", "pushd", "set-location", "sl", "chdir"}
+_CD_PREFIX_FLAGS = {"-path", "-literalpath", "--"}
+_CD_TARGET_BAD = set("$%`*?[{")
+_CD_PREFIX = re.compile(r"""[ \t]*(\S+)((?:[ \t]+-\S+)*)[ \t]+("[^"\n]*"|'[^'\n]*'|[^\s"';&|<>()]+)[ \t]*(&&|;)[ \t]*(?=\S)""")
+
+
+def cd_prefix(command, tool=None):
+    """#83（D-559）：整句是「<cd 動詞> <一個目標> <分隔> <其餘>」時回 (其餘的起點 index, 目標字串)，否則 None。
+    cd 動詞 cd、pushd、Set-Location、sl、chdir（大小寫不分），可帶 -Path／-LiteralPath／--；目標一個 token，可加引號，
+    不准 $ % 反引號 萬用字元 {；分隔 Bash 只認 &&，PowerShell 認 ; 與 &&（tool 不知道時兩種都認）。
+    其餘那段是不是單一 kb 呼叫由呼叫端用 is_single_plugin_call 判。"""
+    m = _CD_PREFIX.match(command or "")
+    if m is None or m.group(1).lower() not in _CD_PREFIX_VERBS:
+        return None
+    if any(f.lower() not in _CD_PREFIX_FLAGS for f in m.group(2).split()):
+        return None
+    if m.group(4) == ";" and tool == "Bash":
+        return None
+    raw = m.group(3)
+    quoted = raw[0] in "\"'"
+    target = raw[1:-1] if quoted else raw
+    if not target or _CD_TARGET_BAD & set(target):
+        return None
+    if quoted and raw[0] == "'" and command[m.end(3):m.end(3) + 1] == "'":
+        return None  # PowerShell 的 '' 跳脫
+    if not quoted and tool != "PowerShell" and "\\" in target:
+        return None  # Bash 引號外的 \ 是跳脫
+    if quoted and raw[0] == '"' and tool != "PowerShell" and "\\" in target and re.search(r'\\[\\"$`]', target):
+        return None
+    return m.end(), target

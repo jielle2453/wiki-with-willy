@@ -178,7 +178,11 @@ def kb_args(command, tool):
     import shlex
 
     from kb._lib import cmdparse
-    m = cmdparse._PYTHON.match(command or "")
+    command = command or ""
+    pre = cmdparse.cd_prefix(command, tool)
+    if pre is not None:
+        command = command[pre[0]:]  # #83：cd <夾> && kb 呼叫，看 kb 那段
+    m = cmdparse._PYTHON.match(command)
     if m is None:
         return None
     try:
@@ -266,7 +270,7 @@ def scope(payload, tool, d, agent_turn):
             return AGENT_DENY, None
         if (cmd, sub) == ("entity", "render") and not _positionals(tokens, sub):
             return AGENT_DENY, None  # 不帶名稱是重寫全部綜合卡，製卡助手用不到（D-521 裁定 18）
-        return None, with_turn(ti, agent_turn, payload.get("agent_id"))
+        return None, with_turn(ti, agent_turn, payload.get("agent_id"), tool)
     if tokens is None:
         return None, None
     if _has_flag(split_global(tokens)[0]):
@@ -289,7 +293,7 @@ def with_session(payload, tool, tokens):
         return None
     if _has_flag(tokens, SECRET_FLAGS):
         return None  # updatedInput 會把整串（含密碼值）印進 hook 的輸出（D-212 守著不帶密碼值），不改寫
-    return with_flags(ti, ("--session", sid))
+    return with_flags(ti, ("--session", sid), tool=tool)
 
 
 def _mark_secret(vault, payload, tool):
@@ -350,26 +354,29 @@ def _secret_target(payload, tool, vault):
     return False
 
 
-def with_flags(tool_input, *pairs):
+def with_flags(tool_input, *pairs, tool=None):
     """tool_input 照抄，command 在 kb.py 路徑後面插 pairs（每對 (旗標, 值)）；插不了（認不出路徑、值給不出引號）回 None，
-    照原樣放行。"""
+    照原樣放行。前面有 cd <夾> 前綴（#83）時前綴逐字不動，插在其餘那段。"""
     from kb._lib import cmdparse, plan
 
     command = tool_input.get("command")
     if not isinstance(command, str):
         return None
+    pre = cmdparse.cd_prefix(command, tool)
+    head = command[:pre[0]] if pre is not None else ""
+    command = command[len(head):]
     m = cmdparse._PYTHON.match(command)
     values = [plan.shell_arg(v) for _f, v in pairs]
     if m is None or any(v is None for v in values):
         return None
     at = m.end(2)
     extra = "".join(f" {f} {v}" for (f, _v), v in zip(pairs, values))
-    return dict(tool_input, command=f"{command[:at]}{extra}{command[at:]}")
+    return dict(tool_input, command=f"{head}{command[:at]}{extra}{command[at:]}")
 
 
-def with_turn(tool_input, turn_id, agent_id):
+def with_turn(tool_input, turn_id, agent_id, tool=None):
     """子代理的單一 kb 呼叫：kb.py 路徑後面插 --turn <回合> --agent <id>（D-195）。"""
-    return with_flags(tool_input, ("--turn", turn_id), ("--agent", agent_id))
+    return with_flags(tool_input, ("--turn", turn_id), ("--agent", agent_id), tool=tool)
 
 
 def _on_error(e, payload, tool):
